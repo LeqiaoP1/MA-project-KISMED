@@ -1,7 +1,0 @@
-\newglossaryentry{KISMED}
-{
-	name={KISMED}, 
-	description={\textbf{K}ünstliche \textbf{I}ntelligente \textbf{S}ysteme der \textbf{Med}izin ist der  führende Arbeitskreis an der \acrshort{TU} Darmstadt der sich mit mit dem Thema KI in der Medizin befasst}
-}
-
-\newacronym{TU}{TU}{Technische Universität}
