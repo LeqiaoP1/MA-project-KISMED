@@ -54,3 +54,12 @@ Each subfigure can be addressed individually, e.g., \autoref{fig:example_2} and 
 \section{Analysis of Related Work}
 In the analysis of your related work, summarize your findings and define the research gap, i.e., open issues, problems, work to be done. 
 The research gap builds the foundation for your own work in the following chapter(s). 
+
+
+The proposed research builds upon three pillars of self-supervised representation learning. 
+
+\textbf{Masked Autoencoders (MAE):} The standard MAE framework \cite{he2022masked} introduced an asymmetric encoder-decoder architecture where a large Vision Transformer (ViT) encoder operates only on a sparse subset of visible image patches, while a lightweight decoder reconstructs the original pixels from the latent representation and mask tokens. This approach established that high masking ratios (e.g., 75\%) serve as an effective pretext task for learning robust spatial features.
+
+\textbf{Multi-modal Multi-task Masked Autoencoders (MultiMAE):} MultiMAE  \cite{multimae2022} extends the MAE paradigm to multimodal environments by utilizing modality-specific linear projections to map diverse sensor streams into a unified token space. By masking across both spatial patches and input modalities, the model is forced to learn cross-modal predictive coding, enabling the reconstruction of missing modalities (e.g., depth or semantic maps) from any available subset of inputs.
+
+\textbf{Video Masked Autoencoders (VideoMAE):} To address the unique challenges of the temporal dimension, VideoMAE  \cite{tong2022videomae} introduces customized tube masking and extremely high masking ratios (90--95\%). Unlike random masking, tube masking applies a consistent spatial mask across the entire temporal axis to prevent the model from "cheating" by exploiting adjacent unmasked frames, thereby enforcing the learning of high-level spatiotemporal structures.

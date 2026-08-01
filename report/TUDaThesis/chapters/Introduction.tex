@@ -7,6 +7,7 @@
 %*****************************************
 \hint{This chapter should motivate the thesis, provide a clear description of the problem to be solved, and describe the major contributions of this thesis.}
 
+
 \section{Overview: Writing Your Thesis}
 
 \hint{
@@ -102,10 +103,26 @@ The following list should provide you with some tips for writing your thesis wit
 
 
 \section{Motivation}
-What is the motivation for doing research in this area?
+%What is the motivation for doing research in this area?
+
+Reliable physiological monitoring is crucial for health and safety in everyday environments such as vehicles and workplaces. While current non-invasive measurement techniques---such as thermographic cameras and Photoplethysmography Imaging (PPGI)---provide a comfortable alternative to invasive sensors, they are highly susceptible to environmental noise and hardware failure (e.g., sun glare on a dashboard camera). 
+
+To extract robust parameters despite these artifacts, the overarching research project evaluates physiological reactions using Sensor Fusion. However, effectively fusing drastically different medical signals remains computationally challenging in unconstrained environments.
+
+Existing multimodal AI models lack the robust cross-modal predictive coding necessary to maintain accurate signal estimation when a sensor stream completely fails in a real-world, dynamic environment. To ensure high reliability, an architecture is required that can dynamically reconstruct missing data streams by learning deep correlations between thermal, visual, and physiological signals. 
+
+
 
 \section{Problem Statement and Contribution}
-What is the problem that should be solved with this thesis?
+%What is the problem that should be solved with this thesis?
+
+\begin{itemize}
+    \item \textbf{Main RQ:} To what extent can cross-modal predictive coding in Masked Autoencoders successfully reconstruct missing multimodal sensor signals during targeted sensor failures, and how much information is lost?
+    
+    \item \textbf{Sub-RQ 1:} How can 1D continuous physiological time-series data (e.g., EDA and Heart Rate) and dynamic 2D videos (RGB and Thermal face) be effectively fused into a unified Vision Transformer encoder?
+
+    \item \textbf{Sub-RQ 2:} What is the quantitative impact of applying temporal tube masking and extremely high masking ratios (90\%+) on the reconstruction of physiological indicators from noisy video data?
+\end{itemize}
 
 \section{Outline}
 How is the rest of this thesis structured?
