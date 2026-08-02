@@ -1,0 +1,27 @@
+*.swp
+**/__pycache__/**
+.dumbo.json
+checkpoints/
+
+**/.ipynb_checkpoints/**
+run.sh
+output/
+wandb/
+runs/
+
+*.pth
+*.DS_Store
+
+
+notebooks/
+pretrained/
+nyuv2_dataset/
+DPT/
+Mask2Former/
+
+# Ignore virtual environment folder
+.venv/
+
+# Ignore Visual Studio Code settings folder
+.vscode/
+
