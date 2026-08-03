@@ -5,9 +5,33 @@
 \hint{This chapter should give a comprehensive overview on the background necessary to understand the thesis. This chapter might be skipped by experts on the topic}
 Bib\TeX-Test: \cite{hoog2007} 
 
+\section{Masked Autoencoders(MAE)}
+
+The foundational paradigm for this research is the Masked Autoencoder (MAE) \cite{he2022masked}, a self-supervised approach that treats visual data similarly to masked language modeling in NLP.
+MAE utilizes an asymmetric encoder-decoder architecture: a large Vision Transformer (ViT) encoder processes only a small subset of visible image patches, while a lightweight decoder reconstructs the original pixels from the latent representation and mask tokens.
+By using high masking ratios (e.g., $75\%$), the model is forced to learn robust spatial features rather than low-level image statistics.
+
+
+\section{Multimodal Predictive Coding (MultiMAE)}
+Multi-modal Multi-task Masked Autoencoders (MultiMAE) extend the MAE framework to handle diverse sensor streams simultaneously.
+\begin{itemize}
+    \item Modality-Specific Projections: MultiMAE employs separate linear layers to map different modalities—such as 2D RGB patches, depth maps, or 1D physiological segments—into a unified token dimension.
+    \item Cross-Modal Predictive Coding: By masking patches across different modalities, the network learns to relate information between sensors. 
+    This allows the model to perform subset inference, where it can "hallucinate" missing modalities (e.g., predicting depth from RGB) during sensor failures.
+    \item Symmetric Dirichlet Sampling: To ensure the model is agnostic to the available inputs at inference time, MultiMAE uses a Dirichlet distribution to randomly sample the number of tokens contributed by each modality during pre-training.
+\end{itemize}
+
+
+\section{Video Masked Autoencoders(VideoMAE)}
+
+
+\section{Vision Transformers(ViT)}
+The system relies on the Vision Transformer (ViT) to model global dependencies through joint space-time attention.
+This mechanism treats all spatiotemporal cube tokens as a unified sequence, allowing the model to capture deep correlations between facial fluctuations in video and underlying 1D physiological changes
+The use of extremely high masking ratios is a critical technical enabler, as it manages the quadratic complexity of self-attention by significantly reducing the number of tokens the encoder must process.
 
 \section{BP4D+ Multimodal Spontaneous Expression Database}
-The experimental data for this research is sourced from the BP4D+ Multimodal Spontaneous Emotion Corpus, a comprehensive dataset featuring synchronized sequences from 140 subjects. To ensure the collection of authentic affective states, the dataset utilizes an emotion elicitation protocol consisting of ten distinct tasks, such as humor, physical threat, and cold pressor tests.
+The experimental data for this research is sourced from the BP4D+ Multimodal Spontaneous Emotion Corpus \cite{zhang2013high}, a comprehensive dataset featuring synchronized sequences from 140 subjects. To ensure the collection of authentic affective states, the dataset utilizes an emotion elicitation protocol consisting of ten distinct tasks, such as humor, physical threat, and cold pressor tests.
 
 The corpus provides a diverse range of high-resolution modalities.
 
@@ -17,6 +41,7 @@ The corpus provides a diverse range of high-resolution modalities.
     \item \textbf{Derivatives and Annotations:} Expert-coded Facial Action Coding System (FACS) intensity and occurrence, as well as tracked head poses and feature points for the 2D, 3D, and thermal streams.
 \end{itemize}
 
+This multi-sensory synchronization makes the BP4D+ an ideal foundation for developing models capable of learning deep cross-modal correlations.
 
 \section{Background Topic 2}
 
