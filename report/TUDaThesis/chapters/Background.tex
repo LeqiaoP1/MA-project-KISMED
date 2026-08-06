@@ -5,36 +5,73 @@
 \hint{This chapter should give a comprehensive overview on the background necessary to understand the thesis. This chapter might be skipped by experts on the topic}
 Bib\TeX-Test: \cite{hoog2007} 
 
-\section{Masked Autoencoders(MAE)}
-
-The foundational paradigm for this research is the Masked Autoencoder (MAE) \cite{he2022masked}, a self-supervised approach that treats visual data similarly to masked language modeling in NLP.
-MAE utilizes an asymmetric encoder-decoder architecture: a large Vision Transformer (ViT) encoder processes only a small subset of visible image patches, while a lightweight decoder reconstructs the original pixels from the latent representation and mask tokens.
-By using high masking ratios (e.g., $75\%$), the model is forced to learn robust spatial features rather than low-level image statistics.
-
-
-\section{Multimodal Predictive Coding (MultiMAE)}
-Multi-modal Multi-task Masked Autoencoders (MultiMAE) extend the MAE framework to handle diverse sensor streams simultaneously.
-\begin{itemize}
-    \item Modality-Specific Projections: MultiMAE employs separate linear layers to map different modalities—such as 2D RGB patches, depth maps, or 1D physiological segments—into a unified token dimension.
-    \item Cross-Modal Predictive Coding: By masking patches across different modalities, the network learns to relate information between sensors. 
-    This allows the model to perform subset inference, where it can "hallucinate" missing modalities (e.g., predicting depth from RGB) during sensor failures.
-    \item Symmetric Dirichlet Sampling: To ensure the model is agnostic to the available inputs at inference time, MultiMAE uses a Dirichlet distribution to randomly sample the number of tokens contributed by each modality during pre-training.
-\end{itemize}
-
-
-\section{Video Masked Autoencoders(VideoMAE)}
-
 
 \section{Vision Transformers(ViT)}
-The system relies on the Vision Transformer (ViT) to model global dependencies through joint space-time attention.
-This mechanism treats all spatiotemporal cube tokens as a unified sequence, allowing the model to capture deep correlations between facial fluctuations in video and underlying 1D physiological changes
-The use of extremely high masking ratios is a critical technical enabler, as it manages the quadratic complexity of self-attention by significantly reducing the number of tokens the encoder must process.
+\subsection{Image Pacthing and Tokenization}
+The Vision Transformer (ViT) \cite{dosovitskiy2021image} represents a paradigm shift in computer vision by adapting the Transformer architecture, originally successful in natural language processing, to process visual data. 
+Instead of utilizing traditional convolutional layers that focus on local pixel neighborhoods, a ViT partitions an input image into a series of regular, non-overlapping patches, such as $16x16$ pixels.
+These patches are flattened and mapped through a linear projection into a latent and shared vector space of dimension D, effectively treating each image segment as a "visual token" analogous to a word embedding in BERT \cite{devlin-etal-2019-bert}.
+
+\subsection{Self-Attention Mechansim}
+The core mechanism of the ViT is multi-head self-attention \cite{vaswani2017attention}, which enables the model to capture global dependencies across the entire image simultaneously.
+While traditional convolutional neural networks (CNNs) rely on local receptive fields and hierarchical feature extraction,
+a ViT allows every visual token to interact with every other token, providing the network with a comprehensive spatial context and significantly reducing the inductive biases—such as translation invariance and locality—inherent in convolutional neural networks. 
+This flexible attention mechanism allows the model to learn complex spatial relationships and has proven highly scalable for large-scale self-supervised pre-training tasks \cite{he2022masked}.
+
+\section{Masked Autoencoders(MAE)}
+The foundational paradigm for this research is the Masked Autoencoder (MAE) \cite{he2022masked}, a self-supervised approach that treats visual data similarly to masked language modeling in NLP.
+MAE utilizes an asymmetric encoder-decoder architecture.
+\subsection{Heavy Encoder} 
+A large encoder processes only a small subset of visible (unmasked) image patches. 
+By completely excluding masked tokens from the encoder—which comprise $75\%$ of image patches or up to $95\%$ of video cubes—the model drastically reduces memory consumption and computational overhead.
+This allow the model to capture deep, high-level features while operating on a sparse representation.
+
+\subsection{Light Decoder} 
+The decoder is significantly smaller and is used only during the pre-training phase to reconstruct the original input.
+It receives the latent representations from the encoder along with learnable mask tokens that act as placeholders for the missing data.
+To maintain efficiency, the decoder typically uses a much smaller latent dimension (e.g., 256 compared to the encoder's 768) and fewer Transformer blocks.
+
+Because the heavy encoder never sees mask tokens during pre-training, it learns to generalize from partial data. 
+After pre-training is completed, the lightweight decoder is discarded and the encoder is fine-tuned for downstream tasks using the full set of unmasked tokens.
+
+
+\section{Multi-modal Multi-task Masked Autoencoders(MultiMAE)}
+Multi-modal Multi-task Masked Autoencoders (MultiMAE) \cite{multimae2022} extends the MAE framework (RGB-only) to handle diverse modalities such as RGB image, depth maps and semantic segments simultaneously.
+
+\subsection{Multimodal Input Handling}
+In MultiMAE, each modality uses its own specific linear projection to project raw inputs into a set of tokens that all share the same unified latent dimension.
+The length of th token sequence can differ between modalites depending on therir original structure and how they are tokenized.
+Once projected, these variable-length sequences are concatendated into a single unified sequence for the encoder.
+
+\subsection{Cross-Modal Predictive Coding}
+To help the model distinguish spatial locations and modalities, 2-D positional embeddings and modality-specific learnable embeddings are added to the token representations.
+MultiMAE masks patches across both spatial locations and input modalities.
+This forces the network to learn deep inter-modal correlations, allowing it to "hallucinate" or reconstruct missing sensors from whatever subset of data is available.
+
+\subsection{Symmetric Dirichlet Sampling}
+MultiMAE uses a Dirichlet distribution to randomly sample the number of tokens contributed by each modality during pre-training.
+It determines the proportions of visible tokens $(\lambda_{RGB}, \lambda_D, \lambda_S)$ from each modality, ensuring that the model learns to handle any combination of available inputs.
+
+\begin{equation}
+(\lambda_{RGB}, \lambda_D, \lambda_S) \sim \text{Dir}(\alpha)
+\end{equation}
+
+Subject to the unity constraint:
+\begin{equation}
+\sum_{i \in \{RGB, D, S\}} \lambda_i = 1, \quad \lambda_i \geq 0
+\end{equation}
+Where the concentration parameter $\alpha > 0$ determines the sampling diversity:
+\begin{itemize}
+    \item $\alpha = 1$: Equivalent to a uniform distribution over the simplex, which is default and exposed to all possible "sensor failure" scenarios during pre-training 
+    to force model to learn how ot reconstrcut any modaility from whatever sparse subset of data is available.
+    \item $\alpha \ll 1$: Modality-specific "extreme" sampling where most tokens are drawn from a single stream.
+    \item $\alpha \gg 1$: Leads to an equal distribution of tokens across all modalities, which ensuring a fixed, identical number of tokens from each modality.
+\end{itemize}
 
 \section{BP4D+ Multimodal Spontaneous Expression Database}
 The experimental data for this research is sourced from the BP4D+ Multimodal Spontaneous Emotion Corpus \cite{zhang2013high}, a comprehensive dataset featuring synchronized sequences from 140 subjects. To ensure the collection of authentic affective states, the dataset utilizes an emotion elicitation protocol consisting of ten distinct tasks, such as humor, physical threat, and cold pressor tests.
 
 The corpus provides a diverse range of high-resolution modalities.
-
 \begin{itemize}
     \item \textbf{Visual Data:} 2D texture images, 3D facial models, and thermal video sequences, all recorded at a frame rate of 25 fps.
     \item \textbf{Physiological Signals:} Continuous 1D time-series data—including blood pressure, heart rate, respiration rate, and electrodermal activity (EDA)—captured at a sampling rate of 1000 Hz.
@@ -43,6 +80,23 @@ The corpus provides a diverse range of high-resolution modalities.
 
 This multi-sensory synchronization makes the BP4D+ an ideal foundation for developing models capable of learning deep cross-modal correlations.
 
-\section{Background Topic 2}
+\section{Challenges of Video-based Multimodal Data}
+Since the BP4D+ dataset is a video-based multimodal dataset, it presents several challenges for masked autoencoding that go beyond the static image setting discussed in the previous sections. 
+This section highlights the difficulties most relevant to this work.
 
-\section{Summary}
+\subsection{Temporal Synchronization of Heterogeneous Data}
+The BP4D+ corpus records its modalities at fundamentally different sampling rates: the 1D physiological signals are captured at $1000\,\mathrm{Hz}$, whereas the 2D, 3D, and thermal visual streams are recorded at only $25\,\mathrm{fps}$. 
+This temporal mismatch must be resolved before the data can be processed jointly.
+
+A first challenge is therefore to align the 1D physiological time-series with the 2D and thermal video frames in a synchronized manner, ensuring that corresponding time steps refer to the same physical moment in the recording. 
+
+Secondly, related challenge is Joint Space-Time cube embeddings (e.g., 2x16x16), every token must interact with overy other token across both spatial and temporal dimensions, which is computationally expensive. 
+The quadratic effect mathematically express as $O(N^2)$.
+
+\subsection{Information Leakage and Temporal Tube Masking}
+A critical challenge in video signals is information leakage. During pre-training, a model can easily ``cheat'' during reconstruction by copying pixels from unmasked adjacent frames rather than learning high-level spatiotemporal structures. 
+This is particularly problematic for video, where consecutive frames are highly correlated and provide a trivial shortcut to low reconstruction error.
+
+Tube masking mitigates this issue by enforcing a consistent spatial mask across the entire temporal axis. 
+By masking entire ``tubes'' through time, the model is prevented from copying spatial regions from neighboring frames. 
+This forces the attention mechanism to reason over high-level spatiotemporal structures instead of relying on low-level temporal correspondences.
