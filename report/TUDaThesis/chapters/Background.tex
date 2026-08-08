@@ -90,8 +90,11 @@ This temporal mismatch must be resolved before the data can be processed jointly
 
 A first challenge is therefore to align the 1D physiological time-series with the 2D and thermal video frames in a synchronized manner, ensuring that corresponding time steps refer to the same physical moment in the recording. 
 
-Secondly, related challenge is Joint Space-Time cube embeddings (e.g., 2x16x16), every token must interact with overy other token across both spatial and temporal dimensions, which is computationally expensive. 
-The quadratic effect mathematically express as $O(N^2)$.
+\subsection{Explosive Token Count in Joint Space-Time Cube Embeddings}
+In the Joint Space-Time cube embeddings there will be temporal dimension added. As example, a 16-frame clip represented as raw input tensor $(Batch Size, Channels, 16, Height, Width)$.
+After it got tokenized into $2\times 16 \times 16$ cubes and mapped into the latent dimension D (768 for ViT-B), its shape become $(Batch Size, D, 8, H/16, W/16)$.
+The token length of a 16-frame clip is 8 times as in a single image $(H/16 \times W/16)$. 
+Because the self-attention mechanism scales quadratically $O(N^2)$ with the number of tokens, it leads to a $64 \times $ increase in the computation load. 
 
 \subsection{Information Leakage and Temporal Tube Masking}
 A critical challenge in video signals is information leakage. During pre-training, a model can easily ``cheat'' during reconstruction by copying pixels from unmasked adjacent frames rather than learning high-level spatiotemporal structures. 
