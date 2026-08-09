@@ -3,103 +3,274 @@
 \label{ch:background}
 %*****************************************
 \hint{This chapter should give a comprehensive overview on the background necessary to understand the thesis. This chapter might be skipped by experts on the topic}
-Bib\TeX-Test: \cite{hoog2007} 
+Bib\TeX-Test: \cite{hoog2007}
 
+\section{Principles of Remote Physiological Sensing}
+\label{sec:principles-rps}
+%The theoretical foundation of your work rests on the ability to detect internal biological
+%changes through external optical observations. Remote Photoplethysmography (rPPG):
+% This thematic area explores how visible light interacts with the skin. As blood
+% volume changes during the cardiac cycle, the absorption of specific wavelengths—particularly
+% in the green spectrum—varies. This creates subtle color fluctuations in the skin
+% that are detectable by standard imaging sensors. Thermal Infrared Sensing:
+% Beyond reflected light, physiological states can be monitored via emitted heat.
+% Thermal sensing captures micro-vascular blood flow and skin temperature
+% variations. Theoretically, this provides a modality that is invariant to visible
+% light conditions but sensitive to the metabolic and autonomic changes associated
+% with stress or physical pain.
 
-\section{Vision Transformers(ViT)}
-\subsection{Image Pacthing and Tokenization}
-The Vision Transformer (ViT) \cite{dosovitskiy2021image} represents a paradigm shift in computer vision by adapting the Transformer architecture, originally successful in natural language processing, to process visual data. 
-Instead of utilizing traditional convolutional layers that focus on local pixel neighborhoods, a ViT partitions an input image into a series of regular, non-overlapping patches, such as $16x16$ pixels.
-These patches are flattened and mapped through a linear projection into a latent and shared vector space of dimension D, effectively treating each image segment as a "visual token" analogous to a word embedding in BERT \cite{devlin-etal-2019-bert}.
-
-\subsection{Self-Attention Mechansim}
-The core mechanism of the ViT is multi-head self-attention \cite{vaswani2017attention}, which enables the model to capture global dependencies across the entire image simultaneously.
-While traditional convolutional neural networks (CNNs) rely on local receptive fields and hierarchical feature extraction,
-a ViT allows every visual token to interact with every other token, providing the network with a comprehensive spatial context and significantly reducing the inductive biases—such as translation invariance and locality—inherent in convolutional neural networks. 
-This flexible attention mechanism allows the model to learn complex spatial relationships and has proven highly scalable for large-scale self-supervised pre-training tasks \cite{he2022masked}.
-
-\section{Masked Autoencoders(MAE)}
-The foundational paradigm for this research is the Masked Autoencoder (MAE) \cite{he2022masked}, a self-supervised approach that treats visual data similarly to masked language modeling in NLP.
-MAE utilizes an asymmetric encoder-decoder architecture.
-\subsection{Heavy Encoder} 
-A large encoder processes only a small subset of visible (unmasked) image patches. 
-By completely excluding masked tokens from the encoder—which comprise $75\%$ of image patches or up to $95\%$ of video cubes—the model drastically reduces memory consumption and computational overhead.
-This allow the model to capture deep, high-level features while operating on a sparse representation.
-
-\subsection{Light Decoder} 
-The decoder is significantly smaller and is used only during the pre-training phase to reconstruct the original input.
-It receives the latent representations from the encoder along with learnable mask tokens that act as placeholders for the missing data.
-To maintain efficiency, the decoder typically uses a much smaller latent dimension (e.g., 256 compared to the encoder's 768) and fewer Transformer blocks.
-
-Because the heavy encoder never sees mask tokens during pre-training, it learns to generalize from partial data. 
-After pre-training is completed, the lightweight decoder is discarded and the encoder is fine-tuned for downstream tasks using the full set of unmasked tokens.
-
-
-\section{Multi-modal Multi-task Masked Autoencoders(MultiMAE)}
-Multi-modal Multi-task Masked Autoencoders (MultiMAE) \cite{multimae2022} extends the MAE framework (RGB-only) to handle diverse modalities such as RGB image, depth maps and semantic segments simultaneously.
-
-\subsection{Multimodal Input Handling}
-In MultiMAE, each modality uses its own specific linear projection to project raw inputs into a set of tokens that all share the same unified latent dimension.
-The length of th token sequence can differ between modalites depending on therir original structure and how they are tokenized.
-Once projected, these variable-length sequences are concatendated into a single unified sequence for the encoder.
-
-\subsection{Cross-Modal Predictive Coding}
-To help the model distinguish spatial locations and modalities, 2-D positional embeddings and modality-specific learnable embeddings are added to the token representations.
-MultiMAE masks patches across both spatial locations and input modalities.
-This forces the network to learn deep inter-modal correlations, allowing it to "hallucinate" or reconstruct missing sensors from whatever subset of data is available.
-
-\subsection{Symmetric Dirichlet Sampling}
-MultiMAE uses a Dirichlet distribution to randomly sample the number of tokens contributed by each modality during pre-training.
-It determines the proportions of visible tokens $(\lambda_{RGB}, \lambda_D, \lambda_S)$ from each modality, ensuring that the model learns to handle any combination of available inputs.
-
-\begin{equation}
-(\lambda_{RGB}, \lambda_D, \lambda_S) \sim \text{Dir}(\alpha)
-\end{equation}
-
-Subject to the unity constraint:
-\begin{equation}
-\sum_{i \in \{RGB, D, S\}} \lambda_i = 1, \quad \lambda_i \geq 0
-\end{equation}
-Where the concentration parameter $\alpha > 0$ determines the sampling diversity:
+Remote physiological sensing (RPS) integrates diverse non-invasive modalities
+including optical, thermal, and radio-frequency (RF) sensors to monitor
+biological indicators without physical contact \cite{hassanpour2025contactless}.
+Within an academic framework, these signals are defined by their underlying
+physiological mechanisms and the specialized extraction methodologies required
+to isolate them from environmental noise. This section focuses on the sensing
+paradigm and the acquisition of each signal class, whereas the mathematical
+properties of the resulting waveforms and their implications for signal
+reconstruction are characterized in Section \ref{sec:signal-characteristics}:
 \begin{itemize}
-    \item $\alpha = 1$: Equivalent to a uniform distribution over the simplex, which is default and exposed to all possible "sensor failure" scenarios during pre-training 
-    to force model to learn how ot reconstrcut any modaility from whatever sparse subset of data is available.
-    \item $\alpha \ll 1$: Modality-specific "extreme" sampling where most tokens are drawn from a single stream.
-    \item $\alpha \gg 1$: Leads to an equal distribution of tokens across all modalities, which ensuring a fixed, identical number of tokens from each modality.
+    \item \textbf{Heart Rate (HR) and Heart Rate Variability (HRV):} These
+        signals reflect cardiac pulsatility and autonomic regulation. They are extracted
+        via remote photoplethysmography (rPPG) from sub-visual skin color variations
+        \cite{wang2017algorithmic}, microwave Doppler radar tracking of minute
+        chest wall displacements \cite{islam2022radar}, or ballistocardiography (BCG)
+        using ambient piezoelectric sensors to capture mechanical body recoil \cite{kjaer2026bcgfm}.
+        Recent advancements utilize neuromorphic event cameras to capture high-frequency
+        intensity transients induced by arterial pulsations with microsecond
+        precision \cite{feng2026empd}.
+
+    \item \textbf{Thermal Infrared (TIR) Sensing:} This modality monitors
+        physiological states by detecting electromagnetic radiation emitted from
+        the skin in the long-wave infrared spectrum ($8 \sim 14 \mu m$), enabling
+        robust monitoring in complete darkness \cite{cho2019physiological}. TIR
+        tracks Thermal Respiration (TR) by detecting periodic temperature
+        fluctuations at the nostrils caused by the difference between inhaled
+        and exhaled air \cite{cho2019physiological}. Additionally, it monitors
+        autonomic stress through nasal temperature drops induced by
+        vasoconstriction and quantifies sweat gland activation via the Pore
+        Activation Index (PAI) \cite{cho2019physiological}.
+
+    \item \textbf{Respiration and Tidal Volume:} Beyond thermal tracking, respiratory
+        rate and tidal volume (air volume per cycle) are captured through microwave
+        Doppler radar tracking of thoracic movement \cite{islam2022radar} and analyzing
+        periodic intensity changes in RGB video sequences \cite{hassanpour2025contactless}.
+
+    \item \textbf{Blood Oxygen Saturation ($\text{SpO}^{2}$):} This signal
+        measures the percentage of oxygenated hemoglobin. Contactless estimation
+        utilizes the ``Ratio of Ratios'' principle, analyzing the differential
+        absorption of specific wavelengths, typically red and blue or infrared,
+        captured by RGB cameras and processed through spatial-temporal maps (STMaps)
+        \cite{cheng2024contactless}.
+
+    \item \textbf{Blood Pressure (BP):} RPS reconstructs blood pressure by fusing
+        multimodal features, such as rPPG waveforms and thermal signatures, through
+        cross-modal deep learning architectures that can simultaneously perceive
+        frame-level pulse variations \cite{hassanpour2025contactless, cen2026robust}.
 \end{itemize}
 
-\section{BP4D+ Multimodal Spontaneous Expression Database}
-The experimental data for this research is sourced from the BP4D+ Multimodal Spontaneous Emotion Corpus \cite{zhang2013high}, a comprehensive dataset featuring synchronized sequences from 140 subjects. To ensure the collection of authentic affective states, the dataset utilizes an emotion elicitation protocol consisting of ten distinct tasks, such as humor, physical threat, and cold pressor tests.
+\section{Spectral and Geometric Multimodality}
+Spectral and Geometric Multimodality in remote physiological sensing (RPS)
+refers to the synergistic integration of radiometric information such as RGB and
+thermal sequences with spatial structural data such as 3D facial meshes to
+mitigate sensing ambiguities induced by subject movement and environmental
+variability \cite{hassanpour2025contactless}. This approach addresses the limitations
+of single-modality systems through two primary mechanisms:
 
-The corpus provides a diverse range of high-resolution modalities.
 \begin{itemize}
-    \item \textbf{Visual Data:} 2D texture images, 3D facial models, and thermal video sequences, all recorded at a frame rate of 25 fps.
-    \item \textbf{Physiological Signals:} Continuous 1D time-series data—including blood pressure, heart rate, respiration rate, and electrodermal activity (EDA)—captured at a sampling rate of 1000 Hz.
-    \item \textbf{Derivatives and Annotations:} Expert-coded Facial Action Coding System (FACS) intensity and occurrence, as well as tracked head poses and feature points for the 2D, 3D, and thermal streams.
+    \item \textbf{Radiometric Texture vs. 3D Geometry:} While 2D spectral
+        modalities provide high-fidelity color-based physiological indicators
+        like blood volume pulse (BVP) variations
+        \cite{wang2017algorithmic, cen2026robust}, they are inherently sensitive
+        to motion-induced photometric noise and perspective distortion \cite{cen2026robust,
+        islam2022radar}. The incorporation of 3D facial geometry captured via
+        mesh tracking and Euler angles enables active head pose compensation and
+        expression-invariant monitoring. By mapping spectral textures onto dynamic
+        3D models, systems can maintain signal integrity during rotation or non-rigid
+        deformations that would otherwise mask the subtle chromatic fluctuations
+        required for rPPG extraction.
+
+    \item \textbf{Landmark-Based ROI Indexing:} Effective RPS requires precise
+        localization of Regions of Interest (ROIs), as physiological signatures are
+        not uniformly distributed across the facial surface \cite{cheng2024contactless,
+        cho2019physiological}. Point-based tracking frameworks utilize
+        standardized landmark indices, such as the 49-point 2D, 83-point 3D, and
+        28-point thermal sets utilized in the BP4D+ dataset corpus, to define and
+        track these regions across multimodal domains. This cross-modal indexing
+        is critical for consistent signal extraction from areas with high micro-vascular
+        density, such as the forehead and cheeks, or high thermal contrast, such
+        as the perinasal regions for respiratory monitoring.
 \end{itemize}
 
-This multi-sensory synchronization makes the BP4D+ an ideal foundation for developing models capable of learning deep cross-modal correlations.
+\section{Temporal Heterogeneity and Signal Alignment}
+Temporal heterogeneity in remote physiological sensing arises from the
+fundamental Sampling Rate Discrepancy between visual acquisition systems and
+clinical-grade physiological sensors. This discrepancy creates a significant barrier
+to the reconstruction of high-fidelity waveforms from sparse visual data:
 
-\section{Challenges of Video-based Multimodal Data}
-Since the BP4D+ dataset is a video-based multimodal dataset, it presents several challenges for masked autoencoding that go beyond the static image setting discussed in the previous sections. 
-This section highlights the difficulties most relevant to this work.
+\begin{itemize}
+    \item \textbf{Video-Signal Duality:} Non-invasive monitoring frameworks
+        typically ingest visual data at standard frame rates (e.g., $25 \sim 30$
+        fps), whereas ground-truth physiological signals—such as Electrocardiography
+        (ECG) or Blood Volume Pulse (BVP)—are often sampled at frequencies as
+        high as 1000 Hz to capture fine-grained morphology
+        \cite{feghoul2026deep}. This duality necessitates specialized synchronization
+        frameworks to eliminate temporal drift between heterogeneous sensors and
+        ensure precise alignment between the asynchronous visual stream and the continuous
+        physiological waveform \cite{feng2026empd}.
 
-\subsection{Temporal Synchronization of Heterogeneous Data}
-The BP4D+ corpus records its modalities at fundamentally different sampling rates: the 1D physiological signals are captured at $1000\,\mathrm{Hz}$, whereas the 2D, 3D, and thermal visual streams are recorded at only $25\,\mathrm{fps}$. 
-This temporal mismatch must be resolved before the data can be processed jointly.
+    \item \textbf{Temporal Resolution and Under-Sampling:} Traditional
+        frame-based sensors are limited by exposure-induced motion blur and a fixed
+        temporal resolution that often under-samples high-frequency cardiovascular
+        events \cite{feng2026empd, cheng2026fcus}. To bridge this gap, research
+        utilizes the quasi-periodic nature of biological waveforms, employing methodologies
+        like temporal binning to aggregate signals into fixed intervals or downsampling
+        the high-frequency ground truth to match the video frame rate for model training
+        \cite{feghoul2026deep}. Advanced neuromorphic approaches,
+        such as event-based vision, offer a potential solution by providing microsecond-level
+        timestamp precision, effectively capturing the ultra-fast physiological
+        transients that are lost in low-frequency 2D video.
+\end{itemize}
 
-A first challenge is therefore to align the 1D physiological time-series with the 2D and thermal video frames in a synchronized manner, ensuring that corresponding time steps refer to the same physical moment in the recording. 
+\section{Characteristics of Physiological Targets}
+\label{sec:signal-characteristics}
+While Section \ref{sec:principles-rps} addressed how the target signals are
+acquired, the signals themselves are heterogeneous in their mathematical
+properties, and a precise characterization of these properties is a prerequisite
+for signal reconstruction. The choice of representation, sampling strategy, and
+modeling assumptions must reflect the underlying signal structure: depending on
+their physiological origin, the target signals may be quasi-periodic,
+continuous, or sporadic, and they are quantified in distinct physical units that
+encode different aspects of autonomic and circulatory activity:
 
-\subsection{Explosive Token Count in Joint Space-Time Cube Embeddings}
-In the Joint Space-Time cube embeddings there will be temporal dimension added. As example, a 16-frame clip represented as raw input tensor $(Batch Size, Channels, 16, Height, Width)$.
-After it got tokenized into $2\times 16 \times 16$ cubes and mapped into the latent dimension D (768 for ViT-B), its shape become $(Batch Size, D, 8, H/16, W/16)$.
-The token length of a 16-frame clip is 8 times as in a single image $(H/16 \times W/16)$. 
-Because the self-attention mechanism scales quadratically $O(N^2)$ with the number of tokens, it leads to a $64 \times $ increase in the computation load. 
+\begin{itemize}
+    \item \textbf{Cardiovascular and Respiratory Signals:} Heart rate and
+        respiration are quasi-periodic signals, measured in beats or breaths
+        per minute. Their periodicity constitutes a strong prior that
+        reconstruction models can exploit to disambiguate the physiological
+        component from noise and motion artifacts.
 
-\subsection{Information Leakage and Temporal Tube Masking}
-A critical challenge in video signals is information leakage. During pre-training, a model can easily ``cheat'' during reconstruction by copying pixels from unmasked adjacent frames rather than learning high-level spatiotemporal structures. 
-This is particularly problematic for video, where consecutive frames are highly correlated and provide a trivial shortcut to low reconstruction error.
+    \item \textbf{Hemodynamic Signals:} Blood pressure---comprising systolic,
+        diastolic, and mean values---represents continuous pressure variations
+        within the circulatory system, typically measured in millimeters of
+        mercury (mmHg). In contrast to periodic cardiac signals, blood pressure
+        exhibits a slower, more sustained dynamic that arises from vascular tone
+        and peripheral resistance, requiring models that capture long-range
+        temporal dependencies.
 
-Tube masking mitigates this issue by enforcing a consistent spatial mask across the entire temporal axis. 
-By masking entire ``tubes'' through time, the model is prevented from copying spatial regions from neighboring frames. 
-This forces the attention mechanism to reason over high-level spatiotemporal structures instead of relying on low-level temporal correspondences.
+    \item \textbf{Electrodermal Activity (EDA):} Unlike periodic cardiac signals,
+        EDA measures skin conductance in microsiemens and reflects sympathetic
+        nervous system arousal. It is characterized by more sporadic, tonic, and
+        phasic changes, which makes its reconstruction particularly challenging:
+        models must capture transient, event-driven dynamics rather than steady
+        rhythmic patterns, and must contend with a signal that is both slowly
+        drifting and punctuated by rapid responses.
+\end{itemize}
+
+\section{Affective-Physiological Coupling}
+Affective-physiological coupling describes the systematic relationship between a
+subject's emotional state and the accompanying physiological responses. In
+contrast to controlled, instructed experimental settings, spontaneous conditions
+do not impose a fixed behavioral protocol: subjects move naturally, express
+emotions freely, and interact with their environment without restriction. As a
+consequence, the recorded physiological signals are superimposed upon a
+continuously varying baseline that reflects both internal affective state and
+external behavior. Establishing this coupling is essential for signal
+reconstruction, since the target waveforms must be recovered from recordings in
+which the physiological component of interest is entangled with unconstrained
+affective and motor activity.
+
+\begin{itemize}
+    \item \textbf{Autonomic Response to Stimuli:} Physiological signals are not
+        static but fluctuate with internal emotional states, ranging from
+        amusement and surprise to physical pain and disgust. These fluctuations
+        are mediated by the autonomic nervous system, which modulates
+        cardiovascular, respiratory, and electrodermal activity according to the
+        level of affective arousal. For signal reconstruction, this implies that
+        the target signal is embedded in a state-dependent baseline that varies
+        across subjects and over time; reconstruction models must therefore
+        remain robust to such non-stationarity rather than assuming a fixed,
+        stationary waveform.
+
+    \item \textbf{Motion and Occlusion:} In a spontaneous environment, subjects
+        are prone to head movements, facial expressions, and partial occlusions
+        of the regions of interest. These behaviors introduce motion-induced
+        photometric noise and temporarily obscure the facial areas from which
+        physiological information is extracted. Signal reconstruction models
+        must consequently remain reliable when facial regions are partially out
+        of view or distorted by intense expressions, motivating the use of
+        spatial redundancy and temporal continuity to compensate for missing or
+        corrupted observations.
+\end{itemize}
+
+\section{Vision Transformers (ViT)}
+Vision Transformers have become a central building block in modern computer
+vision, and they are particularly relevant to the signal reconstruction tasks
+considered in this thesis. Remote physiological signals are subtle, spatially
+distributed, and strongly periodic, so their recovery benefits from a model that
+integrates global context across the entire face rather than relying on local
+receptive fields alone. By tokenizing visual input into discrete patches and
+processing them with self-attention, a Vision Transformer captures long-range
+spatial dependencies, while its self-supervised pre-training regime---exemplified
+by the Masked Autoencoder---allows it to be trained on large amounts of
+unlabeled video before being adapted to a specific downstream task. This section
+introduces the Vision Transformer architecture, its attention mechanism, and the
+Masked Autoencoder paradigm that forms the methodological foundation of this
+thesis.
+
+\subsection{Image Patching and Tokenization}
+The Vision Transformer (ViT) \cite{dosovitskiy2021image} marked a departure from
+convolutional architectures by adapting the Transformer, originally developed
+for natural language processing, to visual data. Instead of relying on local
+pixel neighborhoods, a ViT partitions an input image into a sequence of regular,
+non-overlapping patches, such as $16 \times 16$ pixels. Each patch is flattened
+and mapped through a learned linear projection into a latent vector space of
+dimension $D$, effectively treating every image segment as a ``visual token'' in
+direct analogy to a word embedding in BERT \cite{devlin-etal-2019-bert}. An
+additional learnable class token is prepended to the sequence and serves as an
+aggregate representation of the entire image, while learnable positional
+embeddings are added to the patch tokens so that the model retains information
+about the spatial layout of the patches. Because self-attention is
+permutation-invariant, these positional embeddings are essential: without them,
+the encoder could not distinguish the order in which patches occur.
+
+\subsection{Self-Attention Mechanism}
+The core mechanism of the ViT is multi-head self-attention
+\cite{vaswani2017attention}, which enables the model to capture global
+dependencies across the entire image simultaneously. Whereas convolutional
+neural networks (CNNs) rely on local receptive fields and hierarchical feature
+extraction, a ViT allows every visual token to interact with every other token,
+providing a comprehensive spatial context and substantially reducing the
+inductive biases---such as translation invariance and locality---inherent in
+CNNs. The resulting encoder consists of a stack of transformer blocks, each
+comprising a multi-head self-attention layer and a multi-layer perceptron (MLP),
+interleaved with layer normalization and residual connections. This architecture
+has proven highly scalable, supporting very large models trained on large-scale
+self-supervised pre-training tasks \cite{he2022masked} while learning complex
+spatial relationships from data rather than from hand-crafted priors.
+
+\subsection{Masked Autoencoders (MAE)}
+The foundational paradigm for this research is the Masked Autoencoder (MAE)
+\cite{he2022masked}, a self-supervised approach that applies the logic of masked
+language modeling to visual data. MAE employs an asymmetric encoder-decoder
+architecture in which a large fraction of the image patches (typically 75\%) is
+randomly masked out:
+\begin{itemize}
+    \item The encoder processes only the small subset of visible (unmasked)
+        image patches, drastically reducing memory consumption and computational
+        overhead while forcing the model to work from highly incomplete input.
+
+    \item The decoder is significantly smaller and is used only during the
+        pre-training phase to reconstruct the masked patches from the latent
+        representations provided by the encoder.
+\end{itemize}
+Because the heavy encoder never sees the mask tokens during pre-training, it
+cannot fall back on the trivial shortcut of copying the masked input and must
+instead learn a semantically meaningful latent representation of the visible
+patches. The lightweight decoder then maps this rich latent back to the
+reconstructed image, measuring the reconstruction error on the masked regions.
+After pre-training is completed, the decoder is discarded and the encoder is
+fine-tuned for downstream tasks using the full set of tokens. This design is
+directly aligned with the signal reconstruction problem studied in this thesis:
+just as MAE reconstructs masked patches from their visible context, the models
+developed here reconstruct physiological waveforms from partially observable and
+noise-corrupted visual data.

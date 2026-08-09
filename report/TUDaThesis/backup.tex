@@ -1,0 +1,113 @@
+\section{Multi-modal Multi-task Masked Autoencoders(MultiMAE)}
+Multi-modal Multi-task Masked Autoencoders (MultiMAE) \cite{multimae2022} extends
+the MAE framework (RGB-only) to handle diverse modalities such as RGB image,
+depth maps and semantic segments simultaneously.
+
+\subsection{Multimodal Input Handling}
+In MultiMAE, each modality uses its own specific linear projection to project raw
+inputs into a set of tokens that all share the same unified latent dimension.
+The length of th token sequence can differ between modalites depending on therir
+original structure and how they are tokenized. Once projected, these variable-length
+sequences are concatendated into a single unified sequence for the encoder.
+
+\subsection{Cross-Modal Predictive Coding}
+To help the model distinguish spatial locations and modalities, 2-D positional embeddings
+and modality-specific learnable embeddings are added to the token representations.
+MultiMAE masks patches across both spatial locations and input modalities. This forces
+the network to learn deep inter-modal correlations, allowing it to "hallucinate"
+or reconstruct missing sensors from whatever subset of data is available.
+
+\subsection{Symmetric Dirichlet Sampling}
+MultiMAE uses a Dirichlet distribution to randomly sample the number of tokens
+contributed by each modality during pre-training. It determines the proportions of
+visible tokens $(\lambda_{RGB}, \lambda_{D}, \lambda_{S})$ from each modality,
+ensuring that the model learns to handle any combination of available inputs.
+
+\begin{equation}
+    (\lambda_{RGB}, \lambda_{D}, \lambda_{S}) \sim \text{Dir}(\alpha)
+\end{equation}
+
+Subject to the unity constraint:
+\begin{equation}
+    \sum_{i \in \{RGB, D, S\}}\lambda_{i}= 1, \quad \lambda_{i}\geq 0
+\end{equation}
+Where the concentration parameter $\alpha > 0$ determines the sampling diversity:
+\begin{itemize}
+    \item $\alpha = 1$: Equivalent to a uniform distribution over the simplex, which
+        is default and exposed to all possible "sensor failure" scenarios during
+        pre-training to force model to learn how ot reconstrcut any modaility from
+        whatever sparse subset of data is available.
+
+    \item $\alpha \ll 1$: Modality-specific "extreme" sampling where most tokens
+        are drawn from a single stream.
+
+    \item $\alpha \gg 1$: Leads to an equal distribution of tokens across all
+        modalities, which ensuring a fixed, identical number of tokens from each
+        modality.
+\end{itemize}
+
+
+
+
+\section{BP4D+ Multimodal Spontaneous Expression Database}
+The experimental data for this research is sourced from the BP4D+ Multimodal Spontaneous
+Emotion Corpus \cite{zhang2013high}, a comprehensive dataset featuring
+synchronized sequences from 140 subjects. To ensure the collection of authentic affective
+states, the dataset utilizes an emotion elicitation protocol consisting of ten
+distinct tasks, such as humor, physical threat, and cold pressor tests.
+
+The corpus provides a diverse range of high-resolution modalities.
+\begin{itemize}
+    \item \textbf{Visual Data:} 2D texture images, 3D facial models, and thermal
+        video sequences, all recorded at a frame rate of 25 fps.
+
+    \item \textbf{Physiological Signals:} Continuous 1D time-series
+        data—including blood pressure, heart rate, respiration rate, and electrodermal
+        activity (EDA)—captured at a sampling rate of 1000 Hz.
+
+    \item \textbf{Derivatives and Annotations:} Expert-coded Facial Action
+        Coding System (FACS) intensity and occurrence, as well as tracked head poses
+        and feature points for the 2D, 3D, and thermal streams.
+\end{itemize}
+
+This multi-sensory synchronization makes the BP4D+ an ideal foundation for
+developing models capable of learning deep cross-modal correlations.
+
+\section{Challenges of Video-based Multimodal Data}
+Since the BP4D+ dataset is a video-based multimodal dataset, it presents several
+challenges for masked autoencoding that go beyond the static image setting
+discussed in the previous sections. This section highlights the difficulties most
+relevant to this work.
+
+\subsection{Temporal Synchronization of Heterogeneous Data}
+The BP4D+ corpus records its modalities at fundamentally different sampling
+rates: the 1D physiological signals are captured at $1000\,\mathrm{Hz}$, whereas
+the 2D, 3D, and thermal visual streams are recorded at only $25\,\mathrm{fps}$. This
+temporal mismatch must be resolved before the data can be processed jointly.
+
+A first challenge is therefore to align the 1D physiological time-series with the
+2D and thermal video frames in a synchronized manner, ensuring that
+corresponding time steps refer to the same physical moment in the recording.
+
+\subsection{Explosive Token Count in Joint Space-Time Cube Embeddings}
+In the Joint Space-Time cube embeddings there will be temporal dimension added. As
+example, a 16-frame clip represented as raw input tensor
+$(Batch Size, Channel s, 16, Height, Width)$. After it got tokenized into $2\times
+16 \times 16$ cubes and mapped into the latent dimension D (768 for ViT-B), its
+shape become $(Batch Size, D, 8, H/16, W/16)$. The token length of a 16-frame clip
+is 8 times as in a single image $(H/16 \times W/16)$. Because the self-attention
+mechanism scales quadratically $O(N^{2})$ with the number of tokens, it leads to
+a $64 \times$ increase in the computation load.
+
+\subsection{Information Leakage and Temporal Tube Masking}
+A critical challenge in video signals is information leakage. During pre-training,
+a model can easily ``cheat'' during reconstruction by copying pixels from unmasked
+adjacent frames rather than learning high-level spatiotemporal structures. This
+is particularly problematic for video, where consecutive frames are highly correlated
+and provide a trivial shortcut to low reconstruction error.
+
+Tube masking mitigates this issue by enforcing a consistent spatial mask across the
+entire temporal axis. By masking entire ``tubes'' through time, the model is prevented
+from copying spatial regions from neighboring frames. This forces the attention
+mechanism to reason over high-level spatiotemporal structures instead of relying
+on low-level temporal correspondences.

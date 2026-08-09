@@ -67,56 +67,60 @@ found in biological pulse signals \cite{liu2023rppgmae}.
 %%
 \section{Analysis of Related Work}
 
-The existing literature demonstrates that Masked Autoencoders (MAEs) are highly
-effective at learning spatiotemporal representations for both visual
-\cite{tong2022videomae, wang2023videomaev2} and physiological data
-\cite{liu2023rppgmae, savic2024physunet}. However, current state-of-the-art (SOTA)
-approaches are primarily designed for representation learning—where the
-reconstruction task is a pretext to improve downstream classification or
-regression accuracy—rather than for the explicit generative recovery of a
-missing sensor stream. As your supervisor, I have identified three critical gaps
-in the current research landscape that prevent existing models from addressing
-your main Research Question (RQ) regarding targeted sensor failure and
-information loss:
-\subsection{The Downstream vs. Generative Objective}
-Most physiological MAEs, such as MAEConformer \cite{yu2026maeconformer} and
-bioFAME \cite{liu2024biofame}, evaluate success through performance on specific medical
-tasks like HIE severity classification or cardiovascular outcome prediction.
-While xMAE \cite{zhou2026xmae} utilizes cross-modal reconstruction as a "scaffolding"
-task, its primary goal is to capture directional inductive biases to enhance the
-PPG representation, not to quantify the fidelity of the reconstructed signal for
-its own sake. There is a lack of research that treats the generative reconstruction
-of the raw signal as the primary metric to determine how much biological information
-(e.g., HRV morphology, hemodynamic transients) can be recovered when a physical
-sensor fails.
-\subsection{Robustness vs. Active Reconstruction during Failure}
+\subsection{Research Gaps}
 
-Current multimodal frameworks like MultiMAE \cite{bachmann2022multimae} and
-ImageBind \cite{girdhar2023imagebind} focus on "binding" disparate modalities
-into a joint embedding space to achieve robustness against unpredicted modality
-dropout. While these models can function if a sensor fails, they are not
-optimized for cross-modal predictive coding—specifically the act of using
-surviving modalities (e.g., 2D RGB and 3D geometry) to actively "fill in" the
-missing high-dimensional sensor stream (e.g., Thermal Infrared). Existing work handles
-"missingness" as a noise-insensitivity problem, whereas your RQ frames it as a
-structured inference problem.
+The existing literature demonstrates that Masked Autoencoders (MAEs) are highly effective
+at learning spatiotemporal representations for both visual \cite{tong2022videomae,
+wang2023videomaev2} and physiological data \cite{liu2023rppgmae, savic2024physunet}.
+However, current state-of-the-art (SOTA) approaches are primarily designed for representation
+learning—where the reconstruction task is a pretext to improve downstream classification
+or regression accuracy—rather than for the explicit generative recovery of a missing
+sensor stream. There are three critical gaps in the current research landscape
+that prevent existing models from addressing your main Research Question (RQ)
+regarding targeted sensor failure and information loss:
 
-\subsection{Lack of Information Loss Quantification in the Signal Domain}
-The research community currently lacks a standardized framework for measuring
-information loss during sensor failure in non-invasive sensing. While MMR (Wavelet-Driven
-Masked Multiscale Reconstruction) \cite{thukral2026wavelet} and MAEConformer \cite{yu2026maeconformer}
-utilize spectral losses (DWT and STFT) to improve reconstruction, they do not
-quantify how much "physiological signal information" is systematically discarded
-when forced to predict a modality across spectral gaps (e.g., reconstructing thermal
-heat signatures from RGB color changes). Existing metrics focus on error (MAE/RMSE)
-or correlation \cite{savic2024physunet}, but they do not address the entropy or
-physiological completeness of the reconstructed stream during a targeted
-hardware failure.
+\begin{itemize}
+    \item \textbf{The Downstream vs.\ Generative Objective:} Most physiological
+        MAEs, such as MAEConformer \cite{yu2026maeconformer} and bioFAME \cite{liu2024biofame},
+        evaluate success through performance on specific medical tasks like HIE
+        severity classification or cardiovascular outcome prediction. While xMAE
+        \cite{zhou2026xmae} utilizes cross-modal reconstruction as a ``scaffolding''
+        task, its primary goal is to capture directional inductive biases to
+        enhance the PPG representation, not to quantify the fidelity of the reconstructed
+        signal for its own sake. There is a lack of research that treats the
+        generative reconstruction of the raw signal as the primary metric to
+        determine how much biological information (e.g., HRV morphology,
+        hemodynamic transients) can be recovered when a physical sensor fails.
+
+    \item \textbf{Robustness vs.\ Active Reconstruction during Failure:} Current
+        multimodal frameworks like MultiMAE \cite{bachmann2022multimae} and
+        ImageBind \cite{girdhar2023imagebind} focus on ``binding'' disparate
+        modalities into a joint embedding space to achieve robustness against
+        unpredicted modality dropout. While these models can function if a sensor
+        fails, they are not optimized for cross-modal predictive coding---specifically
+        the act of using surviving modalities (e.g., 2D RGB and 3D geometry) to
+        actively ``fill in'' the missing high-dimensional sensor stream (e.g., Thermal
+        Infrared). Existing work handles ``missingness'' as a noise-insensitivity
+        problem, whereas your RQ frames it as a structured inference problem.
+
+    \item \textbf{Lack of Information Loss Quantification in the Signal Domain:}
+        The research community currently lacks a standardized framework for
+        measuring information loss during sensor failure in non-invasive sensing.
+        While MMR (Wavelet-Driven Masked Multiscale Reconstruction) \cite{thukral2026wavelet}
+        and MAEConformer \cite{yu2026maeconformer} utilize spectral losses (DWT
+        and STFT) to improve reconstruction, they do not quantify how much ``physiological
+        signal information'' is systematically discarded when forced to predict
+        a modality across spectral gaps (e.g., reconstructing thermal heat signatures
+        from RGB color changes). Existing metrics focus on error (MAE/RMSE) or correlation
+        \cite{savic2024physunet}, but they do not address the entropy or
+        physiological completeness of the reconstructed stream during a targeted
+        hardware failure.
+\end{itemize}
 
 \subsection{Summary}
-While the community has explored within-modality interpolation
-and multi-modal task performance, there is a distinct gap in understanding cross-modal
-predictive limits. Your thesis fills this gap by shifting the focus from "representations
+While the community has explored within-modality interpolation and multi-modal task
+performance, there is a distinct gap in understanding cross-modal predictive
+limits. Your thesis fills this gap by shifting the focus from "representations
 for classification" to "predictive coding for sensor recovery." By utilizing the
 BP4D+ environment to simulate targeted sensor failures, your work will provide
 the first rigorous analysis of the extent to which the cross-modal redundancy of
