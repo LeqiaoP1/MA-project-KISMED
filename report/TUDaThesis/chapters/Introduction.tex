@@ -8,96 +8,96 @@
 \hint{This chapter should motivate the thesis, provide a clear description of the problem to be solved, and describe the major contributions of this thesis.}
 
 
-\section{Overview: Writing Your Thesis}
+% \section{Overview: Writing Your Thesis}
 
-\hint{
-This document provides only a general overview. 
-Although you should stick to the common structure (Intro, Background, Related Work, Design, Implementation, Evaluation, Conclusion),
-you have to adapt the sections and chapters to your individual thesis! 
-The sections in this template are not fixed and they can be (re-)moved, renamed, others can be added, etc.
-}
+% \hint{
+% This document provides only a general overview. 
+% Although you should stick to the common structure (Intro, Background, Related Work, Design, Implementation, Evaluation, Conclusion),
+% you have to adapt the sections and chapters to your individual thesis! 
+% The sections in this template are not fixed and they can be (re-)moved, renamed, others can be added, etc.
+% }
 
-\subsection{General Tips}
+% \subsection{General Tips}
 
-\hint{
-The following list should provide you with some tips for writing your thesis with LaTeX.
-}
+% \hint{
+% The following list should provide you with some tips for writing your thesis with LaTeX.
+% }
 
-\begin{itemize}
-\item 
-	We strongly recommend that you use a LaTeX Editor like TeXMaker or TeXStudio.
-    Alternatively, you can use the university's online \LaTeX\~editor, ShareLaTeX: \url{https://www.hrz.tu-darmstadt.de/services/it_services/sharelatex_hrz/index.de.jsp}.
-\item 
-    These editors usually allow to define a file as "master file", which is then compiled every time, no matter in which file you are currently in. 
-	In TeXMaker, it's found in the menu bar under 'options'.
+% \begin{itemize}
+% \item 
+% 	We strongly recommend that you use a LaTeX Editor like TeXMaker or TeXStudio.
+%     Alternatively, you can use the university's online \LaTeX\~editor, ShareLaTeX: \url{https://www.hrz.tu-darmstadt.de/services/it_services/sharelatex_hrz/index.de.jsp}.
+% \item 
+%     These editors usually allow to define a file as "master file", which is then compiled every time, no matter in which file you are currently in. 
+% 	In TeXMaker, it's found in the menu bar under 'options'.
 
-\item 
-	To keep an overview of long paragraphs, you can put every sentence in a separate line. 
-	A linebreak is produced with leaving a blank line (do not use \textbackslash\textbackslash or commands like \textbackslash newline).
+% \item 
+% 	To keep an overview of long paragraphs, you can put every sentence in a separate line. 
+% 	A linebreak is produced with leaving a blank line (do not use \textbackslash\textbackslash or commands like \textbackslash newline).
 
-\item
-	Put every chapter in its own .tex file and use the input command in the main file (main.tex) to add the chapter to your thesis. 
-	We already did this to provide you some examples.
+% \item
+% 	Put every chapter in its own .tex file and use the input command in the main file (main.tex) to add the chapter to your thesis. 
+% 	We already did this to provide you some examples.
 	
-\item
-	Furthermore, we added examples for figures, tables, and equations, look them up. 
+% \item
+% 	Furthermore, we added examples for figures, tables, and equations, look them up. 
 	
-\item
-	You can also use comments to structure your text, using a \% sign in front of a line.
-	% this is a comment
+% \item
+% 	You can also use comments to structure your text, using a \% sign in front of a line.
+% 	% this is a comment
 	
-\item	
-	Write ToDo's or other comments that are put in your document using the ToDo notes. \todo[inline]{Note!} 
-	You can find them in the main file (main.tex) under \enquote{Notes and Annotations}.
-	\todo{this is a simple inline note}
+% \item	
+% 	Write ToDo's or other comments that are put in your document using the ToDo notes. \todo[inline]{Note!} 
+% 	You can find them in the main file (main.tex) under \enquote{Notes and Annotations}.
+% 	\todo{this is a simple inline note}
 
-\item 
-	Did you recognize the use of the \textbackslash enquote command to make nice quotations? 
-	Very helpful if you \enquote{use direct citations}.
+% \item 
+% 	Did you recognize the use of the \textbackslash enquote command to make nice quotations? 
+% 	Very helpful if you \enquote{use direct citations}.
 	
-\item 
-	To prevent a linebreak between your text and a quote, use a tilde ($\sim$) as an unbreakable space before your cite command. % text~\cite 
+% \item 
+% 	To prevent a linebreak between your text and a quote, use a tilde ($\sim$) as an unbreakable space before your cite command. % text~\cite 
 	
-\item 
-	\emph{Google is your friend!}
-	Most problems you have were already encountered by others and can be easily found with a solution in the internet, 
-	e.g., on \url{https://tex.stackexchange.com/} or just search for your problem (best in English). 
+% \item 
+% 	\emph{Google is your friend!}
+% 	Most problems you have were already encountered by others and can be easily found with a solution in the internet, 
+% 	e.g., on \url{https://tex.stackexchange.com/} or just search for your problem (best in English). 
 
-\item 
-    We recommend using a Citation Tool like Citavi for citing in LaTex as well as helping you keep track of all of your citations. There are other Citation tools available. 
+% \item 
+%     We recommend using a Citation Tool like Citavi for citing in LaTex as well as helping you keep track of all of your citations. There are other Citation tools available. 
  
 	
-\end{itemize}
+% \end{itemize}
 
 %%
 %%
-\subsection{Styling, Conventions, and more}
+% \subsection{Styling, Conventions, and more}
 
-\begin{itemize}
-\item 
-	All headlines for chapters, sections, subsections, etc. are capitalized using the Title Case formatting convention.
-	As given by the IEEE:
-	\enquote{The page titles of all IEEE digital pages should be in title case. 
-	All words four letters or more get capitalized, as do any nouns, pronouns, verbs, or adjectives. 
-	Any hyphenated word will require a capital letter after the hyphen in titles (for instance, Pre-University).}\footnote{\url{https://brand-experience.ieee.org/guidelines/digital/style-guide/content/}}
+% \begin{itemize}
+% \item 
+% 	All headlines for chapters, sections, subsections, etc. are capitalized using the Title Case formatting convention.
+% 	As given by the IEEE:
+% 	\enquote{The page titles of all IEEE digital pages should be in title case. 
+% 	All words four letters or more get capitalized, as do any nouns, pronouns, verbs, or adjectives. 
+% 	Any hyphenated word will require a capital letter after the hyphen in titles (for instance, Pre-University).}\footnote{\url{https://brand-experience.ieee.org/guidelines/digital/style-guide/content/}}
 
-\item
-	All captions of tables and figures are always finished with a \enquote{.} (full stop).
+% \item
+% 	All captions of tables and figures are always finished with a \enquote{.} (full stop).
 	
-\item 
-	Tables, figures, and equations should be tagged with a label, such as \textbackslash label\{fig:example1\}.
-	Use \textbackslash autoref{fig:example1} to create a label, e.g. \autoref{fig:example1}, that directly links to your figure.
-	You can also do it manually using 'Figure$\sim$\textbackslash ref\{fig:example\}'.
+% \item 
+% 	Tables, figures, and equations should be tagged with a label, such as \textbackslash label\{fig:example1\}.
+% 	Use \textbackslash autoref{fig:example1} to create a label, e.g. \autoref{fig:example1}, that directly links to your figure.
+% 	You can also do it manually using 'Figure$\sim$\textbackslash ref\{fig:example\}'.
 
-\item
-	Capitalization in your text: it is this chapter, the table, a figure, the equation --- but Table 3, Figure~5, Equation~7, Chapter 5, Section 1.1, etc.
+% \item
+% 	Capitalization in your text: it is this chapter, the table, a figure, the equation --- but Table 3, Figure~5, Equation~7, Chapter 5, Section 1.1, etc.
 	
-\item 
-	To get your bibliography in the end also correct, you may need to adapt the titles of references to get the correct capitalization.
-	The easy way is to put all your titles in double brackets, like \enquote{title = \{\{Big Omicron and Big Omega and Big Theta\}\}}~\cite{knuth:1976}.
+% \item 
+% 	To get your bibliography in the end also correct, you may need to adapt the titles of references to get the correct capitalization.
+% 	The easy way is to put all your titles in double brackets, like \enquote{title = \{\{Big Omicron and Big Omega and Big Theta\}\}}~\cite{knuth:1976}.
 	
 	
-\end{itemize}
+% \end{itemize}
 
 
 
