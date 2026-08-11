@@ -3,7 +3,17 @@
 \label{ch:background}
 %*****************************************
 \hint{This chapter should give a comprehensive overview on the background necessary to understand the thesis. This chapter might be skipped by experts on the topic}
-Bib\TeX-Test: \cite{hoog2007}
+
+This chapter establishes the background necessary to understand the thesis and
+proceeds in two parts. The first part (Sections~\ref{sec:principles-rps}--
+\ref{sec:affective-coupling}) characterizes the sensing problem: the
+physiological signals that can be acquired remotely and their mathematical
+properties, as well as the challenges posed by multimodal integration, temporal
+misalignment, and unconstrained spontaneous recording conditions. The second
+part (Sections~\ref{sec:self-supervised-learning}--\ref{sec:mae}) introduces
+the machine learning foundations on which the proposed approach is built,
+namely self-supervised learning, the Vision Transformer architecture, and the
+Masked Autoencoder paradigm.
 
 \section{Principles of Remote Physiological Sensing}
 \label{sec:principles-rps}
@@ -68,69 +78,6 @@ reconstruction are characterized in Section \ref{sec:signal-characteristics}:
         frame-level pulse variations \cite{hassanpour2025contactless, cen2026robust}.
 \end{itemize}
 
-\section{Spectral and Geometric Multimodality}
-Spectral and Geometric Multimodality in remote physiological sensing (RPS)
-refers to the synergistic integration of radiometric information such as RGB and
-thermal sequences with spatial structural data such as 3D facial meshes to
-mitigate sensing ambiguities induced by subject movement and environmental
-variability \cite{hassanpour2025contactless}. This approach addresses the limitations
-of single-modality systems through two primary mechanisms:
-
-\begin{itemize}
-    \item \textbf{Radiometric Texture vs. 3D Geometry:} While 2D spectral
-        modalities provide high-fidelity color-based physiological indicators
-        like blood volume pulse (BVP) variations
-        \cite{wang2017algorithmic, cen2026robust}, they are inherently sensitive
-        to motion-induced photometric noise and perspective distortion \cite{cen2026robust,
-        islam2022radar}. The incorporation of 3D facial geometry captured via
-        mesh tracking and Euler angles enables active head pose compensation and
-        expression-invariant monitoring. By mapping spectral textures onto dynamic
-        3D models, systems can maintain signal integrity during rotation or non-rigid
-        deformations that would otherwise mask the subtle chromatic fluctuations
-        required for rPPG extraction.
-
-    \item \textbf{Landmark-Based ROI Indexing:} Effective RPS requires precise
-        localization of Regions of Interest (ROIs), as physiological signatures are
-        not uniformly distributed across the facial surface \cite{cheng2024contactless,
-        cho2019physiological}. Point-based tracking frameworks utilize
-        standardized landmark indices, such as the 49-point 2D, 83-point 3D, and
-        28-point thermal sets utilized in the BP4D+ dataset corpus \cite{zhang2014bp4d},
-        to define and track these regions across multimodal domains. This cross-modal indexing
-        is critical for consistent signal extraction from areas with high micro-vascular
-        density, such as the forehead and cheeks, or high thermal contrast, such
-        as the perinasal regions for respiratory monitoring.
-\end{itemize}
-
-\section{Temporal Heterogeneity and Signal Alignment}
-Temporal heterogeneity in remote physiological sensing arises from the
-fundamental Sampling Rate Discrepancy between visual acquisition systems and
-clinical-grade physiological sensors. This discrepancy creates a significant barrier
-to the reconstruction of high-fidelity waveforms from sparse visual data:
-
-\begin{itemize}
-    \item \textbf{Video-Signal Duality:} Non-invasive monitoring frameworks
-        typically ingest visual data at standard frame rates (e.g., $25 \sim 30$
-        fps), whereas ground-truth physiological signals—such as Electrocardiography
-        (ECG) or Blood Volume Pulse (BVP)—are often sampled at frequencies as
-        high as 1000 Hz to capture fine-grained morphology
-        \cite{feghoul2026deep}. This duality necessitates specialized synchronization
-        frameworks to eliminate temporal drift between heterogeneous sensors and
-        ensure precise alignment between the asynchronous visual stream and the continuous
-        physiological waveform \cite{feng2026empd}.
-
-    \item \textbf{Temporal Resolution and Under-Sampling:} Traditional
-        frame-based sensors are limited by exposure-induced motion blur and a fixed
-        temporal resolution that often under-samples high-frequency cardiovascular
-        events \cite{feng2026empd, cheng2026fcus}. To bridge this gap, research
-        utilizes the quasi-periodic nature of biological waveforms, employing methodologies
-        like temporal binning to aggregate signals into fixed intervals or downsampling
-        the high-frequency ground truth to match the video frame rate for model training
-        \cite{feghoul2026deep}. Advanced neuromorphic approaches,
-        such as event-based vision, offer a potential solution by providing microsecond-level
-        timestamp precision, effectively capturing the ultra-fast physiological
-        transients that are lost in low-frequency 2D video.
-\end{itemize}
-
 \section{Characteristics of Physiological Targets}
 \label{sec:signal-characteristics}
 While Section \ref{sec:principles-rps} addressed how the target signals are
@@ -166,7 +113,73 @@ encode different aspects of autonomic and circulatory activity:
         drifting and punctuated by rapid responses.
 \end{itemize}
 
+\section{Spectral and Geometric Multimodality}
+\label{sec:spectral-geometric}
+Spectral and Geometric Multimodality in remote physiological sensing (RPS)
+refers to the synergistic integration of radiometric information such as RGB and
+thermal sequences with spatial structural data such as 3D facial meshes to
+mitigate sensing ambiguities induced by subject movement and environmental
+variability \cite{hassanpour2025contactless}. This approach addresses the limitations
+of single-modality systems through two primary mechanisms:
+
+\begin{itemize}
+    \item \textbf{Radiometric Texture vs. 3D Geometry:} While 2D spectral
+        modalities provide high-fidelity color-based physiological indicators
+        like blood volume pulse (BVP) variations
+        \cite{wang2017algorithmic, cen2026robust}, they are inherently sensitive
+        to motion-induced photometric noise and perspective distortion \cite{cen2026robust,
+        islam2022radar}. The incorporation of 3D facial geometry captured via
+        mesh tracking and Euler angles enables active head pose compensation and
+        expression-invariant monitoring. By mapping spectral textures onto dynamic
+        3D models, systems can maintain signal integrity during rotation or non-rigid
+        deformations that would otherwise mask the subtle chromatic fluctuations
+        required for rPPG extraction.
+
+    \item \textbf{Landmark-Based ROI Indexing:} Effective RPS requires precise
+        localization of Regions of Interest (ROIs), as physiological signatures are
+        not uniformly distributed across the facial surface \cite{cheng2024contactless,
+        cho2019physiological}. Point-based tracking frameworks utilize
+        standardized landmark indices, such as the 49-point 2D, 83-point 3D, and
+        28-point thermal sets utilized in the BP4D+ dataset corpus \cite{zhang2014bp4d},
+        to define and track these regions across multimodal domains. This cross-modal indexing
+        is critical for consistent signal extraction from areas with high micro-vascular
+        density, such as the forehead and cheeks, or high thermal contrast, such
+        as the perinasal regions for respiratory monitoring.
+\end{itemize}
+
+\section{Temporal Heterogeneity and Signal Alignment}
+\label{sec:temporal-heterogeneity}
+Temporal heterogeneity in remote physiological sensing arises from the
+fundamental Sampling Rate Discrepancy between visual acquisition systems and
+clinical-grade physiological sensors. This discrepancy creates a significant barrier
+to the reconstruction of high-fidelity waveforms from sparse visual data:
+
+\begin{itemize}
+    \item \textbf{Video-Signal Duality:} Non-invasive monitoring frameworks
+        typically ingest visual data at standard frame rates (e.g., $25 \sim 30$
+        fps), whereas ground-truth physiological signals—such as Electrocardiography
+        (ECG) or Blood Volume Pulse (BVP)—are often sampled at frequencies as
+        high as 1000 Hz to capture fine-grained morphology
+        \cite{feghoul2026deep}. This duality necessitates specialized synchronization
+        frameworks to eliminate temporal drift between heterogeneous sensors and
+        ensure precise alignment between the asynchronous visual stream and the continuous
+        physiological waveform \cite{feng2026empd}.
+
+    \item \textbf{Temporal Resolution and Under-Sampling:} Traditional
+        frame-based sensors are limited by exposure-induced motion blur and a fixed
+        temporal resolution that often under-samples high-frequency cardiovascular
+        events \cite{feng2026empd, cheng2026fcus}. To bridge this gap, research
+        utilizes the quasi-periodic nature of biological waveforms, employing methodologies
+        like temporal binning to aggregate signals into fixed intervals or downsampling
+        the high-frequency ground truth to match the video frame rate for model training
+        \cite{feghoul2026deep}. Advanced neuromorphic approaches,
+        such as event-based vision, offer a potential solution by providing microsecond-level
+        timestamp precision, effectively capturing the ultra-fast physiological
+        transients that are lost in low-frequency 2D video.
+\end{itemize}
+
 \section{Affective-Physiological Coupling}
+\label{sec:affective-coupling}
 Affective-physiological coupling describes the systematic relationship between a
 subject's emotional state and the accompanying physiological responses. In
 contrast to controlled, instructed experimental settings, spontaneous conditions
@@ -202,7 +215,71 @@ affective and motor activity.
         corrupted observations.
 \end{itemize}
 
+\section{Self-supervised Learning}
+\label{sec:self-supervised-learning}
+The previous sections characterized the sensing problem and the challenges that
+unconstrained, multimodal recording conditions pose to signal reconstruction.
+The remainder of this chapter turns to the machine learning foundations on which
+the proposed approach is built, beginning with self-supervised learning (SSL),
+the training paradigm underlying Masked Autoencoders.
+
+Self-supervised learning (SSL) is a training paradigm in which the supervisory
+signal is derived from the data itself rather than from externally provided
+labels. Instead of mapping inputs to manually annotated targets, an SSL model
+is tasked with solving a surrogate, or \emph{pretext}, task that is constructed
+automatically from the unlabeled observations. Because this supervision
+requires no human effort, SSL methods can exploit the large corpora of
+unlabeled data that are readily available, and they have become a central
+building block of modern deep learning pipelines in both natural language
+processing and computer vision \cite{devlin-etal-2019-bert, he2022masked}.
+This property is of particular importance for the present thesis: physiological
+monitoring generates abundant continuous recordings, whereas their annotation
+in the form of synchronized ground-truth waveforms is costly and often
+restricted to controlled laboratory settings.
+
+The design of the pretext task determines the inductive biases of the learned
+representation, and two principal families of SSL objectives have emerged:
+\begin{itemize}
+    \item \textbf{Contrastive learning} learns representations by bringing
+        augmented views of the same input together in an embedding space while
+        repelling the representations of distinct inputs. It aims to capture
+        invariances to the applied transformations and underlies many multimodal
+        alignment frameworks, in which signals from heterogeneous sensors are
+        projected into a shared embedding space \cite{girdhar2023imagebind}.
+
+    \item \textbf{Generative or predictive learning} corrupts a portion of the
+        input---typically by masking or denoising it---and trains the model to
+        recover the missing information from the remaining context. Masked
+        prediction, originally introduced for language modeling
+        \cite{devlin-etal-2019-bert} and subsequently transferred to the visual
+        domain \cite{he2022masked}, is the most prominent instance of this
+        family and constitutes the methodological foundation of this thesis.
+        The paradigm has been extended to spatiotemporal data, where the high
+        temporal redundancy of video permits exceptionally high masking ratios
+        \cite{tong2022videomae}, and to remote physiological measurement, where
+        the self-similar priors inherent in biological pulse signals are
+        exploited for pre-training \cite{liu2023rppgmae}.
+\end{itemize}
+
+Generative SSL is particularly well suited to the signal reconstruction problem
+considered in this work. First, it allows a model to be pre-trained on large
+amounts of unlabeled video before being adapted to a specific downstream task,
+mitigating the scarcity of paired physiological annotations. Second, and more
+fundamentally, the reconstruction objective of masked pre-training is
+structurally identical to the goal of this thesis: recovering a physiological
+waveform from partially observable, noise-corrupted, or entirely missing sensor
+streams is formally equivalent to reconstructing masked regions from their
+visible context. The pretext task of the Masked Autoencoder is therefore not
+merely a means to an end but a direct formalization of the research problem
+itself. The following two sections introduce the architectural components that
+operationalize this principle: Section~\ref{sec:vit} presents the Vision
+Transformer, whose self-attention mechanism provides the global context required
+for reconstruction, and Section~\ref{sec:mae} describes the Masked Autoencoder
+paradigm that defines the corresponding pre-training objective.
+
 \section{Vision Transformers (ViT)}
+\label{sec:vit}
+
 Vision Transformers have become a central building block in modern computer
 vision, and they are particularly relevant to the signal reconstruction tasks
 considered in this thesis. Remote physiological signals are subtle, spatially
@@ -210,12 +287,12 @@ distributed, and strongly periodic, so their recovery benefits from a model that
 integrates global context across the entire face rather than relying on local
 receptive fields alone. By tokenizing visual input into discrete patches and
 processing them with self-attention, a Vision Transformer captures long-range
-spatial dependencies, while its self-supervised pre-training regime---exemplified
-by the Masked Autoencoder---allows it to be trained on large amounts of
-unlabeled video before being adapted to a specific downstream task. This section
-introduces the Vision Transformer architecture, its attention mechanism, and the
-Masked Autoencoder paradigm that forms the methodological foundation of this
-thesis.
+spatial dependencies, while its self-supervised pre-training regime allows it to
+be trained on large amounts of unlabeled video before being adapted to a
+specific downstream task. This section introduces the Vision Transformer
+architecture and its attention mechanism; the Masked Autoencoder that combines
+them into a self-supervised pre-training paradigm is presented in
+Section~\ref{sec:mae}.
 
 \subsection{Image Patching and Tokenization}
 The Vision Transformer (ViT) \cite{dosovitskiy2021image} marked a departure from
@@ -248,7 +325,8 @@ has proven highly scalable, supporting very large models trained on large-scale
 self-supervised pre-training tasks \cite{he2022masked} while learning complex
 spatial relationships from data rather than from hand-crafted priors.
 
-\subsection{Masked Autoencoders (MAE)}
+\section{Masked Autoencoders (MAE)}
+\label{sec:mae}
 The foundational paradigm for this research is the Masked Autoencoder (MAE)
 \cite{he2022masked}, a self-supervised approach that applies the logic of masked
 language modeling to visual data. MAE employs an asymmetric encoder-decoder
