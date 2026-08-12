@@ -28,13 +28,14 @@ the research gap addressed by this thesis.
 \label{sec:rw-sensing}
 The field of remote photoplethysmography (rPPG) has evolved from handcrafted
 mathematical models to deep neural architectures. Early supervised models such
-as PhysNet and PhysFormer demonstrate that vital signs can be extracted directly
+as PhySU-Net demonstrate that vital signs can be extracted directly
 from facial video \cite{savic2024physunet}; however, these models often lack
 interpretability and degrade under varying environmental conditions. To address
 these limitations, PHASE-Net introduces a physics-informed design that grounds
 its attention mechanism in the Navier--Stokes equations, modeling pulse dynamics
-as second-order damped harmonic oscillators \cite{zhao2024phasenet}. Beyond
-algorithmic advances, the hardware used for physiological sensing has also
+as second-order damped harmonic oscillators \cite{zhao2024phasenet}.
+
+Beyond algorithmic advances, the hardware used for physiological sensing has also
 evolved: because frame-based sensors sample at only $30$--$60$ frames per
 second, they impose a fundamental limit on the temporal resolution of the
 captured signal. Recent work based on the EMPD dataset therefore introduces
@@ -42,13 +43,7 @@ event-based neuromorphic sensing, which offers microsecond-level temporal
 resolution and bridges this sampling gap at the hardware level
 \cite{feng2026empd}.
 
-Two observations from this line of work motivate the thesis. First, existing
-models are predominantly designed to estimate a physiological quantity from a
-single, fully available video stream and provide no mechanism to recover a
-signal when the corresponding sensor stream is entirely unavailable. Second,
-recent efforts to improve robustness operate either at the algorithmic level
-(physics-informed attention) or at the hardware level (event-based sensing), but
-neither approach can compensate for a sensor that has failed completely. These
+Neither approach can compensate for a sensor that has failed completely. These
 limitations correspond exactly to the scenario investigated in this thesis and
 highlight the need for \emph{cross-modal} redundancy rather than sensor-level
 redundancy alone.
@@ -62,24 +57,24 @@ spatial patches in still images, VideoMAE extends this paradigm to video and
 shows that the high temporal redundancy of video data makes extremely high
 masking ratios ($90\%$--$95\%$) not only viable but beneficial: aggressive
 masking forces the model to reason about high-level spatiotemporal structure
-rather than relying on local temporal smoothness \cite{tong2022videomae}.
-Critically, VideoMAE masks entire \emph{spatiotemporal tubes} that span the
+rather than relying on local temporal smoothness \cite{tong2022videomae}. VideoMAE masks entire \emph{spatiotemporal tubes} that span the
 temporal dimension, so that the reconstruction task cannot be solved by copying
 information across adjacent frames. This tube-masking strategy is directly
-relevant to the temporal masking investigated in Sub-RQ~2 of this thesis (the
-research questions are defined in the introduction). VideoMAE V2 later scales
-this framework and introduces a dual-masking strategy that masks both encoder
+relevant to the temporal masking investigated in Sub-RQ~2 of this thesis. 
+
+VideoMAE V2 later scales this framework and introduces a dual-masking strategy that masks both encoder
 and decoder inputs, substantially reducing the computational overhead of
-billion-parameter models \cite{wang2023videomaev2}. For multi-sensor
-environments, MV2MAE extends the MAE paradigm to synchronized multi-view videos,
+billion-parameter models \cite{wang2023videomaev2}. 
+
+For multi-sensor environments, MV2MAE extends the MAE paradigm to synchronized multi-view videos,
 using a cross-view reconstruction task to inject geometric information and to
 ensure representation robustness to viewpoint shifts \cite{shah2023mv2mae}.
 
 The common thread of these works is that the input and target modalities
 coincide: the model reconstructs the same stream from which the visible context
 was drawn. They therefore establish strong within-modality priors, but leave the
-question of \emph{cross-modal} reconstruction---recovering a completely missing
-stream from the remaining sensors---largely unaddressed.
+question of \emph{cross-modal} reconstruction--recovering a completely missing
+stream from the remaining sensors--largely unaddressed.
 
 \section{Multimodal Learning and Joint Embedding Spaces}
 \label{sec:rw-multimodal}
@@ -88,18 +83,19 @@ geometry, and thermal infrared), so multimodal learning frameworks are of
 central relevance. MultiMAE shows that pre-training a single Transformer on
 multiple dense visual tasks (e.g., RGB, depth, and semantic segmentation) yields
 a generalist model that remains robust to unpredicted modality dropout at
-inference time \cite{bachmann2022multimae}. ImageBind provides a complementary
-framework for learning joint embeddings across six disparate
+inference time \cite{bachmann2022multimae}. 
+
+ImageBind provides a complementary framework for learning joint embeddings across six disparate
 modalities---including thermal and IMU---by using images as a \enquote{binding}
 modality that aligns signals that are rarely observed together
-\cite{girdhar2023imagebind}. Moving beyond symmetric alignment, xMAE reframes
-cross-modal learning as a problem of \emph{asymmetric temporal observability}:
+\cite{girdhar2023imagebind}. 
+
+Moving beyond symmetric alignment, xMAE reframes cross-modal learning as a problem of \emph{asymmetric temporal observability}:
 one signal (e.g., PPG) is used as training-time scaffolding to reconstruct a
 directionally dependent second signal (e.g., ECG), thereby capturing the
 electrical-to-mechanical delay inherent in human physiology \cite{zhou2026xmae}.
 
-These frameworks establish that shared embedding spaces can align
-physiologically related modalities and that a model can tolerate the absence of
+These frameworks establish that shared embedding spaces can align physiologically related modalities and that a model can tolerate the absence of
 one modality during inference. However, they treat missingness as a robustness
 problem: the model is expected to produce a \emph{usable representation} despite
 dropout, not to \emph{generate a faithful reconstruction} of the missing raw
@@ -116,8 +112,9 @@ domain, ensuring robustness to modality mismatch in wearable data
 \cite{liu2024biofame}. The MAEConformer architecture combines convolutional
 local feature extraction with Transformer-based long-range attention and employs
 a Multi-Resolution STFT (MR-STFT) loss to learn temporal and spectral
-characteristics jointly \cite{yu2026maeconformer}. To model the hierarchical
-rhythms of biosignals explicitly, the MMR (Wavelet-Driven Masked Multiscale
+characteristics jointly \cite{yu2026maeconformer}. 
+
+To model the hierarchical rhythms of biosignals explicitly, the MMR (Wavelet-Driven Masked Multiscale
 Reconstruction) framework applies the Discrete Wavelet Transform (DWT); by
 reconstructing masked wavelet coefficients, MMR captures features ranging from
 fine-grained waveform morphology to global rhythmic dynamics, providing a robust
@@ -194,7 +191,7 @@ question (RQ) regarding targeted sensor failure and information loss:
         targeted hardware failure.
 \end{itemize}
 
-\subsection{Summary and Positioning}
+\subsection{Summary and Research Gap}
 While the community has explored within-modality interpolation and multimodal
 task performance, there is a distinct gap in understanding cross-modal
 predictive limits. This thesis fills this gap by shifting the focus from
@@ -223,26 +220,25 @@ visible context or from a different one; \enquote{Sensor-failure focus} states w
 method explicitly handles a completely missing sensor stream. The final row
 positions this thesis relative to the state of the art.}
 \label{tab:rw-overview}
-\begin{tabular}{@{}p{2.4cm} p{2.5cm} p{3.3cm} p{2.2cm} p{2.4cm}@{}}
+\begin{tabular}{@{}p{3.2cm} p{2.5cm} p{4.3cm} p{2.2cm} p{2.4cm}@{}}
 \toprule
 Method & Modalities & Reconstruction objective & Within/Cross-modal & Sensor-failure focus \\
 \midrule
-PhysNet, PhysFormer \cite{savic2024physunet}
+PhySU-Net \cite{savic2024physunet}
     & RGB face video & supervised rPPG estimation & Within & No \\
 PHASE-Net \cite{zhao2024phasenet}
     & RGB face video & physics-informed rPPG estimation & Within & No \\
 EMPD \cite{feng2026empd}
-    & Event camera & event-driven rPPG estimation & Within (hardware) & No \\
+    & Event camera & event-driven rPPG estimation & Within & No \\
 VideoMAE \cite{tong2022videomae}
     & Video & tube-masked reconstruction (90--95\,\%) & Within & No \\
-VideoMAE V2 \cite{wang2023videomaev2}
-    & Video & dual-masked reconstruction & Within & No \\
+
 MV2MAE \cite{shah2023mv2mae}
-    & Multi-view video & cross-view reconstruction & Cross-view & Partial (viewpoint) \\
+    & Multi-view video & cross-view reconstruction & Cross-view & Partial \newline (viewpoint) \\
 MultiMAE \cite{bachmann2022multimae}
     & RGB, depth, segmentation & multi-task masked reconstruction & Cross-modal & Partial (dropout) \\
 ImageBind \cite{girdhar2023imagebind}
-    & Six modalities (incl.\ thermal, IMU) & joint embedding alignment & Cross-modal & Partial (no generation) \\
+    & Six modalities (incl.\ thermal, IMU) & joint embedding alignment & Cross-modal & Partial \newline (no generation) \\
 xMAE \cite{zhou2026xmae}
     & PPG, ECG & asymmetric cross-modal scaffolding & Cross-modal & No \\
 bioFAME \cite{liu2024biofame}
@@ -268,7 +264,7 @@ input, the reconstruction objective, whether the reconstruction target lies
 within or across modalities, and whether a completely missing sensor stream is
 explicitly handled. Two patterns emerge. First, the majority of methods operate
 \emph{within} a single modality---reconstructing masked parts of the same
-stream, be it video (VideoMAE, VideoMAE V2, MV2MAE) or physiological signal
+stream, be it video (VideoMAE, MV2MAE) or physiological signal
 (bioFAME, MAEConformer, MMR, rPPG-MAE)---and therefore cannot recover a stream
 that is entirely absent. Second, the methods that do operate \emph{across}
 modalities (MultiMAE, ImageBind, xMAE) treat missingness either as a robustness
