@@ -9,17 +9,19 @@ organized along four complementary lines of research that jointly span the
 design space of the thesis:
 \begin{itemize}
     \item \textbf{Remote physiological sensing} (Section~\ref{sec:rw-sensing})
-    traces the evolution of remote physiological sensing and establishes the
-    modalities that the thesis seeks to fuse.
+    traces the evolution of remote physiological sensing across RGB, thermal
+    infrared, and 3D geometry and establishes the modalities that the thesis
+    seeks to fuse.
     \item \textbf{Masked Autoencoders for spatiotemporal data}
     (Section~\ref{sec:rw-mae}) reviews Masked Autoencoders (MAEs), the
     architectural paradigm underlying the proposed approach.
     \item \textbf{Multimodal learning and joint embedding spaces}
     (Section~\ref{sec:rw-multimodal}) examines how information from
     heterogeneous sensors can be shared across modalities.
-    \item \textbf{Multiscale spectral modeling} (Section~\ref{sec:rw-spectral})
+    \item \textbf{Signal-aware reconstruction objectives} (Section~\ref{sec:rw-spectral})
     complements this discussion with techniques that explicitly exploit the
-    structure of physiological signals.
+    structure of physiological signals, from spectral losses to self-similarity
+    priors.
 \end{itemize}
 Finally, Section~\ref{sec:rw-analysis} synthesizes these threads and defines
 the research gap addressed by this thesis.
@@ -33,20 +35,38 @@ from facial video \cite{savic2024physunet}; however, these models often lack
 interpretability and degrade under varying environmental conditions. To address
 these limitations, PHASE-Net introduces a physics-informed design that grounds
 its attention mechanism in the Navier--Stokes equations, modeling pulse dynamics
-as second-order damped harmonic oscillators \cite{zhao2024phasenet}.
+as second-order damped harmonic oscillators \cite{zhao2025phasenet}.
 
 Beyond algorithmic advances, the hardware used for physiological sensing has also
-evolved: because frame-based sensors sample at only $30$--$60$ frames per
+evolved. Because frame-based sensors sample at only $30$--$60$ frames per
 second, they impose a fundamental limit on the temporal resolution of the
-captured signal. Recent work based on the EMPD dataset therefore introduces
-event-based neuromorphic sensing, which offers microsecond-level temporal
-resolution and bridges this sampling gap at the hardware level
-\cite{feng2026empd}.
+captured signal; to address this gap, recent work based on the EMPD dataset
+introduces event-based neuromorphic sensing, which offers microsecond-level
+temporal resolution \cite{feng2026empd}.
 
-Neither approach can compensate for a sensor that has failed completely. These
-limitations correspond exactly to the scenario investigated in this thesis and
-highlight the need for \emph{cross-modal} redundancy rather than sensor-level
-redundancy alone.
+The modalities relevant to this thesis extend beyond visible-spectrum rPPG.
+Thermal infrared (TIR) imaging captures the long-wave infrared radiation
+($8$--$14\,\mu m$) emitted by the skin and is therefore invariant to visible
+illumination; it enables thermal respiration monitoring at the nostrils,
+autonomic-stress assessment through nasal temperature drops, and the
+quantification of sweat-gland activation \cite{cho2019physiological}. Because
+these signatures are driven by the same autonomic processes that modulate the
+cardiovascular signal, TIR constitutes a physiologically redundant yet
+spectrally disjoint companion to RGB. A third ingredient is 3D facial geometry:
+point-based tracking frameworks register spectral textures onto dynamic 3D
+facial meshes and use standardized landmark sets---such as the 49-point 2D,
+83-point 3D, and 28-point thermal landmarks of the BP4D+ corpus
+\cite{zhang2014bp4d}---to define and track regions of interest across modalities
+\cite{hassanpour2025contactless}. This geometric anchoring compensates for head
+motion and perspective distortion that would otherwise mask the subtle chromatic
+fluctuations exploited by rPPG \cite{cheng2024contactless}.
+
+Each of these strands---algorithmic modeling, additional modalities, and higher
+temporal resolution---assumes that the underlying sensor is functioning. None of
+them can compensate for a sensor that has failed completely. These limitations
+correspond exactly to the scenario investigated in this thesis and highlight the
+need for \emph{cross-modal} redundancy rather than sensor-level redundancy
+alone.
 
 \section{Masked Autoencoders for Spatiotemporal Data}
 \label{sec:rw-mae}
@@ -68,13 +88,26 @@ billion-parameter models \cite{wang2023videomaev2}.
 
 For multi-sensor environments, MV2MAE extends the MAE paradigm to synchronized multi-view videos,
 using a cross-view reconstruction task to inject geometric information and to
-ensure representation robustness to viewpoint shifts \cite{shah2023mv2mae}.
+ensure representation robustness to viewpoint shifts \cite{shah2024mv2mae}.
 
 The common thread of these works is that the input and target modalities
 coincide: the model reconstructs the same stream from which the visible context
 was drawn. They therefore establish strong within-modality priors, but leave the
 question of \emph{cross-modal} reconstruction--recovering a completely missing
-stream from the remaining sensors--largely unaddressed.
+stream from the remaining sensors--largely unaddressed. Moreover, tube-masking
+studies have so far targeted generic video rather than physiological signals
+recovered from noisy, multimodal video, leaving the quantitative impact of
+extreme masking ratios on physiological reconstruction (Sub-RQ~2) unexplored.
+
+Recovering missing visual content is not exclusive to masked reconstruction;
+explicit generative frameworks, such as conditional image-to-image translation
+\cite{isola2017pix2pix} and video inpainting, synthesize the absent stream
+directly. These methods, however, require paired targets for supervised training
+and are typically optimized for perceptual fidelity rather than for the recovery
+of a physiologically meaningful signal, and they do not double as a
+self-supervised pre-training objective. The masked-reconstruction paradigm
+adopted in this thesis instead unifies the pre-training task with the recovery
+objective, which is why it is the basis of the proposed approach.
 
 \section{Multimodal Learning and Joint Embedding Spaces}
 \label{sec:rw-multimodal}
@@ -103,7 +136,7 @@ stream. The fidelity of the recovered signal is therefore neither optimized nor
 quantified, which lies at the heart of the main research question (RQ) of this
 thesis.
 
-\section{Multiscale Spectral Modeling of Physiological Signals}
+\section{Signal-Aware Reconstruction Objectives for Physiological Signals}
 \label{sec:rw-spectral}
 Because physiological signals are non-stationary and quasi-periodic, standard
 time-domain masking is often insufficient. bioFAME addresses this by introducing
@@ -118,15 +151,18 @@ To model the hierarchical rhythms of biosignals explicitly, the MMR (Wavelet-Dri
 Reconstruction) framework applies the Discrete Wavelet Transform (DWT); by
 reconstructing masked wavelet coefficients, MMR captures features ranging from
 fine-grained waveform morphology to global rhythmic dynamics, providing a robust
-foundation for downstream health monitoring \cite{thukral2026wavelet}. Finally,
-rPPG-MAE adapts these self-supervised paradigms to remote measurement by
-leveraging the self-similar priors inherent in biological pulse signals
+foundation for downstream health monitoring \cite{thukral2026wavelet}.
+
+In a complementary line of work, rPPG-MAE adapts these self-supervised paradigms
+to remote measurement by exploiting the self-similar priors inherent in
+biological pulse signals rather than an explicit spectral loss
 \cite{liu2023rppgmae}.
 
-These methods refine the reconstruction objective with spectral losses and show
-that exploiting the quasi-periodic structure of physiological signals improves
-reconstruction fidelity. Nevertheless, they operate almost exclusively within a
-single modality and on wearable or contact-based signals. None of them addresses
+Together, these methods refine the reconstruction objective with spectral or
+structure-aware losses and show that exploiting the quasi-periodic structure of
+physiological signals improves reconstruction fidelity. Nevertheless, they
+operate almost exclusively within a single modality and on wearable or
+contact-based signals. None of them addresses
 the cross-modal setting in which a high-dimensional visual stream (e.g., thermal
 infrared) must be generated from structurally different surviving modalities
 (e.g., RGB video), nor do they quantify the physiological information lost in
@@ -192,9 +228,9 @@ question (RQ) regarding targeted sensor failure and information loss:
 \end{itemize}
 
 \subsection{Summary and Research Gap}
-While the community has explored within-modality interpolation and multimodal
-task performance, there is a distinct gap in understanding cross-modal
-predictive limits. This thesis fills this gap by shifting the focus from
+Taken together, the reviewed literature leaves a distinct gap in understanding
+cross-modal predictive limits. This thesis fills this gap by shifting the focus
+from
 \enquote{representations for classification} to \enquote{predictive coding for
 sensor recovery}. Concretely, the thesis contributes:
 \begin{itemize}
@@ -204,36 +240,37 @@ sensor recovery}. Concretely, the thesis contributes:
     \item a systematic study of temporal tube masking and extreme masking
     ratios ($90\%$ and above) for the reconstruction of physiological
     indicators from noisy video (Sub-RQ~2); and
-    \item a first rigorous analysis, based on simulated sensor failures in the
-    BP4D+ corpus \cite{zhang2014bp4d}, of the extent to which the cross-modal
-    redundancy of human physiology enables a deep model to compensate for
-    missing hardware.
+    \item the first, to our knowledge, rigorous analysis, based on simulated
+    sensor failures in the BP4D+ corpus \cite{zhang2014bp4d}, which synchronizes
+    RGB, thermal, and 3D facial sequences with physiological signals, of the
+    extent to which the cross-modal redundancy of human physiology enables a
+    deep model to compensate for missing hardware.
 \end{itemize}
 
 \begin{table}[htbp]
 \centering
 \small
 \setlength{\tabcolsep}{5pt}
-\caption{Comprehensive overview of the surveyed methods. \enquote{Within/Cross-modal}
-indicates whether the reconstruction target is drawn from the same modality as the
-visible context or from a different one; \enquote{Sensor-failure focus} states whether a
-method explicitly handles a completely missing sensor stream. The final row
-positions this thesis relative to the state of the art.}
+\caption{Comprehensive overview of the surveyed methods. \enquote{Reconstruction
+target} indicates whether the target is drawn from the same modality as the
+visible context (Within), from a different viewpoint of the same modality
+(Cross-view), or from a different modality (Cross-modal); \enquote{Sensor-failure
+focus} states whether a method explicitly handles a completely missing sensor
+stream. The final row positions this thesis relative to the state of the art.}
 \label{tab:rw-overview}
 \begin{tabular}{@{}p{3.2cm} p{2.5cm} p{4.3cm} p{2.2cm} p{2.4cm}@{}}
 \toprule
-Method & Modalities & Reconstruction objective & Within/Cross-modal & Sensor-failure focus \\
+Method & Modalities & Reconstruction objective & Reconstruction target & Sensor-failure focus \\
 \midrule
 PhySU-Net \cite{savic2024physunet}
     & RGB face video & supervised rPPG estimation & Within & No \\
-PHASE-Net \cite{zhao2024phasenet}
+PHASE-Net \cite{zhao2025phasenet}
     & RGB face video & physics-informed rPPG estimation & Within & No \\
-EMPD \cite{feng2026empd}
-    & Event camera & event-driven rPPG estimation & Within & No \\
+
 VideoMAE \cite{tong2022videomae}
     & Video & tube-masked reconstruction (90--95\,\%) & Within & No \\
 
-MV2MAE \cite{shah2023mv2mae}
+MV2MAE \cite{shah2024mv2mae}
     & Multi-view video & cross-view reconstruction & Cross-view & Partial \newline (viewpoint) \\
 MultiMAE \cite{bachmann2022multimae}
     & RGB, depth, segmentation & multi-task masked reconstruction & Cross-modal & Partial (dropout) \\
@@ -248,7 +285,7 @@ MAEConformer \cite{yu2026maeconformer}
 MMR \cite{thukral2026wavelet}
     & Biosignals & DWT coefficient reconstruction & Within & No \\
 rPPG-MAE \cite{liu2023rppgmae}
-    & Face video / rPPG & self-similar masked reconstruction & Within & No \\
+    & Face video, rPPG & self-similar masked reconstruction & Within & No \\
 \midrule
 \textbf{This thesis}
     & \textbf{RGB, 3D, thermal video, 1D series}
@@ -261,12 +298,15 @@ rPPG-MAE \cite{liu2023rppgmae}
 Table~\ref{tab:rw-overview} condenses the reviewed literature along four
 dimensions that are decisive for the problem of this thesis: the modality of the
 input, the reconstruction objective, whether the reconstruction target lies
-within or across modalities, and whether a completely missing sensor stream is
-explicitly handled. Two patterns emerge. First, the majority of methods operate
-\emph{within} a single modality---reconstructing masked parts of the same
-stream, be it video (VideoMAE, MV2MAE) or physiological signal
+within the same modality, across viewpoints, or across modalities, and whether a
+completely missing sensor stream is explicitly handled. Three tiers emerge.
+First, the majority of methods operate \emph{within} a single modality---reconstructing
+masked parts of the same stream, be it video (VideoMAE) or physiological signal
 (bioFAME, MAEConformer, MMR, rPPG-MAE)---and therefore cannot recover a stream
-that is entirely absent. Second, the methods that do operate \emph{across}
+that is entirely absent. Second, MV2MAE reconstructs one viewpoint from another
+within the video modality; although the target view differs from the source, the
+underlying modality is unchanged, so it likewise cannot recover a stream whose
+sensor has failed outright. Third, the methods that do operate \emph{across}
 modalities (MultiMAE, ImageBind, xMAE) treat missingness either as a robustness
 requirement during pre-training or as a scaffolding objective for representation
 learning; none of them optimizes or quantifies the generative fidelity of a
