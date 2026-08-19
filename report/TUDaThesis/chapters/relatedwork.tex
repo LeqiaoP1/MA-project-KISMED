@@ -231,15 +231,12 @@ sensor recovery}. Concretely, the thesis contributes:
 \begin{itemize}
     \item a unified Vision Transformer encoder that fuses 1D physiological
     time series (e.g., EDA, heart rate) with 2D RGB and thermal video
-    (Sub-RQ~1);
+    (Sub-RQ~1).
     \item a systematic study of temporal tube masking and extreme masking
     ratios ($90\%$ and above) for the reconstruction of physiological
-    indicators from noisy video (Sub-RQ~2); and
-    \item the first, to our knowledge, rigorous analysis, based on simulated
-    sensor failures in the BP4D+ corpus \cite{zhang2014bp4d}, which synchronizes
-    RGB, thermal, and 3D facial sequences with physiological signals, of the
-    extent to which the cross-modal redundancy of human physiology enables a
-    deep model to compensate for missing hardware.
+    indicators from noisy video.
+    % \item a rigorous analysis of the extent to which the cross-modal redundancy of human physiology enables a
+    % deep model to compensate for missing hardware.
 \end{itemize}
 
 \begin{table}[htbp]
@@ -292,19 +289,19 @@ rPPG-MAE \cite{liu2023rppgmae}
 \end{tabular}
 \end{table}
 
-Table~\ref{tab:rw-overview} condenses the reviewed literature along four
-dimensions that are decisive for the problem of this thesis: the modality of the
-input, the reconstruction objective, whether the reconstruction target lies
-within the same modality, across viewpoints, or across modalities, and whether a
-completely missing sensor stream is explicitly handled. Three tiers emerge.
-First, the majority of methods operate \emph{within} a single modality---reconstructing
-masked parts of the same stream, be it video (VideoMAE) or physiological signal
-(bioFAME, MAEConformer, MMR, rPPG-MAE)---and therefore cannot recover a stream
-that is entirely absent. Second, MV2MAE reconstructs one viewpoint from another
+As the Table~\ref{tab:rw-overview} condenses the reviewed literature, three tiers emerge.
+At first, the majority of methods operate \emph{within} a single modality, reconstructing
+masked parts of the same stream as video (VideoMAE) or physiological signal
+(bioFAME, MAEConformer, MMR, rPPG-MAE) and therefore cannot recover a stream
+that is entirely absent. 
+
+Secondly, MV2MAE reconstructs one viewpoint from another
 within the video modality; although the target view differs from the source, the
 underlying modality is unchanged, so it likewise cannot recover a stream whose
-sensor has failed outright. Third, the methods that do operate \emph{across}
-modalities (MultiMAE, ImageBind, xMAE) treat missingness either as a robustness
+sensor has failed outright. 
+
+Thirdly, the methods that do operate \emph{across} modalities (MultiMAE, ImageBind, xMAE) treat missingness either as a robustness
 requirement during pre-training or as a scaffolding objective for representation
 learning; none of them optimizes or quantifies the generative fidelity of a
 reconstructed sensor stream.
+

@@ -5,3 +5,5 @@ data/raw/*
 !data/processed/README.md
 !data/raw/README.md
 .venv/
+*.tar.gz
+
