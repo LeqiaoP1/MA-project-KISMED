@@ -1,0 +1,29 @@
+# Example pre-training config (MultiMAE-style YAML: values are argparse defaults,
+# CLI flags override them).
+# Copy & adapt to configs/pretrain/<experiment>.yaml
+
+# Model
+model: project_vit_base_patch16_224
+input_size: 224
+
+# Training
+epochs: 800
+batch_size: 64
+update_freq: 1
+save_ckpt_freq: 20
+
+# Optimizer
+opt: adamw
+blr: 1.5e-4              # base LR: actual lr = blr * batch_size * world_size / 256
+min_lr: 0.0
+warmup_epochs: 40
+weight_decay: 0.05
+clip_grad: 0.0
+
+# Data (implement code/data/datasets.py first)
+data_path: /path/to/your/dataset
+
+# Logging
+output_dir: output/pretrain/example
+log_wandb: false
+wandb_project: thesis-project

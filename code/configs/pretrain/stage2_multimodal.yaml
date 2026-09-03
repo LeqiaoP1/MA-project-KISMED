@@ -1,0 +1,42 @@
+# Stage 2 -- multimodal masked pre-training on BP4D+ (TEMPLATE)
+#
+# WARNING: this stage requires porting the *multimodal* masked-autoencoding
+# model (input/output adapters per stream + masking in the forward pass) from
+# tmp/MultiMAE/multimae/ and the BP4D+ dataset (RGB+TIR video, BVP/RESP/EDA).
+# Until then `runners/run_pretrain.py` trains a single-stream model only.
+# See code/README.md "Suggested port order".
+
+# Streams & asymmetric masking (plan: visual 50-75%, signals 90%+)
+streams: rgb,tir,bvp,resp
+visual_mask_ratio: 0.75
+signal_mask_ratio: 0.95
+
+# Losses: point-level L1/MSE on masked patches
+masked_loss: l1          # l1 | mse
+reconstruct_signals: true
+
+# Model (placeholder -- register your multimodal MAE entrypoint in core/)
+model: project_vit_base_patch16_224
+
+# Data
+data_set: bp4d+
+data_path: /path/to/bp4d+
+
+# Training
+epochs: 800
+batch_size: 16
+update_freq: 1
+save_ckpt_freq: 20
+
+# Optimizer
+opt: adamw
+blr: 1.5e-4
+min_lr: 0.0
+warmup_epochs: 40
+weight_decay: 0.05
+clip_grad: 0.0
+
+# Logging
+output_dir: output/pretrain/stage2_multimodal
+log_wandb: false
+wandb_project: thesis-project

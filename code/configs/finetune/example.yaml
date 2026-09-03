@@ -1,0 +1,33 @@
+# Example fine-tuning config.
+# Copy & adapt to configs/finetune/<experiment>.yaml
+
+# Model
+model: project_vit_base_patch16_224
+nb_classes: 1000
+input_size: 224
+finetune: output/pretrain/example/checkpoints/checkpoint-0799.pth   # optional
+
+# Data
+data_set: my_dataset          # registered via @register_dataset in code/data/datasets.py
+data_path: /path/to/your/dataset
+
+# Training
+epochs: 100
+batch_size: 64
+update_freq: 1
+save_ckpt_freq: 10
+eval_freq: 1
+
+# Optimizer
+opt: adamw
+lr: 1e-3
+min_lr: 0.0
+warmup_epochs: 5
+weight_decay: 0.05
+clip_grad: 0.0
+smoothing: 0.1
+
+# Logging
+output_dir: output/finetune/example
+log_wandb: false
+wandb_project: thesis-project

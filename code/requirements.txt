@@ -1,0 +1,27 @@
+# Core ML
+torch>=2.1.0
+torchvision>=0.16.0
+timm>=0.9.0
+einops>=0.7.0
+
+# Data / numerics
+numpy>=1.24
+scipy>=1.10
+pandas>=2.0
+opencv-python>=4.8
+pillow>=10.0
+# decord>=0.6  # optional ffmpeg decoder for .wmv (OpenCV may lack WMV3/VC-1)
+
+# Training helpers / logging
+PyYAML>=6.0
+tensorboard>=2.14
+wandb>=0.16
+matplotlib>=3.7
+
+# Optional
+scikit-learn>=1.3
+fvcore
+iopath
+
+# Offline clinical evaluation (Tier 3, docs/ImplementationPlan.md)
+neurokit2  # optional, required only by runners/run_evaluate.py --tier 3

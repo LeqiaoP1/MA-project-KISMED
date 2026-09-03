@@ -1,0 +1,42 @@
+# Stage 3 -- BVP regression branch (docs/ImplementationPlan.md)
+# Complete sensor failure: only visual streams (RGB + TIR) drive prediction.
+target: bvp
+seq_len: 1000            # output waveform samples
+fs: 100                  # sampling rate (Hz)
+
+# Model: shared Stage-2 encoder + regression head
+model: project_vit_base_patch16_224
+finetune: output/pretrain/stage2_multimodal/checkpoints/checkpoint-0799.pth
+
+# Data (implement bp4d+ in code/data/datasets.py; yields (samples, [B,T]))
+data_set: bp4d+
+data_path: /path/to/bp4d+
+
+# Joint spatio-temporal-spectral loss weights
+alpha: 1.0               # L_time   (L1 amplitude)
+beta: 1.0                # L_Pearson (phase-locking)
+gamma: 1.0               # L_MR-STFT (multi-resolution)
+fft_sizes: '64,128,256'
+
+# Spectral evaluation band (BVP cardiac: ~1.0-2.5 Hz)
+eval_band: '1.0,2.5'
+
+# Training
+epochs: 100
+batch_size: 16
+update_freq: 1
+save_ckpt_freq: 10
+eval_freq: 1
+
+# Optimizer
+opt: adamw
+lr: 1e-4
+min_lr: 0.0
+warmup_epochs: 5
+weight_decay: 0.05
+clip_grad: 0.0
+
+# Logging
+output_dir: output/finetune/bvp
+log_wandb: false
+wandb_project: thesis-project
