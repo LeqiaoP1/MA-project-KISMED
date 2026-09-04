@@ -7,3 +7,5 @@ data/raw/*
 .venv/
 *.tar.gz
 
+# Ignore Python cache files
+__pycache__/

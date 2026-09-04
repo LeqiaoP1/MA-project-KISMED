@@ -1,0 +1,126 @@
+{
+  "data_path": "/mnt/f/Studium/KISMed/github/MA-project-KISMED/data/processed/bp4d_canonical",
+  "args": {
+    "data_path": "/mnt/f/Studium/KISMed/github/MA-project-KISMED/data/processed/bp4d_canonical",
+    "output_dir": "/mnt/f/Studium/KISMed/github/MA-project-KISMED/output/inspect_data",
+    "target": "bvp",
+    "max_sessions": 2,
+    "max_entries": 2,
+    "train_ratio": 0.5,
+    "fs": 100.0,
+    "fps": 25.0,
+    "clip_duration": 10.0,
+    "seq_len": 0,
+    "input_size": 64,
+    "plot": true
+  },
+  "sessions_found": [
+    "F001_T1"
+  ],
+  "first_session": {
+    "session": "F001_T1",
+    "rgb_frames": 1612,
+    "signals_fs": 100.00000000000213,
+    "signals": {
+      "time": {
+        "len": 6460,
+        "min": 0.0,
+        "max": 64.59,
+        "finite_frac": 1.0
+      },
+      "bvp": {
+        "len": 6460,
+        "min": 52.02993248424577,
+        "max": 118.63992067683728,
+        "finite_frac": 1.0
+      },
+      "resp": {
+        "len": 6460,
+        "min": -10.000201890880614,
+        "max": 0.5199373725515334,
+        "finite_frac": 1.0
+      },
+      "eda": {
+        "len": 6460,
+        "min": 1.5876012559722,
+        "max": 1.7133251321534257,
+        "finite_frac": 1.0
+      }
+    },
+    "tir": {
+      "fps": 25.0,
+      "num_frames": 1612
+    }
+  },
+
+
+  
+  "train": {
+    "entries": 2,
+    "clips": [
+      {
+        "clip_index": 0,
+        "session": "F001_T1",
+        "t_start": 0.0,
+        "samples": {
+          "name": "samples[4,T,H,W]",
+          "shape": [
+            4,
+            250,
+            64,
+            64
+          ],
+          "dtype": "float32",
+          "min": 0.0117647061124444,
+          "max": 0.9686274528503418,
+          "mean": 0.1860695481300354,
+          "finite_frac": 1.0
+        },
+        "target": {
+          "name": "target[bvp]",
+          "shape": [
+            1000
+          ],
+          "dtype": "float32",
+          "min": 70.45462036132812,
+          "max": 115.47891235351562,
+          "mean": 100.88704681396484,
+          "finite_frac": 1.0
+        }
+      },
+      {
+        "clip_index": 1,
+        "session": "F001_T1",
+        "t_start": 10.0,
+        "samples": {
+          "name": "samples[4,T,H,W]",
+          "shape": [
+            4,
+            250,
+            64,
+            64
+          ],
+          "dtype": "float32",
+          "min": 0.0117647061124444,
+          "max": 0.9843137264251709,
+          "mean": 0.18553611636161804,
+          "finite_frac": 1.0
+        },
+        "target": {
+          "name": "target[bvp]",
+          "shape": [
+            1000
+          ],
+          "dtype": "float32",
+          "min": 69.19318389892578,
+          "max": 116.7005386352539,
+          "mean": 99.92147827148438,
+          "finite_frac": 1.0
+        }
+      }
+    ]
+  },
+  "val": {
+    "entries": 0
+  }
+}
