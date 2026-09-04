@@ -20,8 +20,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
 
 from engines import train_one_epoch_pretrain
-from runners._common import (add_common_args, init_env, make_data_loader,
-                             parse_args_with_config)
+from runners._common import (add_common_args, env_or, init_env,
+                             make_data_loader, parse_args_with_config)
 
 
 def get_args():
@@ -32,7 +32,7 @@ def get_args():
     parser.add_argument('--model', default='project_vit_base_patch16_224',
                         type=str, help='registered model name')
     # data
-    parser.add_argument('--data_path', default='', type=str)
+    parser.add_argument('--data_path', default=env_or('DATA_PATH'), type=str)
     # training
     parser.add_argument('--batch_size', default=64, type=int)
     parser.add_argument('--epochs', default=800, type=int)

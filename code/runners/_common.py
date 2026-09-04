@@ -5,6 +5,7 @@ Implements the MultiMAE pattern:
   * explicit command-line flags override the YAML values
 """
 import argparse
+import os
 import random
 
 import numpy as np
@@ -14,6 +15,11 @@ import yaml
 from utils import get_rank, get_world_size, init_distributed_mode
 
 
+def env_or(name: str, default: str = '') -> str:
+    """Resolve a CLI default from an environment variable (e.g. DATA_PATH)."""
+    return os.environ.get(name, default)
+
+
 def add_common_args(parser: argparse.ArgumentParser):
     """Flags shared by every runner."""
     parser.add_argument('--device', default='cuda', type=str)
@@ -21,15 +27,21 @@ def add_common_args(parser: argparse.ArgumentParser):
     # distributed
     parser.add_argument('--dist_url', default='env://', type=str)
     parser.add_argument('--local_rank', default=-1, type=int)
-    # output / resume
-    parser.add_argument('--output_dir', default='./output', type=str,
+    # output / resume  (paths may be injected via env for local <-> HPC switching)
+    parser.add_argument('--output_dir', default=env_or('OUTPUT_DIR', './output'),
+                        type=str,
                         help='root folder for checkpoints/logs')
-    parser.add_argument('--resume', default='', type=str,
+    parser.add_argument('--resume', default=env_or('RESUME', ''), type=str,
                         help='checkpoint path to resume from')
     parser.add_argument('--log_wandb', action='store_true', default=False)
     parser.add_argument('--wandb_project', default='thesis-project', type=str)
-    parser.add_argument('--num_workers', default=8, type=int)
+    parser.add_argument('--num_workers', default=int(env_or('NUM_WORKERS', '8')), type=int)
     parser.add_argument('--pin_mem', action='store_true', default=True)
+    # quick/dev runs: cap the number of sessions / clips (see PairedSessionDataset)
+    parser.add_argument('--max_sessions', default=None, type=int,
+                        help='limit number of sessions (smoke tests)')
+    parser.add_argument('--max_entries', default=None, type=int,
+                        help='limit number of clips per split (smoke tests)')
 
 
 def parse_args_with_config(parser: argparse.ArgumentParser, argv=None):

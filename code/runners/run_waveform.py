@@ -24,8 +24,8 @@ import torch
 
 from core import WaveformJointLoss
 from engines import evaluate_waveforms, train_one_epoch_waveform
-from runners._common import (add_common_args, init_env, make_data_loader,
-                             parse_args_with_config)
+from runners._common import (add_common_args, env_or, init_env,
+                             make_data_loader, parse_args_with_config)
 
 
 def _parse_fft_sizes(s):
@@ -38,19 +38,19 @@ def get_args():
 
     # model / task
     parser.add_argument('--model', default='project_vit_base_patch16_224', type=str)
-    parser.add_argument('--target', default='bvp', choices=['bvp', 'resp'],
+    parser.add_argument('--target', default='bvp', choices=['bvp', 'resp', 'eda'],
                         help='which physiological waveform branch to train')
     parser.add_argument('--seq_len', default=1000, type=int,
                         help='length of the predicted output waveform (samples)')
     parser.add_argument('--fs', default=100.0, type=float,
                         help='waveform sampling rate in Hz')
     parser.add_argument('--input_size', default=224, type=int)
-    parser.add_argument('--finetune', default='', type=str,
+    parser.add_argument('--finetune', default=env_or('MODEL_PATH'), type=str,
                         help='Stage-2 pretrained encoder checkpoint to load')
 
     # data (implement BP4D+ in code/data/datasets.py)
-    parser.add_argument('--data_set', default='bp4d+', type=str)
-    parser.add_argument('--data_path', default='', type=str)
+    parser.add_argument('--data_set', default=env_or('DATA_SET', 'bp4d+'), type=str)
+    parser.add_argument('--data_path', default=env_or('DATA_PATH'), type=str)
 
     # training
     parser.add_argument('--batch_size', default=16, type=int)

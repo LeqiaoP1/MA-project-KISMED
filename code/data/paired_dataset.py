@@ -5,11 +5,11 @@ Expected per-session layout under ``data_path``::
     <data_path>/<session>/
         rgb/            # ordered jpg frames  (25 fps nominal)
         tir.wmv         # single video ~60 s  (25 fps nominal)
-        signals.csv     # header: [time,] bvp, resp [, eda]  at fs Hz
+        signals.csv     # header: [time,] bvp, resp, eda  at fs Hz
 
 ``PairedSessionDataset`` returns ``(samples, target)`` per clip:
   * ``samples`` : float tensor [4, T, H, W]  (RGB 3ch + TIR 1ch, temporal stack)
-  * ``target``  : float tensor [seq_len]     (chosen waveform, BVP or RESP)
+  * ``target``  : float tensor [seq_len]     (chosen waveform: BVP, RESP or EDA)
 
 Both videos are read on a single common time grid (see ``data/alignment.py``),
 handling any RGB/TIR fps mismatch; 1D signals are sliced on the same axis and
@@ -34,7 +34,9 @@ __all__ = ['PairedSessionDataset', 'build_paired_dataset', 'scan_sessions']
 PAIRED_DATA_SETS = ('bp4d+', 'paired')
 
 _CSV_DELIM = ','
-_SIGNAL_ALIASES = {'bvp': ('bvp', 'ppg', 'pulse'), 'resp': ('resp', 'respiration')}
+_SIGNAL_ALIASES = {'bvp': ('bvp', 'ppg', 'pulse'),
+                   'resp': ('resp', 'respiration'),
+                   'eda': ('eda', 'gsr', 'scr', 'electrodermal')}
 
 
 def _first_col(header: List[str], aliases: Tuple[str, ...]) -> Optional[str]:
@@ -117,10 +119,14 @@ class PairedSessionDataset(Dataset):
                  clip_duration: float = 10.0, seq_len: Optional[int] = None,
                  input_size: int = 224, train_ratio: float = 0.8,
                  rgb_dir: str = 'rgb', tir_file: str = 'tir.wmv',
-                 signals_file: str = 'signals.csv'):
-        assert target in ('bvp', 'resp'), target
+                 signals_file: str = 'signals.csv',
+                 max_sessions: Optional[int] = None,
+                 max_entries: Optional[int] = None):
+        assert target in ('bvp', 'resp', 'eda'), target
         self.target = target
         self.fs = float(fs)
+        self.max_sessions = max_sessions
+        self.max_entries = max_entries
         self.fps_rgb = float(fps)
         self.input_size = input_size
         self.clip_duration = float(clip_duration)
@@ -128,6 +134,10 @@ class PairedSessionDataset(Dataset):
 
         sessions = scan_sessions(data_path, rgb_dir=rgb_dir,
                                  tir_file=tir_file, signals_file=signals_file)
+
+        # quick/dev mode: cap the number of sessions BEFORE any heavy decode
+        if max_sessions is not None and max_sessions > 0:
+            sessions = sessions[:max_sessions]
 
         # deterministic per-session split (no frame-level leakage)
         n_train = max(1, int(round(len(sessions) * train_ratio)))
@@ -173,6 +183,10 @@ class PairedSessionDataset(Dataset):
             n_clips = max(1, int(dur // self.clip_duration))
             for k in range(n_clips):
                 self.entries.append((s, k * self.clip_duration))
+
+        # optional hard cap on the total number of clips (quick/dev runs)
+        if max_entries is not None and max_entries > 0:
+            self.entries = self.entries[:max_entries]
 
     def __len__(self):
         return len(self.entries)
@@ -250,4 +264,6 @@ def build_paired_dataset(is_train: bool, test_mode: bool, args):
         train_ratio=getattr(args, 'train_ratio', 0.8),
         rgb_dir=getattr(args, 'rgb_dir', 'rgb'),
         tir_file=getattr(args, 'tir_file', 'tir.wmv'),
-        signals_file=getattr(args, 'signals_file', 'signals.csv'))
+        signals_file=getattr(args, 'signals_file', 'signals.csv'),
+        max_sessions=getattr(args, 'max_sessions', None),
+        max_entries=getattr(args, 'max_entries', None))

@@ -1,6 +1,6 @@
 # Thesis codebase — scaffold
 
-Target (docs/ImplementationPlan.md): contactless **2D RGB + Thermal-IR video →
+Target (ImplementationPlan.md): contactless **2D RGB + Thermal-IR video →
 1D BVP / RESP / EDA waveform** recovery via a 3-stage progressive pipeline
 (ImageNet init -> multimodal masked pre-training on BP4D+ -> three task-specific
 waveform fine-tuning branches).
@@ -23,7 +23,7 @@ code/
 
 ## Source mapping (where to port the heavy parts from)
 
-| This folder                   | Port from                                                                     | Notes                                           |
+| This folder                   | Port from referenced projects (tmp/MultiMAE, tmp/videomae)                    | Notes                                           |
 | ----------------------------- | ----------------------------------------------------------------------------- | ----------------------------------------------- |
 | `core/registry.py`          | `tmp/MultiMAE/utils/registry.py`                                            | timm-style`@register_model`                   |
 | `core/blocks.py`            | `tmp/MultiMAE/multimae/multimae_utils.py`                                   | Block / Attention / DropPath / trunc_normal_    |
@@ -63,7 +63,7 @@ The supervised data path is implemented for the recorded layout via
 the runners end-to-end is the masked Stage-2 pre-training loader plus the
 spatio-temporal video model front-end (both documented as thesis work).
 
-## Thesis plan alignment (docs/ImplementationPlan.md)
+## Thesis plan alignment (ImplementationPlan.md)
 
 | Plan stage                                                                             | Supported here                                                                                                                                                                                                                                                                 | Still to port (thesis work)                                                                                                                                                      |
 | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -106,3 +106,54 @@ data-set params in the YAML: `fs`, `fps`, `clip_duration`, `seq_len`,
 3. `data/` (datasets + masking)
 4. `engines/` then `runners/` wiring + YAML
 5. `scripts/*.sh` launchers
+
+## Local development vs Lichtenberg HPC
+
+The same `code/` tree is used for (a) quick single-GPU tests on a few samples
+and (b) real multi-GPU training on the Lichtenberg cluster. Everything machine
+specific is injected through environment variables — never hard-coded.
+
+**Environment profiles** (source one from `code/`):
+- `scripts/env_local.sh`  — single local GPU / WSL. Points at the repo data
+  (`data/raw/BP4D` and `data/processed/bp4d_canonical`) and an `output/` dir.
+- `scripts/env_hpc.sh`    — Lichtenberg (EDIT the marked values: `VENV`/`CONDA_ENV`,
+  `RAW_DATA_PATH`, `DATA_PATH`, `OUTPUT_DIR`, `CODE_DIR`, `PARTITION`, `GPU_TYPE`,
+  `GPUS_PER_NODE`). A `venv` is supported via `activate_project_env()`.
+
+Env vars read by the runners: `DATA_PATH`, `OUTPUT_DIR`, `DATA_SET`,
+`RAW_DATA_PATH` (converter only), `MODEL_PATH` (`--finetune`), `RESUME`,
+`NUM_WORKERS`. CLI flags always take precedence over env/YAML.
+
+**Canonical data layout.** The raw BP4D layout (`2D+3D/`, `Thermal/`,
+`Physiology/*.txt`) is converted once into the per-session layout consumed by
+`data/paired_dataset.py` using `data/prepare_bp4d.py`:
+`<session>/{rgb/, tir.wmv, signals.csv (time,bvp,resp,eda), meta.json}`.
+Channel mapping: `bvp <- BP_mmHg.txt`, `resp <- Resp_Volts.txt`,
+`eda <- EDA_microsiemens.txt`; raw physiology `.txt` is anti-alias resampled to
+`--fs` (default 100 Hz; raw rate `--phys_fs`, default 1000 Hz, or auto with `0`).
+
+**Quick local smoke (1-2 sessions, data only):**
+
+```bash
+source scripts/env_local.sh
+bash scripts/local/prepare_smoke.sh 2     # convert first 2 sessions
+bash scripts/local/inspect_smoke.sh        # load aligned tensors, print stats + plot
+```
+
+Equivalent manual commands: `python data/prepare_bp4d.py --limit_sessions 2`
+and `python runners/run_inspect_data.py --max_sessions 2 --max_entries 2
+--input_size 64 --plot`. The dataset honours `--max_sessions`/`--max_entries`
+in every training runner too, so the same flags limit smoke training runs.
+
+**Lichtenberg HPC (sbatch):**
+
+```bash
+mkdir -p logs
+sbatch scripts/hpc/submit_prepare.sbatch    # convert raw BP4D once (CPU)
+sbatch scripts/hpc/submit_inspect.sbatch    # data smoke on 1 GPU
+TARGET=bvp sbatch scripts/hpc/submit_waveform.sbatch   # (later) multi-GPU Stage-3
+```
+
+Multi-GPU jobs run one task per GPU through `srun`; `utils/dist.py` initialises
+DDP from the SLURM environment (`SLURM_PROCID`/`SLURM_NTASKS`/`SLURM_LOCALID`)
+and also works under `torchrun` for single-node local multi-GPU testing.
