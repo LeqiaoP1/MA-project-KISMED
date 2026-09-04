@@ -1,8 +1,8 @@
 # Thesis codebase — scaffold
 
 Target (docs/ImplementationPlan.md): contactless **2D RGB + Thermal-IR video →
-1D BVP / RESP waveform** recovery via a 3-stage progressive pipeline
-(ImageNet init -> multimodal masked pre-training on BP4D+ -> two task-specific
+1D BVP / RESP / EDA waveform** recovery via a 3-stage progressive pipeline
+(ImageNet init -> multimodal masked pre-training on BP4D+ -> three task-specific
 waveform fine-tuning branches).
 
 Layout merging best practices from **MultiMAE** (`tmp/MultiMAE`) and
@@ -23,17 +23,17 @@ code/
 
 ## Source mapping (where to port the heavy parts from)
 
-| This folder | Port from | Notes |
-|---|---|---|
-| `core/registry.py` | `tmp/MultiMAE/utils/registry.py` | timm-style `@register_model` |
-| `core/blocks.py` | `tmp/MultiMAE/multimae/multimae_utils.py` | Block / Attention / DropPath / trunc_normal_ |
-| `core/input_adapters.py` | `tmp/MultiMAE/multimae/input_adapters.py` | per-modality input adapters |
-| `core/output_adapters.py` | `tmp/MultiMAE/multimae/output_adapters.py` | reconstruction heads (Spatial/DPT/ConvNeXt/...) |
-| `core/criterion.py` | `tmp/MultiMAE/multimae/criterion.py` | masked MSE/L1/CE |
-| `core/model.py` | `tmp/MultiMAE/multimae/multimae.py` + `tmp/videomae/modeling_finetune.py` | architecture + registered entrypoints |
-| `data/datasets.py` | `tmp/MultiMAE/utils/datasets.py`, `tmp/videomae/datasets.py` | dataset builders (modality specific) |
-| `data/masking_generator.py` | `tmp/videomae/masking_generator.py` | Tube / Random masking |
-| `utils/*` | `tmp/MultiMAE/utils/*`, `tmp/videomae/utils.py` | dist, logging, checkpoint, optim, EMA, scaler |
+| This folder                   | Port from                                                                     | Notes                                           |
+| ----------------------------- | ----------------------------------------------------------------------------- | ----------------------------------------------- |
+| `core/registry.py`          | `tmp/MultiMAE/utils/registry.py`                                            | timm-style`@register_model`                   |
+| `core/blocks.py`            | `tmp/MultiMAE/multimae/multimae_utils.py`                                   | Block / Attention / DropPath / trunc_normal_    |
+| `core/input_adapters.py`    | `tmp/MultiMAE/multimae/input_adapters.py`                                   | per-modality input adapters                     |
+| `core/output_adapters.py`   | `tmp/MultiMAE/multimae/output_adapters.py`                                  | reconstruction heads (Spatial/DPT/ConvNeXt/...) |
+| `core/criterion.py`         | `tmp/MultiMAE/multimae/criterion.py`                                        | masked MSE/L1/CE                                |
+| `core/model.py`             | `tmp/MultiMAE/multimae/multimae.py` + `tmp/videomae/modeling_finetune.py` | architecture + registered entrypoints           |
+| `data/datasets.py`          | `tmp/MultiMAE/utils/datasets.py`, `tmp/videomae/datasets.py`              | dataset builders (modality specific)            |
+| `data/masking_generator.py` | `tmp/videomae/masking_generator.py`                                         | Tube / Random masking                           |
+| `utils/*`                   | `tmp/MultiMAE/utils/*`, `tmp/videomae/utils.py`                           | dist, logging, checkpoint, optim, EMA, scaler   |
 
 ## Conventions
 
@@ -65,17 +65,18 @@ spatio-temporal video model front-end (both documented as thesis work).
 
 ## Thesis plan alignment (docs/ImplementationPlan.md)
 
-| Plan stage | Supported here | Still to port (thesis work) |
-|---|---|---|
-| Stage 1 — ImageNet init of ViT-Base encoder | `core/model.py` entrypoints (`project_vit_base_patch16_224`) | load official ImageNet-1K weights (timm / checkpoint converter); make patch-embed spatiotemporal (VideoMAE 3D tubelet) for RGB+TIR video |
-| Stage 2 — multimodal masked pre-training on BP4D+ (visual 50-75%, signals 90%+) | `core/input_adapters.py` (`SignalInputAdapter`), `data/masking_generator.py` (`MultiModalMaskingGenerator` asymmetric), `core/criterion.py` (masked L1/MSE), config template `configs/pretrain/stage2_multimodal.yaml` | multimodal encoder+decoder with in-forward masking (port `tmp/MultiMAE/multimae/`) and the *masked* pre-training loader built on `data/paired_dataset.PairedSessionDataset` |
-| Stage 3 — two branches BVP & RESP, unified spatio-temporal-spectral loss | `core/waveform_losses.py` (`WaveformJointLoss`: L1 + Pearson + MR-STFT 64/128/256), regression head (`ProjectViT(output_len=...)`, baseline CLS->seq), `runners/run_waveform.py`, configs `configs/finetune/{bvp,resp}.yaml` | lightweight conv decoder over all tokens for finer temporal resolution |
-| Evaluation — Tier 1/2/3 post-processing | `evaluation/metrics.py` (MAE/RMSE/Pearson; Welch PSD), `evaluation/clinical.py` (NeuroKit2 RMSSD/pNN50/MedianNN/ShanEn), `runners/run_evaluate.py` | — |
+| Plan stage                                                                             | Supported here                                                                                                                                                                                                                                                                 | Still to port (thesis work)                                                                                                                                                      |
+| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Stage 1 — ImageNet init of ViT-Base encoder                                           | `core/model.py` entrypoints (`project_vit_base_patch16_224`)                                                                                                                                                                                                               | load official ImageNet-1K weights (timm / checkpoint converter); make patch-embed spatiotemporal (VideoMAE 3D tubelet) for RGB+TIR video                                         |
+| Stage 2 — multimodal masked pre-training on BP4D+ (RGB/TIR 50-75%, BVP/RESP/EDA 90%+) | `core/input_adapters.py` (`SignalInputAdapter`), `data/masking_generator.py` (`MultiModalMaskingGenerator` asymmetric), `core/criterion.py` (masked L1/MSE), config template `configs/pretrain/stage2_multimodal.yaml`                                             | multimodal encoder+decoder with in-forward masking (port`tmp/MultiMAE/multimae/`) and the *masked* pre-training loader built on `data/paired_dataset.PairedSessionDataset` |
+| Stage 3 — three branches BVP, RESP & EDA, unified spatio-temporal-spectral loss       | `core/waveform_losses.py` (`WaveformJointLoss`: L1 + Pearson + MR-STFT; 64/128/256 for BVP/RESP, 256/512/1024 for EDA), regression head (`ProjectViT(output_len=...)`, baseline CLS->seq), `runners/run_waveform.py`, configs `configs/finetune/{bvp,resp,eda}.yaml` | lightweight conv decoder over all tokens for finer temporal resolution                                                                                                           |
+| Evaluation — Tier 1/2/3 post-processing                                               | `evaluation/metrics.py` (MAE/RMSE/Pearson; Welch PSD), `evaluation/clinical.py` (NeuroKit2 RMSSD/pNN50/MedianNN/ShanEn), `runners/run_evaluate.py`                                                                                                                       | —                                                                                                                                                                               |
 
 ```bash
 # Stage 3 example (after implementing data/datasets.py + a Stage-2 ckpt)
 python runners/run_waveform.py -c configs/finetune/bvp.yaml
 python runners/run_waveform.py -c configs/finetune/resp.yaml
+python runners/run_waveform.py -c configs/finetune/eda.yaml
 # Offline post-processing on saved predictions
 python runners/run_evaluate.py --pred_path out.npy --target_path gt.npy \
     --fs 100 --tier 1,2,3 --waveform bvp
@@ -87,7 +88,7 @@ python runners/run_evaluate.py --pred_path out.npy --target_path gt.npy \
 <data_path>/<session>/
     rgb/            # ordered jpg frames  (25 fps nominal)
     tir.wmv         # single WMV ~60 s    (25 fps nominal)
-    signals.csv     # header: [time,] bvp, resp [, eda]  at fs Hz
+    signals.csv     # header: [time,] bvp, resp, eda   at fs Hz
 ```
 
 Readers (`data/video_io.py`), temporal registration (`data/alignment.py`) and

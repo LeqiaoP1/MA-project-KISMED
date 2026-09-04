@@ -1,2 +1,3 @@
 # Study data
-> Please explain here shortly the content of the data folders
+
+> Dataset "BP4D" downloaded from the KISMED NAS-server

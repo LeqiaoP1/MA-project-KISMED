@@ -5,10 +5,8 @@ Implementation Plan
 
 Your work establishes a contactless **Photometric-to-Physiological (2D-to-1D) generative recovery pipeline** under simulated sensor failure.
 
-* **Surviving Inputs (Contactless Visuals):** Standard **2D RGB video** (capturing sub-visual facial skin color variations via rPPG) and **2D Thermal Infrared (TIR) video** (detecting respiratory thermal fluctuations around the nostrils).
-* **Target Waveforms (1D Outputs):** Reconstructing continuous, morphologically complete **Blood Volume Pulse (BVP)**
-  and **Respiration (RESP)** waveforms. This preserves rich clinical features, unlike simple scalar rate averages (BPM)
-  and **Electrodermal Activity (EDA)**
+* **Scope:** Only **2D** modalities are considered. Surviving visual inputs are the **2D RGB video** (capturing sub-visual facial skin-color variations via rPPG) and the **2D Thermal Infrared (TIR) video** (detecting respiratory thermal fluctuations around the nostrils). **No 3D/depth** data is used, and the pipeline has **no face-ROI dependency** — full-frame input with a global resize/crop.
+* **Target Waveforms (1D Outputs):** Reconstructing continuous, morphologically complete **Blood Volume Pulse (BVP)**, **Respiration (RESP)** and **Electrodermal Activity (EDA)** waveforms. This preserves rich clinical features — unlike simple scalar rate averages (BPM) — i.e. cardiac pulse morphology (BVP), respiratory rhythm (RESP), and tonic + phasic electrodermal dynamics (EDA).
 
 ---
 
@@ -20,17 +18,17 @@ To adapt a generic visual network to precise physiological wave generation, your
   * *Mechanism:* Initialize your heavy Vision Transformer (ViT-Base) encoder with weights pre-trained on **ImageNet-1K**.
   * *Objective:* Inherit highly robust, low-level spatial priors (edges, shapes, boundaries) to bypass the prohibitive computational cost of training a ViT from scratch.
 * **Stage 2: Multimodal Pre-Training (Unsupervised Representation Learning)**
-  * *Mechanism:* Train the ViT encoder on the **BP4D+ dataset** using **heavy asymmetric masking** (50%–75% masking on visual streams, but 90%+ on 1D BVP and RESP streams).
-  * *Objective:* Optimize the network using simple, point-level **L1/MSE reconstruction losses** on masked patches. This forces the shared self-attention layers to map facial visual variations to underlying cardiac and respiratory rhythms.
+  * *Mechanism:* Train the ViT encoder on the **BP4D+ dataset** using **heavy asymmetric masking** (50%–75% masking on the RGB and TIR visual streams, but 90%+ on the three 1D streams — BVP, RESP and EDA).
+  * *Objective:* Optimize the network using simple, point-level **L1/MSE reconstruction losses** on masked patches. This forces the shared self-attention layers to map facial visual variations to underlying cardiac (BVP), respiratory (RESP) and electrodermal/autonomic (EDA) dynamics.
 * **Stage 3: Downstream Supervised Fine-Tuning (Task Adaptation)**
-  * *Mechanism:* Simulate complete contact-sensor failure (100% masking of physical 1D streams). You duplicate your Stage 2 encoder and branch it into **two independent, task-specialized runs**—one for BVP regression and one for RESP regression.
+  * *Mechanism:* Simulate complete contact-sensor failure (100% masking of physical 1D streams). You duplicate your Stage 2 encoder and branch it into **three independent, task-specialized runs** — one for BVP regression, one for RESP regression, and one for EDA regression.
     Each run caps the encoder with a modality-restricted, parallel lightweight decoder.
-  * *Optimization:* Both runs are trained end-to-end using a unified **Spatio-Temporal-Spectral Joint Loss Function**:
+  * *Optimization:* All three runs are trained end-to-end using a unified **Spatio-Temporal-Spectral Joint Loss Function**:
     $$
     \mathcal{L}_{\text{joint}} = \alpha \mathcal{L}_{\text{time}} + \beta \mathcal{L}_{\text{Pearson}} + \gamma \mathcal{L}_{\text{MR-STFT}}
     $$
   * This mathematically constrains amplitude (L1 loss), temporal phase-locking (Negative Pearson), and multi-scale frequency dynamics (Multi-Resolution STFT over FFT window sizes of 64, 128, and 256).
-    Branching the runs prevents gradient interference between high-frequency BVP (1.0–2.5 Hz) and slower RESP (0.16–0.4 Hz) waves.
+    Branching the runs prevents gradient interference between high-frequency BVP (1.0–2.5 Hz), slower RESP (0.16–0.4 Hz) and slow tonic/phasic EDA (mostly < 0.5 Hz) waves. Because MR-STFT windows of 64/128/256 samples at fs = 100 Hz only resolve down to ≈1.6/0.78/0.39 Hz, the EDA branch uses longer STFT windows (e.g., 256/512/1024) to capture its slow tonic component.
 
 ---
 

@@ -7,7 +7,7 @@
 # See code/README.md "Suggested port order".
 
 # Streams & asymmetric masking (plan: visual 50-75%, signals 90%+)
-streams: rgb,tir,bvp,resp
+streams: rgb,tir,bvp,resp,eda
 visual_mask_ratio: 0.75
 signal_mask_ratio: 0.95
 
