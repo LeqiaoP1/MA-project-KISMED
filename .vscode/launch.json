@@ -1,0 +1,25 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "prepare_bp4d (smoke)",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "cwd": "${workspaceFolder}/code",
+            "program": "${workspaceFolder}/code/data/prepare_bp4d.py",
+            "args": [
+                "--raw_root", "${workspaceFolder}/data/raw/BP4D",
+                "--out_root", "${workspaceFolder}/data/processed/bp4d_canonical",
+                "--limit_sessions", "2",
+                "--images", "copy"
+            ],
+            "env": {
+                "DATA_PATH": "${workspaceFolder}/data/processed/bp4d_canonical",
+                "RAW_DATA_PATH": "${workspaceFolder}/data/raw/BP4D"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        }
+    ]
+}

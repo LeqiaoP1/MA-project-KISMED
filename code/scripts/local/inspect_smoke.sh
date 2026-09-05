@@ -10,7 +10,7 @@ source scripts/env_local.sh
 python runners/run_inspect_data.py \
     --data_path "$DATA_PATH" \
     --output_dir "$OUTPUT_DIR/inspect_data" \
-    --max_sessions 2 \
+    --max_sessions 3 \
     --max_entries 2 \
     --input_size 64 \
     --plot

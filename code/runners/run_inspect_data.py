@@ -199,12 +199,21 @@ def _make_figure(args, ds, clip, sig_cols, sig_fs):
     n_win = int(round(dur * fs))
     fig, axes = plt.subplots(3, 2, figsize=(11, 8),
                              gridspec_kw={'width_ratios': [1, 2]})
-    axes[0, 0].imshow(rgb); axes[0, 0].set_title('RGB (middle frame)'); axes[0, 0].axis('off')
-    axes[1, 0].imshow(tir, cmap='inferno'); axes[1, 0].set_title('TIR (middle frame)'); axes[1, 0].axis('off')
+    axes[0, 0].imshow(rgb)
+    axes[0, 0].set_title(f'RGB (middle frame) {rgb.shape[0]}x{rgb.shape[1]}')
+    axes[0, 0].axis('off')
+    axes[1, 0].imshow(tir, cmap='gray')
+    axes[1, 0].set_title(f'TIR gray (middle frame) {tir.shape[0]}x{tir.shape[1]}')
+    axes[1, 0].axis('off')
     axes[2, 0].axis('off')
 
     t_tgt = np.arange(target.size) / args.fs
     names = ['bvp', 'resp', 'eda']
+    # vertical reference lines (every second) + shared x-range so the panels
+    # line up: lets you eyeball that blue (raw window) and orange (resampled
+    # dataset target) features occur at the same times in every row
+    step = 1.0
+    refs = np.arange(0.0, args.clip_duration, step)
     for row, col in enumerate(names):
         ax = axes[row, 1]
         if col in sig_cols:
@@ -213,10 +222,29 @@ def _make_figure(args, ds, clip, sig_cols, sig_fs):
             ax.plot(t_ax, seg, lw=0.8, color='tab:blue')
         if col == args.target:
             ax.plot(t_tgt, target, lw=0.8, color='tab:orange')
+        for t in refs:
+            ax.axvline(t, color='0.4', lw=0.6, ls=':', alpha=0.7)
+        ax.set_xlim(0, args.clip_duration)
         ax.set_title(f'{col} (blue=window, orange=dataset target)'
                      if col == args.target else f'{col} window')
         if row == 2:
             ax.set_xlabel('time (s)')
+
+    # --- metadata block in the empty bottom-left panel ---------------------- #
+    meta = ds.entries[idx][0]                      # full per-session meta
+    tir_fps = meta.get('tir_fps') or args.fps      # actual TIR frame rate
+    sig_fs = fs or args.fs                         # signal sample rate in use
+    t_end = t0 + args.clip_duration
+    info = [
+        f'session: {session}   clip #{idx}',
+        f'RGB {args.fps:.0f} fps | TIR {tir_fps:.0f} fps | signal fs {sig_fs:.1f} Hz',
+        f't-start {t0:.2f} s -> t-end {t_end:.2f} s  (dur {args.clip_duration:.0f} s)',
+        f'seq_len (target): {target.size} | input_size: {args.input_size}',
+    ]
+    axes[2, 0].axis('off')
+    axes[2, 0].text(0.0, 0.5, '\n'.join(info),
+                    transform=axes[2, 0].transAxes,
+                    ha='left', va='center', fontsize=8, family='monospace')
 
     fig.tight_layout()
     path = os.path.join(args.output_dir, f'fig_{session}_clip{idx}.png')
