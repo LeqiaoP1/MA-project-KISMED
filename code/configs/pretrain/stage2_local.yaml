@@ -1,0 +1,52 @@
+# Stage 2 -- FIRST LOCAL overfit/smoke slice (do NOT run on HPC as-is).
+# Decisions: Q1 = 3-D tubelet VideoMAE-style front-end; Q2 = rgb+tir+bvp only.
+# Goal: prove adapters <-> encoder <-> decoder <-> loss wiring end-to-end:
+# masked loss should drop towards ~0 on this tiny setup before any real run.
+#
+# Run from code/:  python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml
+
+model: project_multimae_small      # triggers the multimodal builder in run_pretrain
+
+# ---- streams & tokenizer geometry ----
+streams: rgb,tir,bvp
+tubelet: 2,16,16                   # (temporal, H, W) tubelet
+fs: 100.0
+fps: 25.0
+clip_duration: 4.0                 # ~100 frames @ 25 fps -> 50 temporal tubelets
+seq_len: 0                         # 0 => clip_duration * fs = 400 signal samples
+input_size: 64                     # square; patch 16 => 4x4 spatial grid
+
+# ---- asymmetric masking (visual 50-75%, signals 90%+) ----
+mask_ratio_rgb: 0.75
+mask_ratio_tir: 0.50
+mask_ratio_bvp: 0.90
+
+# ---- model size (small) ----
+enc_embed_dim: 192
+enc_depth: 6
+enc_num_heads: 6
+mlp_ratio: 4.0
+dec_depth: 2
+sig_kernel: 8                      # signal token window (samples)
+
+# ---- data (canonical layout from data/prepare_bp4d.py) ----
+data_path: data/processed/bp4d_canonical
+max_sessions: 2
+max_entries: 8
+
+# ---- training (tiny: correctness/overfit only) ----
+epochs: 40
+batch_size: 2
+update_freq: 1
+save_ckpt_freq: 10
+opt: adamw
+blr: 1.5e-4
+min_lr: 0.0
+warmup_epochs: 5
+weight_decay: 0.05
+clip_grad: 0.0
+num_workers: 0
+
+# ---- logging ----
+output_dir: output/pretrain/stage2_local
+log_wandb: false

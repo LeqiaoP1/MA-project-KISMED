@@ -31,8 +31,33 @@ def get_args():
     # model
     parser.add_argument('--model', default='project_vit_base_patch16_224',
                         type=str, help='registered model name')
-    # data
+    # data / clip geometry (the multimodal dataset & model read these)
     parser.add_argument('--data_path', default=env_or('DATA_PATH'), type=str)
+    parser.add_argument('--fs', default=100.0, type=float,
+                        help='signal sample rate (Hz)')
+    parser.add_argument('--fps', default=25.0, type=float,
+                        help='RGB/TIR frame rate (Hz)')
+    parser.add_argument('--clip_duration', default=4.0, type=float,
+                        help='window length in seconds per MAE sample')
+    parser.add_argument('--seq_len', default=0, type=int,
+                        help='signal samples per window (0 => clip_duration*fs)')
+    parser.add_argument('--input_size', default=64, type=int,
+                        help='frame short-side resize/crop (square)')
+    # multimodal MAE (Stage 2)
+    parser.add_argument('--streams', default='rgb,tir,bvp', type=str,
+                        help='comma list of pretraining streams')
+    parser.add_argument('--tubelet', default='2,16,16', type=str,
+                        help='tubelet (t, ph, pw) for the video tokenizer')
+    parser.add_argument('--mask_ratio_rgb', default=0.75, type=float)
+    parser.add_argument('--mask_ratio_tir', default=0.50, type=float)
+    parser.add_argument('--mask_ratio_bvp', default=0.90, type=float)
+    parser.add_argument('--enc_embed_dim', default=192, type=int)
+    parser.add_argument('--enc_depth', default=6, type=int)
+    parser.add_argument('--enc_num_heads', default=6, type=int)
+    parser.add_argument('--dec_depth', default=2, type=int)
+    parser.add_argument('--mlp_ratio', default=4.0, type=float)
+    parser.add_argument('--sig_kernel', default=8, type=int,
+                        help='signal token window (samples per token)')
     # training
     parser.add_argument('--batch_size', default=64, type=int)
     parser.add_argument('--epochs', default=800, type=int)
@@ -59,8 +84,12 @@ def main(args):
     args.lr = args.blr * args.batch_size * get_world_size() / 256
 
     # ----- model ---------------------------------------------------------- #
-    from models import create_model
-    model = create_model(args.model)
+    if args.model.startswith('project_multimae'):
+        from core.multimae import build_pretraining_model
+        model = build_pretraining_model(args)
+    else:
+        from models import create_model
+        model = create_model(args.model)
     model.to(device)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f'Model = {args.model}, params = {n_params:,}')

@@ -20,6 +20,23 @@
             },
             "console": "integratedTerminal",
             "justMyCode": true
+        },
+        {
+            "name": "run_pretrain (stage2 local)",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "cwd": "${workspaceFolder}/code",
+            "program": "${workspaceFolder}/code/runners/run_pretrain.py",
+            "args": [
+                "-c", "configs/pretrain/stage2_local.yaml"
+            ],
+            "env": {
+                "DATA_PATH": "${workspaceFolder}/data/processed/bp4d_canonical",
+                "OUTPUT_DIR": "${workspaceFolder}/output"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
         }
     ]
 }

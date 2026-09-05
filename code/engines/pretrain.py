@@ -34,9 +34,8 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable,
     optimizer.zero_grad()
     for data_iter_step, batch in enumerate(
             metric_logger.log_every(data_loader, 10, header)):
-        # TODO(thesis): unpack your (masked) pre-training batch, e.g.
-        #   samples, targets, index, bool_masked_pos = batch
-        samples, targets = batch[:2]
+        # Multimodal MAE: the batch is a dict {stream: tensor}. A plain tensor
+        # batch (single-stream placeholder model) is still accepted.
         step = data_iter_step // update_freq
 
         if lr_schedule_values is not None or wd_schedule_values is not None:
@@ -47,13 +46,14 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable,
                         and param_group['weight_decay'] > 0):
                     param_group['weight_decay'] = wd_schedule_values[step]
 
-        samples = samples.to(device, non_blocking=True)
-
-        # TODO(thesis): masked reconstruction forward + loss.
-        #   pred, target = model(samples, bool_masked_pos)
-        #   loss = criterion(pred, target, bool_masked_pos) / update_freq
-        outputs = model(samples)
-        loss = outputs.mean() / update_freq   # placeholder until ported
+        if isinstance(batch, dict):
+            x = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
+            out = model(x)
+            loss = out['loss'] / update_freq
+        else:
+            samples = batch[0].to(device, non_blocking=True)
+            out = model(samples)
+            loss = (out['loss'] if isinstance(out, dict) else out) / update_freq
 
         if loss_scaler is None:
             loss.backward()

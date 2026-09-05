@@ -250,6 +250,49 @@ def _pad_time(arr: np.ndarray, t: int) -> np.ndarray:
     return arr[:t]
 
 
+class PairedPretrainDataset(PairedSessionDataset):
+    """Stage-2 multimodal masked-pretraining dataset (first local milestone).
+
+    Reuses ``PairedSessionDataset`` (aligned RGB/TIR frames + 1-D signals on a
+    common time grid) but returns a *dict of raw per-stream tensors* that the
+    multimodal MAE consumes::
+
+        {'rgb': torch [3, T, H, W],   # float in ~[0, 1]
+         'tir': torch [1, T, H, W],
+         'bvp': torch [1, seq_len]}   # raw waveform over the same window
+
+    Split policy = PRETRAIN-ON-ALL: every session is used for training
+    (``train_ratio=1.0``, no subject-disjoint pretrain split). Masking is
+    applied inside the model forward, not here.
+
+    NOTE: signal streams beyond BVP (resp/eda) are a later extension; caching
+    more columns in ``_sig_cache`` mirrors the target loop below.
+    """
+
+    def __init__(self, data_path: str, fs: float = 100.0, fps: float = 25.0,
+                 clip_duration: float = 4.0, seq_len: Optional[int] = None,
+                 input_size: int = 64, rgb_dir: str = 'rgb',
+                 tir_file: str = 'tir.wmv', signals_file: str = 'signals.csv',
+                 max_sessions: Optional[int] = None,
+                 max_entries: Optional[int] = None):
+        super().__init__(
+            data_path=data_path, target='bvp',
+            is_train=True, test_mode=True,
+            fs=fs, fps=fps, clip_duration=clip_duration, seq_len=seq_len,
+            input_size=input_size, train_ratio=1.0,
+            rgb_dir=rgb_dir, tir_file=tir_file, signals_file=signals_file,
+            max_sessions=max_sessions, max_entries=max_entries)
+
+    def __getitem__(self, idx):
+        # super(): samples [4,T,H,W] = RGB(3) + TIR(1); bvp [seq_len]
+        samples, bvp = super().__getitem__(idx)
+        return {
+            'rgb': samples[:3],     # [3, T, H, W]
+            'tir': samples[3:4],    # [1, T, H, W]
+            'bvp': bvp.unsqueeze(0)  # [1, seq_len]
+        }
+
+
 def build_paired_dataset(is_train: bool, test_mode: bool, args):
     """Build a PairedSessionDataset from runner/YAML ``args``."""
     return PairedSessionDataset(

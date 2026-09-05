@@ -64,15 +64,20 @@ def build_dataset(is_train: bool, test_mode: bool, args):
 
 
 def build_pretraining_dataset(args):
-    """Build the masked pre-training dataset (Stage 2).
+    """Build the masked pre-training dataset (Stage 2, first local milestone).
 
-    For the paired layout the loader must additionally emit per-stream masks
-    (visual 50--75 %, signals 90%+). Compose ``PairedSessionDataset`` with
-    ``MultiModalMaskingGenerator`` and apply tube masking over the visual
-    tokens in the batch collate -- after the multimodal MAE model is ported.
+    Streams returned per sample: ``{'rgb','tir','bvp'}`` (dict of aligned
+    per-stream tensors). PRETRAIN-ON-ALL: no split, every session is used.
+    Per-stream masks are produced inside the multimodal MAE forward pass.
     """
-    raise NotImplementedError(
-        'Stage-2 masked pre-training loader is not implemented yet. Build it '
-        'on top of data/paired_dataset.PairedSessionDataset + '
-        'data.masking_generator.MultiModalMaskingGenerator once the multimodal '
-        'encoder/decoder is ported (see code/README.md "Suggested port order").')
+    from .paired_dataset import PairedPretrainDataset
+
+    return PairedPretrainDataset(
+        data_path=getattr(args, 'data_path', ''),
+        fs=getattr(args, 'fs', 100.0),
+        fps=getattr(args, 'fps', 25.0),
+        clip_duration=getattr(args, 'clip_duration', 4.0),
+        seq_len=getattr(args, 'seq_len', None) or None,
+        input_size=getattr(args, 'input_size', 64),
+        max_sessions=getattr(args, 'max_sessions', None),
+        max_entries=getattr(args, 'max_entries', None))
