@@ -7,5 +7,12 @@ data/raw/*
 .venv/
 *.tar.gz
 
+# Ignore downloaded model weight files
+models/*
+
 # Ignore Python cache files
 __pycache__/
+
+# ignore output files
+output/*
+!output/inspect_data/*

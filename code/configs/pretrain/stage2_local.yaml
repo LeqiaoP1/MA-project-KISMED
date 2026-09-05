@@ -30,7 +30,7 @@ dec_depth: 2
 sig_kernel: 8                      # signal token window (samples)
 
 # ---- data (canonical layout from data/prepare_bp4d.py) ----
-data_path: data/processed/bp4d_canonical
+data_path: ../data/processed/bp4d_canonical
 max_sessions: 2
 max_entries: 8
 
@@ -48,5 +48,5 @@ clip_grad: 0.0
 num_workers: 0
 
 # ---- logging ----
-output_dir: output/pretrain/stage2_local
+output_dir: ../output/pretrain/stage2_local
 log_wandb: false

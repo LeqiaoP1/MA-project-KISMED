@@ -30,7 +30,8 @@ import torch.nn as nn
 from .blocks import Block, trunc_normal_
 from .criterion import MaskedL1Loss
 
-__all__ = ['TubeletEmbed', 'MultiModalMAE', 'build_pretraining_model']
+__all__ = ['TubeletEmbed', 'MultiModalMAE', 'build_pretraining_model',
+           'load_pretrained_encoder']
 
 _EPS = 1e-6
 _VISUAL_STREAMS = ('rgb', 'tir')
@@ -354,3 +355,87 @@ def build_pretraining_model(args):
         sig_kernel=int(getattr(args, 'sig_kernel', 8)),
         seq_len=seq_len,
         mask_ratios=ratios)
+
+
+# --------------------------------------------------------------------------- #
+# weight inheritance: load an ImageNet / MAE ViT encoder into the shared
+# encoder of a MultiModalMAE (spatial priors, plan Stage 1 -> Stage 2)
+# --------------------------------------------------------------------------- #
+def load_pretrained_encoder(model: 'MultiModalMAE', path: str,
+                            inflate_rgb_patch: bool = True) -> Dict[str, int]:
+    """Copy a (MAE/ViT) checkpoint's transformer weights into the encoder.
+
+    Handles MAE/timm-style key layouts::
+
+        blocks.{i}.*  -> enc_blocks.{i}.*
+        norm.*        -> enc_norm.*
+        patch_embed.proj.{weight,bias} -> adapters.rgb.patch_embed.*  (2-D
+                    Conv2d inflated along the tubelet time axis into Conv3d)
+
+    Everything else (cls_token / pos_embed / head / non-rgb adapters / signal
+    streams) is left at its random initialisation. Encoder geometry must match
+    the checkpoint (e.g. embed_dim=768, depth=12, heads=12 for ViT-Base).
+
+    :return: counts dict {loaded, skipped, mismatch_shapes, keys}.
+    """
+    import torch
+
+    ckpt = torch.load(path, map_location='cpu')
+    state = ckpt
+    if isinstance(ckpt, dict):
+        for key in ('model', 'state_dict', 'module'):
+            if isinstance(ckpt.get(key), dict):
+                state = ckpt[key]
+                break
+    if isinstance(state, dict) and isinstance(state.get('module'), dict):
+        state = state['module']
+
+    cur = model.state_dict()
+    new_state = {}
+    loaded, skipped, shape_mismatch = [], [], []
+
+    # --- geometry guard (avoids silently loading nothing) ------------------ #
+    src_qkv = state.get('blocks.0.attn.qkv.weight')
+    tgt_qkv = cur.get('enc_blocks.0.attn.qkv.weight')
+    if src_qkv is not None and tgt_qkv is not None \
+            and tuple(src_qkv.shape) != tuple(tgt_qkv.shape):
+        raise ValueError(
+            f'Encoder geometry mismatch: checkpoint ViT embed dim '
+            f'{src_qkv.shape[0]} != model enc_embed_dim {tgt_qkv.shape[0]}. '
+            f'Set enc_embed_dim=768, enc_depth=12, enc_num_heads=12 for '
+            f'ViT-Base (or match dims/depth/heads to the checkpoint).')
+
+    for src_key, v in state.items():
+        dst_key = None
+        if src_key.startswith('blocks.'):
+            dst_key = 'enc_blocks.' + src_key[len('blocks.'):]
+        elif src_key.startswith('norm.'):
+            dst_key = 'enc_norm.' + src_key[len('norm.'):]
+        elif src_key in ('patch_embed.proj.weight', 'patch_embed.proj.bias'):
+            name = src_key.rsplit('.', 1)[-1]
+            dst_key = f'adapters.rgb.patch_embed.{name}'
+            if name == 'weight' and inflate_rgb_patch and dst_key in cur:
+                t = model.tubelet[0]
+                # [out, in, ph, pw] -> [out, in, t, ph, pw] (averaged tube)
+                v = v.unsqueeze(2).expand(-1, -1, t, -1, -1).contiguous() / t
+        # cls_token / pos_embed / head / others: intentionally not loaded
+        if dst_key is None:
+            continue
+        if dst_key not in cur:
+            skipped.append(src_key)
+            continue
+        if tuple(cur[dst_key].shape) != tuple(v.shape):
+            shape_mismatch.append(src_key)
+            continue
+        new_state[dst_key] = v
+        loaded.append(src_key)
+
+    n_loaded = len(loaded)
+    model.load_state_dict(new_state, strict=False)
+    print(f'[pretrained] {path}: loaded {n_loaded} encoder tensors, '
+          f'{len(skipped)} skipped, {len(shape_mismatch)} shape-mismatched.')
+    if shape_mismatch:
+        print(f'[pretrained] first shape-mismatched keys: '
+              f'{shape_mismatch[:5]}')
+    return {'loaded': n_loaded, 'skipped': len(skipped),
+            'shape_mismatch': len(shape_mismatch)}

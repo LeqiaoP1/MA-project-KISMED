@@ -1,0 +1,64 @@
+# Stage 2 -- LOCAL run WITH pretrained (ImageNet/MAE) ViT encoder inheritance.
+# Choice (b): load the shared encoder's transformer weights from a MAE ViT-Base
+# checkpoint (768-d, depth 12, heads 12) -> "spatial priors" from Stage 1.
+# Spatial/frames are kept small so it still fits a LOCAL GPU; switch to the
+# larger geometry (input_size 224, longer windows, all sessions) on the HPC.
+#
+# 1) Download the checkpoint into the repo, e.g. under ../models/:
+#      wget https://dl.fbaipublicfiles.com/mae/pretrain/mae_pretrain_vit_base.pth
+#      (MAE ViT-Base, ImageNet self-supervised). Path must match pretrained_encoder.
+# 2) Run from code/:
+#      python runners/run_pretrain.py -c configs/pretrain/stage2_local_pretrained.yaml
+#
+# NOTE: only the SHARED ENCODER transformer blocks (+ final norm) and the RGB
+# tubelet patch embed (2-D->3-D inflated) inherit weights; the TIR adapter,
+# the BVP signal adapter, and the position embeddings stay random (they have no
+# ImageNet counterpart). cls_token/pos_embed/head are deliberately not loaded.
+
+model: project_multimae_small      # triggers the multimodal builder in run_pretrain
+
+# ---- weight inheritance (must match checkpoint geometry: ViT-Base) ----
+pretrained_encoder: ../models/mae_pretrain_vit_base.pth   # EDIT to your file
+enc_embed_dim: 768                 # ViT-Base
+enc_depth: 12
+enc_num_heads: 12
+mlp_ratio: 4.0
+dec_depth: 2
+
+# ---- streams & tokenizer geometry (small for local GPU) ----
+streams: rgb,tir,bvp
+tubelet: 2,16,16
+fs: 100.0
+fps: 25.0
+clip_duration: 2.0                 # ~50 frames @ 25 fps -> 25 temporal tubelets
+seq_len: 0                         # 0 => clip_duration * fs = 200 signal samples
+input_size: 64                     # square; patch 16 => 4x4 spatial grid
+
+# ---- asymmetric masking ----
+mask_ratio_rgb: 0.75
+mask_ratio_tir: 0.50
+mask_ratio_bvp: 0.90
+
+sig_kernel: 8
+
+# ---- data (canonical layout from data/prepare_bp4d.py) ----
+data_path: ../data/processed/bp4d_canonical
+max_sessions: 2
+max_entries: 8
+
+# ---- training (tiny: correctness/overfit only) ----
+epochs: 20
+batch_size: 1
+update_freq: 1
+save_ckpt_freq: 5
+opt: adamw
+blr: 1.5e-4
+min_lr: 0.0
+warmup_epochs: 5
+weight_decay: 0.05
+clip_grad: 0.0
+num_workers: 0
+
+# ---- logging ----
+output_dir: ../output/pretrain/stage2_local_pretrained
+log_wandb: false

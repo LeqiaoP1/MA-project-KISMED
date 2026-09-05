@@ -27,7 +27,7 @@ def save_model(args, epoch, model, model_without_ddp, optimizer, loss_scaler,
     if model_ema is not None:
         to_save['model_ema'] = model_ema.state_dict()
 
-    save_on_master(torch.save(to_save, checkpoint_path))
+    save_on_master(to_save, checkpoint_path)
     if is_main_process():
         # write a pointer file that auto_resume_model can find
         with open(os.path.join(output_dir, 'latest_checkpoint.txt'), 'w') as f:

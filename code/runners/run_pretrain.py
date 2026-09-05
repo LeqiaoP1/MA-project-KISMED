@@ -58,6 +58,9 @@ def get_args():
     parser.add_argument('--mlp_ratio', default=4.0, type=float)
     parser.add_argument('--sig_kernel', default=8, type=int,
                         help='signal token window (samples per token)')
+    parser.add_argument('--pretrained_encoder', default='', type=str,
+                        help='MAE/ImageNet ViT checkpoint to initialise the '
+                             'shared encoder from (Stage-1 spatial priors)')
     # training
     parser.add_argument('--batch_size', default=64, type=int)
     parser.add_argument('--epochs', default=800, type=int)
@@ -85,8 +88,10 @@ def main(args):
 
     # ----- model ---------------------------------------------------------- #
     if args.model.startswith('project_multimae'):
-        from core.multimae import build_pretraining_model
+        from core.multimae import build_pretraining_model, load_pretrained_encoder
         model = build_pretraining_model(args)
+        if getattr(args, 'pretrained_encoder', ''):
+            load_pretrained_encoder(model, args.pretrained_encoder)
     else:
         from models import create_model
         model = create_model(args.model)
