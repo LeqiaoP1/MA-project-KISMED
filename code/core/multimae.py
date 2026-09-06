@@ -6,12 +6,15 @@ Streams (milestone): ``rgb`` + ``tir`` (3-D tubelet spatio-temporal video) and
   * per-stream adapters -> tokens (+ learned positional embedding)
   * per-stream ASYMMETRIC masks: tube masks for the videos, random-window for
     the signal (visual 50-75 %, signals 90 %+); masks == 1 => "masked / to
-    reconstruct" (matches ``MaskedL1Loss``)
+    reconstruct" (matches ``MaskedMSELoss``)
   * visible tokens of ALL streams are concatenated into ONE shared transformer
   * a shared lightweight decoder re-inserts a learned [MASK] token at every
     masked position and each stream reconstructs its NORMALIZED tubelet/window
     patches (VideoMAE-style ``norm_pix``) through a per-stream linear head;
-    masked L1 is summed over the streams.
+    the loss is a masked MSE computed INDEPENDENTLY per modality on its masked
+    positions only, then combined as a WEIGHTED sum: visual streams (rgb/tir)
+    keep lambda = 1.0 while physio (1-D) streams get lambda = ``signal_weight``
+    (default 0.5; ``loss_weights`` gives a full per-stream override).
 
 Tensor layouts::
 
@@ -28,7 +31,7 @@ import torch
 import torch.nn as nn
 
 from .blocks import Block, trunc_normal_
-from .criterion import MaskedL1Loss
+from .criterion import MaskedMSELoss
 
 __all__ = ['TubeletEmbed', 'MultiModalMAE', 'build_pretraining_model',
            'load_pretrained_encoder']
@@ -100,7 +103,9 @@ class MultiModalMAE(nn.Module):
                  tubelet: Tuple[int, int, int] = (2, 16, 16),
                  input_size: int = 64, num_frames: int = 100,
                  sig_kernel: int = 8, seq_len: int = 400,
-                 mask_ratios: Optional[Dict[str, float]] = None):
+                 mask_ratios: Optional[Dict[str, float]] = None,
+                 signal_weight: float = 0.5,
+                 loss_weights: Optional[Dict[str, float]] = None):
         super().__init__()
         self.streams = list(streams)
         self.visual = [s for s in self.streams if s in _VISUAL_STREAMS]
@@ -128,6 +133,23 @@ class MultiModalMAE(nn.Module):
         if mask_ratios:
             ratios.update(mask_ratios)
         self.mask_ratios = {s: ratios.get(s, 0.90) for s in self.streams}
+
+        # per-modality weights of the final weighted masked-MSE sum.
+        # default policy: lambda = 1.0 for the visual streams (rgb/tir) and
+        # lambda = ``signal_weight`` for every physio (1-D) stream, so the
+        # low-amplitude signals neither dominate nor get ignored by the loss
+        # gradient. ``loss_weights`` overrides this per stream when given.
+        self.loss_weights = {
+            s: (1.0 if s in self.visual else float(signal_weight))
+            for s in self.streams
+        }
+        if loss_weights:
+            self.loss_weights.update(
+                {s: float(w) for s, w in loss_weights.items()
+                 if s in self.streams})
+
+        # masked-MSE criterion; mask == 1 => masked / to reconstruct
+        self.loss_fn = MaskedMSELoss()
 
         # --- adapters ----------------------------------------------------- #
         self.adapters = nn.ModuleDict()
@@ -294,7 +316,8 @@ class MultiModalMAE(nn.Module):
         z = self.enc_norm(z)
 
         # --- per-stream decode + masked reconstruction loss -----------------
-        losses = {}
+        losses = {}        # per-modality weighted masked-MSE contributions
+        losses_mse = {}    # per-modality raw masked MSE (before weighting)
         preds = {}
         start = 0
         for s in self.streams:
@@ -311,11 +334,15 @@ class MultiModalMAE(nn.Module):
                 dec = blk(dec)
             pred = self.heads[s](dec)                    # [B, N, flat]
             tgt = self._targets(xin[s], s)               # [B, N, flat]
-            losses[s] = MaskedL1Loss()(pred, tgt, mask_s)
+            # masked MSE on this modality's MASKED positions only, then scaled
+            # by its per-modality weight (losses[s] = weighted contribution)
+            losses_mse[s] = self.loss_fn(pred, tgt, mask_s)
+            losses[s] = self.loss_weights[s] * losses_mse[s]
             preds[s] = pred
 
         total = torch.stack(list(losses.values())).sum()
-        return {'loss': total, 'losses': losses, 'masks': masks, 'preds': preds}
+        return {'loss': total, 'losses': losses, 'losses_mse': losses_mse,
+                'masks': masks, 'preds': preds}
 
 
 # --------------------------------------------------------------------------- #
@@ -342,6 +369,21 @@ def build_pretraining_model(args):
               'tir': float(getattr(args, 'mask_ratio_tir', 0.50)),
               'bvp': float(getattr(args, 'mask_ratio_bvp', 0.90))}
 
+    # per-modality masked-MSE weights. ``signal_weight`` gives every physio
+    # (non-visual) stream the same lambda (visual streams stay 1.0); a
+    # non-empty ``loss_weights`` comma string (ONE value per stream, in
+    # --streams order) overrides the whole policy per stream.
+    signal_weight = float(getattr(args, 'signal_weight', 0.5))
+    w_raw = str(getattr(args, 'loss_weights', '') or '').strip()
+    loss_weights = None
+    if w_raw:
+        vals = [float(x.strip()) for x in w_raw.split(',') if x.strip()]
+        if vals:
+            assert len(vals) == len(streams), (
+                f'--loss_weights expects one value per stream '
+                f'({len(streams)}: {streams}), got {len(vals)}')
+            loss_weights = dict(zip(streams, vals))
+
     return MultiModalMAE(
         streams=streams,
         embed_dim=int(getattr(args, 'enc_embed_dim', 192)),
@@ -354,7 +396,9 @@ def build_pretraining_model(args):
         num_frames=num_frames,
         sig_kernel=int(getattr(args, 'sig_kernel', 8)),
         seq_len=seq_len,
-        mask_ratios=ratios)
+        mask_ratios=ratios,
+        signal_weight=signal_weight,
+        loss_weights=loss_weights)
 
 
 # --------------------------------------------------------------------------- #

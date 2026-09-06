@@ -11,8 +11,14 @@ streams: rgb,tir,bvp,resp,eda
 visual_mask_ratio: 0.75
 signal_mask_ratio: 0.95
 
-# Losses: point-level L1/MSE on masked patches
-masked_loss: l1          # l1 | mse
+# Losses: per-modality masked MSE (masked positions only), then a WEIGHTED sum.
+# Default policy: lambda_RGB = lambda_TIR = 1.0; every physio (1-D) stream gets
+# lambda = signal_weight (typically 0.5-1.0). Pick signal_weight from the
+# NORMALIZED VARIANCE of the physio stream's masked target tokens: high var ->
+# ~0.5 (avoid 1-D signals dominating the gradient); low var -> ~1.0 (avoid them
+# being ignored). loss_weights overrides per stream (ONE float per --streams
+# modality in order: rgb,tir,bvp,resp,eda).
+signal_weight: 0.5
 reconstruct_signals: true
 
 # Model (placeholder -- register your multimodal MAE entrypoint in core/)

@@ -39,6 +39,15 @@ mask_ratio_rgb: 0.75
 mask_ratio_tir: 0.50
 mask_ratio_bvp: 0.90
 
+# ---- Stage-2 loss: per-modality masked MSE (masked positions only), ----
+# then a WEIGHTED sum. Default policy: lambda_RGB = lambda_TIR = 1.0 and each
+# physio stream (here: bvp) gets lambda = signal_weight. Tune signal_weight in
+# ~[0.5, 1.0] from the NORMALIZED VARIANCE of the physio stream's masked target
+# tokens: high variance -> lean 0.5 (avoid the 1-D signal dominating the loss
+# gradient); low variance -> lean 1.0 (avoid it being ignored). loss_weights
+# (ONE value per --streams modality, in order) overrides per stream.
+signal_weight: 0.5
+
 sig_kernel: 8
 
 # ---- data (canonical layout from data/prepare_bp4d.py) ----

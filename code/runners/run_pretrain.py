@@ -56,6 +56,20 @@ def get_args():
     parser.add_argument('--mask_ratio_rgb', default=0.75, type=float)
     parser.add_argument('--mask_ratio_tir', default=0.50, type=float)
     parser.add_argument('--mask_ratio_bvp', default=0.90, type=float)
+    parser.add_argument('--loss_weights', default='', type=str,
+                        help='FULL per-stream override of the per-modality '
+                             'masked-MSE weights: comma list, ONE value per '
+                             '--streams modality in order. Empty (default) = '
+                             'policy: lambda 1.0 for visual streams and '
+                             'lambda --signal_weight for physio streams.')
+    parser.add_argument('--signal_weight', default=0.5, type=float,
+                        help='weight of each physio (1-D) stream in the '
+                             'masked-MSE weighted sum (visual streams fixed '
+                             'at 1.0). Tune in ~[0.5, 1.0] from the NORMALIZED '
+                             'variance of the physio stream\'s masked target '
+                             'tokens: high variance -> ~0.5 so the 1-D signal '
+                             'does not dominate the gradient; low variance -> '
+                             '~1.0 so it is not ignored.')
     parser.add_argument('--enc_embed_dim', default=192, type=int)
     parser.add_argument('--enc_depth', default=6, type=int)
     parser.add_argument('--enc_num_heads', default=6, type=int)
