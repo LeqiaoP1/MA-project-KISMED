@@ -9,8 +9,19 @@ training on an HPC cluster.
 Usage (from ``code/``)::
 
     python runners/run_inspect_data.py --data_path data/processed/bp4d_canonical
-    python runners/run_inspect_data.py --data_path ... --max_sessions 2 \
-        --max_entries 2 --input_size 64 --plot
+    python runners/run_inspect_data.py --data_path ... --max_sessions 6 \
+        --max_clips 2 --clip_duration 2 --input_size 64 --plot
+
+``--plot`` saves one PNG for EVERY clip of both splits (train + val) into
+``<output_dir>/figures/<split>/``; tensor stats always go to
+``<output_dir>/inspect_summary.json``.
+
+Window geometry: ``--clip_duration`` (default 10 s; ``seq_len = clip_duration *
+fs`` when ``--seq_len 0``) and per-session ``--max_clips``. The dataset is
+bounded by ``--max_sessions`` (decode budget) and ``--max_clips`` (per-session
+windows), so every extracted clip is processed and windows never collapse onto
+the leading sessions. ``--max_entries`` is only an optional per-split safety
+cap (``0`` = no cap; default), see :func:`build`.
 
 The same command runs on a SLURM cluster (see ``scripts/hpc/submit_inspect.sbatch``);
 paths are typically injected through environment variables (see scripts/env_*.sh).
@@ -62,6 +73,18 @@ def _tensor_stats(name: str, arr) -> dict:
     }
 
 
+def _session_counts(ds) -> dict:
+    """Map session name -> number of clips in ``ds``, in session order."""
+    counts, order = {}, []
+    for meta, _ in ds.entries:
+        name = meta['session']
+        if name not in counts:
+            counts[name] = 0
+            order.append(name)
+        counts[name] += 1
+    return counts
+
+
 def get_args():
     p = argparse.ArgumentParser('BP4D data-pipeline smoke test', add_help=False)
     p.add_argument('--data_path', default=_env('DATA_PATH', ''),
@@ -70,32 +93,43 @@ def get_args():
                                                 './output/inspect_data'), type=str)
     p.add_argument('--target', default='bvp', choices=['bvp', 'resp', 'eda'])
     # small-data controls (dev/smoke)
-    p.add_argument('--max_sessions', default=2, type=int,
+    p.add_argument('--max_sessions', default=3, type=int,
                    help='cap the number of sessions loaded')
-    p.add_argument('--max_entries', default=2, type=int,
-                   help='cap the number of clips inspected per split')
+    p.add_argument('--max_clips', default=None, type=int,
+                   help='cap clips per session (None = every clip of a session)')
+    p.add_argument('--max_entries', default=0, type=int,
+                   help='optional cap on clips processed per split; '
+                        '0 = no cap (all clips)')
     p.add_argument('--train_ratio', default=0.5, type=float)
     # dataset geometry (must match what the model will see later)
     p.add_argument('--fs', default=100.0, type=float)
     p.add_argument('--fps', default=25.0, type=float)
-    p.add_argument('--clip_duration', default=10.0, type=float)
+    p.add_argument('--clip_duration', default=10.0, type=float,
+                   help='window length in seconds (seq_len = clip_duration*fs)')
     p.add_argument('--seq_len', default=0, type=int,
                    help='0 => clip_duration * fs')
     p.add_argument('--input_size', default=64, type=int,
                    help='frame short-side resize/crop (small = faster smoke)')
     p.add_argument('--plot', action='store_true',
-                   help='render one aligned sanity figure (RGB+TIR+signals)')
+                   help='save a PNG for every clip of train+val into '
+                        '<output_dir>/figures/<split>/')
     return p.parse_args()
 
 
 def build(args, is_train: bool):
+    # NOTE: the global ``max_entries`` cap is deliberately NOT forwarded to the
+    # dataset. Forwarding it truncates ``self.entries`` to the leading clips of
+    # the leading sessions, which defeats the ``max_clips`` per-session spread.
+    # Instead the dataset is bounded by max_sessions (decode budget) and
+    # max_clips (per-session windows); the inspect loop below processes every
+    # entry unless the user set an explicit ``max_entries`` per-split cap.
     return PairedSessionDataset(
         data_path=args.data_path, target=args.target,
         is_train=is_train, test_mode=True,
         fs=args.fs, fps=args.fps, clip_duration=args.clip_duration,
         seq_len=args.seq_len or None, input_size=args.input_size,
         train_ratio=args.train_ratio,
-        max_sessions=args.max_sessions, max_entries=args.max_entries)
+        max_sessions=args.max_sessions, max_clips=args.max_clips)
 
 
 def main():
@@ -144,28 +178,49 @@ def main():
         if len(ds) == 0:
             report[split] = {'entries': 0}
             continue
+        counts = _session_counts(ds)
         samples = []
-        n = min(args.max_entries, len(ds))
+        # process every clip of the split; max_entries (0 = no cap) may limit it
+        n = (len(ds) if (args.max_entries or 0) <= 0
+             else min(args.max_entries, len(ds)))
         for idx in range(n):
             sample, target = ds[idx]
             sample = np.asarray(sample)
             target = np.asarray(target)
+            meta = ds.entries[idx][0]            # full per-session meta dict
+            t_start = ds.entries[idx][1]
+            clip_k = int(round(t_start / args.clip_duration))
             s = {
                 'clip_index': idx,
-                'session': ds.entries[idx][0]['session'],
-                't_start': ds.entries[idx][1],
+                'session': meta['session'],
+                't_start': t_start,
+                'clip_k': clip_k,                # 0-based window within session
+                'n_clips': meta.get('n_clips'),
+                'n_clips_raw': meta.get('n_clips_raw'),
+                'tir_fps': meta.get('tir_fps') or args.fps,
                 'samples': _tensor_stats('samples[4,T,H,W]', sample),
                 'target': _tensor_stats(f'target[{args.target}]', target),
             }
             samples.append(s)
             print(f'  [{split}] clip {idx} '
-                  f'(session {s["session"]}, t0={s["t_start"]:.2f}s): '
+                  f'(session {s["session"]}, k={clip_k + 1}/{s["n_clips"]}, '
+                  f't0={t_start:.2f}s): '
                   f'samples {s["samples"]["shape"]} range '
                   f'[{s["samples"]["min"]:.3f}, {s["samples"]["max"]:.3f}] | '
                   f'target {s["target"]["shape"]}')
-        report[split] = {'entries': len(ds), 'clips': samples}
-        if args.plot and split == 'train':
-            _make_figure(args, ds, samples[0], sig_cols, sig_fs)
+            if args.plot:
+                # preview uses that session's own signals for correct overlay
+                cols_plot, fs_plot = _read_signals_csv(meta['signals_file'])
+                _make_figure(args, s, sample, target, cols_plot, fs_plot,
+                             split=split)
+        report[split] = {
+            'entries': len(ds),                  # after session + max_clips caps
+            'inspected': len(samples),           # visited (<= max_entries)
+            'entries_per_session': counts,       # full dataset, in session order
+            'window': {'clip_duration': args.clip_duration,
+                       'seq_len': int(ds.seq_len), 'fs': args.fs},
+            'clips': samples,
+        }
 
     out_json = os.path.join(args.output_dir, 'inspect_summary.json')
     with open(out_json, 'w') as f:
@@ -173,8 +228,14 @@ def main():
     print(f'Wrote summary to {out_json}')
 
 
-def _make_figure(args, ds, clip, sig_cols, sig_fs):
-    """One sanity figure: RGB + TIR middle frame and aligned 1D signals."""
+def _make_figure(args, clip, sample, target, sig_cols, sig_fs, split='train'):
+    """Save one preview PNG per inspected clip: RGB + TIR middle frame and the
+    aligned 1-D signal windows (blue) with the dataset target (orange).
+
+    ``clip`` is the per-clip report dict from :func:`main`; ``sample``/``target``
+    are the already-decoded arrays. The figure is written to
+    ``<output_dir>/figures/<split>/<session>_t<t0>s.png``.
+    """
     try:
         import matplotlib
         matplotlib.use('Agg')
@@ -185,9 +246,6 @@ def _make_figure(args, ds, clip, sig_cols, sig_fs):
 
     session = clip['session']
     idx = clip['clip_index']
-    sample, target = ds[idx]
-    sample = np.asarray(sample)
-    target = np.asarray(target)
     t_mid = sample.shape[1] // 2
 
     rgb = (np.clip(sample[0:3, t_mid].transpose(1, 2, 0), 0, 1) * 255).astype(np.uint8)
@@ -231,23 +289,33 @@ def _make_figure(args, ds, clip, sig_cols, sig_fs):
             ax.set_xlabel('time (s)')
 
     # --- metadata block in the empty bottom-left panel ---------------------- #
-    meta = ds.entries[idx][0]                      # full per-session meta
-    tir_fps = meta.get('tir_fps') or args.fps      # actual TIR frame rate
-    sig_fs = fs or args.fs                         # signal sample rate in use
+    tir_fps = clip.get('tir_fps') or args.fps    # actual TIR frame rate
+    sig_fs = fs or args.fs                       # signal sample rate in use
     t_end = t0 + args.clip_duration
+    n_cap = clip.get('n_clips')
+    n_raw = clip.get('n_clips_raw') or n_cap
+    clip_k1 = int(clip.get('clip_k') or 0) + 1   # 1-based window in the session
+    capped = (n_cap is not None and n_raw is not None and n_cap < n_raw)
     info = [
-        f'session: {session}   clip #{idx}',
-        f'RGB {args.fps:.0f} fps | TIR {tir_fps:.0f} fps | signal fs {sig_fs:.1f} Hz',
-        f't-start {t0:.2f} s -> t-end {t_end:.2f} s  (dur {args.clip_duration:.0f} s)',
-        f'seq_len (target): {target.size} | input_size: {args.input_size}',
+        f'session: {session}   clip #{idx}  k={clip_k1}/{n_cap or "?"}   '
+        f'split: {split}',
+        f'clip dur {args.clip_duration:.1f} s | seq_len {target.size} | '
+        f'input {args.input_size}',
+        f'RGB {args.fps:.0f} fps | TIR {tir_fps:.0f} fps | '
+        f'signal fs {sig_fs:.1f} Hz',
+        f't-start {t0:.2f} s -> t-end {t_end:.2f} s',
     ]
+    if capped:
+        info.append(f'max_clips applied: {n_cap} of {n_raw} session windows shown')
     axes[2, 0].axis('off')
     axes[2, 0].text(0.0, 0.5, '\n'.join(info),
                     transform=axes[2, 0].transAxes,
                     ha='left', va='center', fontsize=8, family='monospace')
 
     fig.tight_layout()
-    path = os.path.join(args.output_dir, f'fig_{session}_clip{idx}.png')
+    out_dir = os.path.join(args.output_dir, 'figures', split)
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, f'{session}_t{t0:06.2f}s.png')
     fig.savefig(path, dpi=100)
     plt.close(fig)
     print(f'[plot] saved {path}')

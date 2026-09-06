@@ -40,6 +40,9 @@ def add_common_args(parser: argparse.ArgumentParser):
     # quick/dev runs: cap the number of sessions / clips (see PairedSessionDataset)
     parser.add_argument('--max_sessions', default=None, type=int,
                         help='limit number of sessions (smoke tests)')
+    parser.add_argument('--max_clips', default=None, type=int,
+                        help='limit number of clips taken per session '
+                             '(smoke tests)')
     parser.add_argument('--max_entries', default=None, type=int,
                         help='limit number of clips per split (smoke tests)')
 

@@ -99,6 +99,11 @@ common time grid and the target waveform is resampled to `seq_len`. Set
 data-set params in the YAML: `fs`, `fps`, `clip_duration`, `seq_len`,
 `input_size`, `rgb_dir`, `tir_file`, `signals_file`, `train_ratio`.
 
+Optional dev/quick-run caps (accepted by every training runner and by the
+inspect runner): `max_sessions` bounds the number of decoded sessions up
+front, `max_clips` bounds the number of windows taken from *each* session,
+and `max_entries` bounds the global total number of clips in the dataset.
+
 ## Suggested port order
 
 1. `utils/` (dist, logger, metrics, checkpoint, optim_factory, EMA, scaler, pos_embed)
@@ -132,18 +137,46 @@ Channel mapping: `bvp <- BP_mmHg.txt`, `resp <- Resp_Volts.txt`,
 `eda <- EDA_microsiemens.txt`; raw physiology `.txt` is anti-alias resampled to
 `--fs` (default 100 Hz; raw rate `--phys_fs`, default 1000 Hz, or auto with `0`).
 
-**Quick local smoke (1-2 sessions, data only):**
+**Quick local smoke / data inspection (few sessions, data only):**
 
 ```bash
 source scripts/env_local.sh
-bash scripts/local/prepare_smoke.sh 2     # convert first 2 sessions
-bash scripts/local/inspect_smoke.sh        # load aligned tensors, print stats + plot
+bash scripts/local/prepare_smoke.sh 2        # convert first 2 raw sessions
+bash scripts/local/inspect_smoke.sh          # stats JSON + a PNG per clip
 ```
 
-Equivalent manual commands: `python data/prepare_bp4d.py --limit_sessions 2`
-and `python runners/run_inspect_data.py --max_sessions 2 --max_entries 2
---input_size 64 --plot`. The dataset honours `--max_sessions`/`--max_entries`
-in every training runner too, so the same flags limit smoke training runs.
+`scripts/local/inspect_smoke.sh` runs `runners/run_inspect_data.py`, which
+writes `output/inspect_data/inspect_summary.json` and, per split, a PNG for
+**every** clip of train and val into `output/inspect_data/figures/<split>/`
+(one PNG = RGB + TIR middle frame, aligned signal windows vs. the dataset
+target, plus `session/k<n>/split` metadata). The inspected scope is bounded by
+the caps below; override them through environment variables (short names or
+`INSPECT_*` aliases), e.g.:
+
+```bash
+# 2 s windows, one clip per session, across 6 sessions -> every clip gets a PNG
+MAX_SESSIONS=6 MAX_CLIPS=2 CLIP_DURATION=2 bash scripts/local/inspect_smoke.sh
+```
+
+| Var (local)         | Alias (HPC)             | Meaning                                      | Default |
+| ------------------- | ----------------------- | -------------------------------------------- | ------- |
+| `MAX_SESSIONS`      | `INSPECT_SESSIONS`      | sessions decoded (decode budget)             | 3       |
+| `MAX_CLIPS`         | `INSPECT_MAX_CLIPS`     | max windows taken from each session          | none    |
+| `CLIP_DURATION`     | `INSPECT_CLIP_DURATION` | window length in s (`seq_len = fs*duration`) | 10 s    |
+| `MAX_ENTRIES`       | `INSPECT_ENTRIES`       | optional per-split cap (`0` = no cap / all)  | 0       |
+| `INPUT_SIZE`        | (HPC fixed to 64)       | frame short-side resize/crop                 | 64      |
+
+Manual equivalent (runner defaults: 3 sessions, no per-session cap, no
+`max_entries` limit, 10 s windows, `--plot`):
+
+```bash
+python runners/run_inspect_data.py --clip_duration 10 --plot
+```
+
+The same caps limit smoke **training** runs too: in `data/paired_dataset.py`
+`max_sessions` caps decoding up front, `max_clips` caps the windows per
+session, and `max_entries` caps the global dataset total (see the YAML under
+`configs/pretrain/`).
 
 **Lichtenberg HPC (sbatch):**
 

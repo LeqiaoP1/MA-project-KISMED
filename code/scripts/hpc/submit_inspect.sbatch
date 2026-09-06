@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Lichtenberg HPC: data-pipeline smoke test (load 1-2 sessions, report shapes).
+# Lichtenberg HPC: data-pipeline smoke test (load 3 sessions, report shapes).
 # 1) edit scripts/env_hpc.sh   2) mkdir -p logs
 # 3) sbatch scripts/hpc/submit_inspect.sbatch
 #SBATCH --job-name=inspect_bp4d
@@ -20,12 +20,25 @@ source "$ENV_SH"
 activate_project_env
 
 cd "$CODE_DIR"
+# Plot & save a PNG for every clip of train+val. Optional HPC overrides:
+# INSPECT_SESSIONS, INSPECT_ENTRIES (0 = no cap / all clips),
+# INSPECT_CLIP_DURATION, INSPECT_MAX_CLIPS (the latter two add a flag only when
+# set; runner defaults otherwise: 10 s window, no per-session cap).
+EXTRA_ARGS=()
+if [ -n "${INSPECT_CLIP_DURATION:-}" ]; then
+    EXTRA_ARGS+=(--clip_duration "$INSPECT_CLIP_DURATION")
+fi
+if [ -n "${INSPECT_MAX_CLIPS:-}" ]; then
+    EXTRA_ARGS+=(--max_clips "$INSPECT_MAX_CLIPS")
+fi
+
 python -u runners/run_inspect_data.py \
     --data_path "$DATA_PATH" \
     --output_dir "$OUTPUT_DIR/inspect_data" \
-    --max_sessions "${INSPECT_SESSIONS:-2}" \
-    --max_entries "${INSPECT_ENTRIES:-2}" \
+    --max_sessions "${INSPECT_SESSIONS:-3}" \
+    --max_entries "${INSPECT_ENTRIES:-0}" \
     --input_size 64 \
-    --plot
+    --plot \
+    "${EXTRA_ARGS[@]}"
 
 echo "Inspection summary: $OUTPUT_DIR/inspect_data/inspect_summary.json"

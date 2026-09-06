@@ -32,7 +32,7 @@ fs: 100.0
 fps: 25.0
 clip_duration: 2.0                 # ~50 frames @ 25 fps -> 25 temporal tubelets
 seq_len: 0                         # 0 => clip_duration * fs = 200 signal samples
-input_size: 64                     # square; patch 16 => 4x4 spatial grid
+input_size: 64                     # square; patch size 16x16 => 4x4 spatial grid
 
 # ---- asymmetric masking ----
 mask_ratio_rgb: 0.75
@@ -43,12 +43,12 @@ sig_kernel: 8
 
 # ---- data (canonical layout from data/prepare_bp4d.py) ----
 data_path: ../data/processed/bp4d_canonical
-max_sessions: 2
-max_entries: 8
+max_sessions: 8
+max_entries: 16
 
 # ---- training (tiny: correctness/overfit only) ----
 epochs: 20
-batch_size: 1
+batch_size: 2
 update_freq: 1
 save_ckpt_freq: 5
 opt: adamw

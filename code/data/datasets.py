@@ -80,4 +80,5 @@ def build_pretraining_dataset(args):
         seq_len=getattr(args, 'seq_len', None) or None,
         input_size=getattr(args, 'input_size', 64),
         max_sessions=getattr(args, 'max_sessions', None),
+        max_clips=getattr(args, 'max_clips', None),
         max_entries=getattr(args, 'max_entries', None))

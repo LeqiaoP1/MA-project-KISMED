@@ -16,6 +16,10 @@ handling any RGB/TIR fps mismatch; 1D signals are sliced on the same axis and
 resampled to ``seq_len``. Splits are per *session* (never per frame/clip) to
 avoid subject leakage.
 
+Dev/quick-run caps are applied in order: ``max_sessions`` bounds the decode
+budget up front, ``max_clips`` bounds the windows taken from *each* session,
+and ``max_entries`` bounds the global total (``self.entries``).
+
 NOTE: the spatio-temporal video *model* front-end is the remaining port (see
 code/README.md Stage 1) -- this module only produces the synchronised inputs.
 """
@@ -121,11 +125,13 @@ class PairedSessionDataset(Dataset):
                  rgb_dir: str = 'rgb', tir_file: str = 'tir.wmv',
                  signals_file: str = 'signals.csv',
                  max_sessions: Optional[int] = None,
+                 max_clips: Optional[int] = None,
                  max_entries: Optional[int] = None):
         assert target in ('bvp', 'resp', 'eda'), target
         self.target = target
         self.fs = float(fs)
         self.max_sessions = max_sessions
+        self.max_clips = max_clips
         self.max_entries = max_entries
         self.fps_rgb = float(fps)
         self.input_size = input_size
@@ -181,6 +187,11 @@ class PairedSessionDataset(Dataset):
                 len(self._tir_cache[s['session']]) / s['tir_fps'],
                 len(sig) / s['fs']])
             n_clips = max(1, int(dur // self.clip_duration))
+            s['n_clips_raw'] = n_clips          # before the per-session cap
+            # quick/dev mode: cap the windows taken from each session
+            if max_clips is not None and max_clips > 0:
+                n_clips = min(n_clips, max_clips)
+            s['n_clips'] = n_clips              # after the per-session cap
             for k in range(n_clips):
                 self.entries.append((s, k * self.clip_duration))
 
@@ -274,6 +285,7 @@ class PairedPretrainDataset(PairedSessionDataset):
                  input_size: int = 64, rgb_dir: str = 'rgb',
                  tir_file: str = 'tir.wmv', signals_file: str = 'signals.csv',
                  max_sessions: Optional[int] = None,
+                 max_clips: Optional[int] = None,
                  max_entries: Optional[int] = None):
         super().__init__(
             data_path=data_path, target='bvp',
@@ -281,7 +293,8 @@ class PairedPretrainDataset(PairedSessionDataset):
             fs=fs, fps=fps, clip_duration=clip_duration, seq_len=seq_len,
             input_size=input_size, train_ratio=1.0,
             rgb_dir=rgb_dir, tir_file=tir_file, signals_file=signals_file,
-            max_sessions=max_sessions, max_entries=max_entries)
+            max_sessions=max_sessions, max_clips=max_clips,
+            max_entries=max_entries)
 
     def __getitem__(self, idx):
         # super(): samples [4,T,H,W] = RGB(3) + TIR(1); bvp [seq_len]
@@ -309,4 +322,5 @@ def build_paired_dataset(is_train: bool, test_mode: bool, args):
         tir_file=getattr(args, 'tir_file', 'tir.wmv'),
         signals_file=getattr(args, 'signals_file', 'signals.csv'),
         max_sessions=getattr(args, 'max_sessions', None),
+        max_clips=getattr(args, 'max_clips', None),
         max_entries=getattr(args, 'max_entries', None))
