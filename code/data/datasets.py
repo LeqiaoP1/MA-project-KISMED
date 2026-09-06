@@ -77,6 +77,7 @@ def build_pretraining_dataset(args):
         fs=getattr(args, 'fs', 100.0),
         fps=getattr(args, 'fps', 25.0),
         clip_duration=getattr(args, 'clip_duration', 4.0),
+        clip_stride=getattr(args, 'clip_stride', None) or None,
         seq_len=getattr(args, 'seq_len', None) or None,
         input_size=getattr(args, 'input_size', 64),
         max_sessions=getattr(args, 'max_sessions', None),

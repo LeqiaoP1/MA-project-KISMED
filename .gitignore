@@ -15,4 +15,4 @@ __pycache__/
 
 # ignore output files
 output/*
-!output/inspect_data/*
+!output/inspect_data/**

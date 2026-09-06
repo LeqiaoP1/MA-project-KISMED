@@ -120,7 +120,9 @@ class PairedSessionDataset(Dataset):
     def __init__(self, data_path: str, target: str = 'bvp',
                  is_train: bool = True, test_mode: bool = False,
                  fs: float = 100.0, fps: float = 25.0,
-                 clip_duration: float = 10.0, seq_len: Optional[int] = None,
+                 clip_duration: float = 10.0,
+                 clip_stride: Optional[float] = None,
+                 seq_len: Optional[int] = None,
                  input_size: int = 224, train_ratio: float = 0.8,
                  rgb_dir: str = 'rgb', tir_file: str = 'tir.wmv',
                  signals_file: str = 'signals.csv',
@@ -136,6 +138,12 @@ class PairedSessionDataset(Dataset):
         self.fps_rgb = float(fps)
         self.input_size = input_size
         self.clip_duration = float(clip_duration)
+        # stride between window starts (seconds); None/<=0 => non-overlapping
+        # windows (stride == clip_duration). clip_stride < clip_duration yields
+        # overlapping windows and therefore more samples per session.
+        self.clip_stride = (
+            self.clip_duration if not clip_stride or float(clip_stride) <= 0
+            else float(clip_stride))
         self.seq_len = seq_len or int(round(self.clip_duration * self.fs))
 
         sessions = scan_sessions(data_path, rgb_dir=rgb_dir,
@@ -186,14 +194,20 @@ class PairedSessionDataset(Dataset):
                 len(rgb_files) / self.fps_rgb,
                 len(self._tir_cache[s['session']]) / s['tir_fps'],
                 len(sig) / s['fs']])
-            n_clips = max(1, int(dur // self.clip_duration))
+            stride = self.clip_stride
+            # windows start at 0, stride, ... while the window still fits
+            if dur >= self.clip_duration:
+                n_windows = 1 + int((dur - self.clip_duration) / stride)
+            else:
+                n_windows = 1
+            n_clips = max(1, n_windows)
             s['n_clips_raw'] = n_clips          # before the per-session cap
             # quick/dev mode: cap the windows taken from each session
             if max_clips is not None and max_clips > 0:
                 n_clips = min(n_clips, max_clips)
             s['n_clips'] = n_clips              # after the per-session cap
             for k in range(n_clips):
-                self.entries.append((s, k * self.clip_duration))
+                self.entries.append((s, k * stride))
 
         # optional hard cap on the total number of clips (quick/dev runs)
         if max_entries is not None and max_entries > 0:
@@ -281,7 +295,9 @@ class PairedPretrainDataset(PairedSessionDataset):
     """
 
     def __init__(self, data_path: str, fs: float = 100.0, fps: float = 25.0,
-                 clip_duration: float = 4.0, seq_len: Optional[int] = None,
+                 clip_duration: float = 4.0,
+                 clip_stride: Optional[float] = None,
+                 seq_len: Optional[int] = None,
                  input_size: int = 64, rgb_dir: str = 'rgb',
                  tir_file: str = 'tir.wmv', signals_file: str = 'signals.csv',
                  max_sessions: Optional[int] = None,
@@ -290,7 +306,8 @@ class PairedPretrainDataset(PairedSessionDataset):
         super().__init__(
             data_path=data_path, target='bvp',
             is_train=True, test_mode=True,
-            fs=fs, fps=fps, clip_duration=clip_duration, seq_len=seq_len,
+            fs=fs, fps=fps, clip_duration=clip_duration,
+            clip_stride=clip_stride, seq_len=seq_len,
             input_size=input_size, train_ratio=1.0,
             rgb_dir=rgb_dir, tir_file=tir_file, signals_file=signals_file,
             max_sessions=max_sessions, max_clips=max_clips,
@@ -315,6 +332,7 @@ def build_paired_dataset(is_train: bool, test_mode: bool, args):
         fs=getattr(args, 'fs', 100.0),
         fps=getattr(args, 'fps', 25.0),
         clip_duration=getattr(args, 'clip_duration', 10.0),
+        clip_stride=getattr(args, 'clip_stride', None),
         seq_len=getattr(args, 'seq_len', None),
         input_size=getattr(args, 'input_size', 224),
         train_ratio=getattr(args, 'train_ratio', 0.8),

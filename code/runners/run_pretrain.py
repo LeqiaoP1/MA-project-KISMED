@@ -39,6 +39,11 @@ def get_args():
                         help='RGB/TIR frame rate (Hz)')
     parser.add_argument('--clip_duration', default=4.0, type=float,
                         help='window length in seconds per MAE sample')
+    parser.add_argument('--clip_stride', default=0.0, type=float,
+                        help='window stride in seconds. < clip_duration yields '
+                             'OVERLAPPING windows (more samples/session, e.g. '
+                             'to reach 10-20k clips on the full HPC data). '
+                             '0 => stride = clip_duration (non-overlapping).')
     parser.add_argument('--seq_len', default=0, type=int,
                         help='signal samples per window (0 => clip_duration*fs)')
     parser.add_argument('--input_size', default=64, type=int,
@@ -66,11 +71,18 @@ def get_args():
     parser.add_argument('--epochs', default=800, type=int)
     parser.add_argument('--save_ckpt_freq', default=20, type=int)
     parser.add_argument('--update_freq', default=1, type=int)
-    # optimizer / lr
+    # optimizer / lr  (official-MAE semantics)
     parser.add_argument('--opt', default='adamw', type=str)
-    parser.add_argument('--lr', default=1.5e-4, type=float)
+    parser.add_argument('--lr', default=None, type=float,
+                        help='peak (absolute) learning rate. Omit it to derive '
+                             'the LR from --blr via lr = blr * batch_size * '
+                             'world_size / 256 (large-batch MAE convention). '
+                             'For small-batch LOCAL runs pass --lr explicitly: '
+                             'the scaled LR would be ~1e-6 and the model would '
+                             'not learn.')
     parser.add_argument('--blr', default=1.5e-4, type=float,
-                        help='base lr = lr * batch_size / 256 (takes precedence)')
+                        help='base lr, only used when --lr is not set: '
+                             'lr = blr * batch_size * world_size / 256')
     parser.add_argument('--min_lr', default=0.0, type=float)
     parser.add_argument('--warmup_epochs', default=40, type=int)
     parser.add_argument('--weight_decay', default=0.05, type=float)
@@ -83,8 +95,14 @@ def main(args):
 
     device = init_env(args)
 
-    # scale LR by the effective batch size (MAE convention)
-    args.lr = args.blr * args.batch_size * get_world_size() / 256
+    # MAE linear-scaling rule: only derive the absolute LR from --blr when the
+    # user did not pass --lr explicitly. Otherwise blr*batch/256 on a batch-1/2
+    # local run silently yields ~1e-6 and the weights never move (flat loss).
+    if args.lr is None:
+        args.lr = args.blr * args.batch_size * get_world_size() / 256
+        print(f'LR derived from blr (blr*batch*world/256): {args.lr:.3e}')
+    else:
+        print(f'LR set explicitly (--lr): {args.lr:.3e}')
 
     # ----- model ---------------------------------------------------------- #
     if args.model.startswith('project_multimae'):
@@ -104,6 +122,18 @@ def main(args):
     from data import build_pretraining_dataset
     dataset_train = build_pretraining_dataset(args)
     data_loader_train = make_data_loader(args, dataset_train, shuffle=True)
+
+    # step-level warmup + cosine LR schedule (mirrors MultiMAE/VideoMAE)
+    from utils import cosine_scheduler
+    steps_per_epoch = max(
+        1, (len(dataset_train) // (args.batch_size * get_world_size()))
+        // max(1, args.update_freq))
+    lr_schedule_values = cosine_scheduler(
+        args.lr, args.min_lr, args.epochs, steps_per_epoch,
+        warmup_epochs=args.warmup_epochs)
+    print(f'Step-level LR schedule: {len(lr_schedule_values)} steps, '
+          f'peak {args.lr:.3e} -> min {args.min_lr:.3e}, '
+          f'warmup {args.warmup_epochs} epoch(s)')
 
     model_without_ddp = model
     if args.distributed:
@@ -126,7 +156,9 @@ def main(args):
         stats = train_one_epoch_pretrain(
             model=model, data_loader=data_loader_train, optimizer=optimizer,
             device=device, epoch=epoch, loss_scaler=loss_scaler,
-            max_norm=args.clip_grad, update_freq=args.update_freq)
+            max_norm=args.clip_grad, update_freq=args.update_freq,
+            lr_schedule_values=lr_schedule_values,
+            start_steps=epoch * steps_per_epoch)
         print(f'Epoch {epoch} stats: {stats}')
 
         if is_main_process() and (epoch % args.save_ckpt_freq == 0

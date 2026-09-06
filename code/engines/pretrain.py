@@ -25,7 +25,8 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable,
                     epoch: int, loss_scaler=None, max_norm: float = 0.0,
                     model_ema=None, log_writer=None,
                     lr_schedule_values=None, wd_schedule_values=None,
-                    update_freq: int = 1):
+                    update_freq: int = 1,
+                    start_steps: Optional[int] = None):
     model.train(True)
     metric_logger = MetricLogger(delimiter='  ')
     metric_logger.add_meter('lr', SmoothedValue(window_size=1, fmt='{value:.6f}'))
@@ -37,14 +38,16 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable,
         # Multimodal MAE: the batch is a dict {stream: tensor}. A plain tensor
         # batch (single-stream placeholder model) is still accepted.
         step = data_iter_step // update_freq
+        # index into the GLOBAL step schedule (start_steps = epoch * n_steps)
+        sched_idx = step if start_steps is None else start_steps + step
 
         if lr_schedule_values is not None or wd_schedule_values is not None:
             for i, param_group in enumerate(optimizer.param_groups):
                 if lr_schedule_values is not None:
-                    param_group['lr'] = lr_schedule_values[step]
+                    param_group['lr'] = lr_schedule_values[sched_idx]
                 if (wd_schedule_values is not None
                         and param_group['weight_decay'] > 0):
-                    param_group['weight_decay'] = wd_schedule_values[step]
+                    param_group['weight_decay'] = wd_schedule_values[sched_idx]
 
         if isinstance(batch, dict):
             x = {k: v.to(device, non_blocking=True) for k, v in batch.items()}

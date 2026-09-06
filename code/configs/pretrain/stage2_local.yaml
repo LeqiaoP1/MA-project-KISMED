@@ -33,6 +33,9 @@ sig_kernel: 8                      # signal token window (samples)
 data_path: ../data/processed/bp4d_canonical
 max_sessions: 2
 max_entries: 8
+# Overlapping windows (more samples). For the real HPC run over ALL sessions set
+# e.g. clip_stride: 1.0 with clip_duration: 4.0 to reach ~10-20k clips; 0 =
+# non-overlapping (stride == clip_duration).
 
 # ---- training (tiny: correctness/overfit only) ----
 epochs: 40
@@ -40,8 +43,13 @@ batch_size: 2
 update_freq: 1
 save_ckpt_freq: 10
 opt: adamw
-blr: 1.5e-4
-min_lr: 0.0
+# Explicit ABSOLUTE LR for this small local batch. Do NOT rely on `blr` here:
+# lr = blr*batch/256 with batch 1-2 would give ~1e-6 and the model would not
+# learn. On the HPC with a large batch, drop `lr` and set `blr` instead.
+# Peak 1e-3 + warmup 5 makes the loss visibly drop within ~40 local epochs;
+# min_lr 1e-4 keeps the tail of the cosine schedule learning (was decaying to 0).
+lr: 1.0e-3
+min_lr: 1.0e-4
 warmup_epochs: 5
 weight_decay: 0.05
 clip_grad: 0.0

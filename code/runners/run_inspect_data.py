@@ -106,6 +106,9 @@ def get_args():
     p.add_argument('--fps', default=25.0, type=float)
     p.add_argument('--clip_duration', default=10.0, type=float,
                    help='window length in seconds (seq_len = clip_duration*fs)')
+    p.add_argument('--clip_stride', default=0.0, type=float,
+                   help='window stride in seconds; < clip_duration => overlapping '
+                        'windows; 0 => clip_duration (non-overlapping)')
     p.add_argument('--seq_len', default=0, type=int,
                    help='0 => clip_duration * fs')
     p.add_argument('--input_size', default=64, type=int,
@@ -127,6 +130,7 @@ def build(args, is_train: bool):
         data_path=args.data_path, target=args.target,
         is_train=is_train, test_mode=True,
         fs=args.fs, fps=args.fps, clip_duration=args.clip_duration,
+        clip_stride=args.clip_stride or None,
         seq_len=args.seq_len or None, input_size=args.input_size,
         train_ratio=args.train_ratio,
         max_sessions=args.max_sessions, max_clips=args.max_clips)
