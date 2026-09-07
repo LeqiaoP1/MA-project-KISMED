@@ -12,8 +12,9 @@
 #
 # NOTE: only the SHARED ENCODER transformer blocks (+ final norm) and the RGB
 # tubelet patch embed (2-D->3-D inflated) inherit weights; the TIR adapter,
-# the BVP signal adapter, and the position embeddings stay random (they have no
-# ImageNet counterpart). cls_token/pos_embed/head are deliberately not loaded.
+# the bvp/resp/eda signal adapters, and the position embeddings stay random
+# (they have no ImageNet counterpart). cls_token/pos_embed/head are
+# deliberately not loaded.
 
 model: project_multimae_small      # triggers the multimodal builder in run_pretrain
 
@@ -26,7 +27,9 @@ mlp_ratio: 4.0
 dec_depth: 2
 
 # ---- streams & tokenizer geometry (small for local GPU) ----
-streams: rgb,tir,bvp
+# Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bvp/resp/eda).
+# All five = rgb,tir,bvp,resp,eda; ablate by trimming (e.g. rgb,bvp).
+streams: rgb,tir,bvp,resp,eda
 tubelet: 2,16,16
 fs: 100.0
 fps: 25.0
@@ -37,11 +40,14 @@ input_size: 64                     # square; patch size 16x16 => 4x4 spatial gri
 # ---- asymmetric masking ----
 mask_ratio_rgb: 0.75
 mask_ratio_tir: 0.50
+# 1-D physio streams are masked hardest (90%+) in Stage 2
 mask_ratio_bvp: 0.90
+mask_ratio_resp: 0.90
+mask_ratio_eda: 0.90
 
 # ---- Stage-2 loss: per-modality masked MSE (masked positions only), ----
 # then a WEIGHTED sum. Default policy: lambda_RGB = lambda_TIR = 1.0 and each
-# physio stream (here: bvp) gets lambda = signal_weight. Tune signal_weight in
+# physio stream (bvp/resp/eda) gets lambda = signal_weight. Tune signal_weight in
 # ~[0.5, 1.0] from the NORMALIZED VARIANCE of the physio stream's masked target
 # tokens: high variance -> lean 0.5 (avoid the 1-D signal dominating the loss
 # gradient); low variance -> lean 1.0 (avoid it being ignored). loss_weights

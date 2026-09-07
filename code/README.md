@@ -93,6 +93,24 @@ per-stream override (one comma value per `--streams` modality, in order; empty
 ⇒ policy above). `MultiModalMAE.forward` returns `losses_mse` (raw per-modality
 masked MSE) and `losses` (weighted contributions); `loss = Σ losses`.
 
+### Stage-2 streams — flexible modality contract
+
+The pretraining modalities are configured with `--streams` (or `streams:` in
+the YAML under `configs/pretrain/`) as a comma list. The **Stage-2 contract**
+requires at least TWO streams: **≥1 video** (`rgb` and/or `tir`) **plus ≥1
+physiological 1-D signal** (`bvp`, `resp`, `eda` — the waveform later
+regressed in Stage 3). Video-only, signal-only, single-modality, empty or
+unknown lists are rejected consistently in `MultiModalMAE.__init__`,
+`build_pretraining_model` (`core/multimae.py`) and
+`PairedPretrainDataset`/`build_pretraining_dataset` (`data/`).
+
+`PairedPretrainDataset` serves **exactly** the requested streams: e.g.
+`streams: rgb,bvp` returns only `{'rgb','bvp'}`, while the default five-stream
+configs return all of `{'rgb','tir','bvp','resp','eda'}`. So trimming/ablating
+modalities (while keeping the ≥1 video + ≥1 physio rule) is a YAML-only
+change. Per-stream mask ratios: visual `mask_ratio_rgb/tir` 50–75 %, signals
+`mask_ratio_bvp/resp/eda` 90 %+.
+
 Implemented and run so far (see the thesis-plan table below): canonical BP4D
 conversion, the aligned `PairedSessionDataset` (+ overlapping windows via
 `clip_stride`), the multimodal masked autoencoder `core/multimae.py`
@@ -102,17 +120,19 @@ step-level warmup/cosine schedule via `utils/lr_sched.py`), MAE ViT-Base
 encoder inheritance (`load_pretrained_encoder`), and the Stage-3 waveform
 scaffold (`run_waveform.py`, `WaveformJointLoss`, `evaluation/`).
 
-Not yet implemented: RESP/EDA streams in Stage 2, a finer Stage-3 temporal
-decoder, and the *session-level* reconstruction/stitching that turns per-clip
-predictions into one continuous whole-session waveform (a planned offline
-inference step — per-clip training is clip-level by design).
+Not yet implemented: a finer Stage-3 temporal decoder, and the *session-level*
+reconstruction/stitching that turns per-clip predictions into one continuous
+whole-session waveform (a planned offline inference step — per-clip training is
+clip-level by design). (RESP/EDA streams in Stage 2 *are* implemented — the
+local configs now train all five streams, see the flexible-modalities
+subsection above.)
 
 ## Thesis plan alignment (ImplementationPlan.md)
 
 | Plan stage                                                                             | Supported here                                                                                                                                                                                                                                                                                                                                                      | Still to port (thesis work)                                                                                                                                                                                                                                                                       |
 | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Stage 1 — ImageNet init of ViT-Base encoder                                           | `core/model.py` entrypoints (`project_vit_base_patch16_224`)                                                                                                                                                                                                                                                                                                    | official ImageNet-1K timm classifier converter (MAE ViT-Base inheritance already implemented:`core/multimae.py::load_pretrained_encoder`, 2-D -> 3-D rgb tubelet inflation via `--pretrained_encoder`)                                                                                        |
-| Stage 2 — multimodal masked pre-training on BP4D+ (RGB/TIR 50-75%, BVP/RESP/EDA 90%+) | `core/input_adapters.py` (`SignalInputAdapter`), `data/masking_generator.py` (`MultiModalMaskingGenerator` asymmetric), `core/criterion.py` (masked L1/MSE), config template `configs/pretrain/stage2_multimodal.yaml`; implemented local milestone: `core/multimae.py` (`MultiModalMAE`) + `PairedPretrainDataset` + `runners/run_pretrain.py` | RESP/EDA streams, separate deeper decoders, full-data HPC run at 224. Local rgb+tir+bvp milestone is implemented & run:`core/multimae.py` (`MultiModalMAE`), `data/paired_dataset.PairedPretrainDataset`, `runners/run_pretrain.py`, `configs/pretrain/stage2_local{,_pretrained}.yaml` |
+| Stage 2 — multimodal masked pre-training on BP4D+ (RGB/TIR 50-75%, BVP/RESP/EDA 90%+) | `core/input_adapters.py` (`SignalInputAdapter`), `data/masking_generator.py` (`MultiModalMaskingGenerator` asymmetric), `core/criterion.py` (masked L1/MSE), config template `configs/pretrain/stage2_multimodal.yaml`; implemented local milestone: `core/multimae.py` (`MultiModalMAE`) + `PairedPretrainDataset` + `runners/run_pretrain.py` | separate deeper decoders; full-data HPC run at larger 224 geometry. Local five-stream milestone (rgb+tir+bvp+resp+eda) is implemented & run:`core/multimae.py` (`MultiModalMAE`), `data/paired_dataset.PairedPretrainDataset`, `runners/run_pretrain.py`, `configs/pretrain/stage2_local{,_pretrained}.yaml` |
 | Stage 3 — three branches BVP, RESP & EDA, unified spatio-temporal-spectral loss       | `core/waveform_losses.py` (`WaveformJointLoss`: L1 + Pearson + MR-STFT; 64/128/256 for BVP/RESP, 256/512/1024 for EDA), regression head (`ProjectViT(output_len=...)`, baseline CLS->seq), `runners/run_waveform.py`, configs `configs/finetune/{bvp,resp,eda}.yaml`                                                                                      | lightweight conv decoder over all tokens for finer temporal resolution; session-level whole-waveform reconstruction/stitching (offline inference, not yet implemented)                                                                                                                            |
 | Evaluation — Tier 1/2/3 post-processing                                               | `evaluation/metrics.py` (MAE/RMSE/Pearson; Welch PSD), `evaluation/clinical.py` (NeuroKit2 RMSSD/pNN50/MedianNN/ShanEn), `runners/run_evaluate.py`                                                                                                                                                                                                            | —                                                                                                                                                                                                                                                                                                |
 

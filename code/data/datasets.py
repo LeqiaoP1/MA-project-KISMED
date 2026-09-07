@@ -64,13 +64,24 @@ def build_dataset(is_train: bool, test_mode: bool, args):
 
 
 def build_pretraining_dataset(args):
-    """Build the masked pre-training dataset (Stage 2, first local milestone).
+    """Build the masked pre-training dataset (Stage 2, multimodal MAE).
 
-    Streams returned per sample: ``{'rgb','tir','bvp'}`` (dict of aligned
-    per-stream tensors). PRETRAIN-ON-ALL: no split, every session is used.
+    The dataset serves exactly the modalities listed in ``args.streams``.
+    Stage-2 CONTRACT: at least TWO modalities -- >=1 video (``rgb``/``tir``)
+    AND >=1 physiological 1-D signal (``bvp``/``resp``/``eda``, the Stage-3
+    reconstruction target). PRETRAIN-ON-ALL: no split, every session is used.
     Per-stream masks are produced inside the multimodal MAE forward pass.
     """
     from .paired_dataset import PairedPretrainDataset
+
+    streams = tuple(s.strip() for s in
+                    str(getattr(args, 'streams', 'rgb,tir,bvp')).split(',')
+                    if s.strip())
+    if not streams:
+        raise ValueError(
+            'build_pretraining_dataset: --streams must name at least two '
+            'modalities (>=1 video rgb/tir and >=1 physiological 1-D '
+            'bvp/resp/eda); got an empty list.')
 
     return PairedPretrainDataset(
         data_path=getattr(args, 'data_path', ''),
@@ -80,6 +91,7 @@ def build_pretraining_dataset(args):
         clip_stride=getattr(args, 'clip_stride', None) or None,
         seq_len=getattr(args, 'seq_len', None) or None,
         input_size=getattr(args, 'input_size', 64),
+        streams=streams,
         max_sessions=getattr(args, 'max_sessions', None),
         max_clips=getattr(args, 'max_clips', None),
         max_entries=getattr(args, 'max_entries', None))

@@ -24,7 +24,7 @@ NOTE: the spatio-temporal video *model* front-end is the remaining port (see
 code/README.md Stage 1) -- this module only produces the synchronised inputs.
 """
 import os
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -42,6 +42,9 @@ _SIGNAL_ALIASES = {'bvp': ('bvp', 'ppg', 'pulse'),
                    'resp': ('resp', 'respiration'),
                    'eda': ('eda', 'gsr', 'scr', 'electrodermal')}
 
+#: visual stream names the Stage-2 dataset can serve (RGB 3ch, TIR 1ch)
+_PRETRAIN_VISUAL_STREAMS = ('rgb', 'tir')
+
 
 def _first_col(header: List[str], aliases: Tuple[str, ...]) -> Optional[str]:
     low = [h.strip().lower() for h in header]
@@ -49,6 +52,21 @@ def _first_col(header: List[str], aliases: Tuple[str, ...]) -> Optional[str]:
         if alias in low:
             return header[low.index(alias)]
     return None
+
+
+def _canonical_signals(cols: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+    """Map raw csv columns -> canonical stream names ``{'bvp','resp','eda'}``.
+
+    Only streams whose csv column resolves via :data:`_SIGNAL_ALIASES` are
+    included; missing streams are simply absent from the returned dict (callers
+    decide whether that absence is an error).
+    """
+    out = {}
+    for canon, aliases in _SIGNAL_ALIASES.items():
+        col = _first_col(list(cols.keys()), aliases)
+        if col is not None:
+            out[canon] = np.nan_to_num(cols[col]).astype(np.float32)
+    return out
 
 
 def _load_signals_csv(path: str, fs: float) -> Tuple[Dict[str, np.ndarray], float]:
@@ -165,20 +183,22 @@ class PairedSessionDataset(Dataset):
         self.entries = []          # (session_meta, t_start_s)
         self._tir_cache = {}
         self._sig_cache = {}
+        self._sig_all = {}          # session -> {canonical signal name: array}
         self._files_cache = {}
 
         for s in sessions:
             sig_path = s['signals_file']
             cols, fs_real = _load_signals_csv(sig_path, self.fs)
             s['fs'] = fs_real                      # per-session true sample rate
-            for alias in _SIGNAL_ALIASES[target]:
-                if alias in cols:
-                    sig = cols[alias]
-                    break
-            else:
+            # cache EVERY canonical signal stream present (bvp/resp/eda) from
+            # a single csv parse, so subclasses (Stage-2 multimodal pretraining)
+            # can read extra streams without re-parsing the file.
+            canon = _canonical_signals(cols)
+            self._sig_all[s['session']] = canon
+            if target not in canon:
                 raise ValueError(
                     f'{sig_path}: no column for {target}; header={list(cols)}')
-            self._sig_cache[s['session']] = np.nan_to_num(sig).astype(np.float32)
+            self._sig_cache[s['session']] = canon[target]
 
             rgb_files = vio.list_image_files(s['rgb_dir'])
             self._files_cache[s['session']] = rgb_files
@@ -193,7 +213,7 @@ class PairedSessionDataset(Dataset):
             dur = align.available_duration([
                 len(rgb_files) / self.fps_rgb,
                 len(self._tir_cache[s['session']]) / s['tir_fps'],
-                len(sig) / s['fs']])
+                len(canon[target]) / s['fs']])
             stride = self.clip_stride
             # windows start at 0, stride, ... while the window still fits
             if dur >= self.clip_duration:
@@ -227,41 +247,54 @@ class PairedSessionDataset(Dataset):
             raise IndexError('RGB read range out of bounds')
         return np.stack(frames, axis=0).astype(np.float32) / 255.0   # [T,H,W,3]
 
-    def __getitem__(self, idx):
-        s, t_start = self.entries[idx]
-        session = s['session']
-
-        rgb_files = self._files_cache[session]
-        tir_frames = self._tir_cache[session]          # [T, H, W] uint8
-        sig = self._sig_cache[session]
+    def _signal_at(self, s, t_start: float, name: str) -> np.ndarray:
+        """Canonical signal ``name`` over this clip, resampled to ``seq_len``."""
+        sig = self._sig_all[s['session']][name]
         fs_s = s['fs']
-
-        # common time grid between both videos
         plan = align.plan_clip(t_start, self.clip_duration,
                                self.fps_rgb, s['tir_fps'], fs_s)
+        sig_slice = align.slice_1d(
+            sig, fs_s, start=plan['signal']['start'], n=plan['signal']['n'])
+        return align.resample_1d(
+            sig_slice, fs_s, float(self.seq_len / self.clip_duration),
+            length=self.seq_len)
 
-        rgb = self._get_rgb(rgb_files, plan['rgb']['indices'])
+    def _load_rgb(self, s, t_start: float) -> torch.Tensor:
+        """RGB clip ``[3, T, H, W]`` on the common time grid."""
+        session = s['session']
+        plan = align.plan_clip(t_start, self.clip_duration,
+                               self.fps_rgb, s['tir_fps'], s['fs'])
+        rgb = self._get_rgb(self._files_cache[session],
+                            plan['rgb']['indices'])
+        tgt_t = plan['rgb']['n']
+        rgb = _pad_time(rgb, tgt_t)
+        return torch.from_numpy(rgb).permute(3, 0, 1, 2)       # [3,T,H,W]
+
+    def _load_tir(self, s, t_start: float) -> torch.Tensor:
+        """TIR clip ``[1, T, H, W]`` on the common time grid."""
+        session = s['session']
+        tir_frames = self._tir_cache[session]          # [T, H, W] uint8
+        plan = align.plan_clip(t_start, self.clip_duration,
+                               self.fps_rgb, s['tir_fps'], s['fs'])
         tir_idx = plan['tir']['indices']
         tir_idx = tir_idx[(tir_idx >= 0) & (tir_idx < len(tir_frames))]
         tir = tir_frames[tir_idx].astype(np.float32) / 255.0   # [T,H,W]
         tir = tir[..., None]                                   # [T,H,W,1]
+        # pad/trim to the RGB grid so both visuals share the same T
+        tir = _pad_time(tir, plan['rgb']['n'])
+        return torch.from_numpy(tir).permute(3, 0, 1, 2)       # [1,T,H,W]
 
-        # pad/trim the two streams to the same T on the common grid
-        tgt_t = plan['rgb']['n']
-        rgb = _pad_time(rgb, tgt_t)
-        tir = _pad_time(tir, tgt_t)
+    def _load_visual(self, s, t_start: float) -> torch.Tensor:
+        """Aligned RGB+TIR clip stack ``[4, T, H, W]`` on the common grid."""
+        rgb = self._load_rgb(s, t_start)
+        tir = self._load_tir(s, t_start)
+        return torch.cat([rgb, tir], dim=0)                    # [4,T,H,W]
 
+    def __getitem__(self, idx):
+        s, t_start = self.entries[idx]
+        samples = self._load_visual(s, t_start)
         # target waveform on the same window, resampled to seq_len
-        sig_slice = align.slice_1d(
-            sig, fs_s, start=plan['signal']['start'], n=plan['signal']['n'])
-        target = align.resample_1d(
-            sig_slice, fs_s, float(self.seq_len / self.clip_duration),
-            length=self.seq_len)
-
-        # [C, T, H, W] = 3xRGB + 1xTIR
-        rgb = torch.from_numpy(rgb).permute(3, 0, 1, 2)        # [3,T,H,W]
-        tir = torch.from_numpy(tir).permute(3, 0, 1, 2)        # [1,T,H,W]
-        samples = torch.cat([rgb, tir], dim=0)                 # [4,T,H,W]
+        target = self._signal_at(s, t_start, self.target)
         return samples, torch.from_numpy(target)
 
 
@@ -276,22 +309,23 @@ def _pad_time(arr: np.ndarray, t: int) -> np.ndarray:
 
 
 class PairedPretrainDataset(PairedSessionDataset):
-    """Stage-2 multimodal masked-pretraining dataset (first local milestone).
+    """Stage-2 masked-pretraining dataset with FLEXIBLE modalities.
 
     Reuses ``PairedSessionDataset`` (aligned RGB/TIR frames + 1-D signals on a
-    common time grid) but returns a *dict of raw per-stream tensors* that the
-    multimodal MAE consumes::
+    common time grid) but returns a *dict of raw per-stream tensors* consumed
+    by the multimodal MAE. Exactly the streams listed in ``streams`` are
+    returned, e.g.::
 
-        {'rgb': torch [3, T, H, W],   # float in ~[0, 1]
-         'tir': torch [1, T, H, W],
-         'bvp': torch [1, seq_len]}   # raw waveform over the same window
+        streams = ('rgb', 'bvp')       -> video + physio (Stage-2 minimum)
+        streams = ('rgb','tir','bvp')  -> two video + one physio
+        streams = ('rgb','tir','bvp','resp','eda') -> all five
 
-    Split policy = PRETRAIN-ON-ALL: every session is used for training
-    (``train_ratio=1.0``, no subject-disjoint pretrain split). Masking is
+    Stage-2 CONTRACT: ``streams`` must contain at least TWO modalities --
+    >=1 video (``rgb``/``tir``) AND >=1 physiological 1-D signal
+    (``bvp``/``resp``/``eda``, the waveform later regressed in Stage 3);
+    video-only or signal-only lists are rejected. Split policy =
+    PRETRAIN-ON-ALL: every session is used (``train_ratio=1.0``). Masking is
     applied inside the model forward, not here.
-
-    NOTE: signal streams beyond BVP (resp/eda) are a later extension; caching
-    more columns in ``_sig_cache`` mirrors the target loop below.
     """
 
     def __init__(self, data_path: str, fs: float = 100.0, fps: float = 25.0,
@@ -300,11 +334,41 @@ class PairedPretrainDataset(PairedSessionDataset):
                  seq_len: Optional[int] = None,
                  input_size: int = 64, rgb_dir: str = 'rgb',
                  tir_file: str = 'tir.wmv', signals_file: str = 'signals.csv',
+                 streams: Sequence[str] = ('rgb', 'tir', 'bvp', 'resp', 'eda'),
                  max_sessions: Optional[int] = None,
                  max_clips: Optional[int] = None,
                  max_entries: Optional[int] = None):
+        streams = tuple(streams)
+        if not streams:
+            raise ValueError(
+                'PairedPretrainDataset: Stage-2 needs at least TWO streams '
+                '(>=1 video and >=1 physiological 1-D signal); got an empty '
+                'list.')
+        allowed = _PRETRAIN_VISUAL_STREAMS + tuple(_SIGNAL_ALIASES)
+        unknown = [s for s in streams if s not in allowed]
+        if unknown:
+            raise ValueError(
+                f'PairedPretrainDataset: unknown stream(s) {unknown}; '
+                f'allowed streams: {allowed}')
+        self.streams = streams
+        self.visual_streams = tuple(
+            s for s in streams if s in _PRETRAIN_VISUAL_STREAMS)
+        self.signal_streams = tuple(
+            s for s in streams if s not in _PRETRAIN_VISUAL_STREAMS)
+        # Stage-2 contract: >=1 video (rgb/tir) AND >=1 1-D physiological
+        # (bvp/resp/eda); the physio stream(s) are the Stage-3 targets.
+        if not self.visual_streams or not self.signal_streams:
+            raise ValueError(
+                'PairedPretrainDataset: Stage-2 requires >=1 video stream '
+                f'({", ".join(_PRETRAIN_VISUAL_STREAMS)}) AND >=1 '
+                f'physiological 1-D stream ({", ".join(_SIGNAL_ALIASES)}); '
+                f'got visual={self.visual_streams}, '
+                f'signal={self.signal_streams}.')
+
+        # the base loader only needs ONE signal to size/fs the window.
+        target = self.signal_streams[0]
         super().__init__(
-            data_path=data_path, target='bvp',
+            data_path=data_path, target=target,
             is_train=True, test_mode=True,
             fs=fs, fps=fps, clip_duration=clip_duration,
             clip_stride=clip_stride, seq_len=seq_len,
@@ -313,14 +377,30 @@ class PairedPretrainDataset(PairedSessionDataset):
             max_sessions=max_sessions, max_clips=max_clips,
             max_entries=max_entries)
 
+        # every requested 1-D stream must exist in each cached session's csv
+        checked = set()
+        for meta, _ in self.entries:
+            if meta['session'] in checked:
+                continue
+            checked.add(meta['session'])
+            avail = set(self._sig_all[meta['session']])
+            missing = [s for s in self.signal_streams if s not in avail]
+            if missing:
+                raise ValueError(
+                    f'{meta["signals_file"]}: requested stream(s) {missing} '
+                    f'missing; available: {sorted(avail)}')
+
     def __getitem__(self, idx):
-        # super(): samples [4,T,H,W] = RGB(3) + TIR(1); bvp [seq_len]
-        samples, bvp = super().__getitem__(idx)
-        return {
-            'rgb': samples[:3],     # [3, T, H, W]
-            'tir': samples[3:4],    # [1, T, H, W]
-            'bvp': bvp.unsqueeze(0)  # [1, seq_len]
-        }
+        s, t_start = self.entries[idx]
+        out = {}
+        if 'rgb' in self.visual_streams:
+            out['rgb'] = self._load_rgb(s, t_start)       # [3, T, H, W]
+        if 'tir' in self.visual_streams:
+            out['tir'] = self._load_tir(s, t_start)       # [1, T, H, W]
+        for name in self.signal_streams:
+            w = self._signal_at(s, t_start, name)         # np [seq_len]
+            out[name] = torch.from_numpy(w).unsqueeze(0)  # [1, seq_len]
+        return out
 
 
 def build_paired_dataset(is_train: bool, test_mode: bool, args):

@@ -1,5 +1,6 @@
 # Stage 2 -- FIRST LOCAL overfit/smoke slice (do NOT run on HPC as-is).
-# Decisions: Q1 = 3-D tubelet VideoMAE-style front-end; Q2 = rgb+tir+bvp only.
+# Decisions: Q1 = 3-D tubelet VideoMAE-style front-end;
+#            Q2 = rgb+tir+bvp+resp+eda (all five streams).
 # Goal: prove adapters <-> encoder <-> decoder <-> loss wiring end-to-end:
 # masked loss should drop towards ~0 on this tiny setup before any real run.
 #
@@ -8,7 +9,9 @@
 model: project_multimae_small      # triggers the multimodal builder in run_pretrain
 
 # ---- streams & tokenizer geometry ----
-streams: rgb,tir,bvp
+# Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bvp/resp/eda).
+# All five = rgb,tir,bvp,resp,eda; ablate by trimming (e.g. rgb,bvp).
+streams: rgb,tir,bvp,resp,eda
 tubelet: 2,16,16                   # (temporal, H, W) tubelet
 fs: 100.0
 fps: 25.0
@@ -19,11 +22,14 @@ input_size: 64                     # square; patch 16 => 4x4 spatial grid
 # ---- asymmetric masking (visual 50-75%, signals 90%+) ----
 mask_ratio_rgb: 0.75
 mask_ratio_tir: 0.50
+# 1-D physio streams are masked hardest (90%+) in Stage 2
 mask_ratio_bvp: 0.90
+mask_ratio_resp: 0.90
+mask_ratio_eda: 0.90
 
 # ---- Stage-2 loss: per-modality masked MSE (masked positions only), ----
 # then a WEIGHTED sum. Default policy: lambda_RGB = lambda_TIR = 1.0 and each
-# physio stream (here: bvp) gets lambda = signal_weight. Tune signal_weight in
+# physio stream (bvp/resp/eda) gets lambda = signal_weight. Tune signal_weight in
 # ~[0.5, 1.0] from the NORMALIZED VARIANCE of the physio stream's masked target
 # tokens: high variance -> lean 0.5 (avoid the 1-D signal dominating the loss
 # gradient); low variance -> lean 1.0 (avoid it being ignored). loss_weights

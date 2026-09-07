@@ -1,7 +1,11 @@
-"""Multimodal masked autoencoder for Stage-2 pre-training (first local milestone).
+"""Multimodal masked autoencoder for Stage-2 pre-training.
 
-Streams (milestone): ``rgb`` + ``tir`` (3-D tubelet spatio-temporal video) and
-``bvp`` (1-D physiological signal). Pipeline inside ``MultiModalMAE.forward``:
+Streams: ``rgb`` + ``tir`` (3-D tubelet spatio-temporal video) plus any
+physiological 1-D signals (``bvp`` / ``resp`` / ``eda``; milestone runs
+``rgb,tir,bvp``). STAGE-2 CONTRACT: at least TWO streams -- >=1 video
+(rgb/tir) AND >=1 physiological 1-D signal (bvp/resp/eda, the waveform
+later regressed in Stage 3). All-visual or all-signal stream lists are
+rejected. Pipeline inside ``MultiModalMAE.forward``:
 
   * per-stream adapters -> tokens (+ learned positional embedding)
   * per-stream ASYMMETRIC masks: tube masks for the videos, random-window for
@@ -18,10 +22,12 @@ Streams (milestone): ``rgb`` + ``tir`` (3-D tubelet spatio-temporal video) and
 
 Tensor layouts::
 
-    x = {'rgb': [B, 3, T, H, W], 'tir': [B, 1, T, H, W], 'bvp': [B, 1, S]}
+    x = {'rgb': [B, 3, T, H, W],
+         'tir': [B, 1, T, H, W],
+         'bvp': [B, 1, S]}    # any physio stream (resp/eda share this layout)
 
-TODO(extend): resp/eda streams, MultiMAE-style prediction-task sampling,
-separate deeper decoders, 3-D sincos pos-embed, visual-stream weight sharing.
+TODO(extend): MultiMAE-style prediction-task sampling, separate deeper
+per-stream decoders, 3-D sincos pos-embed, visual-stream weight sharing.
 """
 from typing import Dict, Optional, Sequence, Tuple
 
@@ -38,6 +44,7 @@ __all__ = ['TubeletEmbed', 'MultiModalMAE', 'build_pretraining_model',
 
 _EPS = 1e-6
 _VISUAL_STREAMS = ('rgb', 'tir')
+_SIGNAL_STREAMS = ('bvp', 'resp', 'eda')
 
 
 # --------------------------------------------------------------------------- #
@@ -108,8 +115,27 @@ class MultiModalMAE(nn.Module):
                  loss_weights: Optional[Dict[str, float]] = None):
         super().__init__()
         self.streams = list(streams)
+        if not self.streams:
+            raise ValueError(
+                'MultiModalMAE: Stage-2 needs at least TWO streams (>=1 video '
+                'and >=1 physiological 1-D signal); got an empty list.')
+        unknown = [s for s in self.streams
+                   if s not in _VISUAL_STREAMS and s not in _SIGNAL_STREAMS]
+        if unknown:
+            raise ValueError(
+                f'MultiModalMAE: unknown stream(s) {unknown}; allowed: '
+                f'{_VISUAL_STREAMS + _SIGNAL_STREAMS}')
         self.visual = [s for s in self.streams if s in _VISUAL_STREAMS]
         self.signal = [s for s in self.streams if s not in _VISUAL_STREAMS]
+        # Stage-2 contract: >=1 video (rgb/tir) AND >=1 1-D physiological
+        # (bvp/resp/eda) -- the physio stream(s) are the Stage-3 regression
+        # targets, so video-only or signal-only runs are not allowed.
+        if not self.visual or not self.signal:
+            raise ValueError(
+                'MultiModalMAE: Stage-2 requires >=1 video stream '
+                f'({", ".join(_VISUAL_STREAMS)}) AND >=1 physiological 1-D '
+                f'stream ({", ".join(_SIGNAL_STREAMS)}); got '
+                f'visual={self.visual}, signal={self.signal}.')
 
         t, ph, pw = tubelet
         assert input_size % ph == 0 and input_size % pw == 0, \
@@ -357,6 +383,18 @@ def build_pretraining_model(args):
     streams = tuple(x.strip() for x in
                     str(getattr(args, 'streams', 'rgb,tir,bvp')).split(',')
                     if x.strip())
+    if not streams:
+        raise ValueError(
+            'build_pretraining_model: --streams must name at least two '
+            'modalities (>=1 video rgb/tir and >=1 physiological 1-D '
+            'bvp/resp/eda).')
+    if not any(s in _VISUAL_STREAMS for s in streams) or \
+            not any(s in _SIGNAL_STREAMS for s in streams):
+        raise ValueError(
+            'build_pretraining_model: Stage-2 needs >=1 video stream '
+            f'({", ".join(_VISUAL_STREAMS)}) AND >=1 physiological 1-D '
+            f'stream ({", ".join(_SIGNAL_STREAMS)}); got --streams '
+            f'"{",".join(streams)}".')
     tubelet = _parse_int_csv(getattr(args, 'tubelet', '2,16,16'))
 
     clip_duration = float(getattr(args, 'clip_duration', 4.0))
@@ -367,7 +405,9 @@ def build_pretraining_model(args):
 
     ratios = {'rgb': float(getattr(args, 'mask_ratio_rgb', 0.75)),
               'tir': float(getattr(args, 'mask_ratio_tir', 0.50)),
-              'bvp': float(getattr(args, 'mask_ratio_bvp', 0.90))}
+              'bvp': float(getattr(args, 'mask_ratio_bvp', 0.90)),
+              'resp': float(getattr(args, 'mask_ratio_resp', 0.90)),
+              'eda': float(getattr(args, 'mask_ratio_eda', 0.90))}
 
     # per-modality masked-MSE weights. ``signal_weight`` gives every physio
     # (non-visual) stream the same lambda (visual streams stay 1.0); a

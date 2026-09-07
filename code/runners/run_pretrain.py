@@ -50,12 +50,17 @@ def get_args():
                         help='frame short-side resize/crop (square)')
     # multimodal MAE (Stage 2)
     parser.add_argument('--streams', default='rgb,tir,bvp', type=str,
-                        help='comma list of pretraining streams')
+                        help='comma list of pretraining streams. Stage-2 '
+                             'requires >=2: >=1 of rgb,tir (video) AND >=1 '
+                             'of bvp,resp,eda (1-D physio, Stage-3 target), '
+                             'e.g. rgb,bvp or rgb,tir,bvp,resp,eda')
     parser.add_argument('--tubelet', default='2,16,16', type=str,
                         help='tubelet (t, ph, pw) for the video tokenizer')
     parser.add_argument('--mask_ratio_rgb', default=0.75, type=float)
     parser.add_argument('--mask_ratio_tir', default=0.50, type=float)
     parser.add_argument('--mask_ratio_bvp', default=0.90, type=float)
+    parser.add_argument('--mask_ratio_resp', default=0.90, type=float)
+    parser.add_argument('--mask_ratio_eda', default=0.90, type=float)
     parser.add_argument('--loss_weights', default='', type=str,
                         help='FULL per-stream override of the per-modality '
                              'masked-MSE weights: comma list, ONE value per '
