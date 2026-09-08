@@ -68,6 +68,9 @@ python runners/run_waveform.py -c configs/finetune/eda.yaml
 python runners/run_evaluate.py --pred_path out.npy --target_path gt.npy \
     --fs 100 --tier 1,2,3 --waveform bvp
 
+# (4) OPTIONAL ADD-ON diagnostic: AU-occurrence probe on the Stage-2 encoder
+python runners/run_au_probe.py -c configs/finetune/au_local.yaml
+
 # multi-GPU (HPC)
 bash scripts/project/pretrain.sh
 bash scripts/project/finetune.sh
@@ -129,6 +132,11 @@ subsection above.)
 
 ## Thesis plan alignment (ImplementationPlan.md)
 
+> **ADD-ON (not a pipeline stage):** the *AU-occurrence probe* (semantic
+> representation quality, `runners/run_au_probe.py`) is a separate diagnostic
+> on the Stage-2 encoder — it is not part of the three-stage pipeline above.
+> See the dedicated AU-probe subsection below and `code/ImplementationPlan.md` §5.
+
 | Plan stage                                                                             | Supported here                                                                                                                                                                                                                                                                                                                                                      | Still to port (thesis work)                                                                                                                                                                                                                                                                       |
 | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Stage 1 — ImageNet init of ViT-Base encoder                                           | `core/model.py` entrypoints (`project_vit_base_patch16_224`)                                                                                                                                                                                                                                                                                                    | official ImageNet-1K timm classifier converter (MAE ViT-Base inheritance already implemented:`core/multimae.py::load_pretrained_encoder`, 2-D -> 3-D rgb tubelet inflation via `--pretrained_encoder`)                                                                                        |
@@ -181,6 +189,55 @@ and `max_entries` bounds the global total number of clips in the dataset.
 than `clip_duration` to generate overlapping windows and thus more samples per
 session; combined with `max_clips` it keeps only the earliest windows of each
 session.
+
+### AU-occurrence probe — Semantic Representation Quality (ADD-ON)
+
+A **diagnostic control, not a Stage-1/2/3 step**. Its claim: Stage-2
+unsupervised masked pre-training should make FACS facial-action semantics
+linearly decodable from the (frozen) shared encoder. It is implemented as an
+independent, self-contained module that re-uses the Stage-2 shared encoder
+(identical module names/geometry); **no Stage code is modified**.
+
+* **Task & label.** Per RGB **clip** (length == the Stage-2 `num_frames` =
+  `clip_duration * fps`), predict ONE multi-label AU occurrence vector,
+  supervised by the **centre frame** only (temporal context; centre-anchored).
+  AU value `9` (unknown) is dropped — never treated as absent.
+* **Data.** Canonical `rgb/` frames + raw BP4D+ `AUCoding/AU_OCC/<Session>.csv`
+  (AU-coded tasks **T1/T6/T7/T8**, 140 subjects × 4). AU frame `f` ⇔ jpg
+  number `f-1`. **Subject-disjoint** train/val splits (never frame/session).
+* **Loss / metric.** Multi-label BCE; per-AU F1 @0.5 and macro-F1 over the
+  target AU set (BP4D protocol). Report a per-AU *trivial baseline* too: coded
+  segments are the "most expressive" ~15–28 s, so some AUs are near-constant.
+* **Probe modes & controls** (identical protocol; only `--finetune` differs):
+  * `--probe linear` (default) freezes the encoder ⇒ the formal diagnostic;
+    `--probe ft` fine-tunes the whole model.
+  * C0 random init (`--finetune ''`), C1 Stage-1 MAE/ImageNet
+    (`../models/mae_pretrain_vit_base.pth`), **C2 Stage-2** (headline).
+* **Configurable AU set.** `--au_list` (explicit, string or YAML list) **or**
+  `--au_freq_topk N` (top-N by presence rate over the full AU corpus;
+  `5` ⇒ AU6/7/10/12/14); default = the BP4D 12-AU subset. The head width,
+  dataset label columns and per-AU table all follow the resolved list.
+* **Geometry contract.** `tubelet`, `input_size`, `clip_duration`,
+  `enc_embed_dim`, `enc_depth`, `enc_num_heads`, `mlp_ratio` MUST match the
+  probed Stage-2 checkpoint (the loader raises on mismatch instead of silently
+  loading nothing). Visual-stream input only (no physio leakage).
+* **Files.** `core/au_probe.py` (probe model + checkpoint loader),
+  `data/au_dataset.py` (dataset + subject split + AU-set resolution),
+  `engines/au_probe.py` (BCE train + per-AU F1 eval),
+  `runners/run_au_probe.py`, configs `configs/finetune/au_local{,_pretrained}.yaml`,
+  launcher `scripts/local/au_smoke.sh`. Details & status:
+  `code/ImplementationPlan.md` §5.
+
+```bash
+# AU probe (linear, Stage-2 ckpt); local smoke via scripts/local/au_smoke.sh
+python runners/run_au_probe.py -c configs/finetune/au_local.yaml
+python runners/run_au_probe.py -c configs/finetune/au_local_pretrained.yaml
+# controls / AU subset
+python runners/run_au_probe.py -c configs/finetune/au_local_pretrained.yaml \
+    --finetune ../models/mae_pretrain_vit_base.pth          # C1 Stage-1 (768-d)
+python runners/run_au_probe.py -c configs/finetune/au_local.yaml \
+    --au_list '' --au_freq_topk 5                            # top-5 frequent AUs
+```
 
 ## Suggested port order
 

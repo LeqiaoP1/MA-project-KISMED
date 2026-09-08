@@ -1,0 +1,61 @@
+# AU-occurrence probe -- LOCAL smoke / dev (linear probe, small geometry).
+# ADD-ON diagnostic: does the Stage-2 shared encoder linearly separate FACS
+# AU occurrence? Controls are selected by changing --finetune / via YAML:
+#   C0 random init   : finetune: ''            (lower bound)
+#   C2 Stage-2       : finetune: ../output/pretrain/stage2_local/checkpoints/checkpoint-0039.pth
+#
+# IMPORTANT (geometry contract): every encoder field below (tubelet,
+# input_size, clip_duration -> num_frames, enc_embed_dim, enc_depth,
+# enc_num_heads, mlp_ratio) MUST reproduce the geometry of the Stage-2 run
+# whose checkpoint is probed. Here it mirrors configs/pretrain/stage2_local.yaml
+# (enc 192/6/6, clip_duration 4.0 s => num_frames 100, input 64).
+#
+# Run from code/:  python runners/run_au_probe.py -c configs/finetune/au_local.yaml
+
+# ---- data (canonical rgb + raw AU_OCC csv) ----
+data_path: ../data/processed/bp4d_canonical
+au_root: ../data/raw/BP4D/AUCoding/AU_OCC
+# Target AU set is CONFIGURABLE. Either an explicit list ...
+au_list: 1,2,4,6,7,10,12,14,15,17,23,24
+# ... or auto-select by frequency (empty au_list + this > 0). The 5 most
+# frequent AUs are the near-constant expressive ones: AU6, AU7, AU10, AU12, AU14.
+# au_list: ''        # (clear the default above when using au_freq_topk)
+# au_freq_topk: 5
+streams: rgb
+
+# subject-disjoint split (only F001..F004 media locally -> 3 train / 1 val)
+train_ratio: 0.75
+# or explicit: train_subjects: F001,F002,F003   val_subjects: F004
+
+# ---- probe geometry (must equal the Stage-2 checkpoint) ----
+tubelet: 2,16,16
+fps: 25.0
+clip_duration: 4.0            # num_frames = 100 (even, symmetric window)
+input_size: 64
+enc_embed_dim: 192
+enc_depth: 6
+enc_num_heads: 6
+mlp_ratio: 4.0
+
+# ---- probe mode / init ----
+probe: linear                 # linear = frozen encoder + head (diagnostic)
+pool: mean
+finetune: ../output/pretrain/stage2_local/checkpoints/checkpoint-0039.pth
+
+# ---- dev caps (remove for the real run on full data) ----
+max_entries: 48               # per split; keeps local image I/O cheap
+max_sessions: 4
+
+# ---- training (tiny local smoke) ----
+epochs: 30
+batch_size: 4
+update_freq: 1
+eval_freq: 1
+save_ckpt_freq: 10
+opt: adamw
+# explicit ABSOLUTE LR (small local batch; do not use blr here)
+lr: 1.0e-3
+min_lr: 1.0e-4
+warmup_epochs: 3
+weight_decay: 0.05
+clip_grad: 0.0

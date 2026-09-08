@@ -1,0 +1,55 @@
+# AU-occurrence probe -- LOCAL smoke with the PRETRAINED-encoder Stage-2 run
+# (enc ViT-Base 768/12/12, mirrored from configs/pretrain/stage2_local_pretrained.yaml:
+# clip_duration 2.0 s => num_frames 50, input 64, tubelet 2,16,16).
+#
+# Controls with an IDENTICAL probe protocol (only --finetune changes):
+#   C1 Stage-1 (MAE/ImageNet only):
+#        finetune: ../models/mae_pretrain_vit_base.pth
+#   C2 Stage-2 (Stage-1 init + BP4D multimodal masked pre-training):
+#        finetune: ../output/pretrain/stage2_local_pretrained/checkpoints/checkpoint-0039.pth
+#   C0 random (lower bound):  finetune: ''
+#
+# Run from code/:  python runners/run_au_probe.py -c configs/finetune/au_local_pretrained.yaml
+
+# ---- data ----
+data_path: ../data/processed/bp4d_canonical
+au_root: ../data/raw/BP4D/AUCoding/AU_OCC
+# Target AU set is CONFIGURABLE. Explicit list (default) ...
+au_list: 1,2,4,6,7,10,12,14,15,17,23,24
+# ... or auto top-N by presence rate (5 => the most frequent AU6/7/10/12/14):
+# au_list: ''
+# au_freq_topk: 5
+streams: rgb
+train_ratio: 0.75
+
+# ---- probe geometry (ViT-Base stage-2_local_pretrained) ----
+tubelet: 2,16,16
+fps: 25.0
+clip_duration: 2.0            # num_frames = 50
+input_size: 64
+enc_embed_dim: 768
+enc_depth: 12
+enc_num_heads: 12
+mlp_ratio: 4.0
+
+# ---- probe mode / init (C2 default) ----
+probe: linear
+pool: mean
+finetune: ../output/pretrain/stage2_local_pretrained/checkpoints/checkpoint-0039.pth
+
+# ---- dev caps ----
+max_entries: 48
+max_sessions: 4
+
+# ---- training (tiny local smoke; 768-d so keep the batch small) ----
+epochs: 30
+batch_size: 2
+update_freq: 1
+eval_freq: 1
+save_ckpt_freq: 10
+opt: adamw
+lr: 1.0e-3
+min_lr: 1.0e-4
+warmup_epochs: 3
+weight_decay: 0.05
+clip_grad: 0.0
