@@ -217,6 +217,19 @@ independent, self-contained module that re-uses the Stage-2 shared encoder
   `--au_freq_topk N` (top-N by presence rate over the full AU corpus;
   `5` ⇒ AU6/7/10/12/14); default = the BP4D 12-AU subset. The head width,
   dataset label columns and per-AU table all follow the resolved list.
+* **Two local configs = two probe variants of the same control.** Each of
+  `configs/finetune/au_local.yaml` and `au_local_pretrained.yaml` probes ONE
+  locally-trained Stage-2 encoder, so each must mirror that checkpoint's
+  geometry: `au_local.yaml` -> `stage2_local` (small 192-d/6-layer from-scratch;
+  clip 4.0 s -> num_frames 100, batch 4, full 12-AU subset),
+  `au_local_pretrained.yaml` -> `stage2_local_pretrained` (MAE ViT-Base-inherited
+  768-d/12-layer; clip 2.0 s -> num_frames 50, batch 2, top-5 frequent AUs
+  `{6,7,10,12,14}`). The shorter windows + `batch_size 2` keep the ~16x bigger
+  768-d encoder within a LOCAL GPU (see the `Geometry contract` bullet). Within
+  one geometry, keep the protocol identical across C0/C1/C2 (C1 = the MAE
+  768-d checkpoint only fits the 768-d geometry). The two configs use DIFFERENT
+  AU sets by design, so they are not a head-to-head A/B of the two encoders -
+  fix one AU set before comparing across encoders.
 * **Geometry contract.** `tubelet`, `input_size`, `clip_duration`,
   `enc_embed_dim`, `enc_depth`, `enc_num_heads`, `mlp_ratio` MUST match the
   probed Stage-2 checkpoint (the loader raises on mismatch instead of silently

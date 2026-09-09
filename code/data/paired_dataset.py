@@ -214,6 +214,7 @@ class PairedSessionDataset(Dataset):
                 len(rgb_files) / self.fps_rgb,
                 len(self._tir_cache[s['session']]) / s['tir_fps'],
                 len(canon[target]) / s['fs']])
+            s['dur'] = dur                       # session's available duration
             stride = self.clip_stride
             # windows start at 0, stride, ... while the window still fits
             if dur >= self.clip_duration:

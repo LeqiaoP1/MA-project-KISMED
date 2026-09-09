@@ -2,23 +2,45 @@
 # (enc ViT-Base 768/12/12, mirrored from configs/pretrain/stage2_local_pretrained.yaml:
 # clip_duration 2.0 s => num_frames 50, input 64, tubelet 2,16,16).
 #
+# COUNTERPART of configs/finetune/au_local.yaml (which probes the SMALL
+# from-scratch encoder stage2_local, 192/6/6 @ clip 4.0 s, batch 4, full 12-AU
+# subset). Both are probe variants of the SAME linear-decodability control; the
+# geometry below MUST reproduce the probed checkpoint (stage2_local_pretrained,
+# MAE ViT-Base inherited) and protocol knobs must stay fixed across the
+# C0/C1/C2 runs of THIS geometry. RESOURCE RATIONALE: the 768-d encoder is
+# ~16x the 192-d one, so windows are shorter (2.0 s => num_frames 50, half of
+# au_local.yaml) and batch_size is 2 (not 4) to keep it on a LOCAL GPU
+# (stage2_local_pretrained.yaml made the same upstream choice).
+#
+# NOTE (AU set): this config deliberately probes the 5 most-frequent /
+# near-constant AUs {6,7,10,12,14} (au_local.yaml probes the full 12-AU
+# subset), so au_local{,_pretrained} are NOT a head-to-head A/B of the two
+# encoders -- for an encoder comparison fix ONE AU set; for a control ladder
+# within this geometry change only --finetune below.
+#
 # Controls with an IDENTICAL probe protocol (only --finetune changes):
+#   C0 random (lower bound):  finetune: ''
 #   C1 Stage-1 (MAE/ImageNet only):
 #        finetune: ../models/mae_pretrain_vit_base.pth
 #   C2 Stage-2 (Stage-1 init + BP4D multimodal masked pre-training):
 #        finetune: ../output/pretrain/stage2_local_pretrained/checkpoints/checkpoint-0039.pth
-#   C0 random (lower bound):  finetune: ''
 #
 # Run from code/:  python runners/run_au_probe.py -c configs/finetune/au_local_pretrained.yaml
 
 # ---- data ----
 data_path: ../data/processed/bp4d_canonical
 au_root: ../data/raw/BP4D/AUCoding/AU_OCC
-# Target AU set is CONFIGURABLE. Explicit list (default) ...
-au_list: 1,2,4,6,7,10,12,14,15,17,23,24
-# ... or auto top-N by presence rate (5 => the most frequent AU6/7/10/12/14):
+# Target AU set is CONFIGURABLE. au_local.yaml probes the full BP4D 12-AU
+# subset; THIS (pretrained-encoder) config deliberately probes the 5 most-
+# frequent / near-constant AUs below (see the header note). Keep the AU set
+# FIXED across the C0/C1/C2 runs of this geometry.
+#au_list: 1,2,4,6,7,10,12,14,15,17,23,24    # full-12 option (au_local.yaml)
+au_list: 6, 7, 10, 12, 14
+# ... or auto top-N by presence rate (5 => AU6/7/10/12/14):
 # au_list: ''
 # au_freq_topk: 5
+
+# input modality (RGB only for probe)
 streams: rgb
 train_ratio: 0.75
 

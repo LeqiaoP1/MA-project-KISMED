@@ -12,9 +12,14 @@ Usage (from ``code/``)::
     python runners/run_inspect_data.py --data_path ... --max_sessions 6 \
         --max_clips 2 --clip_duration 2 --input_size 64 --plot
 
-``--plot`` saves one PNG for EVERY clip of both splits (train + val) into
+``--plot`` saves one PNG per clip AND one per-session "all-clips overview"
+figure (window coverage/overlap, one colour per clip) into
 ``<output_dir>/figures/<split>/``; tensor stats always go to
 ``<output_dir>/inspect_summary.json``.
+
+By default (``--force``) any ``figures/`` and ``inspect_summary.json`` left
+over from a previous inspect run are erased first so stale previews never
+accumulate; pass ``--no-force`` to keep them.
 
 Window geometry: ``--clip_duration`` (default 10 s; ``seq_len = clip_duration *
 fs`` when ``--seq_len 0``) and per-session ``--max_clips``. The dataset is
@@ -27,8 +32,10 @@ The same command runs on a SLURM cluster (see ``scripts/hpc/submit_inspect.sbatc
 paths are typically injected through environment variables (see scripts/env_*.sh).
 """
 import argparse
+import itertools
 import json
 import os
+import shutil
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -85,6 +92,20 @@ def _session_counts(ds) -> dict:
     return counts
 
 
+def _wipe_inspect_outputs(output_dir: str):
+    """Remove the outputs a previous inspect run wrote under ``output_dir``.
+
+    Only inspect-managed artifacts are touched (the ``figures/`` tree and
+    ``inspect_summary.json``); anything else under ``output_dir`` is kept.
+    """
+    for target in (os.path.join(output_dir, 'figures'),
+                   os.path.join(output_dir, 'inspect_summary.json')):
+        if os.path.isdir(target):
+            shutil.rmtree(target, ignore_errors=True)
+        elif os.path.exists(target):
+            os.remove(target)
+
+
 def get_args():
     p = argparse.ArgumentParser('BP4D data-pipeline smoke test', add_help=False)
     p.add_argument('--data_path', default=_env('DATA_PATH', ''),
@@ -114,8 +135,15 @@ def get_args():
     p.add_argument('--input_size', default=64, type=int,
                    help='frame short-side resize/crop (small = faster smoke)')
     p.add_argument('--plot', action='store_true',
-                   help='save a PNG for every clip of train+val into '
+                   help='save PNG previews: one per clip and one per-session '
+                        "'all-clips overview' (coverage/overlap) into "
                         '<output_dir>/figures/<split>/')
+    p.add_argument('--force', dest='force', action='store_true', default=True,
+                   help='erase figures/ and inspect_summary.json left over from '
+                        'a previous inspect run before writing (default)')
+    p.add_argument('--no-force', dest='force', action='store_false',
+                   help='keep pre-existing inspect figures/summary instead of '
+                        'erasing them first')
     return p.parse_args()
 
 
@@ -142,6 +170,10 @@ def main():
         raise SystemExit(f'data_path not found: {args.data_path} '
                          f'(run data/prepare_bp4d.py first)')
     os.makedirs(args.output_dir, exist_ok=True)
+    if args.force:
+        _wipe_inspect_outputs(args.output_dir)
+        print(f'[force] cleared previous inspect outputs under '
+              f'{args.output_dir}')
     report = {'data_path': args.data_path, 'args': vars(args)}
 
     sessions = scan_sessions(args.data_path)
@@ -183,6 +215,8 @@ def main():
             report[split] = {'entries': 0}
             continue
         counts = _session_counts(ds)
+        stride = (args.clip_stride if (args.clip_stride or 0.0) > 0
+                  else args.clip_duration)
         samples = []
         # process every clip of the split; max_entries (0 = no cap) may limit it
         n = (len(ds) if (args.max_entries or 0) <= 0
@@ -193,7 +227,10 @@ def main():
             target = np.asarray(target)
             meta = ds.entries[idx][0]            # full per-session meta dict
             t_start = ds.entries[idx][1]
-            clip_k = int(round(t_start / args.clip_duration))
+            # windows start at multiples of the effective stride (t_start =
+            # clip_k * stride); the in-session index stays correct even when
+            # clip_stride < clip_duration (overlapping windows)
+            clip_k = int(round(t_start / stride))
             s = {
                 'clip_index': idx,
                 'session': meta['session'],
@@ -201,6 +238,7 @@ def main():
                 'clip_k': clip_k,                # 0-based window within session
                 'n_clips': meta.get('n_clips'),
                 'n_clips_raw': meta.get('n_clips_raw'),
+                'dur': meta.get('dur'),          # session's available duration
                 'tir_fps': meta.get('tir_fps') or args.fps,
                 'samples': _tensor_stats('samples[4,T,H,W]', sample),
                 'target': _tensor_stats(f'target[{args.target}]', target),
@@ -217,6 +255,12 @@ def main():
                 cols_plot, fs_plot = _read_signals_csv(meta['signals_file'])
                 _make_figure(args, s, sample, target, cols_plot, fs_plot,
                              split=split)
+        # one "all-clips overview" figure per processed session (clips are
+        # contiguous per session in dataset order, so groupby is safe)
+        if args.plot and samples:
+            for sess, group in itertools.groupby(samples,
+                                                 key=lambda c: c['session']):
+                _make_session_overview(args, split, sess, list(group))
         report[split] = {
             'entries': len(ds),                  # after session + max_clips caps
             'inspected': len(samples),           # visited (<= max_entries)
@@ -323,6 +367,121 @@ def _make_figure(args, clip, sample, target, sig_cols, sig_fs, split='train'):
     fig.savefig(path, dpi=100)
     plt.close(fig)
     print(f'[plot] saved {path}')
+
+
+def _make_session_overview(args, split, session, clips):
+    """Save one 'overview of all clips' PNG per processed session.
+
+    Every inspected clip of ``session`` is drawn as a horizontal bar in a
+    distinct colour (one row per clip, first clip on the top row) over the
+    session's common time axis; overlapping extractions therefore sit on the
+    same x-range of adjacent rows. The panel below plots how many clips cover
+    each instant (overlap count) so the effect of ``clip_stride`` vs.
+    ``clip_duration`` is visible at a glance.
+
+    ``clips`` is the per-session subset of the per-clip report dicts from
+    :func:`main` (inspected order). Written to
+    ``<output_dir>/figures/<split>/<session>_overview.png``.
+    """
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        from matplotlib import patheffects as pe
+        from matplotlib.patches import Rectangle
+    except Exception as exc:
+        print(f'[overview] matplotlib unavailable, skipping ({exc})')
+        return
+
+    n = len(clips)
+    if n == 0:
+        return
+    dur_c = args.clip_duration
+    stride = (args.clip_stride if (args.clip_stride or 0.0) > 0 else dur_c)
+    dur_s = clips[0].get('dur') or float(
+        max(c['t_start'] + dur_c for c in clips))
+    overlap_s = dur_c - stride                     # > 0 => windows overlap
+    capped = ((clips[0].get('n_clips_raw') or 0)
+              > (clips[0].get('n_clips') or 0))
+    cmap = plt.get_cmap('turbo')
+
+    fig, (ax_top, ax_cov) = plt.subplots(
+        2, 1, figsize=(11, max(4.5, 2.6 + 0.42 * n)),
+        sharex=True,
+        gridspec_kw={'height_ratios': [max(1.0, 0.8 * n), 1.0]})
+
+    # top axis: one distinctively coloured bar per clip --------------------- #
+    ax_top.set_ylim(-1.4, n + 0.9)
+    for i, c in enumerate(clips):
+        y = (n - 1) - i                           # first clip on the top row
+        t0 = c['t_start']
+        color = cmap(i / max(1, n - 1))
+        ax_top.add_patch(Rectangle((t0, y - 0.38), dur_c, 0.76,
+                                   facecolor=color, edgecolor='0.15',
+                                   lw=0.7, zorder=3))
+        ax_top.text(t0 + dur_c / 2, y, f'{c.get("clip_k", i) + 1}',
+                    ha='center', va='center', fontsize=8, zorder=4,
+                    color='0.05',
+                    path_effects=[pe.withStroke(linewidth=2.5,
+                                                foreground='white')])
+    # dotted grid lines at every window start
+    for c in clips:
+        ax_top.axvline(c['t_start'], color='0.75', lw=0.6, ls=':', zorder=1)
+    ax_top.set_yticks([])
+    if n > 1:
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(0, n - 1))
+        cbar = fig.colorbar(sm, ax=ax_top, fraction=0.025, pad=0.01)
+        step = max(1, n // 10)
+        cbar.set_ticks(range(0, n, step))
+        cbar.set_ticklabels([str(t + 1) for t in range(0, n, step)])
+        cbar.set_label('clip k (1 = first window)')
+
+    # bottom axis: number of clips covering each instant (overlap count) ----- #
+    events = {}
+    for c in clips:
+        s0 = c['t_start']
+        events[s0] = events.get(s0, 0) + 1
+        events[s0 + dur_c] = events.get(s0 + dur_c, 0) - 1
+    xs = sorted(events)
+    levels, run = [], 0
+    for x in xs:
+        run += events[x]
+        levels.append(run)
+    # strictly increasing boundaries; step='post' keeps each level until the
+    # next boundary, so we only need to append dur_s when it is new
+    xb = list(xs)
+    yb = list(levels)
+    if dur_s > xs[-1]:
+        xb.append(dur_s)
+        yb.append(levels[-1])
+    ax_cov.fill_between(xb, yb, step='post', color='tab:blue', alpha=0.35)
+    ax_cov.plot(xb, yb, drawstyle='steps-post', color='tab:blue', lw=1.1)
+    ymax = max(1, int(max(yb)))
+    ax_cov.set_ylim(0, ymax * 1.2)
+    ax_cov.set_yticks(range(0, ymax + 1))
+    ax_cov.set_ylabel('overlap\n(clips)')
+    ax_cov.set_xlabel('session time (s)')
+
+    ax_top.set_xlim(0, dur_s)
+    title = (f'{session}  [{split}]  all-clips overview: {n} clip(s), '
+             f'window {dur_c:g}s, stride {stride:g}s')
+    if overlap_s > 1e-9:
+        title += f' (overlap {overlap_s:g}s)'
+    else:
+        title += ' (non-overlapping)'
+    if capped:
+        title += (f', max_clips cap '
+                  f'{clips[0].get("n_clips_raw")}->{n}')
+    ax_top.set_title(title, fontsize=10)
+
+    fig.align_labels()
+    fig.tight_layout()
+    out_dir = os.path.join(args.output_dir, 'figures', split)
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, f'{session}_overview.png')
+    fig.savefig(path, dpi=110)
+    plt.close(fig)
+    print(f'[overview] saved {path}')
 
 
 if __name__ == '__main__':
