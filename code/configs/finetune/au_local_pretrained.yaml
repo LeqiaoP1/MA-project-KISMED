@@ -76,3 +76,5 @@ min_lr: 1.0e-4
 warmup_epochs: 3
 weight_decay: 0.05
 clip_grad: 0.0
+# data loading: the run is JPEG-decoding bound, so decode frames in parallel
+num_workers: 4

@@ -35,6 +35,8 @@ min_lr: 0.0
 warmup_epochs: 5
 weight_decay: 0.05
 clip_grad: 0.0
+# data loading: RGB+TIR clips are JPEG/video decoded per sample; parallelise it
+num_workers: 4
 
 # Logging
 output_dir: output/finetune/resp

@@ -58,7 +58,8 @@ lr: 1.0e-3
 min_lr: 1.0e-4                     # keep the cosine tail learning
 warmup_epochs: 5
 weight_decay: 0.05
-num_workers: 0
+# data loading: the run is JPEG-decoding bound, so decode frames in parallel
+num_workers: 4
 
 # ---- logging ----
 output_dir: ../output/pretrain/stage2_local_pretrained
