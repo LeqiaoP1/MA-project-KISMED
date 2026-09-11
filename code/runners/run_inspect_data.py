@@ -16,9 +16,9 @@ Usage (from ``code/``)::
 in-repo ``data/processed/bp4d_canonical`` (same fallback as the AU probe), so a
 plain invocation works after ``data/prepare_bp4d.py`` has run.
 
-``--plot`` saves one PNG per clip AND one per-session "all-clips overview"
-figure (window coverage/overlap, uniform bars labelled with the clip number) into
-``<output_dir>/figures/<split>/``; tensor stats always go to
+``--plot`` saves one PNG per clip AND one per-session "session overview" figure
+(the session's full respiration trace with every extracted clip window shaded and
+numbered) into ``<output_dir>/figures/<split>/``; tensor stats always go to
 ``<output_dir>/inspect_summary.json``.
 
 By default (``--force``) any ``figures/`` and ``inspect_summary.json`` left
@@ -176,8 +176,8 @@ def get_args():
                    help='frame short-side resize/crop (small = faster smoke)')
     p.add_argument('--plot', action='store_true',
                    help='save PNG previews: one per clip and one per-session '
-                        "'all-clips overview' (coverage/overlap) into "
-                        '<output_dir>/figures/<split>/')
+                        "'session overview' (full respiration trace with every "
+                        'clip window marked) into <output_dir>/figures/<split>/')
     p.add_argument('--force', dest='force', action='store_true', default=True,
                    help='erase figures/ and inspect_summary.json left over from '
                         'a previous inspect run before writing (default)')
@@ -298,9 +298,13 @@ def main():
         # one "all-clips overview" figure per processed session (clips are
         # contiguous per session in dataset order, so groupby is safe)
         if args.plot and samples:
+            # per-session signals.csv, needed for the full respiration trace
+            sig_files = {m['session']: m.get('signals_file')
+                         for m, _ in ds.entries}
             for sess, group in itertools.groupby(samples,
                                                  key=lambda c: c['session']):
-                _make_session_overview(args, split, sess, list(group))
+                _make_session_overview(args, split, sess, list(group),
+                                       signals_file=sig_files.get(sess))
         report[split] = {
             'entries': len(ds),                  # after session + max_clips caps
             'inspected': len(samples),           # visited (<= max_entries)
@@ -415,20 +419,24 @@ def _make_figure(args, clip, sample, target, sig_cols, sig_fs, split='train'):
     print(f'[plot] saved {path}')
 
 
-def _make_session_overview(args, split, session, clips):
-    """Save one 'overview of all clips' PNG per processed session.
+def _make_session_overview(args, split, session, clips, signals_file=None):
+    """Save one 'session overview' PNG: the full respiration trace of
+    ``session`` plus the clip windows extracted from it, linked together.
 
-    Every inspected clip of ``session`` is drawn as a horizontal bar (one row
-    per clip, first clip on the top row) over the session's common time axis;
-    overlapping extractions therefore sit on the same x-range of adjacent rows.
-    All bars share one uniform colour -- identity comes from the clip number
-    printed inside each bar, not from a per-clip colour, so no colourbar is
-    needed. The panel below plots how many clips cover each instant (overlap
-    count) so the effect of ``clip_stride`` vs. ``clip_duration`` is visible at
-    a glance.
+    Two panels share one time axis. The TOP panel is the session's COMPLETE
+    respiration waveform (the ``resp`` column of ``signals.csv``; falls back to
+    the dataset target, then to the first signal column) with every extracted
+    clip shaded on it, so it is obvious which parts of the signal were used and
+    which were skipped. The BOTTOM panel gives each clip its own row (first clip
+    on the top row) labelled with its clip number, which keeps overlapping
+    windows readable instead of letting them pile up on one line. Dotted
+    connectors run from each window's start/end edge on the trace down to the
+    same edges of its row, so every row can be traced back to its slice of the
+    signal.
 
     ``clips`` is the per-session subset of the per-clip report dicts from
-    :func:`main` (inspected order). Written to
+    :func:`main` (inspected order); ``signals_file`` is that session's
+    ``signals.csv``. Written to
     ``<output_dir>/figures/<split>/<session>_overview.png``.
     """
     try:
@@ -436,7 +444,7 @@ def _make_session_overview(args, split, session, clips):
         matplotlib.use('Agg')
         import matplotlib.pyplot as plt
         from matplotlib import patheffects as pe
-        from matplotlib.patches import Rectangle
+        from matplotlib.patches import ConnectionPatch, Rectangle
     except Exception as exc:
         print(f'[overview] matplotlib unavailable, skipping ({exc})')
         return
@@ -451,60 +459,78 @@ def _make_session_overview(args, split, session, clips):
     overlap_s = dur_c - stride                     # > 0 => windows overlap
     capped = ((clips[0].get('n_clips_raw') or 0)
               > (clips[0].get('n_clips') or 0))
-    bar_color = 'tab:blue'                         # one colour for every clip
 
-    fig, (ax_top, ax_cov) = plt.subplots(
-        2, 1, figsize=(11, max(4.5, 2.6 + 0.42 * n)),
-        sharex=True,
-        gridspec_kw={'height_ratios': [max(1.0, 0.8 * n), 1.0]})
+    # --- the session's FULL respiration trace (not just the clipped windows) - #
+    cols, fs = {}, args.fs
+    if signals_file and os.path.isfile(signals_file):
+        cols, fs = _read_signals_csv(signals_file)
+        fs = fs or args.fs
+    sig = next((k for k in ('resp', args.target) if k in cols), None)
+    if sig is None and cols:
+        sig = next((k for k in cols if k != 'time'), None)
+    t_ax = y_ax = None
+    if sig is not None:
+        y_ax = np.asarray(cols[sig], dtype=float)
+        t_ax = (np.asarray(cols['time'], dtype=float)
+                if 'time' in cols else None)
+        if t_ax is None or t_ax.size != y_ax.size:
+            t_ax = np.arange(y_ax.size) / fs
+        if t_ax.size:
+            dur_s = max(dur_s, float(np.nanmax(t_ax)))   # full session axis
+    else:
+        print(f'[overview] no signal column in {signals_file}; marking '
+              f'windows on an empty axis')
 
-    # top axis: one bar per clip, all in the same colour -------------------- #
-    ax_top.set_ylim(-1.4, n + 0.9)
+    # two stacked panels sharing the time axis: the trace on top, the windows
+    # that were actually extracted from it below, joined by connectors
+    fig, (ax_wave, ax_win) = plt.subplots(
+        2, 1, sharex=True, figsize=(13, 3.0 + 0.42 * n),
+        gridspec_kw={'height_ratios': [2.4, max(0.8, 0.42 * n)],
+                     'hspace': 0.12})
+    if y_ax is not None and y_ax.size:
+        ax_wave.plot(t_ax, y_ax, lw=0.7, color='0.15', zorder=2)
+        lo, hi = float(np.nanmin(y_ax)), float(np.nanmax(y_ax))
+        pad = 0.08 * (hi - lo if hi > lo else 1.0)
+        ax_wave.set_ylim(lo - pad, hi + pad)
+        ax_wave.set_ylabel(sig)
+
+    # --- top panel: shade every extracted clip window on the trace ---------- #
+    for c in clips:
+        ax_wave.axvspan(c['t_start'], c['t_start'] + dur_c,
+                        facecolor='0.62', edgecolor='0.45', linewidth=0.8,
+                        alpha=0.35, zorder=1)
+    ax_wave.grid(axis='x', color='0.9', lw=0.6, zorder=0)
+
+    # --- bottom panel: one labelled row per clip, connected to its span ------ #
+    ax_win.set_ylim(-0.8, n - 1 + 0.8)
+    ax_win.set_yticks([])
+    ax_win.set_ylabel('clip\nwindow')
+    ax_win.grid(axis='x', color='0.9', lw=0.6, zorder=0)
+    win_top = ax_win.transData                      # row top edge, data coords
+    wave_bottom = ax_wave.get_xaxis_transform()     # trace bottom edge
     for i, c in enumerate(clips):
-        y = (n - 1) - i                           # first clip on the top row
         t0 = c['t_start']
-        ax_top.add_patch(Rectangle((t0, y - 0.38), dur_c, 0.76,
-                                   facecolor=bar_color, edgecolor='0.15',
-                                   lw=0.7, alpha=0.55, zorder=3))
-        ax_top.text(t0 + dur_c / 2, y, f'{c.get("clip_k", i) + 1}',
+        row = float((n - 1) - i)                    # first clip on the top row
+        ax_win.add_patch(Rectangle((t0, row - 0.38), dur_c, 0.76,
+                                   facecolor='0.62', edgecolor='0.45',
+                                   linewidth=0.8, alpha=0.55, zorder=3))
+        ax_win.text(t0 + dur_c / 2, row, f'{c.get("clip_k", i) + 1}',
                     ha='center', va='center', fontsize=8, zorder=4,
                     color='0.05',
                     path_effects=[pe.withStroke(linewidth=2.5,
                                                 foreground='white')])
-    # dotted grid lines at every window start
-    for c in clips:
-        ax_top.axvline(c['t_start'], color='0.75', lw=0.6, ls=':', zorder=1)
-    ax_top.set_yticks([])
+        # one connector per window edge: same instant on the trace and on the row
+        for t in (t0, t0 + dur_c):
+            fig.add_artist(ConnectionPatch(
+                xyA=(t, 0.0), coordsA=wave_bottom,
+                xyB=(t, row + 0.38), coordsB=win_top,
+                color='0.55', lw=0.7, ls=':', zorder=1, clip_on=False))
 
-    # bottom axis: number of clips covering each instant (overlap count) ----- #
-    events = {}
-    for c in clips:
-        s0 = c['t_start']
-        events[s0] = events.get(s0, 0) + 1
-        events[s0 + dur_c] = events.get(s0 + dur_c, 0) - 1
-    xs = sorted(events)
-    levels, run = [], 0
-    for x in xs:
-        run += events[x]
-        levels.append(run)
-    # strictly increasing boundaries; step='post' keeps each level until the
-    # next boundary, so we only need to append dur_s when it is new
-    xb = list(xs)
-    yb = list(levels)
-    if dur_s > xs[-1]:
-        xb.append(dur_s)
-        yb.append(levels[-1])
-    ax_cov.fill_between(xb, yb, step='post', color='tab:blue', alpha=0.35)
-    ax_cov.plot(xb, yb, drawstyle='steps-post', color='tab:blue', lw=1.1)
-    ymax = max(1, int(max(yb)))
-    ax_cov.set_ylim(0, ymax * 1.2)
-    ax_cov.set_yticks(range(0, ymax + 1))
-    ax_cov.set_ylabel('overlap\n(clips)')
-    ax_cov.set_xlabel('session time (s)')
-
-    ax_top.set_xlim(0, dur_s)
-    title = (f'{session}  [{split}]  all-clips overview: {n} clip(s), '
-             f'window {dur_c:g}s, stride {stride:g}s')
+    ax_win.set_xlim(0, dur_s)
+    ax_win.set_xlabel('session time (s)')
+    title = (f'{session}  [{split}]  session overview: {n} clip(s) -- full '
+             f'{sig or "signal"} trace (top) with the extracted windows '
+             f'(bottom), window {dur_c:g}s, stride {stride:g}s')
     if overlap_s > 1e-9:
         title += f' (overlap {overlap_s:g}s)'
     else:
@@ -512,9 +538,8 @@ def _make_session_overview(args, split, session, clips):
     if capped:
         title += (f', max_clips cap '
                   f'{clips[0].get("n_clips_raw")}->{n}')
-    ax_top.set_title(title, fontsize=10)
+    ax_wave.set_title(title, fontsize=10)
 
-    fig.align_labels()
     fig.tight_layout()
     out_dir = os.path.join(args.output_dir, 'figures', split)
     os.makedirs(out_dir, exist_ok=True)
