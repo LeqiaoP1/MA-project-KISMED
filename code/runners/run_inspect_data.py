@@ -8,12 +8,16 @@ training on an HPC cluster.
 
 Usage (from ``code/``)::
 
-    python runners/run_inspect_data.py --data_path data/processed/bp4d_canonical
-    python runners/run_inspect_data.py --data_path ... --max_sessions 6 \
-        --max_clips 2 --clip_duration 2 --input_size 64 --plot
+    python runners/run_inspect_data.py --clip_duration 2 --plot
+    python runners/run_inspect_data.py --data_path ../data/processed/bp4d_canonical \
+        --max_sessions 6 --max_clips 2 --clip_duration 2 --input_size 64 --plot
+
+``--data_path`` defaults to ``$DATA_PATH`` and, when that is unset, to the
+in-repo ``data/processed/bp4d_canonical`` (same fallback as the AU probe), so a
+plain invocation works after ``data/prepare_bp4d.py`` has run.
 
 ``--plot`` saves one PNG per clip AND one per-session "all-clips overview"
-figure (window coverage/overlap, one colour per clip) into
+figure (window coverage/overlap, uniform bars labelled with the clip number) into
 ``<output_dir>/figures/<split>/``; tensor stats always go to
 ``<output_dir>/inspect_summary.json``.
 
@@ -49,6 +53,38 @@ from data.paired_dataset import PairedSessionDataset, scan_sessions
 
 def _env(key: str, default: str = '') -> str:
     return os.environ.get(key, default)
+
+
+_CODE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_REPO_DIR = os.path.dirname(_CODE_DIR)
+
+
+def _default_output_dir() -> str:
+    """``$OUTPUT_DIR/inspect_data``, else ``<project_root>/output/inspect_data``.
+
+    Deliberately ABSOLUTE: the previous default (``./output/inspect_data``) was
+    relative to the CWD, so running from ``code/`` without the env profile
+    (``scripts/env_local.sh`` exports ``OUTPUT_DIR=<repo>/output``) silently
+    wrote results into ``code/output/`` instead of ``<project_root>/output/``.
+    """
+    root = _env('OUTPUT_DIR', '') or os.path.join(_REPO_DIR, 'output')
+    return os.path.join(root, 'inspect_data')
+
+
+def _default_data_path() -> str:
+    """``$DATA_PATH`` when set, else the in-repo canonical root if it exists.
+
+    The training runners read ``data_path`` from their YAML config, so only this
+    CLI-only runner needs a fallback; it reuses the same default as the AU probe
+    (``data.au_dataset.default_data_path``). Returns '' when neither exists, so
+    the ``isdir`` check below still raises the helpful error.
+    """
+    env = _env('DATA_PATH', '')
+    if env:
+        return env
+    from data.au_dataset import default_data_path
+    cand = default_data_path()
+    return cand if os.path.isdir(cand) else ''
 
 
 def _read_signals_csv(path: str):
@@ -108,10 +144,14 @@ def _wipe_inspect_outputs(output_dir: str):
 
 def get_args():
     p = argparse.ArgumentParser('BP4D data-pipeline smoke test', add_help=False)
-    p.add_argument('--data_path', default=_env('DATA_PATH', ''),
-                   help='canonical sessions root (see data/prepare_bp4d.py)')
-    p.add_argument('--output_dir', default=_env('OUTPUT_DIR',
-                                                './output/inspect_data'), type=str)
+    p.add_argument('--data_path', default=_default_data_path(),
+                   help='canonical sessions root (see data/prepare_bp4d.py); '
+                        'default: $DATA_PATH, else the in-repo '
+                        'data/processed/bp4d_canonical when present')
+    p.add_argument('--output_dir', default=_default_output_dir(), type=str,
+                   help='where to write figures/ + inspect_summary.json; '
+                        'default: $OUTPUT_DIR/inspect_data, else '
+                        '<project_root>/output/inspect_data')
     p.add_argument('--target', default='bvp', choices=['bvp', 'resp', 'eda'])
     # small-data controls (dev/smoke)
     p.add_argument('--max_sessions', default=3, type=int,
@@ -314,9 +354,8 @@ def _make_figure(args, clip, sample, target, sig_cols, sig_fs, split='train'):
             f'TIR luma (middle frame) {tir.shape[0]}x{tir.shape[1]}')
     else:                                       # false-colour thermal render
         axes[1, 0].imshow(tir)
-        axes[1, 0].set_title(
-            f'TIR false-colour {tir.shape[2]}ch (middle frame) '
-            f'{tir.shape[0]}x{tir.shape[1]}')
+        axes[1, 0].set_title(f'TIR (middle frame) 'f'{tir.shape[0]}x{tir.shape[1]}')
+        
     axes[1, 0].axis('off')
     axes[2, 0].axis('off')
 
@@ -379,12 +418,14 @@ def _make_figure(args, clip, sample, target, sig_cols, sig_fs, split='train'):
 def _make_session_overview(args, split, session, clips):
     """Save one 'overview of all clips' PNG per processed session.
 
-    Every inspected clip of ``session`` is drawn as a horizontal bar in a
-    distinct colour (one row per clip, first clip on the top row) over the
-    session's common time axis; overlapping extractions therefore sit on the
-    same x-range of adjacent rows. The panel below plots how many clips cover
-    each instant (overlap count) so the effect of ``clip_stride`` vs.
-    ``clip_duration`` is visible at a glance.
+    Every inspected clip of ``session`` is drawn as a horizontal bar (one row
+    per clip, first clip on the top row) over the session's common time axis;
+    overlapping extractions therefore sit on the same x-range of adjacent rows.
+    All bars share one uniform colour -- identity comes from the clip number
+    printed inside each bar, not from a per-clip colour, so no colourbar is
+    needed. The panel below plots how many clips cover each instant (overlap
+    count) so the effect of ``clip_stride`` vs. ``clip_duration`` is visible at
+    a glance.
 
     ``clips`` is the per-session subset of the per-clip report dicts from
     :func:`main` (inspected order). Written to
@@ -410,22 +451,21 @@ def _make_session_overview(args, split, session, clips):
     overlap_s = dur_c - stride                     # > 0 => windows overlap
     capped = ((clips[0].get('n_clips_raw') or 0)
               > (clips[0].get('n_clips') or 0))
-    cmap = plt.get_cmap('turbo')
+    bar_color = 'tab:blue'                         # one colour for every clip
 
     fig, (ax_top, ax_cov) = plt.subplots(
         2, 1, figsize=(11, max(4.5, 2.6 + 0.42 * n)),
         sharex=True,
         gridspec_kw={'height_ratios': [max(1.0, 0.8 * n), 1.0]})
 
-    # top axis: one distinctively coloured bar per clip --------------------- #
+    # top axis: one bar per clip, all in the same colour -------------------- #
     ax_top.set_ylim(-1.4, n + 0.9)
     for i, c in enumerate(clips):
         y = (n - 1) - i                           # first clip on the top row
         t0 = c['t_start']
-        color = cmap(i / max(1, n - 1))
         ax_top.add_patch(Rectangle((t0, y - 0.38), dur_c, 0.76,
-                                   facecolor=color, edgecolor='0.15',
-                                   lw=0.7, zorder=3))
+                                   facecolor=bar_color, edgecolor='0.15',
+                                   lw=0.7, alpha=0.55, zorder=3))
         ax_top.text(t0 + dur_c / 2, y, f'{c.get("clip_k", i) + 1}',
                     ha='center', va='center', fontsize=8, zorder=4,
                     color='0.05',
@@ -435,13 +475,6 @@ def _make_session_overview(args, split, session, clips):
     for c in clips:
         ax_top.axvline(c['t_start'], color='0.75', lw=0.6, ls=':', zorder=1)
     ax_top.set_yticks([])
-    if n > 1:
-        sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(0, n - 1))
-        cbar = fig.colorbar(sm, ax=ax_top, fraction=0.025, pad=0.01)
-        step = max(1, n // 10)
-        cbar.set_ticks(range(0, n, step))
-        cbar.set_ticklabels([str(t + 1) for t in range(0, n, step)])
-        cbar.set_label('clip k (1 = first window)')
 
     # bottom axis: number of clips covering each instant (overlap count) ----- #
     events = {}

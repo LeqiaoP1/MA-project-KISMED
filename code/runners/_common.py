@@ -14,6 +14,10 @@ import yaml
 
 from utils import get_rank, get_world_size, init_distributed_mode
 
+# ``code/runners/_common.py`` -> [0]=runners, [1]=code, [2]=project root
+_CODE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_PROJECT_ROOT = os.path.dirname(_CODE_DIR)
+
 
 def env_or(name: str, default: str = '') -> str:
     """Resolve a CLI default from an environment variable (e.g. DATA_PATH)."""
@@ -28,9 +32,14 @@ def add_common_args(parser: argparse.ArgumentParser):
     parser.add_argument('--dist_url', default='env://', type=str)
     parser.add_argument('--local_rank', default=-1, type=int)
     # output / resume  (paths may be injected via env for local <-> HPC switching)
-    parser.add_argument('--output_dir', default=env_or('OUTPUT_DIR', './output'),
+    # ABSOLUTE fallback: a bare './output' would land inside code/ when the env
+    # profile is not sourced (env_local.sh exports OUTPUT_DIR=<repo>/output)
+    parser.add_argument('--output_dir',
+                        default=env_or('OUTPUT_DIR',
+                                       os.path.join(_PROJECT_ROOT, 'output')),
                         type=str,
-                        help='root folder for checkpoints/logs')
+                        help='root folder for checkpoints/logs; default: '
+                             '$OUTPUT_DIR, else <project_root>/output')
     parser.add_argument('--resume', default=env_or('RESUME', ''), type=str,
                         help='checkpoint path to resume from')
     parser.add_argument('--log_wandb', action='store_true', default=False)
