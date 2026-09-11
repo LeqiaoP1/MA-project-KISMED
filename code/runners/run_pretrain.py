@@ -29,8 +29,16 @@ def get_args():
     add_common_args(parser)
 
     # model
-    parser.add_argument('--model', default='project_vit_base_patch16_224',
-                        type=str, help='registered model name')
+    parser.add_argument('--model', default='project_multimae_tiny', type=str,
+                        help='registered model name. project_multimae_{tiny,'
+                             'small,base,large,huge} run the multimodal masked '
+                             'pre-training (the NAME sets the ViT geometry); '
+                             'any project_vit_* runs the single-stream path')
+    # ViT geometry comes from the --model variant; 0 = "unset" => take it from
+    # the name. Set a value only to OVERRIDE (e.g. an ablation).
+    parser.add_argument('--enc_embed_dim', default=0, type=int)
+    parser.add_argument('--enc_depth', default=0, type=int)
+    parser.add_argument('--enc_num_heads', default=0, type=int)
     # data / clip geometry (the multimodal dataset & model read these)
     parser.add_argument('--data_path', default=env_or('DATA_PATH'), type=str)
     parser.add_argument('--fs', default=100.0, type=float,
@@ -75,16 +83,16 @@ def get_args():
                              'tokens: high variance -> ~0.5 so the 1-D signal '
                              'does not dominate the gradient; low variance -> '
                              '~1.0 so it is not ignored.')
-    parser.add_argument('--enc_embed_dim', default=192, type=int)
-    parser.add_argument('--enc_depth', default=6, type=int)
-    parser.add_argument('--enc_num_heads', default=6, type=int)
     parser.add_argument('--dec_depth', default=2, type=int)
     parser.add_argument('--mlp_ratio', default=4.0, type=float)
     parser.add_argument('--sig_kernel', default=8, type=int,
                         help='signal token window (samples per token)')
     parser.add_argument('--pretrained_encoder', default='', type=str,
                         help='MAE/ImageNet ViT checkpoint to initialise the '
-                             'shared encoder from (Stage-1 spatial priors)')
+                             'shared encoder from (Stage-1 spatial priors): a '
+                             'local path OR a variant spec, e.g. base, '
+                             'mae:large, deit:small (downloaded once into '
+                             '<project_root>/models/initial)')
     # training
     parser.add_argument('--batch_size', default=64, type=int)
     parser.add_argument('--epochs', default=800, type=int)
@@ -128,7 +136,9 @@ def main(args):
         from core.multimae import build_pretraining_model, load_pretrained_encoder
         model = build_pretraining_model(args)
         if getattr(args, 'pretrained_encoder', ''):
-            load_pretrained_encoder(model, args.pretrained_encoder)
+            from models.pretrained import resolve_encoder_weights
+            ckpt = resolve_encoder_weights(args.pretrained_encoder)
+            load_pretrained_encoder(model, ckpt)
     else:
         from models import create_model
         model = create_model(args.model)

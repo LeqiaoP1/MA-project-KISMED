@@ -38,13 +38,40 @@ import torch.nn as nn
 
 from .blocks import Block, trunc_normal_
 from .criterion import MaskedMSELoss
+from .registry import register_model
 
 __all__ = ['TubeletEmbed', 'MultiModalMAE', 'build_pretraining_model',
-           'load_pretrained_encoder']
+           'load_pretrained_encoder', 'MULTIMAE_VARIANTS', 'multimae_variant']
 
 _EPS = 1e-6
 _VISUAL_STREAMS = ('rgb', 'tir')
 _SIGNAL_STREAMS = ('bvp', 'resp', 'eda')
+
+#: Named multimodal encoder geometries. The NAME implies the geometry (the same
+#: timm-style convention as the ``project_vit_*`` family in :mod:`core.model`),
+#: so a config only needs ``model: project_multimae_base`` and embed_dim /
+#: depth / heads follow from it -- they can no longer contradict the
+#: ``pretrained_encoder`` checkpoint. ``tiny`` (192/6/6) is this project's
+#: small local-dev geometry (the ``MultiModalMAE`` default); ``small`` matches
+#: ``project_vit_small_patch16_224``. Set ``enc_embed_dim`` / ``enc_depth`` /
+#: ``enc_num_heads`` explicitly only to OVERRIDE (e.g. an ablation).
+MULTIMAE_VARIANTS: Dict[str, Dict[str, int]] = {
+    'project_multimae_tiny': {'embed_dim': 192, 'enc_depth': 6,
+                              'enc_num_heads': 6},
+    'project_multimae_small': {'embed_dim': 384, 'enc_depth': 12,
+                               'enc_num_heads': 6},
+    'project_multimae_base': {'embed_dim': 768, 'enc_depth': 12,
+                              'enc_num_heads': 12},
+    'project_multimae_large': {'embed_dim': 1024, 'enc_depth': 24,
+                               'enc_num_heads': 16},
+    'project_multimae_huge': {'embed_dim': 1280, 'enc_depth': 32,
+                              'enc_num_heads': 16},
+}
+
+
+def multimae_variant(model_name: str) -> Optional[Dict[str, int]]:
+    """Geometry of a ``project_multimae_*`` variant (``None`` if unknown)."""
+    return MULTIMAE_VARIANTS.get(str(model_name or ''))
 
 
 # --------------------------------------------------------------------------- #
@@ -424,11 +451,18 @@ def build_pretraining_model(args):
                 f'({len(streams)}: {streams}), got {len(vals)}')
             loss_weights = dict(zip(streams, vals))
 
+    # ViT geometry: the --model variant name sets it, and an explicit (>0)
+    # enc_* flag/YAML value overrides it (ablation escape hatch).
+    geom = multimae_variant(getattr(args, 'model', '')) or {}
+
+    def _geo(arg_name: str, geom_key: str, default: int) -> int:
+        return int(getattr(args, arg_name, 0) or 0) or geom.get(geom_key, default)
+
     return MultiModalMAE(
         streams=streams,
-        embed_dim=int(getattr(args, 'enc_embed_dim', 192)),
-        enc_depth=int(getattr(args, 'enc_depth', 6)),
-        enc_num_heads=int(getattr(args, 'enc_num_heads', 6)),
+        embed_dim=_geo('enc_embed_dim', 'embed_dim', 192),
+        enc_depth=_geo('enc_depth', 'enc_depth', 6),
+        enc_num_heads=_geo('enc_num_heads', 'enc_num_heads', 6),
         mlp_ratio=float(getattr(args, 'mlp_ratio', 4.0)),
         dec_depth=int(getattr(args, 'dec_depth', 2)),
         tubelet=tubelet,
@@ -523,3 +557,51 @@ def load_pretrained_encoder(model: 'MultiModalMAE', path: str,
               f'{shape_mismatch[:5]}')
     return {'loaded': n_loaded, 'skipped': len(skipped),
             'shape_mismatch': len(shape_mismatch)}
+
+
+# --------------------------------------------------------------------------- #
+# registered entrypoints -- the NAME implies the geometry, exactly like the
+# project_vit_* family in core/model.py (so `models.list_models()` lists them
+# and `create_model('project_multimae_base')` builds a 768-d model).
+# run_pretrain.py builds through build_pretraining_model(args), which resolves
+# the same names from the run's args.
+# --------------------------------------------------------------------------- #
+def _build_multimae(geom: Dict[str, int], **kwargs):
+    """``MultiModalMAE`` from a variant geometry + runtime kwargs."""
+    kwargs.setdefault('streams', ('rgb', 'tir', 'bvp'))
+    return MultiModalMAE(embed_dim=geom['embed_dim'],
+                         enc_depth=geom['enc_depth'],
+                         enc_num_heads=geom['enc_num_heads'], **kwargs)
+
+
+@register_model
+def project_multimae_tiny(**kwargs):
+    """192-d / 6-layer / 6-head (local-dev geometry)."""
+    return _build_multimae(MULTIMAE_VARIANTS['project_multimae_tiny'], **kwargs)
+
+
+@register_model
+def project_multimae_small(**kwargs):
+    """384-d / 12-layer / 6-head."""
+    return _build_multimae(MULTIMAE_VARIANTS['project_multimae_small'],
+                           **kwargs)
+
+
+@register_model
+def project_multimae_base(**kwargs):
+    """768-d / 12-layer / 12-head (MAE ViT-Base geometry)."""
+    return _build_multimae(MULTIMAE_VARIANTS['project_multimae_base'], **kwargs)
+
+
+@register_model
+def project_multimae_large(**kwargs):
+    """1024-d / 24-layer / 16-head (MAE ViT-Large geometry)."""
+    return _build_multimae(MULTIMAE_VARIANTS['project_multimae_large'],
+                           **kwargs)
+
+
+@register_model
+def project_multimae_huge(**kwargs):
+    """1280-d / 32-layer / 16-head (MAE ViT-Huge geometry)."""
+    return _build_multimae(MULTIMAE_VARIANTS['project_multimae_huge'],
+                           **kwargs)

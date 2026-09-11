@@ -55,8 +55,8 @@ python data/prepare_bp4d.py --raw_root ../data/raw/BP4D --out_root ../data/proce
 python runners/run_inspect_data.py --data_path ../data/processed/bp4d_canonical --clip_duration 2 --input_size 64 --plot
 
 # (1) Stage-2 multimodal masked pre-training (local milestone)
-#   from-scratch small slice ............... configs/pretrain/stage2_local.yaml
-#   MAE ViT-Base encoder inheritance ........ configs/pretrain/stage2_local_pretrained.yaml
+#   from-scratch tiny slice (192-d) ......... configs/pretrain/stage2_local.yaml
+#   MAE ViT-Base inheritance (768-d) ........ configs/pretrain/stage2_local_pretrained.yaml
 python runners/run_pretrain.py -c configs/pretrain/stage2_local_pretrained.yaml
 
 # (2) Stage-3 waveform fine-tuning per branch (needs a Stage-2 encoder ckpt)
@@ -84,7 +84,7 @@ only** (`mask == 1` ⇒ to reconstruct; `core/criterion.py::MaskedMSELoss`), the
 combined as a **weighted sum** over the streams:
 
 ```math
-L = Σ_s λ_s·MSE_s ,      λ_RGB = λ_TIR = 1.0 ,      λ_physio = signal_weight (default 0.5)
+L = Σ_s λ_s·MSE_s ,      λ_{RGB} = λ_{TIR} = 1.0 ,      λ_{physio} = signal weight (default 0.5)
 ```
 
 Visual streams (RGB/TIR) keep weight 1.0; every physio (1-D) stream uses
@@ -137,12 +137,12 @@ subsection above.)
 > on the Stage-2 encoder — it is not part of the three-stage pipeline above.
 > See the dedicated AU-probe subsection below and `code/ImplementationPlan.md` §5.
 
-| Plan stage                                                                             | Supported here                                                                                                                                                                                                                                                                                                                                                      | Still to port (thesis work)                                                                                                                                                                                                                                                                       |
-| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Stage 1 — ImageNet init of ViT-Base encoder                                           | `core/model.py` entrypoints (`project_vit_base_patch16_224`)                                                                                                                                                                                                                                                                                                    | official ImageNet-1K timm classifier converter (MAE ViT-Base inheritance already implemented:`core/multimae.py::load_pretrained_encoder`, 2-D -> 3-D rgb tubelet inflation via `--pretrained_encoder`)                                                                                        |
-| Stage 2 — multimodal masked pre-training on BP4D+ (RGB/TIR 50-75%, BVP/RESP/EDA 90%+) | `core/input_adapters.py` (`SignalInputAdapter`), `data/masking_generator.py` (`MultiModalMaskingGenerator` asymmetric), `core/criterion.py` (masked L1/MSE), config template `configs/pretrain/stage2_multimodal.yaml`; implemented local milestone: `core/multimae.py` (`MultiModalMAE`) + `PairedPretrainDataset` + `runners/run_pretrain.py` | separate deeper decoders; full-data HPC run at larger 224 geometry. Local five-stream milestone (rgb+tir+bvp+resp+eda) is implemented & run:`core/multimae.py` (`MultiModalMAE`), `data/paired_dataset.PairedPretrainDataset`, `runners/run_pretrain.py`, `configs/pretrain/stage2_local{,_pretrained}.yaml` |
-| Stage 3 — three branches BVP, RESP & EDA, unified spatio-temporal-spectral loss       | `core/waveform_losses.py` (`WaveformJointLoss`: L1 + Pearson + MR-STFT; 64/128/256 for BVP/RESP, 256/512/1024 for EDA), regression head (`ProjectViT(output_len=...)`, baseline CLS->seq), `runners/run_waveform.py`, configs `configs/finetune/{bvp,resp,eda}.yaml`                                                                                      | lightweight conv decoder over all tokens for finer temporal resolution; session-level whole-waveform reconstruction/stitching (offline inference, not yet implemented)                                                                                                                            |
-| Evaluation — Tier 1/2/3 post-processing                                               | `evaluation/metrics.py` (MAE/RMSE/Pearson; Welch PSD), `evaluation/clinical.py` (NeuroKit2 RMSSD/pNN50/MedianNN/ShanEn), `runners/run_evaluate.py`                                                                                                                                                                                                            | —                                                                                                                                                                                                                                                                                                |
+| Plan stage                                                                             | Supported here                                                                                                                                                                                                                                                                                                                                                      | Still to port (thesis work)                                                                                                                                                                                                                                                                                            |
+| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Stage 1 — ImageNet init of ViT-Base encoder                                           | `core/model.py` entrypoints (`project_vit_base_patch16_224`)                                                                                                                                                                                                                                                                                                    | official ImageNet-1K timm classifier converter (MAE ViT-Base inheritance already implemented:`core/multimae.py::load_pretrained_encoder`, 2-D -> 3-D rgb tubelet inflation via `--pretrained_encoder`; variant specs (`small|base|large|huge`, `timm:<id>`) are fetched by `runners/run_download_weights.py` into `models/initial/`)                                                                                                             |
+| Stage 2 — multimodal masked pre-training on BP4D+ (RGB/TIR 50-75%, BVP/RESP/EDA 90%+) | `core/input_adapters.py` (`SignalInputAdapter`), `data/masking_generator.py` (`MultiModalMaskingGenerator` asymmetric), `core/criterion.py` (`MaskedMSELoss`), configs `configs/pretrain/stage2_local.yaml` (tiny smoke) + `stage2_local_pretrained.yaml` (base + Stage-1 init) + HPC template `stage2_multimodal.yaml`; implemented local milestone: `core/multimae.py` (`MultiModalMAE`) + `PairedPretrainDataset` + `runners/run_pretrain.py` | separate deeper decoders; full-data HPC run at larger 224 geometry. Local five-stream milestone (rgb+tir+bvp+resp+eda) is implemented & run:`core/multimae.py` (`MultiModalMAE`), `data/paired_dataset.PairedPretrainDataset`, `runners/run_pretrain.py`, `configs/pretrain/stage2_local{,_pretrained}.yaml` |
+| Stage 3 — three branches BVP, RESP & EDA, unified spatio-temporal-spectral loss       | `core/waveform_losses.py` (`WaveformJointLoss`: L1 + Pearson + MR-STFT; 64/128/256 for BVP/RESP, 256/512/1024 for EDA), regression head (`ProjectViT(output_len=...)`, baseline CLS->seq), `runners/run_waveform.py`, configs `configs/finetune/{bvp,resp,eda}.yaml`                                                                                      | lightweight conv decoder over all tokens for finer temporal resolution; session-level whole-waveform reconstruction/stitching (offline inference, not yet implemented)                                                                                                                                                 |
+| Evaluation — Tier 1/2/3 post-processing                                               | `evaluation/metrics.py` (MAE/RMSE/Pearson; Welch PSD), `evaluation/clinical.py` (NeuroKit2 RMSSD/pNN50/MedianNN/ShanEn), `runners/run_evaluate.py`                                                                                                                                                                                                            | —                                                                                                                                                                                                                                                                                                                     |
 
 ```bash
 # Stage 3 example (needs a Stage-2 encoder ckpt)
@@ -212,7 +212,7 @@ independent, self-contained module that re-uses the Stage-2 shared encoder
   * `--probe linear` (default) freezes the encoder ⇒ the formal diagnostic;
     `--probe ft` fine-tunes the whole model.
   * C0 random init (`--finetune ''`), C1 Stage-1 MAE/ImageNet
-    (`../models/mae_pretrain_vit_base.pth`), **C2 Stage-2** (headline).
+    (`--finetune base`, or that checkpoint's path), **C2 Stage-2** (headline).
 * **Configurable AU set.** `--au_list` (explicit, string or YAML list) **or**
   `--au_freq_topk N` (top-N by presence rate over the full AU corpus;
   `5` ⇒ AU6/7/10/12/14); default = the BP4D 12-AU subset. The head width,
@@ -220,16 +220,17 @@ independent, self-contained module that re-uses the Stage-2 shared encoder
 * **Two local configs = two probe variants of the same control.** Each of
   `configs/finetune/au_local.yaml` and `au_local_pretrained.yaml` probes ONE
   locally-trained Stage-2 encoder, so each must mirror that checkpoint's
-  geometry: `au_local.yaml` -> `stage2_local` (small 192-d/6-layer from-scratch;
+  geometry: `au_local.yaml` -> `stage2_local` (tiny 192-d/6-layer from-scratch;
   clip 4.0 s -> num_frames 100, batch 4, full 12-AU subset),
   `au_local_pretrained.yaml` -> `stage2_local_pretrained` (MAE ViT-Base-inherited
-  768-d/12-layer; clip 2.0 s -> num_frames 50, batch 2, top-5 frequent AUs
-  `{6,7,10,12,14}`). The shorter windows + `batch_size 2` keep the ~16x bigger
-  768-d encoder within a LOCAL GPU (see the `Geometry contract` bullet). Within
-  one geometry, keep the protocol identical across C0/C1/C2 (C1 = the MAE
-  768-d checkpoint only fits the 768-d geometry). The two configs use DIFFERENT
-  AU sets by design, so they are not a head-to-head A/B of the two encoders -
-  fix one AU set before comparing across encoders.
+  768-d/12-layer; clip 4.0 s -> num_frames 100, batch 2, top-5 frequent AUs
+  `{6,7,10,12,14}`). Both use the SAME window length; only `batch_size` is
+  smaller (2 vs 4) to keep the ~16x bigger 768-d encoder within a LOCAL GPU (see
+  the `Geometry contract` bullet). Within one geometry, keep the protocol
+  identical across C0/C1/C2 (C1 = the MAE 768-d checkpoint only fits the 768-d
+  geometry). The two configs use DIFFERENT AU sets by design, so they are not a
+  head-to-head A/B of the two encoders - fix one AU set before comparing across
+  encoders.
 * **Geometry contract.** `tubelet`, `input_size`, `clip_duration`,
   `enc_embed_dim`, `enc_depth`, `enc_num_heads`, `mlp_ratio` MUST match the
   probed Stage-2 checkpoint (the loader raises on mismatch instead of silently
@@ -247,7 +248,7 @@ python runners/run_au_probe.py -c configs/finetune/au_local.yaml
 python runners/run_au_probe.py -c configs/finetune/au_local_pretrained.yaml
 # controls / AU subset
 python runners/run_au_probe.py -c configs/finetune/au_local_pretrained.yaml \
-    --finetune ../models/mae_pretrain_vit_base.pth          # C1 Stage-1 (768-d)
+    --finetune base                                         # C1 Stage-1 (768-d)
 python runners/run_au_probe.py -c configs/finetune/au_local.yaml \
     --au_list '' --au_freq_topk 5                            # top-5 frequent AUs
 ```
@@ -276,7 +277,43 @@ specific is injected through environment variables — never hard-coded.
 
 Env vars read by the runners: `DATA_PATH`, `OUTPUT_DIR`, `DATA_SET`,
 `RAW_DATA_PATH` (converter only), `MODEL_PATH` (`--finetune`), `RESUME`,
-`NUM_WORKERS`. CLI flags always take precedence over env/YAML.
+`NUM_WORKERS`, `INITIAL_MODELS_DIR` (downloaded Stage-1 weights), `HF_ENDPOINT`
+(HuggingFace mirror). CLI flags always take precedence over env/YAML.
+
+**Initial (Stage-1) encoder weights.** `models.build.create_model` initialises
+randomly; the Stage-1 spatial priors come from a public checkpoint. Instead of a
+path you may pass a *variant spec* to `--finetune` / `--pretrained_encoder`; the
+matching checkpoint is downloaded **once** into `<repo>/models/initial/`
+(already git-ignored via `models/*`; relocate with `$INITIAL_MODELS_DIR` or
+`--weights_dir`, e.g. a scratch volume on the HPC).
+
+| spec                        | source                                                        | geometry (dim/depth/heads) |
+| --------------------------- | ------------------------------------------------------------- | -------------------------- |
+| `small` \| `deit:small` | DeiT-Small distilled, ImageNet-1k                             | 384/12/6                   |
+| `base` \| `mae:base`    | MAE ViT-Base, self-supervised                                 | 768/12/12                  |
+| `large` \| `mae:large`  | MAE ViT-Large                                                 | 1024/24/16                 |
+| `huge` \| `mae:huge`    | MAE ViT-Huge (~2.5 GB)                                        | 1280/32/16                 |
+| `timm:<model_id>`         | any timm/HF checkpoint, e.g.`timm:vit_base_patch16_224.mae` | as named                   |
+
+There is no ViT-**S** MAE release, so `small` resolves to DeiT-S (the exact
+`project_vit_small_patch16_224` geometry) - an ImageNet control, not a MAE one.
+For Stage 2 the model name sets the ViT geometry, so `model:
+project_multimae_base` pairs with `pretrained_encoder: base`
+(`enc_embed_dim`/`enc_depth`/`enc_num_heads` remain explicit overrides). The
+multimodal/probe loaders raise on mismatch instead of silently loading nothing.
+
+```bash
+python runners/run_download_weights.py --list        # variants + geometry
+python runners/run_download_weights.py base          # pre-fetch (login node!)
+python runners/run_finetune.py --finetune large ...  # downloads on demand
+python runners/run_au_probe.py -c configs/finetune/au_local_pretrained.yaml \
+    --finetune base                                  # C1 Stage-1 (768-d)
+```
+
+Downloads stream to a `.part` file (HTTP-Range resume), are renamed atomically
+and cached, so a second run is a no-op; under DDP only rank 0 downloads. On the
+HPC the compute nodes have no internet - pre-fetch on a login node and keep
+`$INITIAL_MODELS_DIR` on the shared filesystem.
 
 **Canonical data layout.** The raw BP4D layout (`2D+3D/`, `Thermal/`,
 `Physiology/*.txt`) is converted once into the per-session layout consumed by

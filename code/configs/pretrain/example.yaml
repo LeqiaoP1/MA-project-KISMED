@@ -1,29 +1,38 @@
-# Example pre-training config (MultiMAE-style YAML: values are argparse defaults,
-# CLI flags override them).
-# Copy & adapt to configs/pretrain/<experiment>.yaml
+# Example Stage-2 pre-training config (MultiMAE-style YAML: values are argparse
+# defaults, CLI flags override them). Copy & adapt.
+# Run from code/:  python runners/run_pretrain.py -c configs/pretrain/example.yaml
+# Tuned variants: stage2_local.yaml (tiny smoke), stage2_local_pretrained.yaml
+# (Stage-1 inheritance), stage2_multimodal.yaml (full-data HPC template).
 
-# Model
-model: project_vit_base_patch16_224
-input_size: 224
+model: project_multimae_base       # 768-d/12-layer -- the NAME sets the geometry
+pretrained_encoder: ''             # '' = from scratch, 'base' = MAE ViT-B, or a path
 
-# Training
+# ---- streams & tokenizer geometry ----
+# Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bvp/resp/eda).
+streams: rgb,tir,bvp,resp,eda
+tubelet: 2,16,16
+fs: 100.0
+fps: 25.0
+clip_duration: 4.0                 # 100 frames @ 25 fps -> 50 temporal tubelets
+seq_len: 0                         # 0 => clip_duration * fs = 400 signal samples
+input_size: 224                    # full-frame (no face ROI)
+
+# ---- data (canonical layout from data/prepare_bp4d.py) ----
+data_path: /path/to/your/bp4d_canonical
+
+# ---- training ----
 epochs: 800
 batch_size: 64
-update_freq: 1
 save_ckpt_freq: 20
 
-# Optimizer
+# ---- optimizer (large batch: derive the LR from blr) ----
 opt: adamw
-blr: 1.5e-4              # base LR: actual lr = blr * batch_size * world_size / 256
+blr: 1.5e-4              # actual lr = blr * batch_size * world_size / 256
 min_lr: 0.0
 warmup_epochs: 40
 weight_decay: 0.05
-clip_grad: 0.0
 
-# Data (implement code/data/datasets.py first)
-data_path: /path/to/your/dataset
-
-# Logging
+# ---- logging ----
 output_dir: output/pretrain/example
 log_wandb: false
 wandb_project: thesis-project

@@ -7,7 +7,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."   # code/
 PY="${PYTHON:-python}"                       # use the project .venv, e.g. PYTHON=.venv/bin/python
 
-# C2 (Stage-2 pretrained encoder) linear probe -- small 192-d Stage-2 run.
+# C2 (Stage-2 from-scratch encoder) linear probe -- tiny 192-d Stage-2 run.
 # NUM_WORKERS=0 keeps the smoke deterministic/simple; raise it for real runs.
 NUM_WORKERS=0 "$PY" runners/run_au_probe.py -c configs/finetune/au_local.yaml "$@"
 
@@ -17,4 +17,4 @@ NUM_WORKERS=0 "$PY" runners/run_au_probe.py -c configs/finetune/au_local.yaml "$
 # Controls (same geometry/config, change only the checkpoint):
 #   C0 random:  ... -c configs/finetune/au_local.yaml --finetune ''
 #   C1 Stage-1: ... -c configs/finetune/au_local_pretrained.yaml \
-#                  --finetune ../models/mae_pretrain_vit_base.pth
+#                  --finetune base      # downloads MAE ViT-B into ../models/initial/

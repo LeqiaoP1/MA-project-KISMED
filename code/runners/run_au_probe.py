@@ -6,7 +6,7 @@ frozen (linear) or fine-tuned encoder linearly separate facial-action
 semantics? Compare controls by pointing ``--finetune`` at different
 checkpoints with an identical probe protocol:
   * random init          (no --finetune)                -- lower bound C0
-  * Stage-1 MAE/ImageNet (../models/mae_pretrain_vit_base.pth)  -- C1
+  * Stage-1 MAE/ImageNet (--finetune base)              -- C1
   * Stage-2 BP4D multimodal MAE (output/pretrain/...)   -- C2 (headline)
 
 Usage (from ``code/``)::
@@ -90,7 +90,10 @@ def get_args():
                         help='token pooling (only "mean" implemented)')
     parser.add_argument('--finetune', default=env_or('MODEL_PATH'), type=str,
                         help='checkpoint to probe: Stage-2 MAE or Stage-1 '
-                             'MAE/ImageNet. Empty => random init (C0).')
+                             'MAE/ImageNet. Either a local path or a variant '
+                             'spec (base, mae:large, deit:small) that is '
+                             'downloaded into <project_root>/models/initial. '
+                             'Empty => random init (C0).')
 
     # --- training -------------------------------------------------------- #
     parser.add_argument('--batch_size', default=16, type=int)
@@ -135,7 +138,8 @@ def main(args):
           f'params={n_params:,}')
 
     if args.finetune:
-        load_au_probe_weights(model, args.finetune)
+        from models.pretrained import resolve_encoder_weights
+        load_au_probe_weights(model, resolve_encoder_weights(args.finetune))
     if args.probe == 'linear':
         model.freeze_features()
         n_head = sum(p.numel() for p in model.head.parameters())

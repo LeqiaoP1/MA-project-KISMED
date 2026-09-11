@@ -1,40 +1,28 @@
-# Stage 2 -- LOCAL run WITH pretrained (ImageNet/MAE) ViT encoder inheritance.
-# Choice (b): load the shared encoder's transformer weights from a MAE ViT-Base
-# checkpoint (768-d, depth 12, heads 12) -> "spatial priors" from Stage 1.
-# Spatial/frames are kept small so it still fits a LOCAL GPU; switch to the
-# larger geometry (input_size 224, longer windows, all sessions) on the HPC.
+# Stage 2 -- LOCAL run WITH Stage-1 encoder inheritance.
+# The shared encoder's transformer blocks + the RGB tubelet patch embed are
+# initialised from a MAE ViT-Base checkpoint; the TIR/signal adapters, position
+# embeddings, cls_token and head stay random (no ImageNet counterpart).
 #
-# 1) Download the checkpoint into the repo, e.g. under ../models/:
-#      wget https://dl.fbaipublicfiles.com/mae/pretrain/mae_pretrain_vit_base.pth
-#      (MAE ViT-Base, ImageNet self-supervised). Path must match pretrained_encoder.
-# 2) Run from code/:
-#      python runners/run_pretrain.py -c configs/pretrain/stage2_local_pretrained.yaml
+# The 'base' spec downloads the checkpoint once into ../models/initial/ (see
+# `python runners/run_download_weights.py --list`); a plain path works too.
+# Frames per clip match stage2_local.yaml; the input size, batch and clip count
+# are kept small so this still fits a LOCAL GPU -- switch to the larger geometry
+# (input_size 224, all sessions) on the HPC.
 #
-# NOTE: only the SHARED ENCODER transformer blocks (+ final norm) and the RGB
-# tubelet patch embed (2-D->3-D inflated) inherit weights; the TIR adapter,
-# the bvp/resp/eda signal adapters, and the position embeddings stay random
-# (they have no ImageNet counterpart). cls_token/pos_embed/head are
-# deliberately not loaded.
+# Run from code/:  python runners/run_pretrain.py -c configs/pretrain/stage2_local_pretrained.yaml
 
-model: project_multimae_small      # triggers the multimodal builder in run_pretrain
+model: project_multimae_base       # 768-d/12-layer -- MUST match pretrained_encoder
+pretrained_encoder: base           # or a path: ../models/initial/mae_pretrain_vit_base.pth
 
-# ---- weight inheritance (must match checkpoint geometry: ViT-Base) ----
-pretrained_encoder: ../models/mae_pretrain_vit_base.pth   # EDIT to your file
-enc_embed_dim: 768                 # ViT-Base
-enc_depth: 12
-enc_num_heads: 12
-mlp_ratio: 4.0
-dec_depth: 2
-
-# ---- streams & tokenizer geometry (small for local GPU) ----
+# ---- streams & tokenizer geometry (small for a local GPU) ----
 # Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bvp/resp/eda).
 # All five = rgb,tir,bvp,resp,eda; ablate by trimming (e.g. rgb,bvp).
 streams: rgb,tir,bvp,resp,eda
 tubelet: 2,16,16
 fs: 100.0
 fps: 25.0
-clip_duration: 2.0                 # ~50 frames @ 25 fps -> 25 temporal tubelets
-seq_len: 0                         # 0 => clip_duration * fs = 200 signal samples
+clip_duration: 4.0                 # ~100 frames @ 25 fps -> 50 temporal tubelets
+seq_len: 0                         # 0 => clip_duration * fs = 400 signal samples
 input_size: 64                     # square; patch size 16x16 => 4x4 spatial grid
 
 # ---- asymmetric masking ----
@@ -45,41 +33,31 @@ mask_ratio_bvp: 0.90
 mask_ratio_resp: 0.90
 mask_ratio_eda: 0.90
 
-# ---- Stage-2 loss: per-modality masked MSE (masked positions only), ----
-# then a WEIGHTED sum. Default policy: lambda_RGB = lambda_TIR = 1.0 and each
-# physio stream (bvp/resp/eda) gets lambda = signal_weight. Tune signal_weight in
-# ~[0.5, 1.0] from the NORMALIZED VARIANCE of the physio stream's masked target
-# tokens: high variance -> lean 0.5 (avoid the 1-D signal dominating the loss
-# gradient); low variance -> lean 1.0 (avoid it being ignored). loss_weights
-# (ONE value per --streams modality, in order) overrides per stream.
+# ---- loss: per-modality masked MSE (masked positions only), then a weighted
+# sum. lambda = 1.0 for rgb/tir; lambda = signal_weight for each physio stream
+# (see stage2_local.yaml for how to pick it).
 signal_weight: 0.5
-
 sig_kernel: 8
 
 # ---- data (canonical layout from data/prepare_bp4d.py) ----
 data_path: ../data/processed/bp4d_canonical
-max_sessions: 8
-max_entries: 16
+max_sessions: 11
+max_entries: 32
 # Overlapping windows (more samples). For the real HPC run over ALL sessions set
 # e.g. clip_stride: 1.0 with clip_duration: 4.0 to reach ~10-20k clips; 0 =
 # non-overlapping (stride == clip_duration).
 
 # ---- training (tiny: correctness/overfit only) ----
 epochs: 40
-batch_size: 2
-update_freq: 1
-save_ckpt_freq: 5
+batch_size: 2                      # 768-d encoder: keep small on a local GPU
+save_ckpt_freq: 10
 opt: adamw
-# Explicit ABSOLUTE LR for this small local batch. Do NOT rely on `blr` here:
-# lr = blr*batch/256 with batch 1-2 would give ~1e-6 and the model would not
-# learn. On the HPC with a large batch, drop `lr` and set `blr` instead.
-# Peak 1e-3 + warmup 5 makes the loss visibly drop within ~40 local epochs;
-# min_lr 1e-4 keeps the tail of the cosine schedule learning (was decaying to 0).
+# ABSOLUTE peak LR. On the HPC (large batch) drop `lr` and set `blr` instead:
+# lr = blr*batch*world/256 would be ~1e-6 at batch 2 and never learn.
 lr: 1.0e-3
-min_lr: 1.0e-4
+min_lr: 1.0e-4                     # keep the cosine tail learning
 warmup_epochs: 5
 weight_decay: 0.05
-clip_grad: 0.0
 num_workers: 0
 
 # ---- logging ----

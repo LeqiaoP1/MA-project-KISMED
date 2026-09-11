@@ -1,48 +1,47 @@
-# Stage 2 -- multimodal masked pre-training on BP4D+ (TEMPLATE)
-#
-# WARNING: this stage requires porting the *multimodal* masked-autoencoding
-# model (input/output adapters per stream + masking in the forward pass) from
-# tmp/MultiMAE/multimae/ and the BP4D+ dataset (RGB+TIR video, BVP/RESP/EDA).
-# Until then `runners/run_pretrain.py` trains a single-stream model only.
-# See code/README.md "Suggested port order".
+# Stage 2 -- multimodal masked pre-training on BP4D+ (HPC / full-data TEMPLATE).
+# Copy & adapt; the small local version is configs/pretrain/stage2_local.yaml.
+# Run from code/:  python runners/run_pretrain.py -c configs/pretrain/stage2_multimodal.yaml
 
-# Streams & asymmetric masking (plan: visual 50-75%, signals 90%+)
+model: project_multimae_base       # 768-d/12-layer -- the NAME sets the geometry
+pretrained_encoder: base           # Stage-1 init; '' = from scratch
+
+# ---- streams & tokenizer geometry ----
+# Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bvp/resp/eda).
 streams: rgb,tir,bvp,resp,eda
-visual_mask_ratio: 0.75
-signal_mask_ratio: 0.95
+tubelet: 2,16,16
+fs: 100.0
+fps: 25.0
+clip_duration: 4.0                 # 100 frames @ 25 fps -> 50 temporal tubelets
+seq_len: 0                         # 0 => clip_duration * fs = 400 samples
+input_size: 224                    # full-frame (no face ROI); 14x14 grid at patch 16
 
-# Losses: per-modality masked MSE (masked positions only), then a WEIGHTED sum.
-# Default policy: lambda_RGB = lambda_TIR = 1.0; every physio (1-D) stream gets
-# lambda = signal_weight (typically 0.5-1.0). Pick signal_weight from the
-# NORMALIZED VARIANCE of the physio stream's masked target tokens: high var ->
-# ~0.5 (avoid 1-D signals dominating the gradient); low var -> ~1.0 (avoid them
-# being ignored). loss_weights overrides per stream (ONE float per --streams
-# modality in order: rgb,tir,bvp,resp,eda).
+# ---- asymmetric masking (visual 50-75%, signals 90%+) ----
+mask_ratio_rgb: 0.75
+mask_ratio_tir: 0.50
+mask_ratio_bvp: 0.90
+mask_ratio_resp: 0.90
+mask_ratio_eda: 0.90
+
+# ---- loss: weighted sum of per-modality masked MSE (see stage2_local.yaml) ----
 signal_weight: 0.5
-reconstruct_signals: true
 
-# Model (placeholder -- register your multimodal MAE entrypoint in core/)
-model: project_vit_base_patch16_224
+# ---- data ----
+data_path: /path/to/bp4d_canonical
+clip_stride: 1.0                   # overlapping windows (more clips/session)
 
-# Data
-data_set: bp4d+
-data_path: /path/to/bp4d+
-
-# Training
+# ---- training (large batch: derive the LR from blr, no explicit `lr`) ----
 epochs: 800
 batch_size: 16
-update_freq: 1
 save_ckpt_freq: 20
 
-# Optimizer
+# ---- optimizer ----
 opt: adamw
 blr: 1.5e-4
 min_lr: 0.0
 warmup_epochs: 40
 weight_decay: 0.05
-clip_grad: 0.0
 
-# Logging
+# ---- logging ----
 output_dir: output/pretrain/stage2_multimodal
 log_wandb: false
 wandb_project: thesis-project

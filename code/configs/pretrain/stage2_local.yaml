@@ -1,12 +1,10 @@
 # Stage 2 -- FIRST LOCAL overfit/smoke slice (do NOT run on HPC as-is).
-# Decisions: Q1 = 3-D tubelet VideoMAE-style front-end;
-#            Q2 = rgb+tir+bvp+resp+eda (all five streams).
-# Goal: prove adapters <-> encoder <-> decoder <-> loss wiring end-to-end:
-# masked loss should drop towards ~0 on this tiny setup before any real run.
+# Goal: prove adapters <-> encoder <-> decoder <-> loss wiring end-to-end (the
+# masked loss should drop towards ~0 here before any real run).
 #
 # Run from code/:  python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml
 
-model: project_multimae_small      # triggers the multimodal builder in run_pretrain
+model: project_multimae_tiny       # 192-d/6-layer -- the NAME sets the geometry
 
 # ---- streams & tokenizer geometry ----
 # Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bvp/resp/eda).
@@ -27,22 +25,16 @@ mask_ratio_bvp: 0.90
 mask_ratio_resp: 0.90
 mask_ratio_eda: 0.90
 
-# ---- Stage-2 loss: per-modality masked MSE (masked positions only), ----
-# then a WEIGHTED sum. Default policy: lambda_RGB = lambda_TIR = 1.0 and each
-# physio stream (bvp/resp/eda) gets lambda = signal_weight. Tune signal_weight in
-# ~[0.5, 1.0] from the NORMALIZED VARIANCE of the physio stream's masked target
-# tokens: high variance -> lean 0.5 (avoid the 1-D signal dominating the loss
-# gradient); low variance -> lean 1.0 (avoid it being ignored). loss_weights
-# (ONE value per --streams modality, in order) overrides per stream.
+# ---- loss: per-modality masked MSE (masked positions only), then a weighted
+# sum. lambda = 1.0 for rgb/tir; lambda = signal_weight for each physio stream.
+# Tune it from the NORMALIZED VARIANCE of the physio masked targets: high -> 0.5
+# so the 1-D signal does not dominate the gradient, low -> 1.0 so it is not
+# ignored (loss_weights overrides per stream, one float per --streams modality).
 signal_weight: 0.5
 
-# ---- model size (small) ----
-enc_embed_dim: 192
-enc_depth: 6
-enc_num_heads: 6
-mlp_ratio: 4.0
-dec_depth: 2
-sig_kernel: 8                      # signal token window (samples)
+# NOTE: the ViT geometry (embed_dim/depth/heads) comes from `model` above;
+# mlp_ratio, dec_depth and sig_kernel keep their defaults. Set any of them here
+# only to OVERRIDE, e.g. `enc_embed_dim: 384` for an ablation.
 
 # ---- data (canonical layout from data/prepare_bp4d.py) ----
 data_path: ../data/processed/bp4d_canonical
@@ -55,19 +47,14 @@ max_entries: 8
 # ---- training (tiny: correctness/overfit only) ----
 epochs: 40
 batch_size: 2
-update_freq: 1
 save_ckpt_freq: 10
 opt: adamw
-# Explicit ABSOLUTE LR for this small local batch. Do NOT rely on `blr` here:
-# lr = blr*batch/256 with batch 1-2 would give ~1e-6 and the model would not
-# learn. On the HPC with a large batch, drop `lr` and set `blr` instead.
-# Peak 1e-3 + warmup 5 makes the loss visibly drop within ~40 local epochs;
-# min_lr 1e-4 keeps the tail of the cosine schedule learning (was decaying to 0).
+# ABSOLUTE peak LR. On the HPC (large batch) drop `lr` and set `blr` instead:
+# lr = blr*batch*world/256 would be ~1e-6 at batch 2 and never learn.
 lr: 1.0e-3
-min_lr: 1.0e-4
+min_lr: 1.0e-4                     # keep the cosine tail learning
 warmup_epochs: 5
 weight_decay: 0.05
-clip_grad: 0.0
 num_workers: 0
 
 # ---- logging ----

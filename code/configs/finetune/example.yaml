@@ -6,6 +6,9 @@ model: project_vit_base_patch16_224
 nb_classes: 1000
 input_size: 224
 finetune: output/pretrain/example/checkpoints/checkpoint-0799.pth   # optional
+# A Stage-1 variant spec is auto-downloaded into <project_root>/models/initial/
+# (small|base|large|huge, or <source>:<variant>, e.g. mae:large, deit:small):
+#finetune: base
 
 # Data
 data_set: my_dataset          # registered via @register_dataset in code/data/datasets.py

@@ -1,9 +1,9 @@
 # AU-occurrence probe -- LOCAL smoke / dev (linear probe, small geometry).
 # ADD-ON diagnostic: does the Stage-2 shared encoder linearly separate FACS
-# AU occurrence? This config probes the SMALL from-scratch Stage-2 encoder
+# AU occurrence? This config probes the TINY from-scratch Stage-2 encoder
 # (stage2_local). Its MAE-ViT-Base counterpart is
 # configs/finetune/au_local_pretrained.yaml (probes stage2_local_pretrained,
-# 768/12/12 @ clip 2.0 s, batch 2, top-5 frequent AUs). Both are variants of
+# 768/12/12 @ clip 4.0 s, batch 2, top-5 frequent AUs). Both are variants of
 # the SAME control: within one geometry keep every protocol knob (mode, split,
 # AU set, LR) fixed and change only the probed checkpoint:
 #   C0 random init   : finetune: ''            (lower bound)

@@ -1,16 +1,16 @@
 # AU-occurrence probe -- LOCAL smoke with the PRETRAINED-encoder Stage-2 run
 # (enc ViT-Base 768/12/12, mirrored from configs/pretrain/stage2_local_pretrained.yaml:
-# clip_duration 2.0 s => num_frames 50, input 64, tubelet 2,16,16).
+# clip_duration 4.0 s => num_frames 100, input 64, tubelet 2,16,16).
 #
-# COUNTERPART of configs/finetune/au_local.yaml (which probes the SMALL
+# COUNTERPART of configs/finetune/au_local.yaml (which probes the TINY
 # from-scratch encoder stage2_local, 192/6/6 @ clip 4.0 s, batch 4, full 12-AU
 # subset). Both are probe variants of the SAME linear-decodability control; the
 # geometry below MUST reproduce the probed checkpoint (stage2_local_pretrained,
 # MAE ViT-Base inherited) and protocol knobs must stay fixed across the
 # C0/C1/C2 runs of THIS geometry. RESOURCE RATIONALE: the 768-d encoder is
-# ~16x the 192-d one, so windows are shorter (2.0 s => num_frames 50, half of
-# au_local.yaml) and batch_size is 2 (not 4) to keep it on a LOCAL GPU
-# (stage2_local_pretrained.yaml made the same upstream choice).
+# ~16x the 192-d one of au_local.yaml, so batch_size is 2 (not 4) to keep it on
+# a LOCAL GPU. The window length matches au_local.yaml (4.0 s => num_frames 100)
+# and the dev caps below limit the number of clips.
 #
 # NOTE (AU set): this config deliberately probes the 5 most-frequent /
 # near-constant AUs {6,7,10,12,14} (au_local.yaml probes the full 12-AU
@@ -20,8 +20,9 @@
 #
 # Controls with an IDENTICAL probe protocol (only --finetune changes):
 #   C0 random (lower bound):  finetune: ''
-#   C1 Stage-1 (MAE/ImageNet only):
-#        finetune: ../models/mae_pretrain_vit_base.pth
+#   C1 Stage-1 (MAE/ImageNet only) -- 'base' downloads MAE ViT-B once into
+#       ../models/initial/ (a local path works too):
+#        finetune: base            # or ../models/initial/mae_pretrain_vit_base.pth
 #   C2 Stage-2 (Stage-1 init + BP4D multimodal masked pre-training):
 #        finetune: ../output/pretrain/stage2_local_pretrained/checkpoints/checkpoint-0039.pth
 #
@@ -47,7 +48,7 @@ train_ratio: 0.75
 # ---- probe geometry (ViT-Base stage-2_local_pretrained) ----
 tubelet: 2,16,16
 fps: 25.0
-clip_duration: 2.0            # num_frames = 50
+clip_duration: 4.0            # num_frames = 100
 input_size: 64
 enc_embed_dim: 768
 enc_depth: 12

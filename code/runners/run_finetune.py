@@ -33,7 +33,11 @@ def get_args():
     parser.add_argument('--nb_classes', default=1000, type=int)
     parser.add_argument('--input_size', default=224, type=int)
     parser.add_argument('--finetune', default=env_or('MODEL_PATH'), type=str,
-                        help='pretrained checkpoint to fine-tune from')
+                        help='pretrained checkpoint to fine-tune from: a local '
+                             'path OR a Stage-1 variant spec '
+                             '(small|base|large|huge, or <source>:<variant> '
+                             'e.g. mae:large). Variants are downloaded once '
+                             'into <project_root>/models/initial')
     # data
     parser.add_argument('--data_set', default=env_or('DATA_SET', ''), type=str)
     parser.add_argument('--data_path', default=env_or('DATA_PATH'), type=str)
@@ -58,6 +62,11 @@ def main(args):
     from utils import is_main_process
 
     device = init_env(args)
+
+    # A variant spec ('base', 'mae:large', 'timm:...') is downloaded into
+    # <project_root>/models/initial; '' / 'none' and existing paths pass through.
+    from models.pretrained import resolve_encoder_weights
+    args.finetune = resolve_encoder_weights(args.finetune)
 
     # ----- model ---------------------------------------------------------- #
     from models import create_model

@@ -13,6 +13,10 @@ export RAW_DATA_PATH="${RAW_DATA_PATH:-/path/on/hpc/data/raw/BP4D}"          # E
 export DATA_PATH="${DATA_PATH:-/path/on/hpc/data/processed/bp4d_canonical}"  # EDIT
 export OUTPUT_DIR="${OUTPUT_DIR:-/path/on/hpc/output}"                       # EDIT
 export CODE_DIR="${CODE_DIR:-$SLURM_SUBMIT_DIR/code}"
+# Stage-1 initial (downloaded) ViT encoder weights. Must be on a path every
+# compute node can read: pre-fetch with runners/run_download_weights.py on a
+# LOGIN node (compute nodes have no internet), then reuse the cache.
+export INITIAL_MODELS_DIR="${INITIAL_MODELS_DIR:-$(dirname "$CODE_DIR")/models/initial}"
 export DATA_SET="${DATA_SET:-bp4d+}"
 export NUM_WORKERS="${NUM_WORKERS:-4}"
 

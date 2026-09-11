@@ -46,7 +46,9 @@ def get_args():
                         help='waveform sampling rate in Hz')
     parser.add_argument('--input_size', default=224, type=int)
     parser.add_argument('--finetune', default=env_or('MODEL_PATH'), type=str,
-                        help='Stage-2 pretrained encoder checkpoint to load')
+                        help='Stage-2 pretrained encoder checkpoint to load: a '
+                             'local path OR a variant spec (base, mae:large) '
+                             'downloaded into <project_root>/models/initial')
 
     # data (implement BP4D+ in code/data/datasets.py)
     parser.add_argument('--data_set', default=env_or('DATA_SET', 'bp4d+'), type=str)
@@ -94,6 +96,8 @@ def main(args):
     model.to(device)
 
     if args.finetune:
+        from models.pretrained import resolve_encoder_weights
+        args.finetune = resolve_encoder_weights(args.finetune)
         ckpt = torch.load(args.finetune, map_location='cpu')
         state = ckpt['model'] if 'model' in ckpt else ckpt
         # drop incompatible keys (task heads / decoders of the pretrain model)
