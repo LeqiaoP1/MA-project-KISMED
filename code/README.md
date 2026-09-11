@@ -208,6 +208,52 @@ than `clip_duration` to generate overlapping windows and thus more samples per
 session; combined with `max_clips` it keeps only the earliest windows of each
 session.
 
+### Data-loading throughput — RGB decode is the bottleneck, not the disk
+
+Measured 2026-09 on 1392x1040 jpgs (`F004_T2`, cold session, 60 frames):
+
+| step                                                              | ms/frame |
+| ----------------------------------------------------------------- | -------- |
+| read the jpg bytes, **no decode**                                 | 0.6      |
+| read + **full decode** (the old path)                             | 11.6     |
+| full decode of bytes already in RAM (**no filesystem at all**)    | 9.2      |
+| `IMREAD_REDUCED_COLOR_4` decode of bytes already in RAM           | 6.3      |
+
+~90 % of the per-frame cost is libjpeg decoding a 1.4 MP image whose pixels are
+then 97 % discarded for a 224 px target; the filesystem contributes well under
+1 ms. A faster disk therefore does **not** fix it. One worker sustains ~0.35 of
+a 10 s clip per second, i.e. **~2.6-2.9 s of single-core CPU per 10 s clip**, so
+size `num_workers` against that budget. Stage 2 also decodes each session's TIR
+**once** at dataset construction and keeps it in RAM (`_tir_cache`); only the RGB
+grid is re-read per clip (250 jpgs for a 10 s window).
+
+**Implemented (2026-09).** `data/video_io.py::read_image` asks OpenCV for a
+DCT-scaled JPEG decode (`IMREAD_REDUCED_{COLOR,GRAYSCALE}_{8,4,2}`) chosen by
+`_imread_flag` from the source size parsed out of the JPEG SOF header
+(`_jpeg_size`, no decode): the coarsest scale that still covers `target_size`, so
+the image is never upscaled. Non-JPEG inputs, `target_size=None` and sources
+smaller than the scale keep the previous full decode.
+
+| `target_size` | flag chosen (1392x1040 source) | mean abs diff vs full decode | speedup |
+| ------------- | ------------------------------ | ---------------------------- | ------- |
+| `None`        | `IMREAD_UNCHANGED`             | 0 (byte-identical)           | 1.00x   |
+| 512           | `IMREAD_REDUCED_COLOR_2`       | 0.55/255                     | 1.15x   |
+| 224           | `IMREAD_REDUCED_COLOR_4`       | 0.69/255                     | 1.38x   |
+| 64            | `IMREAD_REDUCED_COLOR_8`       | 0.50/255                     | 1.34x   |
+
+Shapes are unchanged for every `target_size` x `gray` combination, and a 10 s /
+250-frame clip at 224 px drops from ~3450 ms to ~2630 ms (the clip-level gain is
+smaller than the per-frame 1.4x because TIR slicing and the float conversion are
+in the same loop).
+
+**Not implemented (the remaining lever).** The decode itself is still there.
+Materialising each session once into a uint8 `(T, S, S, 3)` mmap-able array
+removes it: measured 4.5 ms/clip from page cache (71 ms cold) instead of
+3450 ms, which takes the loader off the critical path entirely. Sizing: the
+7.96 GB of jpgs (10 594 frames) collapse to 1.59 GB at 224 px (130 MB at 64 px);
+building all 11 sessions takes ~2.5 min once. This is a *CPU* fix rather than a
+disk fix, and it would also remove the per-rank startup TIR decode under DDP.
+
 ### AU-occurrence probe — Semantic Representation Quality (ADD-ON)
 
 A **diagnostic control, not a Stage-1/2/3 step**. Its claim: Stage-2

@@ -16,3 +16,5 @@ __pycache__/
 # ignore output files
 output/*
 
+# ignore temporary files
+tmp/
