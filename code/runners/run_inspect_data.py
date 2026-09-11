@@ -297,7 +297,7 @@ def _make_figure(args, clip, sample, target, sig_cols, sig_fs, split='train'):
     t_mid = sample.shape[1] // 2
 
     rgb = (np.clip(sample[0:3, t_mid].transpose(1, 2, 0), 0, 1) * 255).astype(np.uint8)
-    tir = (np.clip(sample[3, t_mid], 0, 1) * 255).astype(np.uint8)
+    tir = (np.clip(sample[3:, t_mid].transpose(1, 2, 0), 0, 1) * 255).astype(np.uint8)
 
     fs = sig_fs or args.fs
     t0, dur = clip['t_start'], args.clip_duration
@@ -308,8 +308,15 @@ def _make_figure(args, clip, sample, target, sig_cols, sig_fs, split='train'):
     axes[0, 0].imshow(rgb)
     axes[0, 0].set_title(f'RGB (middle frame) {rgb.shape[0]}x{rgb.shape[1]}')
     axes[0, 0].axis('off')
-    axes[1, 0].imshow(tir, cmap='gray')
-    axes[1, 0].set_title(f'TIR gray (middle frame) {tir.shape[0]}x{tir.shape[1]}')
+    if tir.shape[2] == 1:                       # legacy luma-only TIR
+        axes[1, 0].imshow(tir[..., 0], cmap='gray')
+        axes[1, 0].set_title(
+            f'TIR luma (middle frame) {tir.shape[0]}x{tir.shape[1]}')
+    else:                                       # false-colour thermal render
+        axes[1, 0].imshow(tir)
+        axes[1, 0].set_title(
+            f'TIR false-colour {tir.shape[2]}ch (middle frame) '
+            f'{tir.shape[0]}x{tir.shape[1]}')
     axes[1, 0].axis('off')
     axes[2, 0].axis('off')
 

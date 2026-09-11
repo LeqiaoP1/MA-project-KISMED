@@ -27,7 +27,7 @@ import torch
 import torch.nn as nn
 
 from .blocks import Block, trunc_normal_
-from .multimae import TubeletEmbed, _PosMask
+from .multimae import STREAM_CHANNELS, TubeletEmbed, _PosMask
 
 __all__ = ['MultiModalMAEProbe', 'build_au_probe_model', 'load_au_probe_weights']
 
@@ -59,6 +59,7 @@ class MultiModalMAEProbe(nn.Module):
     """
 
     def __init__(self, streams: Sequence[str] = ('rgb',),
+                 stream_channels: Optional[Dict[str, int]] = None,
                  embed_dim: int = 192, enc_depth: int = 6,
                  enc_num_heads: int = 6, mlp_ratio: float = 4.0,
                  num_classes: int = 12, pool: str = 'mean',
@@ -68,6 +69,10 @@ class MultiModalMAEProbe(nn.Module):
                  input_size: int = 64, num_frames: int = 100):
         super().__init__()
         self.streams = list(streams)
+        self.stream_channels = dict(STREAM_CHANNELS)
+        if stream_channels:
+            self.stream_channels.update(
+                {k: int(v) for k, v in stream_channels.items()})
         if not self.streams:
             raise ValueError('MultiModalMAEProbe: needs >=1 visual stream.')
         unknown = [s for s in self.streams if s not in _VISUAL_STREAMS]
@@ -98,7 +103,7 @@ class MultiModalMAEProbe(nn.Module):
         self.adapters = nn.ModuleDict()
         self.positions = nn.ModuleDict()
         for s in self.streams:
-            in_ch = 3 if s == 'rgb' else 1
+            in_ch = int(self.stream_channels.get(s, 3))
             self.adapters[s] = TubeletEmbed(in_ch, embed_dim, tubelet)
             self.positions[s] = _PosMask(self.n_visual, embed_dim)
 
@@ -186,6 +191,7 @@ def build_au_probe_model(args, num_classes: int):
     pool = getattr(args, 'pool', 'mean')
     return MultiModalMAEProbe(
         streams=streams,
+        stream_channels={'tir': int(getattr(args, 'tir_channels', 3))},
         embed_dim=int(getattr(args, 'enc_embed_dim', 192)),
         enc_depth=int(getattr(args, 'enc_depth', 6)),
         enc_num_heads=int(getattr(args, 'enc_num_heads', 6)),

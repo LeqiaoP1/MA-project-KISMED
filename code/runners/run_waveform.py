@@ -92,7 +92,10 @@ def main(args):
 
     # ----- model: shared ViT encoder + waveform regression head ----------- #
     from models import create_model
-    model = create_model(args.model, num_classes=0, output_len=args.seq_len)
+    # RGB (3) + TIR (tir_channels, 3 by default) share one patch-embed conv
+    in_chans = 3 + int(getattr(args, 'tir_channels', 3))
+    model = create_model(args.model, num_classes=0, output_len=args.seq_len,
+                         in_chans=in_chans)
     model.to(device)
 
     if args.finetune:

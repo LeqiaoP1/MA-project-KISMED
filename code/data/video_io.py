@@ -2,6 +2,12 @@
 
 * RGB -- an ordered directory of ``jpg`` frames (``data/raw/<session>/rgb/``).
 * TIR -- a single ``.wmv`` video container (~60 s) (``data/raw/<session>/tir.wmv``).
+  NOTE: the BP4D thermal stream is a FALSE-COLOUR (rainbow) thermal *rendering*
+  with a burned-in degC legend -- NOT a gray thermal image. Verified with two
+  independent decoders (OpenCV and PyAV): ``wmv3``/``yuv420p``, 3 planes, mean
+  |U-128| ~ 23-27 on every session, and the chroma plane follows the scene.
+  ``read_all`` therefore defaults to ``gray=False`` (RGB, 3 channels); pass
+  ``gray=True`` only for the legacy luma-only surrogate.
 
 Both nominal 25 fps -- probe at runtime. WMV3/VC-1 decoding is **not** present
 in every OpenCV build, so ``open_video`` falls back to decord (ffmpeg-based);
@@ -119,7 +125,7 @@ class CV2ClipReader:
     def duration(self) -> float:
         return self.num_frames / self.fps
 
-    def read_all(self, gray: bool = True, target_size: Optional[int] = None):
+    def read_all(self, gray: bool = False, target_size: Optional[int] = None):
         frames = []
         while True:
             ok, frame = self._cap.read()
@@ -165,7 +171,7 @@ class DecordClipReader:
     def duration(self) -> float:
         return self.num_frames / self.fps
 
-    def read_all(self, gray: bool = True, target_size: Optional[int] = None):
+    def read_all(self, gray: bool = False, target_size: Optional[int] = None):
         import numpy as _np
         frames = self._vr.get_batch(list(range(self.num_frames))).asnumpy()
         if frames.ndim == 3:

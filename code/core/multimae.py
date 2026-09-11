@@ -23,8 +23,14 @@ rejected. Pipeline inside ``MultiModalMAE.forward``:
 Tensor layouts::
 
     x = {'rgb': [B, 3, T, H, W],
-         'tir': [B, 1, T, H, W],
-         'bvp': [B, 1, S]}    # any physio stream (resp/eda share this layout)
+         'tir': [B, 3, T, H, W],   # false-colour thermal rendering (3 ch)
+         'bvp': [B, 1, S]}         # any physio stream (resp/eda share this layout)
+
+``tir`` is 3-channel by default because the BP4D thermal ``.wmv`` is a
+false-colour (rainbow) thermal *rendering* with a burned-in degC legend -- not a
+gray thermal image (verified with two independent decoders: ``wmv3``/``yuv420p``,
+real chroma on every session). ``--tir_channels 1`` restores the legacy
+luma-only path, which is what checkpoints trained before 2026-09 expect.
 
 TODO(extend): MultiMAE-style prediction-task sampling, separate deeper
 per-stream decoders, 3-D sincos pos-embed, visual-stream weight sharing.
@@ -41,11 +47,21 @@ from .criterion import MaskedMSELoss
 from .registry import register_model
 
 __all__ = ['TubeletEmbed', 'MultiModalMAE', 'build_pretraining_model',
-           'load_pretrained_encoder', 'MULTIMAE_VARIANTS', 'multimae_variant']
+           'load_pretrained_encoder', 'MULTIMAE_VARIANTS', 'multimae_variant',
+           'STREAM_CHANNELS']
 
 _EPS = 1e-6
 _VISUAL_STREAMS = ('rgb', 'tir')
 _SIGNAL_STREAMS = ('bvp', 'resp', 'eda')
+
+#: Default input channels per stream. ``tir`` is 3, NOT 1: the BP4D thermal
+#: stream is a false-colour (rainbow) rendering with a burned-in degC legend --
+#: verified with two independent decoders (OpenCV + PyAV): ``wmv3``/``yuv420p``,
+#: 3 planes, mean |U-128| ~ 23-27 on every session, chroma following the scene.
+#: Feeding luma only would discard the palette the camera wrote. Override per
+#: run with ``--tir_channels 1`` (legacy), but note that changes the TIR
+#: adapter geometry: Stage-2 checkpoints are only compatible within one setting.
+STREAM_CHANNELS = {'rgb': 3, 'tir': 3, 'bvp': 1, 'resp': 1, 'eda': 1}
 
 #: Named multimodal encoder geometries. The NAME implies the geometry (the same
 #: timm-style convention as the ``project_vit_*`` family in :mod:`core.model`),
@@ -130,6 +146,7 @@ class MultiModalMAE(nn.Module):
     """Single shared-encoder, per-stream asymmetric-masked autoencoder."""
 
     def __init__(self, streams: Sequence[str] = ('rgb', 'tir', 'bvp'),
+                 stream_channels: Optional[Dict[str, int]] = None,
                  embed_dim: int = 192, enc_depth: int = 6,
                  enc_num_heads: int = 6, mlp_ratio: float = 4.0,
                  dec_depth: int = 2, drop_rate: float = 0.0,
@@ -142,6 +159,11 @@ class MultiModalMAE(nn.Module):
                  loss_weights: Optional[Dict[str, float]] = None):
         super().__init__()
         self.streams = list(streams)
+        # per-stream input channels (tir = 3 by default; see STREAM_CHANNELS)
+        self.stream_channels = dict(STREAM_CHANNELS)
+        if stream_channels:
+            self.stream_channels.update(
+                {k: int(v) for k, v in stream_channels.items()})
         if not self.streams:
             raise ValueError(
                 'MultiModalMAE: Stage-2 needs at least TWO streams (>=1 video '
@@ -208,10 +230,11 @@ class MultiModalMAE(nn.Module):
         self.adapters = nn.ModuleDict()
         for s in self.streams:
             if s in self.visual:
-                in_ch = 3 if s == 'rgb' else 1
+                in_ch = int(self.stream_channels.get(s, 3))
                 self.adapters[s] = TubeletEmbed(in_ch, embed_dim, tubelet)
             else:
-                self.adapters[s] = SignalEmbed(1, embed_dim, sig_kernel)
+                self.adapters[s] = SignalEmbed(
+                    int(self.stream_channels.get(s, 1)), embed_dim, sig_kernel)
 
         # --- positions / mask tokens -------------------------------------- #
         self.positions = nn.ModuleDict()
@@ -237,12 +260,14 @@ class MultiModalMAE(nn.Module):
             for _ in range(dec_depth)
         ])
 
-        # flat reconstruction dim per stream (normalized patch of raw values)
+        # flat reconstruction dim per stream (normalized patch of raw values).
+        # MUST use the same channel counts as the adapters, otherwise the
+        # per-stream prediction and target shapes disagree (tir = 3 by default).
         self.heads = nn.ModuleDict()
         self._flat = {}
         for s in self.streams:
             if s in self.visual:
-                in_ch = 3 if s == 'rgb' else 1
+                in_ch = int(self.stream_channels.get(s, 3))
                 f = t * ph * pw * in_ch
             else:
                 f = sig_kernel
@@ -460,6 +485,7 @@ def build_pretraining_model(args):
 
     return MultiModalMAE(
         streams=streams,
+        stream_channels={'tir': int(getattr(args, 'tir_channels', 3))},
         embed_dim=_geo('enc_embed_dim', 'embed_dim', 192),
         enc_depth=_geo('enc_depth', 'enc_depth', 6),
         enc_num_heads=_geo('enc_num_heads', 'enc_num_heads', 6),

@@ -8,8 +8,10 @@ Expected per-session layout under ``data_path``::
         signals.csv     # header: [time,] bvp, resp, eda  at fs Hz
 
 ``PairedSessionDataset`` returns ``(samples, target)`` per clip:
-  * ``samples`` : float tensor [4, T, H, W]  (RGB 3ch + TIR 1ch, temporal stack)
-  * ``target``  : float tensor [seq_len]     (chosen waveform: BVP, RESP or EDA)
+  * ``samples`` : float tensor [3+C, T, H, W]  (RGB 3ch + TIR ``C``ch, temporal
+    stack; ``C = tir_channels``, default 3 -> 6 channels, because the TIR
+    stream is a false-colour rendering -- see ``video_io`` and ``tir_channels``)
+  * ``target``  : float tensor [seq_len]       (chosen waveform: BVP, RESP or EDA)
 
 Both videos are read on a single common time grid (see ``data/alignment.py``),
 handling any RGB/TIR fps mismatch; 1D signals are sliced on the same axis and
@@ -146,8 +148,11 @@ class PairedSessionDataset(Dataset):
                  signals_file: str = 'signals.csv',
                  max_sessions: Optional[int] = None,
                  max_clips: Optional[int] = None,
-                 max_entries: Optional[int] = None):
+                 max_entries: Optional[int] = None,
+                 tir_channels: int = 3):
         assert target in ('bvp', 'resp', 'eda'), target
+        assert int(tir_channels) in (1, 3), \
+            f'tir_channels must be 1 or 3, got {tir_channels}'
         self.target = target
         self.fs = float(fs)
         self.max_sessions = max_sessions
@@ -163,6 +168,9 @@ class PairedSessionDataset(Dataset):
             self.clip_duration if not clip_stride or float(clip_stride) <= 0
             else float(clip_stride))
         self.seq_len = seq_len or int(round(self.clip_duration * self.fs))
+        # TIR channels: 3 keeps the false-colour thermal rendering as written
+        # (verified wmv3/yuv420p with real chroma), 1 = legacy luma-only path
+        self.tir_channels = int(tir_channels)
 
         sessions = scan_sessions(data_path, rgb_dir=rgb_dir,
                                  tir_file=tir_file, signals_file=signals_file)
@@ -208,7 +216,7 @@ class PairedSessionDataset(Dataset):
                 tir_fps = reader.fps
                 s['tir_fps'] = tir_fps
                 self._tir_cache[s['session']] = reader.read_all(
-                    gray=True, target_size=self.input_size)
+                    gray=self.tir_channels == 1, target_size=self.input_size)
 
             dur = align.available_duration([
                 len(rgb_files) / self.fps_rgb,
@@ -272,21 +280,22 @@ class PairedSessionDataset(Dataset):
         return torch.from_numpy(rgb).permute(3, 0, 1, 2)       # [3,T,H,W]
 
     def _load_tir(self, s, t_start: float) -> torch.Tensor:
-        """TIR clip ``[1, T, H, W]`` on the common time grid."""
+        """TIR clip ``[C, T, H, W]`` on the common time grid (C = 3 by default)."""
         session = s['session']
         tir_frames = self._tir_cache[session]          # [T, H, W] uint8
         plan = align.plan_clip(t_start, self.clip_duration,
                                self.fps_rgb, s['tir_fps'], s['fs'])
         tir_idx = plan['tir']['indices']
         tir_idx = tir_idx[(tir_idx >= 0) & (tir_idx < len(tir_frames))]
-        tir = tir_frames[tir_idx].astype(np.float32) / 255.0   # [T,H,W]
-        tir = tir[..., None]                                   # [T,H,W,1]
+        tir = tir_frames[tir_idx].astype(np.float32) / 255.0  # [T,H,W] or [T,H,W,C]
+        if tir.ndim == 3:                                     # legacy 1-channel
+            tir = tir[..., None]                              # [T,H,W,1]
         # pad/trim to the RGB grid so both visuals share the same T
         tir = _pad_time(tir, plan['rgb']['n'])
-        return torch.from_numpy(tir).permute(3, 0, 1, 2)       # [1,T,H,W]
+        return torch.from_numpy(tir).permute(3, 0, 1, 2)      # [C,T,H,W]
 
     def _load_visual(self, s, t_start: float) -> torch.Tensor:
-        """Aligned RGB+TIR clip stack ``[4, T, H, W]`` on the common grid."""
+        """Aligned RGB+TIR clip stack ``[3+C, T, H, W]`` on the common grid."""
         rgb = self._load_rgb(s, t_start)
         tir = self._load_tir(s, t_start)
         return torch.cat([rgb, tir], dim=0)                    # [4,T,H,W]
@@ -338,7 +347,8 @@ class PairedPretrainDataset(PairedSessionDataset):
                  streams: Sequence[str] = ('rgb', 'tir', 'bvp', 'resp', 'eda'),
                  max_sessions: Optional[int] = None,
                  max_clips: Optional[int] = None,
-                 max_entries: Optional[int] = None):
+                 max_entries: Optional[int] = None,
+                 tir_channels: int = 3):
         streams = tuple(streams)
         if not streams:
             raise ValueError(
@@ -376,7 +386,7 @@ class PairedPretrainDataset(PairedSessionDataset):
             input_size=input_size, train_ratio=1.0,
             rgb_dir=rgb_dir, tir_file=tir_file, signals_file=signals_file,
             max_sessions=max_sessions, max_clips=max_clips,
-            max_entries=max_entries)
+            max_entries=max_entries, tir_channels=tir_channels)
 
         # every requested 1-D stream must exist in each cached session's csv
         checked = set()
@@ -422,4 +432,5 @@ def build_paired_dataset(is_train: bool, test_mode: bool, args):
         signals_file=getattr(args, 'signals_file', 'signals.csv'),
         max_sessions=getattr(args, 'max_sessions', None),
         max_clips=getattr(args, 'max_clips', None),
-        max_entries=getattr(args, 'max_entries', None))
+        max_entries=getattr(args, 'max_entries', None),
+        tir_channels=int(getattr(args, 'tir_channels', 3)))

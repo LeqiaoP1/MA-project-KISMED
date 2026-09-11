@@ -36,6 +36,16 @@ def add_common_args(parser: argparse.ArgumentParser):
     parser.add_argument('--log_wandb', action='store_true', default=False)
     parser.add_argument('--wandb_project', default='thesis-project', type=str)
     parser.add_argument('--num_workers', default=int(env_or('NUM_WORKERS', '8')), type=int)
+    parser.add_argument('--tir_channels',
+                        default=int(env_or('TIR_CHANNELS', '3')),
+                        type=int, choices=[1, 3],
+                        help='TIR input channels. 3 (default) treats the '
+                             'thermal stream as what it is: a false-colour '
+                             '(rainbow) rendering with real chroma '
+                             '(wmv3/yuv420p, verified with OpenCV + PyAV). '
+                             '1 = legacy luma-only surrogate; it changes the '
+                             'TIR adapter geometry, so use it only to match '
+                             'Stage-2 checkpoints trained before 2026-09.')
     parser.add_argument('--pin_mem', action='store_true', default=True)
     # quick/dev runs: cap the number of sessions / clips (see PairedSessionDataset)
     parser.add_argument('--max_sessions', default=None, type=int,

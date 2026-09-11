@@ -179,7 +179,25 @@ layout; select it with `data_set: bp4d+` (alias `paired`). Per-session TIR fps
 and signal sample rates are probed at runtime; both modalities are read on one
 common time grid and the target waveform is resampled to `seq_len`. Set
 data-set params in the YAML: `fs`, `fps`, `clip_duration`, `clip_stride`, `seq_len`,
-`input_size`, `rgb_dir`, `tir_file`, `signals_file`, `train_ratio`.
+`input_size`, `rgb_dir`, `tir_file`, `signals_file`, `train_ratio`,
+`tir_channels`.
+
+**TIR is not gray (verified 2026-09).** The BP4D thermal `.wmv` is a
+false-colour (rainbow) thermal *rendering* with the camera's degC legend burned
+into the right edge. Two independent decoders agree: `wmv3`/`yuv420p`, 3 planes
+decoded, mean `|U-128| = 23-27` and `|V-128| = 16-20` on all 11 local sessions,
+with the chroma plane following the scene (not noise, not a flat cast); the raw
+`Thermal/<S>/<T>.wmv` and the canonical `tir.wmv` are byte-identical, so this is
+source data rather than a preprocessing artefact. The pipeline therefore keeps
+TIR as **3-channel** (`tir_channels: 3`, the default): the Stage-2 TIR adapter is
+`Conv3d(3->D)`, `PairedSessionDataset` returns `[3+C, T, H, W]` = `[6, T, H, W]`
+(RGB 3 + TIR 3) so Stage 3 needs `in_chans: 6`. `--tir_channels 1` restores the
+legacy luma-only surrogate (`cvtColor(BGR2GRAY)`) and is only needed to match
+Stage-2 checkpoints trained before this change - it does change the TIR adapter
+geometry. Consequence to state wherever TIR is claimed to carry temperature:
+this input is a *rendered* proxy whose palette depends on the camera's per-frame
+auto-range, not radiometric temperature. (The legend itself is cropped away by
+`resize_center_crop` at 64 px and at 224 px.)
 
 Optional dev/quick-run caps (accepted by every training runner and by the
 inspect runner): `max_sessions` bounds the number of decoded sessions up

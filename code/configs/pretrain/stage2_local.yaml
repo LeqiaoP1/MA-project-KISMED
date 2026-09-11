@@ -10,6 +10,7 @@ model: project_multimae_tiny       # 192-d/6-layer -- the NAME sets the geometry
 # Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bvp/resp/eda).
 # All five = rgb,tir,bvp,resp,eda; ablate by trimming (e.g. rgb,bvp).
 streams: rgb,tir,bvp,resp,eda
+tir_channels: 3                    # thermal is a false-colour render, not gray
 tubelet: 2,16,16                   # (temporal, H, W) tubelet
 fs: 100.0
 fps: 25.0

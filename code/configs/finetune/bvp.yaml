@@ -6,6 +6,7 @@ fs: 100                  # sampling rate (Hz)
 
 # Model: shared Stage-2 encoder + regression head
 model: project_vit_base_patch16_224
+in_chans: 6                       # RGB(3) + TIR(3, false-colour thermal render)
 finetune: output/pretrain/stage2_multimodal/checkpoints/checkpoint-0799.pth
 
 # Data (implement bp4d+ in code/data/datasets.py; yields (samples, [B,T]))
