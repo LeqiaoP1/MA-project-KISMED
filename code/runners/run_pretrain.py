@@ -52,6 +52,12 @@ def get_args():
                              'OVERLAPPING windows (more samples/session, e.g. '
                              'to reach 10-20k clips on the full HPC data). '
                              '0 => stride = clip_duration (non-overlapping).')
+    parser.add_argument('--temporal_stride', default=1, type=int,
+                        help='decimate frames INSIDE a window: keep 1 frame '
+                             'every N (1 = every frame; 2/4/8 -> 12.5/6.25/'
+                             '3.125 fps at 25 fps nominal). Distinct from '
+                             '--clip_stride (window hop in seconds). Sets the '
+                             'video geometry num_frames = clip_duration*fps/N.')
     parser.add_argument('--seq_len', default=0, type=int,
                         help='signal samples per window (0 => clip_duration*fs)')
     parser.add_argument('--input_size', default=64, type=int,

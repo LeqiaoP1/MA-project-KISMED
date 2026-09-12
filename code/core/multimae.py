@@ -452,7 +452,16 @@ def build_pretraining_model(args):
     clip_duration = float(getattr(args, 'clip_duration', 4.0))
     fps = float(getattr(args, 'fps', 25.0))
     fs = float(getattr(args, 'fs', 100.0))
-    num_frames = max(1, int(round(clip_duration * fps)))
+    # temporal decimation inside the window (1 = every frame). MUST mirror the
+    # dataset's alignment.plan_clip so the video token geometry matches clip T.
+    temporal_stride = max(1, int(getattr(args, 'temporal_stride', 1) or 1))
+    num_frames = max(1, int(round(clip_duration * fps / temporal_stride)))
+    # the Conv3d tubelet partitions time into ``t`` frames, so round the clip
+    # length DOWN to a multiple of t (e.g. stride 4 @ 25 fps / 4 s -> 25 -> 24);
+    # MultiModalMAE._resize_t then trims the dataset's T to this length.
+    if num_frames % tubelet[0]:
+        num_frames -= num_frames % tubelet[0]
+    num_frames = max(tubelet[0], num_frames)
     seq_len = int(getattr(args, 'seq_len', 0)) or max(1, int(round(clip_duration * fs)))
 
     ratios = {'rgb': float(getattr(args, 'mask_ratio_rgb', 0.75)),

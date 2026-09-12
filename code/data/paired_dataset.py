@@ -142,6 +142,7 @@ class PairedSessionDataset(Dataset):
                  fs: float = 100.0, fps: float = 25.0,
                  clip_duration: float = 10.0,
                  clip_stride: Optional[float] = None,
+                 temporal_stride: int = 1,
                  seq_len: Optional[int] = None,
                  input_size: int = 224, train_ratio: float = 0.8,
                  rgb_dir: str = 'rgb', tir_file: str = 'tir.wmv',
@@ -167,6 +168,11 @@ class PairedSessionDataset(Dataset):
         self.clip_stride = (
             self.clip_duration if not clip_stride or float(clip_stride) <= 0
             else float(clip_stride))
+        # temporal decimation INSIDE a window: keep one frame every
+        # ``temporal_stride`` frames of the common video grid (1 = every frame;
+        # 2/4/8 -> 12.5/6.25/3.125 fps at the nominal 25 fps). This is NOT the
+        # window hop -- that is ``clip_stride`` (in seconds, above).
+        self.temporal_stride = max(1, int(temporal_stride))
         self.seq_len = seq_len or int(round(self.clip_duration * self.fs))
         # TIR channels: 3 keeps the false-colour thermal rendering as written
         # (verified wmv3/yuv420p with real chroma), 1 = legacy luma-only path
@@ -261,7 +267,8 @@ class PairedSessionDataset(Dataset):
         sig = self._sig_all[s['session']][name]
         fs_s = s['fs']
         plan = align.plan_clip(t_start, self.clip_duration,
-                               self.fps_rgb, s['tir_fps'], fs_s)
+                               self.fps_rgb, s['tir_fps'], fs_s,
+                               temporal_stride=self.temporal_stride)
         sig_slice = align.slice_1d(
             sig, fs_s, start=plan['signal']['start'], n=plan['signal']['n'])
         return align.resample_1d(
@@ -272,7 +279,8 @@ class PairedSessionDataset(Dataset):
         """RGB clip ``[3, T, H, W]`` on the common time grid."""
         session = s['session']
         plan = align.plan_clip(t_start, self.clip_duration,
-                               self.fps_rgb, s['tir_fps'], s['fs'])
+                               self.fps_rgb, s['tir_fps'], s['fs'],
+                               temporal_stride=self.temporal_stride)
         rgb = self._get_rgb(self._files_cache[session],
                             plan['rgb']['indices'])
         tgt_t = plan['rgb']['n']
@@ -284,7 +292,8 @@ class PairedSessionDataset(Dataset):
         session = s['session']
         tir_frames = self._tir_cache[session]          # [T, H, W] uint8
         plan = align.plan_clip(t_start, self.clip_duration,
-                               self.fps_rgb, s['tir_fps'], s['fs'])
+                               self.fps_rgb, s['tir_fps'], s['fs'],
+                               temporal_stride=self.temporal_stride)
         tir_idx = plan['tir']['indices']
         tir_idx = tir_idx[(tir_idx >= 0) & (tir_idx < len(tir_frames))]
         tir = tir_frames[tir_idx].astype(np.float32) / 255.0  # [T,H,W] or [T,H,W,C]
@@ -341,6 +350,7 @@ class PairedPretrainDataset(PairedSessionDataset):
     def __init__(self, data_path: str, fs: float = 100.0, fps: float = 25.0,
                  clip_duration: float = 4.0,
                  clip_stride: Optional[float] = None,
+                 temporal_stride: int = 1,
                  seq_len: Optional[int] = None,
                  input_size: int = 64, rgb_dir: str = 'rgb',
                  tir_file: str = 'tir.wmv', signals_file: str = 'signals.csv',
@@ -382,7 +392,8 @@ class PairedPretrainDataset(PairedSessionDataset):
             data_path=data_path, target=target,
             is_train=True, test_mode=True,
             fs=fs, fps=fps, clip_duration=clip_duration,
-            clip_stride=clip_stride, seq_len=seq_len,
+            clip_stride=clip_stride, temporal_stride=temporal_stride,
+            seq_len=seq_len,
             input_size=input_size, train_ratio=1.0,
             rgb_dir=rgb_dir, tir_file=tir_file, signals_file=signals_file,
             max_sessions=max_sessions, max_clips=max_clips,
@@ -424,6 +435,7 @@ def build_paired_dataset(is_train: bool, test_mode: bool, args):
         fps=getattr(args, 'fps', 25.0),
         clip_duration=getattr(args, 'clip_duration', 10.0),
         clip_stride=getattr(args, 'clip_stride', None),
+        temporal_stride=int(getattr(args, 'temporal_stride', 1) or 1),
         seq_len=getattr(args, 'seq_len', None),
         input_size=getattr(args, 'input_size', 224),
         train_ratio=getattr(args, 'train_ratio', 0.8),
