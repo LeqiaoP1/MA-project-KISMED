@@ -17,7 +17,9 @@ pretrained_encoder: base           # or a path: ../models/initial/mae_pretrain_v
 # ---- streams & tokenizer geometry (small for a local GPU) ----
 # Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bvp/resp/eda).
 # All five = rgb,tir,bvp,resp,eda; ablate by trimming (e.g. rgb,bvp).
-streams: rgb,tir,bvp,resp,eda
+streams: rgb,bvp
+#streams: tir, resp
+
 tir_channels: 3                    # thermal is a false-colour render, not gray
 tubelet: 2,16,16
 fs: 100.0
@@ -29,10 +31,22 @@ temporal_stride: 1                 # decimate INSIDE the window (1=every frame;
                                    # num_frames = clip_duration*fps/N.
 seq_len: 0                         # 0 => clip_duration*fs = 400 signal samples
 input_size: 64                     # square; patch size 16x16 => 4x4 spatial grid
+# ---- space-time alignment (checked hard by the model) ----
+# tubelet_t*temporal_stride/fps == sig_kernel/fs -> 2*1/25 == 8/100 == 80 ms,
+# and 100/2 == 400/8 == 50 tokens per stream; the model raises otherwise.
+# pos_init sincos3d = 3-D (t,h,w) sincos init for the video positions + the
+# same 1-D temporal sincos for the physio positions (a Stage-1 MAE pos_embed
+# cannot be reused: 197 tokens vs 800 here).
+pos_init: sincos3d
+
+# NOTE on 0.90 + a 4x4 grid: a tube mask at 0.90 keeps only 2 of the 16
+# spatial patches visible in EVERY frame (VideoMAE's 0.90 is normally used on a
+# 14x14 grid at input_size 224). Use 224 for the real run, or drop to 0.75 to
+# debug at 64 px.
 
 # ---- asymmetric masking ----
-mask_ratio_rgb: 0.75
-mask_ratio_tir: 0.50
+mask_ratio_rgb: 0.90
+mask_ratio_tir: 0.90
 # 1-D physio streams are masked hardest (90%+) in Stage 2
 mask_ratio_bvp: 0.90
 mask_ratio_resp: 0.90

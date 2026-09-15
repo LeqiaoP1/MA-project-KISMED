@@ -92,7 +92,20 @@ def get_args():
     parser.add_argument('--dec_depth', default=2, type=int)
     parser.add_argument('--mlp_ratio', default=4.0, type=float)
     parser.add_argument('--sig_kernel', default=8, type=int,
-                        help='signal token window (samples per token)')
+                        help='signal token window (samples per token). MUST be '
+                             'time-aligned with the video tubelet: one token '
+                             'must cover the same seconds in every stream, '
+                             'i.e. sig_kernel/fs == tubelet_t*temporal_stride/'
+                             'fps (default 8/100 == 2*1/25 = 80 ms). The model '
+                             'refuses to build on a misaligned geometry.')
+    parser.add_argument('--pos_init', default='sincos3d', type=str,
+                        choices=['sincos3d', 'random'],
+                        help="positional-embedding init: 'sincos3d' (default) "
+                             'initialises the video positions with a 3-D '
+                             '(t, h, w) sincos grid and the physio positions '
+                             'with the same 1-D temporal sincos (a space-time '
+                             'prior at init, since the Stage-1 MAE pos_embed '
+                             'cannot be reused); \'random\' = trunc_normal.')
     parser.add_argument('--pretrained_encoder', default='', type=str,
                         help='MAE/ImageNet ViT checkpoint to initialise the '
                              'shared encoder from (Stage-1 spatial priors): a '

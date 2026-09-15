@@ -150,11 +150,33 @@ class PairedSessionDataset(Dataset):
                  max_sessions: Optional[int] = None,
                  max_clips: Optional[int] = None,
                  max_entries: Optional[int] = None,
-                 tir_channels: int = 3):
+                 tir_channels: int = 3,
+                 use_tir: bool = True,
+                 signal_norm: str = 'none'):
         assert target in ('bvp', 'resp', 'eda'), target
         assert int(tir_channels) in (1, 3), \
             f'tir_channels must be 1 or 3, got {tir_channels}'
+        if signal_norm not in ('none', 'ac', 'zscore'):
+            raise ValueError(
+                f"signal_norm must be 'none', 'ac' or 'zscore'; got "
+                f'{signal_norm!r}')
         self.target = target
+        #: waveform normalisation per clip. The recorded BP4D streams are NOT
+        #: zero-mean: the BVP column is raw blood pressure in mmHg (measured
+        #: mean ~101, std ~11 on the local sessions), so a regression head would
+        #: have to reproduce a ~100 offset and the MR-STFT term would be
+        #: dominated by that DC component (its 0 Hz bin) instead of the
+        #: pulsatile band. Stage 3 therefore uses 'zscore' (per-window
+        #: zero-mean/unit-std, the standard rPPG convention; Pearson/PSD/MAE are
+        #: all reported on the normalised waveform).
+        #: 'none' keeps the raw units (default -- the inspection tooling plots
+        #: absolute waveforms), 'ac' removes the mean only.
+        self.signal_norm = signal_norm
+        #: False => RGB-only clips (no TIR decode at all). Stage 3 uses this
+        #: when the Stage-2 encoder was pre-trained on ``rgb`` (+ physio) only,
+        #: so the TIR adapter has no trained weights and TIR would be a domain
+        #: shift; it also halves the decode cost and the RAM cache.
+        self.use_tir = bool(use_tir)
         self.fs = float(fs)
         self.max_sessions = max_sessions
         self.max_clips = max_clips
@@ -218,16 +240,20 @@ class PairedSessionDataset(Dataset):
             self._files_cache[s['session']] = rgb_files
 
             tir_fps = self.fps_rgb
-            with vio.open_video(s['tir_file']) as reader:
-                tir_fps = reader.fps
+            if self.use_tir:
+                with vio.open_video(s['tir_file']) as reader:
+                    tir_fps = reader.fps
+                    s['tir_fps'] = tir_fps
+                    self._tir_cache[s['session']] = reader.read_all(
+                        gray=self.tir_channels == 1, target_size=self.input_size)
+            else:
                 s['tir_fps'] = tir_fps
-                self._tir_cache[s['session']] = reader.read_all(
-                    gray=self.tir_channels == 1, target_size=self.input_size)
 
-            dur = align.available_duration([
-                len(rgb_files) / self.fps_rgb,
-                len(self._tir_cache[s['session']]) / s['tir_fps'],
-                len(canon[target]) / s['fs']])
+            durations = [len(rgb_files) / self.fps_rgb,
+                         len(canon[target]) / s['fs']]
+            if self.use_tir:
+                durations.insert(1, len(self._tir_cache[s['session']]) / tir_fps)
+            dur = align.available_duration(durations)
             s['dur'] = dur                       # session's available duration
             stride = self.clip_stride
             # windows start at 0, stride, ... while the window still fits
@@ -271,9 +297,15 @@ class PairedSessionDataset(Dataset):
                                temporal_stride=self.temporal_stride)
         sig_slice = align.slice_1d(
             sig, fs_s, start=plan['signal']['start'], n=plan['signal']['n'])
-        return align.resample_1d(
+        w = align.resample_1d(
             sig_slice, fs_s, float(self.seq_len / self.clip_duration),
             length=self.seq_len)
+        # per-clip waveform normalisation (see signal_norm in __init__)
+        if self.signal_norm != 'none':
+            w = w - float(w.mean())
+            if self.signal_norm == 'zscore':
+                w = w / (float(w.std()) + 1e-6)
+        return w
 
     def _load_rgb(self, s, t_start: float) -> torch.Tensor:
         """RGB clip ``[3, T, H, W]`` on the common time grid."""
@@ -304,10 +336,17 @@ class PairedSessionDataset(Dataset):
         return torch.from_numpy(tir).permute(3, 0, 1, 2)      # [C,T,H,W]
 
     def _load_visual(self, s, t_start: float) -> torch.Tensor:
-        """Aligned RGB+TIR clip stack ``[3+C, T, H, W]`` on the common grid."""
+        """Aligned RGB(+TIR) clip stack ``[3(+C), T, H, W]`` on the common grid.
+
+        ``use_tir=False`` returns the RGB branch alone (``[3, T, H, W]``): the
+        Stage-3 configuration used when the Stage-2 encoder was pre-trained on
+        ``rgb`` (+ 1-D physio) and therefore has no trained TIR adapter.
+        """
         rgb = self._load_rgb(s, t_start)
+        if not self.use_tir:
+            return rgb
         tir = self._load_tir(s, t_start)
-        return torch.cat([rgb, tir], dim=0)                    # [4,T,H,W]
+        return torch.cat([rgb, tir], dim=0)                    # [3+C,T,H,W]
 
     def __getitem__(self, idx):
         s, t_start = self.entries[idx]
@@ -397,7 +436,11 @@ class PairedPretrainDataset(PairedSessionDataset):
             input_size=input_size, train_ratio=1.0,
             rgb_dir=rgb_dir, tir_file=tir_file, signals_file=signals_file,
             max_sessions=max_sessions, max_clips=max_clips,
-            max_entries=max_entries, tir_channels=tir_channels)
+            max_entries=max_entries, tir_channels=tir_channels,
+            # decode/cache the TIR video ONLY when 'tir' is a requested stream:
+            # an rgb+bvp run would otherwise pay the warm .wmv decode plus up to
+            # ~1.6 GB (224 px) of RAM per dataset instance for nothing.
+            use_tir=('tir' in self.visual_streams))
 
         # every requested 1-D stream must exist in each cached session's csv
         checked = set()
@@ -445,4 +488,6 @@ def build_paired_dataset(is_train: bool, test_mode: bool, args):
         max_sessions=getattr(args, 'max_sessions', None),
         max_clips=getattr(args, 'max_clips', None),
         max_entries=getattr(args, 'max_entries', None),
-        tir_channels=int(getattr(args, 'tir_channels', 3)))
+        tir_channels=int(getattr(args, 'tir_channels', 3)),
+        use_tir=bool(getattr(args, 'use_tir', True)),
+        signal_norm=str(getattr(args, 'signal_norm', 'none')))

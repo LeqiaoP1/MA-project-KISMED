@@ -20,6 +20,29 @@ rejected. Pipeline inside ``MultiModalMAE.forward``:
     keep lambda = 1.0 while physio (1-D) streams get lambda = ``signal_weight``
     (default 0.5; ``loss_weights`` gives a full per-stream override).
 
+SPACE-TIME ATTENTION AND ALIGNMENT (checked, not assumed)
+---------------------------------------------------------
+* The encoder is a plain ViT (``core.blocks.Block``) applied to the SINGLE
+  concatenated token sequence of all streams, i.e. JOINT space-time attention
+  over the tubelet tokens -- there is no divided/ factorised space-time
+  attention and no per-frame attention anywhere in this path. The 3-D
+  structure comes from the Conv3d tubelet embed: token index
+  ``gt*Gh*Gw + gh*Gw + gw``.
+* ``_check_space_time_alignment`` enforces at CONSTRUCTION time that one video
+  tubelet and one 1-D signal token cover the same time span *and* that there
+  are equally many of them (``Gt == n_signal``), so token ``i`` means the same
+  instant in every stream. A geometry that violates this raises instead of
+  silently letting the shared encoder learn a non-existent cross-modal
+  relation. ``_fit_time`` then refuses to PAD at forward time (padding would
+  re-warp the time axis); only a trailing trim (which keeps the time origin)
+  is allowed.
+* ``_init_pos_embeds`` initialises the (learned) positions with a 3-D
+  ``(t, h, w)`` sincos grid for the videos and the SAME 1-D temporal sincos for
+  the physio streams, so the space-time prior exists at init -- the Stage-1
+  MAE/ViT checkpoint cannot provide it (its 2-D ``pos_embed`` has a different
+  token count and is dropped by ``load_pretrained_encoder``). Disable with
+  ``pos_init='random'``.
+
 Tensor layouts::
 
     x = {'rgb': [B, 3, T, H, W],
@@ -129,7 +152,13 @@ class SignalEmbed(nn.Module):
 
 
 class _PosMask(nn.Module):
-    """Learned 1-D position embedding + single [MASK] token for one stream."""
+    """Learned 1-D position embedding + single [MASK] token for one stream.
+
+    ``num_tokens`` is ``Gt*Gh*Gw`` for a video stream (tubelet tokens, ordered
+    ``(t, h, w)``) and ``seq_len // sig_kernel`` for a 1-D physio stream; in a
+    correctly aligned Stage-2 geometry the two counts are EQUAL, see
+    :meth:`MultiModalMAE._check_space_time_alignment`.
+    """
 
     def __init__(self, num_tokens: int, dim_tokens: int):
         super().__init__()
@@ -154,9 +183,12 @@ class MultiModalMAE(nn.Module):
                  tubelet: Tuple[int, int, int] = (2, 16, 16),
                  input_size: int = 64, num_frames: int = 100,
                  sig_kernel: int = 8, seq_len: int = 400,
+                 fps: float = 25.0, fs: float = 100.0,
+                 temporal_stride: int = 1,
                  mask_ratios: Optional[Dict[str, float]] = None,
                  signal_weight: float = 0.5,
-                 loss_weights: Optional[Dict[str, float]] = None):
+                 loss_weights: Optional[Dict[str, float]] = None,
+                 pos_init: str = 'sincos3d'):
         super().__init__()
         self.streams = list(streams)
         # per-stream input channels (tir = 3 by default; see STREAM_CHANNELS)
@@ -195,13 +227,32 @@ class MultiModalMAE(nn.Module):
         self.embed_dim = embed_dim
         self.num_frames = num_frames
         self.seq_len = seq_len
+        self.input_size = input_size
+        self.sig_kernel = sig_kernel
+        self.fps = float(fps)
+        self.fs = float(fs)
+        self.temporal_stride = max(1, int(temporal_stride or 1))
 
         Gh = Gw = input_size // ph
         Gt = num_frames // t
+        self.grid_t, self.grid_h, self.grid_w = Gt, Gh, Gw
         self.n_visual = Gt * Gh * Gw            # tokens per visual stream
         self.n_signal = seq_len // sig_kernel   # tokens for a signal stream
         assert self.n_signal > 0, 'seq_len < sig_kernel'
-        self.sig_kernel = sig_kernel
+        # HARD space-time alignment contract: one tubelet token and one signal
+        # token must cover the SAME time span and there must be the same number
+        # of them, so token index i means the same instant in every stream.
+        self._check_space_time_alignment()
+
+        # per-stream positional embedding init: 3-D (t, h, w) sincos for the
+        # video streams + the matching 1-D temporal sincos for the physio
+        # streams (see _init_pos_embeds). 'random' keeps the trunc_normal init.
+        if pos_init not in ('sincos3d', 'random'):
+            raise ValueError(
+                f"MultiModalMAE: pos_init must be 'sincos3d' or 'random'; "
+                f'got {pos_init!r}')
+        self.pos_init = pos_init
+
 
         # default asymmetric ratios (visual 50-75 %, signals 90 %+)
         ratios = {'rgb': 0.75, 'tir': 0.50, 'bvp': 0.90}
@@ -275,6 +326,8 @@ class MultiModalMAE(nn.Module):
             self.heads[s] = nn.Linear(embed_dim, f)
 
         self.apply(self._init_weights)
+        if self.pos_init == 'sincos3d':
+            self._init_pos_embeds()
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -286,19 +339,138 @@ class MultiModalMAE(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     # ------------------------------------------------------------------ #
+    # space-time alignment contract
+    # ------------------------------------------------------------------ #
+    def _check_space_time_alignment(self):
+        """Verify that the video tubelets and the 1-D signal tokens agree.
+
+        The shared encoder sees ONE concatenated token sequence, so a video
+        tubelet token and a physio token are only interchangeable if both
+        cover the same time span and there are equally many of them. Three
+        conditions are enforced (all hard errors -- a silent mismatch would
+        let the model "learn" a cross-modal relation that does not exist):
+
+        1. the tubelet grid tiles the clip exactly (``tubelet_t | num_frames``);
+        2. the signal grid tiles the window exactly (``sig_kernel | seq_len``);
+        3. one tubelet token and one signal token span the SAME number of
+           seconds (``tubelet_t*temporal_stride/fps == sig_kernel/fs``) and
+           there is the SAME number of them (``Gt == n_signal``).
+        """
+        t, _, _ = self.tubelet
+        self.sec_per_visual_token = t * self.temporal_stride / self.fps
+        self.sec_per_signal_token = self.sig_kernel / self.fs
+
+        if self.num_frames % t:
+            raise ValueError(
+                f'Space-time alignment: tubelet_t {t} must divide num_frames '
+                f'{self.num_frames} so the tubelet grid covers the clip '
+                f'exactly.')
+
+        if self.seq_len % self.sig_kernel:
+            rest = self.seq_len % self.sig_kernel
+            raise ValueError(
+                f'Space-time alignment: seq_len {self.seq_len} is not a '
+                f'multiple of sig_kernel {self.sig_kernel} -- the trailing '
+                f'{rest} signal sample(s) would fall outside the last token '
+                f'and the 1-D token grid would drift off the video tubelet '
+                f'grid. Use seq_len = {self.seq_len - rest} (or a divisor of '
+                f'the window).')
+
+        if not math.isclose(self.sec_per_visual_token,
+                            self.sec_per_signal_token,
+                            rel_tol=1e-6, abs_tol=1e-9):
+            raise ValueError(
+                f'Space-time alignment: one video tubelet covers '
+                f'tubelet_t*temporal_stride/fps = '
+                f'{t}*{self.temporal_stride}/{self.fps} = '
+                f'{self.sec_per_visual_token * 1000:.2f} ms but one signal '
+                f'token covers sig_kernel/fs = {self.sig_kernel}/{self.fs} = '
+                f'{self.sec_per_signal_token * 1000:.2f} ms, so token i means '
+                f'a different instant in the two streams. Set '
+                f'sig_kernel = {int(round(self.sec_per_visual_token * self.fs))} '
+                f'(recommended) or temporal_stride = 1 / tune fps-fs.')
+
+        if self.grid_t != self.n_signal:
+            raise ValueError(
+                f'Space-time alignment: the video covers '
+                f'{self.grid_t} tubelet steps '
+                f'({self.num_frames} frames / {t} = '
+                f'{self.grid_t * self.sec_per_visual_token:.3f} s) but the '
+                f'signal covers {self.n_signal} tokens '
+                f'({self.seq_len} samples / {self.sig_kernel} = '
+                f'{self.n_signal * self.sec_per_signal_token:.3f} s). Both '
+                f'streams must span the same window: set seq_len = '
+                f'{int(round(self.grid_t * self.sec_per_visual_token * self.fs))} '
+                f'(= num_frames * temporal_stride / fps * fs).')
+
+    def _init_pos_embeds(self):
+        """Deterministic space-time prior for the learned positional embeds.
+
+        A Stage-1 MAE/ViT-Base checkpoint carries a 2-D ``pos_embed`` over a
+        14x14 spatial grid, which cannot be reused for ``Gt*Gh*Gw`` tubelet
+        tokens (and ``load_pretrained_encoder`` drops it), so without this the
+        temporal structure of the clip would be pure noise at init. Here the
+        video positions start from the VideoMAE 3-D sincos grid, and each
+        physio stream starts from the SAME 1-D temporal sincos, placed in the
+        SAME embedding dims -- i.e. visual token ``(t, h, w)`` and signal
+        token ``t`` share an identical time basis. Both stay trainable
+        parameters, so this is only an initialisation.
+        """
+        from utils.pos_embed import (get_1d_sincos_pos_embed_from_grid,
+                                     get_3d_sincos_pos_embed)
+        import numpy as np
+
+        vis = torch.from_numpy(get_3d_sincos_pos_embed(
+            self.embed_dim, (self.grid_t, self.grid_h, self.grid_w))).float()
+        d_t = 2 * (self.embed_dim // 6)        # size of the [t] block
+        time = torch.from_numpy(get_1d_sincos_pos_embed_from_grid(
+            d_t, np.arange(self.n_signal, dtype=np.float32))).float()
+        sig = time.new_zeros(self.n_signal, self.embed_dim)
+        sig[:, :d_t] = time
+
+        for s in self.streams:
+            pe = vis if s in self.visual else sig
+            with torch.no_grad():
+                self.positions[s].pos_embed.copy_(pe.unsqueeze(0))
+
+    # ------------------------------------------------------------------ #
+    # input geometry check (loud failure instead of a silent time warp)
+    # ------------------------------------------------------------------ #
+    def _fit_time(self, x, n, stream):
+        """Trim the trailing frames/samples of ``x`` to ``n`` (or fail loudly).
+
+        Trimming keeps the shared time origin, so it preserves the alignment of
+        the remaining tokens. PADDING cannot: replicating frames/samples would
+        silently re-warp the time axis against the other stream, which is what
+        the old modulo-index helper did -- so a too-short input is an error.
+        """
+        T = x.shape[2]
+        if T == n:
+            return x
+        if T > n:
+            return x[:, :, :n]
+        raise ValueError(
+            f'Space-time alignment: stream "{stream}" provides T={T} but this '
+            f'model needs T={n} per clip (num_frames for the videos, seq_len '
+            f'for the 1-D signals). The dataset grid is '
+            f'round(clip_duration*fps_common/temporal_stride) with '
+            f'fps_common = min(fps_rgb, fps_tir), so check that --fps matches '
+            f'the video fps the dataset actually decodes, and that '
+            f'--clip_duration/--temporal_stride/--seq_len match the geometry '
+            f'this checkpoint was trained with.')
+
+    # ------------------------------------------------------------------ #
     # masking (masks == 1 => masked / to reconstruct)
     # ------------------------------------------------------------------ #
     def _tube_mask(self, B: int, device, mask_ratio: float):
         """Random subset of spatial patches, replicated across all frames."""
-        Gt = self.num_frames // self.tubelet[0]
-        Gh = Gw = math.isqrt(self.n_visual // Gt)   # square spatial grid
-        n_spatial = Gh * Gw
+        n_spatial = self.grid_h * self.grid_w
         k = max(1, min(n_spatial - 1, int(mask_ratio * n_spatial)))
         perm = torch.rand(B, n_spatial, device=device).argsort(dim=1)
         hidden = perm[:, :k]                                   # [B, k]
         m = torch.zeros(B, n_spatial, device=device, dtype=torch.long)
         m.scatter_(1, hidden, 1)                               # [B, n_spatial]
-        mask = m.unsqueeze(1).expand(B, Gt, n_spatial)
+        mask = m.unsqueeze(1).expand(B, self.grid_t, n_spatial)
         return mask.reshape(B, self.n_visual)
 
     def _random_mask(self, B: int, device, N: int, mask_ratio: float):
@@ -342,26 +514,27 @@ class MultiModalMAE(nn.Module):
     # ------------------------------------------------------------------ #
     @staticmethod
     def _resize_t(x, n: int):
-        """Slice/pad the time dim (dim 2) of a [B, C, T, ...] tensor to ``n``."""
-        T = x.shape[2]
-        if T == n:
+        """Slice the time dim (dim 2) of a [B, C, T, ...] tensor to ``n``.
+
+        Kept for backward compatibility; the analysis-critical behaviour lives
+        in :meth:`_fit_time`, which REFUSES to pad (padding would re-warp the
+        time axis against the other streams).
+        """
+        if x.shape[2] <= n:
             return x
-        if T > n:
-            return x[:, :, :n]
-        idx = torch.arange(n, device=x.device) % T   # replicate last frames
-        return x.index_select(2, idx)
+        return x[:, :, :n]
 
     def forward(self, x):
         B = next(iter(x.values())).shape[0]
         device = next(iter(x.values())).device
 
-        # enforce the configured time/signal lengths (token geometry contract)
+        # Enforce the configured time/signal lengths. Both streams are trimmed
+        # from the END, which keeps the shared time origin and therefore the
+        # tubelet <-> signal token alignment; a too-short stream raises.
         xin = {}
         for s in self.streams:
-            if s in self.visual:
-                xin[s] = self._resize_t(x[s], self.num_frames)
-            else:
-                xin[s] = self._resize_t(x[s], self.seq_len)
+            n = self.num_frames if s in self.visual else self.seq_len
+            xin[s] = self._fit_time(x[s], n, s)
 
         # --- tokenize + add positional embedding -------------------------- #
         tokens = {}
@@ -457,12 +630,20 @@ def build_pretraining_model(args):
     temporal_stride = max(1, int(getattr(args, 'temporal_stride', 1) or 1))
     num_frames = max(1, int(round(clip_duration * fps / temporal_stride)))
     # the Conv3d tubelet partitions time into ``t`` frames, so round the clip
-    # length DOWN to a multiple of t (e.g. stride 4 @ 25 fps / 4 s -> 25 -> 24);
-    # MultiModalMAE._resize_t then trims the dataset's T to this length.
+    # length DOWN to a multiple of t (e.g. stride 4 @ 25 fps / 4 s -> 25 -> 24).
+    # The dropped tail shortens the KEPT window, so the signal length must be
+    # derived from the kept duration below -- otherwise the video and the 1-D
+    # signals would cover different time spans (checked hard in the model).
     if num_frames % tubelet[0]:
+        print(f'[geometry] num_frames {num_frames} is not a multiple of '
+              f'tubelet_t {tubelet[0]}: keeping the first '
+              f'{num_frames - num_frames % tubelet[0]} frames '
+              f'({(num_frames - num_frames % tubelet[0]) * temporal_stride / fps:.3f} s)')
         num_frames -= num_frames % tubelet[0]
     num_frames = max(tubelet[0], num_frames)
-    seq_len = int(getattr(args, 'seq_len', 0)) or max(1, int(round(clip_duration * fs)))
+    kept_seconds = num_frames * temporal_stride / fps
+    seq_len = int(getattr(args, 'seq_len', 0) or 0) or max(
+        1, int(round(kept_seconds * fs)))
 
     ratios = {'rgb': float(getattr(args, 'mask_ratio_rgb', 0.75)),
               'tir': float(getattr(args, 'mask_ratio_tir', 0.50)),
@@ -505,9 +686,11 @@ def build_pretraining_model(args):
         num_frames=num_frames,
         sig_kernel=int(getattr(args, 'sig_kernel', 8)),
         seq_len=seq_len,
+        fps=fps, fs=fs, temporal_stride=temporal_stride,
         mask_ratios=ratios,
         signal_weight=signal_weight,
-        loss_weights=loss_weights)
+        loss_weights=loss_weights,
+        pos_init=str(getattr(args, 'pos_init', 'sincos3d')))
 
 
 # --------------------------------------------------------------------------- #

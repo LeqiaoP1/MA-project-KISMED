@@ -1,17 +1,32 @@
 # Stage 3 -- EDA regression branch (docs/ImplementationPlan.md)
+#
+# NOTE (2026-09): the Stage-2 configs currently pre-train on streams `rgb,bvp`
+# only, so there is NO Stage-2 encoder for the EDA target. Either add `eda` to
+# `streams` in configs/pretrain/stage2_*.yaml and re-run Stage 2, or treat this
+# branch as a from-scratch / Stage-1-init baseline (drop `finetune`).
+# The model / clip-geometry keys must mirror the Stage-2 run exactly, see the
+# fully updated configs/finetune/bvp.yaml.
 # Complete sensor failure: only visual streams (RGB + TIR) drive prediction.
 target: eda
-seq_len: 1000            # output waveform samples
+seq_len: 0               # 0 => the input clip window (see bvp.yaml)
 fs: 100                  # sampling rate (Hz)
 
 # Model: shared Stage-2 encoder + regression head
-model: project_vit_base_patch16_224
-in_chans: 6                       # RGB(3) + TIR(3, false-colour thermal render)
-finetune: output/pretrain/stage2_multimodal/checkpoints/checkpoint-0799.pth
+model: project_multimae_base       # Stage-3 path (see bvp.yaml)
+streams: rgb                       # Stage-2 was rgb+bvp -> feed RGB only
+use_tir: false
+clip_duration: 4.0
+fps: 25.0
+tubelet: 2,16,16
+temporal_stride: 1
+sig_kernel: 8
+input_size: 224
+signal_norm: zscore     # raw BP4D streams are not zero-mean (see bvp.yaml)
+finetune: ../output/pretrain/stage2_multimodal/checkpoints/checkpoint-0799.pth
 
-# Data (implement bp4d+ in code/data/datasets.py; yields (samples, [B,T]))
+# Data (canonical layout from data/prepare_bp4d.py)
 data_set: bp4d+
-data_path: /path/to/bp4d+
+data_path: ../data/processed/bp4d_canonical
 
 # Joint spatio-temporal-spectral loss weights
 alpha: 1.0               # L_time   (L1 amplitude)

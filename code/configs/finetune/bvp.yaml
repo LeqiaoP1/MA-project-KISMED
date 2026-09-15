@@ -1,45 +1,89 @@
-# Stage 3 -- BVP regression branch (docs/ImplementationPlan.md)
-# Complete sensor failure: only visual streams (RGB + TIR) drive prediction.
-target: bvp
-seq_len: 1000            # output waveform samples
-fs: 100                  # sampling rate (Hz)
+# Stage 3 -- BVP waveform reconstruction branch (docs/ImplementationPlan.md).
+#
+# Goal: fine-tune the STAGE-2 cross-modal encoder for the downstream task
+# "reconstruct the BSP/BVP waveform from video alone" (simulated complete
+# contact-sensor failure: NO 1-D stream is fed, only RGB).
+#
+# The model is project_multimae_* = the Stage-2 multimodal encoder (Conv3d
+# tubelet front-end + joint space-time attention over the tubelet tokens, key
+# names enc_blocks.*/enc_norm/adapters.*/positions.*) + a temporal regression
+# head that emits one waveform segment per tubelet time step. Every geometry
+# flag below must MIRROR the Stage-2 run the checkpoint comes from: the loader
+# refuses to load a partially matching encoder and the model refuses a
+# misaligned tubelet/signal token grid.
+#
+# Local mirror of configs/pretrain/stage2_local_pretrained.yaml (small GPU):
+#   model: project_multimae_base   input_size: 64   clip_duration: 4.0
+#   finetune: ../output/pretrain/stage2_local_pretrained/checkpoints/checkpoint-0039.pth
+#   batch_size: 2   max_sessions: 2   max_entries: 8
+#
+# Run from code/:  python runners/run_waveform.py -c configs/finetune/bvp.yaml
 
-# Model: shared Stage-2 encoder + regression head
-model: project_vit_base_patch16_224
-in_chans: 6                       # RGB(3) + TIR(3, false-colour thermal render)
-finetune: output/pretrain/stage2_multimodal/checkpoints/checkpoint-0799.pth
+target: bvp              # 1-D stream to reconstruct (a Stage-2 target modality)
 
-# Data (implement bp4d+ in code/data/datasets.py; yields (samples, [B,T]))
+# ---- model: shared Stage-2 encoder + time-aligned waveform head ----
+model: project_multimae_base       # geometry 768-d/12-layer/12-head (= Stage 2)
+streams: rgb                       # visual input at Stage 3 (rgb, or rgb,tir)
+use_tir: false                     # no TIR: the Stage-2 run is rgb+bvp, so the
+                                   # TIR adapter would keep random weights
+finetune: ../output/pretrain/stage2_multimodal/checkpoints/checkpoint-0799.pth
+head_hidden: 0                     # 0 = one linear head per tubelet token
+
+# ---- clip geometry -- MUST equal the Stage-2 geometry of `finetune` ----
+clip_duration: 4.0                 # 100 frames @ 25 fps -> 50 tubelet steps
+fps: 25.0
+tubelet: 2,16,16
+temporal_stride: 1
+input_size: 224                    # value used by stage2_multimodal.yaml
+# 0 => output_len = num_frames*temporal_stride/fps*fs = 400 samples: the head
+# reconstructs the SAME 4 s window the input clip covers (one segment per
+# tubelet token). Another length is allowed only if it is a multiple of the
+# tubelet step count (its waveform window is still the clip window).
+seq_len: 0
+fs: 100                            # sampling rate (Hz)
+sig_kernel: 8                      # signal samples per token: 8/100 == 2/25 s
+# The recorded BVP column is RAW blood pressure in mmHg (mean ~101, std ~11), so
+# the target is z-scored per clip: without it the head spends capacity on a
+# ~100 DC offset and the MR-STFT term is dominated by that offset's 0 Hz bin.
+signal_norm: zscore
+
+# ---- data (canonical layout from data/prepare_bp4d.py) ----
 data_set: bp4d+
-data_path: /path/to/bp4d+
+data_path: ../data/processed/bp4d_canonical
+# Subject-disjoint splits are MANDATORY for the Stage-3 result (BP4D "F00X/Tn");
+# PairedSessionDataset currently splits by SESSION -- see ImplementationPlan §4.
+train_ratio: 0.8
 
-# Joint spatio-temporal-spectral loss weights
+# ---- joint spatio-temporal-spectral loss (plan Stage 3) ----
 alpha: 1.0               # L_time   (L1 amplitude)
 beta: 1.0                # L_Pearson (phase-locking)
 gamma: 1.0               # L_MR-STFT (multi-resolution)
-fft_sizes: '64,128,256'
+fft_sizes: '64,128,256'  # >= 2x the BVP period (1-2.5 Hz at 100 Hz)
 
 # Spectral evaluation band (BVP cardiac: ~1.0-2.5 Hz)
 eval_band: '1.0,2.5'
 
-# Training
+# ---- training ----
 epochs: 100
 batch_size: 16
 update_freq: 1
 save_ckpt_freq: 10
 eval_freq: 1
 
-# Optimizer
+# ---- optimizer ----
 opt: adamw
+# fine-tuning a pre-trained encoder: keep the LR small (100x below the Stage-2
+# peak) and do NOT let the `blr` rule shrink it further on small batches
 lr: 1e-4
 min_lr: 0.0
 warmup_epochs: 5
 weight_decay: 0.05
 clip_grad: 0.0
-# data loading: RGB+TIR clips are JPEG/video decoded per sample; parallelise it
+
+# data loading: RGB clips are JPEG-decoded per sample; parallelise it
 num_workers: 4
 
-# Logging
-output_dir: output/finetune/bvp
+# ---- logging ----
+output_dir: ../output/finetune/bvp
 log_wandb: false
 wandb_project: thesis-project

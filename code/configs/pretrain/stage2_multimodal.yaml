@@ -7,7 +7,8 @@ pretrained_encoder: base           # Stage-1 init; '' = from scratch
 
 # ---- streams & tokenizer geometry ----
 # Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bvp/resp/eda).
-streams: rgb,tir,bvp,resp,eda
+streams: rgb,bvp
+
 tir_channels: 3                    # thermal is a false-colour render, not gray
 tubelet: 2,16,16
 fs: 100.0
@@ -19,10 +20,17 @@ temporal_stride: 1                 # decimate INSIDE the window (1=every frame;
                                    # num_frames = clip_duration*fps/N.
 seq_len: 0                         # 0 => clip_duration * fs = 400 samples
 input_size: 224                    # full-frame (no face ROI); 14x14 grid at patch 16
+# ---- space-time alignment (checked hard by the model) ----
+# tubelet_t*temporal_stride/fps == sig_kernel/fs -> 2*1/25 == 8/100 == 80 ms,
+# and num_frames/tubelet_t == seq_len/sig_kernel == 50 tokens per stream; the
+# model raises on any other geometry. pos_init sincos3d = 3-D (t,h,w) sincos
+# init for the video positions + the same 1-D temporal sincos for the physio
+# positions (pos_init: random disables the prior).
+pos_init: sincos3d
 
 # ---- asymmetric masking (visual 50-75%, signals 90%+) ----
-mask_ratio_rgb: 0.75
-mask_ratio_tir: 0.50
+mask_ratio_rgb: 0.90
+mask_ratio_tir: 0.90
 mask_ratio_bvp: 0.90
 mask_ratio_resp: 0.90
 mask_ratio_eda: 0.90

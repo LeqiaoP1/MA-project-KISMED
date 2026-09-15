@@ -1,15 +1,17 @@
-"""2D sinusoidal position embeddings for ViTs.
+"""2D/3D sinusoidal position embeddings for ViTs.
 
 Standard MAE implementation (also present in
 ``tmp/MultiMAE/utils/pos_embed.py`` and inside
-``tmp/MultiMAE/multimae/multimae_utils.py``).
+``tmp/MultiMAE/multimae/multimae_utils.py``) plus the 3-D (tubelet) variant
+from VideoMAE (``tmp/videomae/util/pos_embed.py``).
 """
 import math
 
 import numpy as np
 import torch
 
-__all__ = ['get_2d_sincos_pos_embed', 'interpolate_pos_embed']
+__all__ = ['get_1d_sincos_pos_embed', 'get_2d_sincos_pos_embed',
+           'get_3d_sincos_pos_embed', 'interpolate_pos_embed']
 
 
 def get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False):
@@ -26,6 +28,12 @@ def get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False):
     if cls_token:
         pos_embed = np.concatenate([np.zeros([1, embed_dim]), pos_embed], axis=0)
     return pos_embed
+
+
+def get_1d_sincos_pos_embed(embed_dim, length):
+    """Return a [length, embed_dim] 1-D sincos position embedding (time axis)."""
+    pos = np.arange(length, dtype=np.float32)
+    return get_1d_sincos_pos_embed_from_grid(embed_dim, pos)
 
 
 def get_2d_sincos_pos_embed_from_grid(embed_dim, grid):
@@ -53,6 +61,45 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
     emb_cos = np.cos(out)
     emb = np.concatenate([emb_sin, emb_cos], axis=1)   # (M, D)
     return emb
+
+
+def get_3d_sincos_pos_embed(embed_dim, grid_size, cls_token=False):
+    """Return a [Gt*Gh*Gw (+1), embed_dim] 3-D (t, h, w) sincos embedding.
+
+    VideoMAE convention: the token order is ``(t, h, w)`` with ``w`` fastest --
+    exactly the order a ``Conv3d`` tubelet embed produces when it is flattened
+    with ``flatten(2)`` -- and the embedding dims are split as
+    ``[time | height | width]`` with the TIME block first (so a 1-D temporal
+    embedding can be placed in the same dims, see
+    ``core.multimae.MultiModalMAE._init_pos_embeds``).
+
+    :param grid_size: ``(Gt, Gh, Gw)`` = (temporal, height, width) token grid
+    """
+    grid_t, grid_h, grid_w = grid_size
+    gt, gh, gw = np.meshgrid(np.arange(grid_t, dtype=np.float32),
+                             np.arange(grid_h, dtype=np.float32),
+                             np.arange(grid_w, dtype=np.float32),
+                             indexing='ij')          # each (Gt, Gh, Gw)
+    grid = np.stack([gt, gh, gw], axis=0)            # (3, Gt, Gh, Gw), w fastest
+    pos_embed = get_3d_sincos_pos_embed_from_grid(embed_dim, grid)
+    if cls_token:
+        pos_embed = np.concatenate([np.zeros([1, embed_dim]), pos_embed], axis=0)
+    return pos_embed
+
+
+def get_3d_sincos_pos_embed_from_grid(embed_dim, grid):
+    """``grid``: (3, Gt, Gh, Gw) with the (t, h, w) coordinate values."""
+    assert grid.shape[0] == 3, 'grid must be (3, Gt, Gh, Gw)'
+    # each sub-block must stay EVEN (get_1d_sincos_pos_embed_from_grid splits it
+    # into sin|cos halves), hence 2*(D//6) and not D//3: for D=1024 the plain
+    # third 341 is odd and the 1-D helper would assert.
+    d_t = d_h = 2 * (embed_dim // 6)
+    d_w = embed_dim - 2 * d_t
+
+    emb_t = get_1d_sincos_pos_embed_from_grid(d_t, grid[0].reshape(-1))
+    emb_h = get_1d_sincos_pos_embed_from_grid(d_h, grid[1].reshape(-1))
+    emb_w = get_1d_sincos_pos_embed_from_grid(d_w, grid[2].reshape(-1))
+    return np.concatenate([emb_t, emb_h, emb_w], axis=1)               # (N, D)
 
 
 def interpolate_pos_embed(model, checkpoint_model):

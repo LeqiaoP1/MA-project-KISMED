@@ -39,14 +39,23 @@ def _parse_int_csv(v, dtype=int):
 
 
 def _resize_t(x: torch.Tensor, n: int) -> torch.Tensor:
-    """Slice/pad the time dim (dim 2) of a [B, C, T, ...] tensor to ``n``."""
+    """Trim the time dim (dim 2) of a [B, C, T, ...] tensor to ``n``.
+
+    Only a TRAILING trim is allowed: it keeps the time origin, so the remaining
+    tokens stay aligned with the preceding clip. A too-short input used to be
+    "fixed" with a modulo index (``arange(n) % T``), which silently replayed the
+    beginning of the clip as if it were its end -- i.e. it re-warped time. That
+    is now a hard error.
+    """
     T = x.shape[2]
     if T == n:
         return x
     if T > n:
         return x[:, :, :n]
-    idx = torch.arange(n, device=x.device) % T
-    return x.index_select(2, idx)
+    raise ValueError(
+        f'AU probe geometry: clip has T={T} frames but the probed encoder was '
+        f'pre-trained with num_frames={n}. Reproduce the Stage-2 clip geometry '
+        f'(clip_duration * fps / temporal_stride) in the AU config.')
 
 
 class MultiModalMAEProbe(nn.Module):
@@ -186,8 +195,14 @@ def build_au_probe_model(args, num_classes: int):
     tubelet = _parse_int_csv(getattr(args, 'tubelet', '2,16,16'))
     fps = float(getattr(args, 'fps', 25.0))
     clip_duration = float(getattr(args, 'clip_duration', 4.0))
+    # SAME derivation as build_pretraining_model, so the probe geometry can
+    # never drift from the encoder checkpoint it loads (temporal_stride +
+    # rounding down to a whole tubelet).
+    temporal_stride = max(1, int(getattr(args, 'temporal_stride', 1) or 1))
     num_frames = int(getattr(args, 'num_frames', 0)) or max(
-        1, int(round(clip_duration * fps)))
+        1, int(round(clip_duration * fps / temporal_stride)))
+    if num_frames % tubelet[0]:
+        num_frames -= num_frames % tubelet[0]
     pool = getattr(args, 'pool', 'mean')
     return MultiModalMAEProbe(
         streams=streams,

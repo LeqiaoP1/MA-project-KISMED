@@ -6,13 +6,22 @@ Two independent task-specialised runs share the Stage-2 encoder checkpoint
 (``--finetune``) but use separate regression heads and a unified
 spatio-temporal-spectral joint loss (``core.waveform_losses.WaveformJointLoss``).
 
+The Stage-3 model is ``core.waveform_model.MultiModalWaveformRegressor``: the
+Stage-2 multimodal encoder (tubelet front-end, joint space-time attention,
+identical key names) + a temporal regression head that predicts one waveform
+segment per tubelet time step. ``--model project_multimae_<variant>`` selects
+it; the clip geometry flags (``--clip_duration/--fps/--tubelet/--temporal_
+stride/--sig_kernel/--input_size/--streams``) MUST MIRROR the Stage-2 run the
+checkpoint comes from -- both are validated on load, and the head is only
+time-aligned when ``sig_kernel/fs == tubelet_t*temporal_stride/fps``.
+
 Usage (from ``code/``)::
 
     python runners/run_waveform.py -c configs/finetune/bvp.yaml
     python runners/run_waveform.py -c configs/finetune/resp.yaml
 
-Requires an implemented ``bp4d+`` dataset in ``data/datasets.py`` yielding
-``(samples, target_waveform)`` where ``target_waveform`` is ``[B, T]``.
+The ``bp4d+`` dataset (``data/paired_dataset.py``) yields ``(samples, [B, T])``
+with ``samples = [B, 3, T, H, W]`` (``use_tir`` off) or ``[B, 6, T, H, W]``.
 """
 import argparse
 import os
@@ -37,14 +46,60 @@ def get_args():
     add_common_args(parser)
 
     # model / task
-    parser.add_argument('--model', default='project_vit_base_patch16_224', type=str)
+    parser.add_argument('--model', default='project_multimae_base', type=str,
+                        help='project_multimae_{tiny,small,base,large,huge} -> '
+                             'Stage-2 multimodal encoder + temporal waveform '
+                             'head (the Stage-3 path; the NAME sets the ViT '
+                             'geometry and MUST match the Stage-2 run). Any '
+                             'project_vit_* keeps the legacy 2-D single-image '
+                             'ViT path (cannot consume the clip tensor).')
+    parser.add_argument('--streams', default='rgb', type=str,
+                        help='VISUAL streams fed at Stage 3 (rgb or rgb,tir) '
+                             '-- 1-D physio input is the simulated failure, so '
+                             'it is never fed. Must be a subset of the '
+                             'Stage-2 streams.')
+    parser.add_argument('--use_tir', action='store_true', default=False,
+                        help='feed TIR as a second visual stream (default off: '
+                             'the Stage-2 run in this project is rgb+bvp, so '
+                             'the TIR adapter has no trained weights).')
     parser.add_argument('--target', default='bvp', choices=['bvp', 'resp', 'eda'],
                         help='which physiological waveform branch to train')
-    parser.add_argument('--seq_len', default=1000, type=int,
-                        help='length of the predicted output waveform (samples)')
+    parser.add_argument('--seq_len', default=0, type=int,
+                        help='length of the predicted output waveform (samples). '
+                             '0 => the aligned default: num_frames*temporal_'
+                             'stride/fps*fs, i.e. the SAME window the input '
+                             'clip covers (400 for a 4 s clip at 100 Hz).')
     parser.add_argument('--fs', default=100.0, type=float,
                         help='waveform sampling rate in Hz')
     parser.add_argument('--input_size', default=224, type=int)
+    parser.add_argument('--signal_norm', default='zscore', type=str,
+                        choices=['none', 'ac', 'zscore'],
+                        help='per-clip target normalisation. The recorded '
+                             'streams are NOT zero-mean (BP4D BVP is raw mmHg, '
+                             'mean ~101): with "none" the head must fit a ~100 '
+                             'DC offset and the MR-STFT term is dominated by '
+                             'the 0 Hz bin instead of the pulsatile band. '
+                             '"zscore" (default) = zero-mean/unit-std per '
+                             'window, the standard rPPG convention; "ac" '
+                             'removes the mean only.')
+    # clip geometry -- MUST mirror the Stage-2 Stage-2 run the ckpt comes from
+    parser.add_argument('--clip_duration', default=4.0, type=float,
+                        help='window length in seconds; mirror Stage 2')
+    parser.add_argument('--fps', default=25.0, type=float,
+                        help='video frame rate; mirror Stage 2')
+    parser.add_argument('--tubelet', default='2,16,16', type=str,
+                        help='tubelet (t, ph, pw); mirror Stage 2')
+    parser.add_argument('--temporal_stride', default=1, type=int,
+                        help='intra-window frame decimation; mirror Stage 2')
+    parser.add_argument('--sig_kernel', default=8, type=int,
+                        help='signal samples per token; must satisfy '
+                             'sig_kernel/fs == tubelet_t*temporal_stride/fps')
+    parser.add_argument('--enc_embed_dim', default=0, type=int)
+    parser.add_argument('--enc_depth', default=0, type=int)
+    parser.add_argument('--enc_num_heads', default=0, type=int)
+    parser.add_argument('--head_hidden', default=0, type=int,
+                        help='hidden width of a 2-layer waveform head '
+                             '(0 = single linear layer per time step)')
     parser.add_argument('--finetune', default=env_or('MODEL_PATH'), type=str,
                         help='Stage-2 pretrained encoder checkpoint to load: a '
                              'local path OR a variant spec (base, mae:large) '
@@ -90,29 +145,58 @@ def main(args):
     args.eval_band = (tuple(float(x) for x in args.eval_band.split(','))
                       if args.eval_band else None)
 
-    # ----- model: shared ViT encoder + waveform regression head ----------- #
-    from models import create_model
-    # RGB (3) + TIR (tir_channels, 3 by default) share one patch-embed conv
-    in_chans = 3 + int(getattr(args, 'tir_channels', 3))
-    model = create_model(args.model, num_classes=0, output_len=args.seq_len,
-                         in_chans=in_chans)
-    model.to(device)
+    # the dataset (use_tir) and the model (streams) must agree, else the
+    # regressor would receive a channel stack that does not match its adapters
+    _streams = [s.strip() for s in str(args.streams).split(',') if s.strip()]
+    if args.use_tir and 'tir' not in _streams:
+        raise SystemExit(
+            f'--use_tir needs --streams to include tir (got "{args.streams}").')
+    if not args.use_tir and 'tir' in _streams:
+        raise SystemExit(
+            f'--streams includes tir ("{args.streams}") but --use_tir is off, '
+            f'so the dataset returns RGB only. Drop tir or pass --use_tir.')
 
-    if args.finetune:
-        from models.pretrained import resolve_encoder_weights
-        args.finetune = resolve_encoder_weights(args.finetune)
-        ckpt = torch.load(args.finetune, map_location='cpu')
-        state = ckpt['model'] if 'model' in ckpt else ckpt
-        # drop incompatible keys (task heads / decoders of the pretrain model)
-        drop = []
-        for k in state:
-            if k.startswith('head.') or k.startswith('decoder.'):
-                drop.append(k)
-        for k in drop:
-            del state[k]
-        model.load_state_dict(state, strict=False)
-        print(f'Loaded Stage-2 encoder from {args.finetune} '
-              f'(dropped {len(drop)} head/decoder keys)')
+    # ----- model: Stage-2 encoder + waveform regression head --------------- #
+    use_multimae = str(args.model).startswith('project_multimae')
+    if use_multimae:
+        # Stage-3 proper: re-use the Stage-2 multimodal (tubelet, joint
+        # space-time) encoder verbatim + a time-aligned regression head.
+        from core.waveform_model import build_waveform_model, load_stage2_encoder
+        model = build_waveform_model(args)
+        print(f'Stage-3 model: {args.model} streams={list(model.streams)} '
+              f'geometry num_frames={model.num_frames} input={model.input_size} '
+              f'output_len={model.output_len} '
+              f'({model.samples_per_token} samples/tubelet token)')
+        if args.finetune:
+            from models.pretrained import resolve_encoder_weights
+            args.finetune = resolve_encoder_weights(args.finetune)
+            load_stage2_encoder(model, args.finetune)
+        else:
+            print('[stage3] WARNING: no --finetune checkpoint -> the encoder '
+                  'starts from random weights (this is NOT Stage-3 fine-tuning).')
+    else:
+        # legacy 2-D path (project_vit_*): a single patch-embed Conv2d cannot
+        # consume the dataset's [B, C, T, H, W] clip tensor.
+        from models import create_model
+        # RGB (3) + TIR (tir_channels, 3 by default) share one patch-embed conv
+        in_chans = 3 + (int(getattr(args, 'tir_channels', 3))
+                        if args.use_tir else 0)
+        if args.seq_len <= 0:
+            args.seq_len = int(round(args.clip_duration * args.fs))
+        model = create_model(args.model, num_classes=0, output_len=args.seq_len,
+                             in_chans=in_chans)
+        print('[stage3] WARNING: project_vit_* is the 2-D legacy path -- it '
+              'loads NO Stage-2 encoder weights (key names differ) and expects '
+              'a 4-D [B, C, H, W] input. Use project_multimae_* for the real '
+              'Stage-3 fine-tune.')
+        if args.finetune:
+            raise SystemExit(
+                'project_vit_* cannot load a Stage-2 multimodal checkpoint '
+                '(Stage-2 keys are enc_blocks.*/adapters.*, ProjectViT keys are '
+                'blocks.*/patch_embed.*): previously this silently loaded '
+                'NOTHING. Use --model project_multimae_base (or drop '
+                '--finetune for an intentionally from-scratch baseline).')
+    model.to(device)
 
     # ----- data (implement bp4d+ first) ----------------------------------- #
     from data import build_dataset
