@@ -53,6 +53,8 @@ cd code
 # (0) data: convert raw sessions once, then inspect a few
 python data/prepare_bp4d.py --raw_root ../data/raw/BP4D --out_root ../data/processed/bp4d_canonical --limit_sessions 8
 python runners/run_inspect_data.py --data_path ../data/processed/bp4d_canonical --clip_duration 2 --input_size 64 --plot
+# raw physiology only (min/max/length/estimated frequency, original sample rate)
+python runners/run_inspect_physio.py --subject F001 --task T1 --channel all
 
 # (1) Stage-2 multimodal masked pre-training (local milestone)
 #   from-scratch tiny slice (192-d) ......... configs/pretrain/stage2_local.yaml
@@ -426,6 +428,132 @@ The same caps limit smoke **training** runs too: in `data/paired_dataset.py`
 `max_sessions` caps decoding up front, `max_clips` caps the windows per
 session, and `max_entries` caps the global dataset total (see the YAML under
 `configs/pretrain/`).
+
+**Raw physiology inspection (`Physiology/*.txt`, original sample rate):**
+
+`runners/run_inspect_physio.py` looks at the RAW physiology channels *before*
+the canonical conversion -- no alignment, no filtering, no resampling -- and
+reports length (samples + duration), min/max (+ mean/median/std/percentiles) and
+the estimated frequency, with one figure + JSON per channel:
+
+```bash
+source scripts/env_local.sh
+# one session, every channel (BVP | Resp | EDA | all, case-insensitive)
+python runners/run_inspect_physio.py --subject F001 --task T1 --channel all
+python runners/run_inspect_physio.py --subject F001,F002 --task T1,T2 --channel Resp,EDA
+python runners/run_inspect_physio.py --list          # what is on disk?
+bash scripts/local/inspect_physio.sh                 # SUBJECT/TASK/CHANNEL env-style
+```
+
+Output goes to `output/inspect_data/<subject>_<task>/`: `<Channel>.png` (the
+full native-rate trace, a 10 s zoom, and the amplitude distribution),
+`<Channel>.json`, `physio_summary.json` and an `overview.png` stacking the
+channels. The per-channel figure shows the raw signal only -- no band-passed
+overlay and no Welch PSD panel, since those describe how the frequency estimate
+was derived and are reported through `frequency` in the JSON instead. All three
+figures are deliberately numbers-free; every statistic is in the JSON files and
+printed to stdout. `physio_index.json` indexes every inspected session. This
+writes *alongside* `run_inspect_data.py`; the two do not share file names (the
+session folders are only ever written by this runner, and
+`run_inspect_data.py --force` wipes only `figures/` + `inspect_summary.json`).
+
+**A channel pulls in its whole family of raw files.** Inspecting `bvp` or `resp`
+(explicitly or via `all`) also reads the session's other related raw files and
+draws them together in `<FAMILY>_overview.png` (full session at the original
+rate, 10 s zoom, plus a third panel). They are merged into the channel's JSON as
+`family_components[]`, with `family_files[]` listing them and a warning if one is
+missing:
+
+| Channel | Figure | Raw files |
+| --- | --- | --- |
+| `bvp` | `BP_overview.png` | `BP_mmHg.txt`, `LA Systolic BP_mmHg.txt`, `LA Mean BP_mmHg.txt`, `BP Dia_mmHg.txt` |
+| `resp` | `Resp_overview.png` | `Resp_Volts.txt`, `Respiration Rate_BPM.txt` |
+
+| Raw file | Kind | Unit |
+| --- | --- | --- |
+| `BP_mmHg.txt`, `Resp_Volts.txt` | continuous **waveform** (changes every sample) | mmHg, V |
+| `LA Systolic` / `LA Mean` / `BP Dia` | vendor-derived **per-beat** value, step-held | mmHg |
+| `Respiration Rate_BPM.txt` | vendor-derived, step-held (updated every few s) | BPM |
+
+The waveform/step-held distinction is real and measured: on `F001_T1` the
+systolic series holds `114.433` for >300 samples (about a whole beat) before
+jumping to `113.901`, so it is a beat-resolution envelope, not a second
+waveform. For the BP family, overlaying them is what makes the figure useful --
+the pulse waveform oscillates inside the systolic/diastolic envelope, and the
+third panel is a box comparison of all four (box = IQR, whiskers = min/max).
+
+**Units can differ inside a family, and the figure respects that.** The Resp
+family pairs volts with breaths/min, so `Resp_overview.png` puts the rate on a
+right-hand axis instead of drawing two scales on one, and its third panel is the
+waveform's amplitude distribution rather than a cross-series box plot (which
+would compare unlike quantities). The console prints each component's unit.
+
+**Consequence for the numbers.** A spectral estimate is only meaningful for the
+waveform. For the step-held series it is actively misleading: the staircase
+spectrum is dominated by its flat plateaus, so the in-band Welch peak pins to
+the LOWER edge of the search band -- measured on `F001_T1`, all three BP series
+reported `0.6 Hz = 36.0/min` against a ~90/min pulse. They therefore get a
+**`step_update_rate`** (count of value changes = the beat rate, plus
+`update_interval_s_median` = how long the vendor held each value) instead of a
+`frequency` block, and each record carries `derived`/`kind` so the two kinds are
+never confused. The console marks them `(step-held)`.
+
+**Dropout found in the derived files:** `LA Systolic` and `LA Mean` each contain
+a 26-sample run of exactly `0.0` at line 29705 of `F001_T1` (a blood pressure of
+0 mmHg is not a measurement). `stats.frac_exactly_zero` / `n_zero_samples`
+reports this and it raises a warning. Neither file is read by
+`prepare_bp4d.py`, so these zeros do **not** reach the canonical `signals.csv`.
+
+Channels map through the same `data.prepare_bp4d.CHANNEL_FILES` table the
+converter uses, so the two can never disagree: `BVP <- BP_mmHg.txt` [mmHg],
+`Resp <- Resp_Volts.txt` [V], `EDA <- EDA_microsiemens.txt` [uS]. The derived
+`Pulse Rate_BPM.txt` / `Respiration Rate_BPM.txt` are deliberately excluded from
+that mapping.
+
+**`HR` -- the vendor heart rate (`Pulse Rate_BPM.txt` -> `HR.png`).** An extra,
+inspector-only channel: `--channel HR` (aliases `heart_rate`, `pulse_rate`,
+`bpm`) writes `HR.png` / `HR.json` for the session's `Pulse Rate_BPM.txt`, and
+`--channel all` includes it. It is a per-beat series **held constant between
+beats**, not a waveform, so it is analysed as a step signal: no spectral
+estimate, but `step_update_rate` (value-change count, i.e. the beat rate, plus
+`update_interval_s_median` = how long the vendor held each value) and the plain
+min/max/mean BPM in `stats`.
+
+`HR` is deliberately **not** added to `data.prepare_bp4d.CHANNEL_FILES`. That
+table drives the canonical `signals.csv` in two ways -- its columns
+(`['time'] + list(CHANNEL_FILES)`) and its fail-the-session behaviour when a
+channel file is missing -- so adding HR there would silently add an `hr` column
+to every `signals.csv` and break any session without a `Pulse Rate_BPM.txt`.
+The needle lives in `CHANNEL_META['hr']['raw_file']` instead, resolved through
+`channel_raw_file()`.
+
+Sample rate: the raw files carry no time column, so `--phys_fs` (default 1000 Hz,
+the BP4D nominal rate) sets the time axis, or `--phys_fs 0` estimates it per
+session from the RGB frame count and `--fps_rgb` (`n_frames / fps`, listing only
+-- no JPEG decode). The ORIGINAL samples are kept either way.
+
+Frequency: `welch_peak_hz` is the headline estimate (in-band PSD maximum,
+parabolically refined); `autocorr_hz` (autocorrelation peak) and
+`cycle_count_per_min` (peak counting) are cross-checks. The runner DIAGNOSES
+its own estimates rather than hiding failures: a peak sitting on the search-band
+edge, a >25% spread between estimators, or a channel railed at a hard limit
+(e.g. respiration pinned at exactly -10.0000 V for 10-45% of several sessions)
+is reported as a warning in the JSON and printed. When the Welch peak is
+flagged, `preferred_estimate` names the peak-counting rate as the value to use.
+`--band lo,hi` (or `CHANNEL:lo,hi`) overrides the search band when a session is
+flagged -- the cycle-count reference deliberately keeps the channel's own
+physiological band, so it stays stable while the spectral search moves.
+`--no-plot` writes JSON only.
+
+Known caveats, measured on the 19 raw sessions: respiration estimates land at
+14-26 /min where the cycle count and the raw waveform agree, but `T1`/`T2`
+recordings are only 9-25 s long (vs ~65 s for `T6`-`T8`), which widens the
+spectral bins, and the vendor `Respiration Rate_BPM.txt` is a coarse STEP
+function (it holds one value for seconds at a time) that can read ~half the
+cycle count -- do not use it as ground truth. `EDA` gets no frequency claim: it
+is reported with a plain 20 s moving-average tonic/phasic split plus the LSB
+step (an attempt to report SCR events/min was removed -- without NeuroKit2 it
+produced meaningless 2-20 /min rates on traces whose whole range was ADC noise).
 
 **Lichtenberg HPC (sbatch):**
 

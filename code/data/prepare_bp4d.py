@@ -100,6 +100,43 @@ def load_channel(path: str) -> np.ndarray:
     return np.loadtxt(path, dtype=np.float64).reshape(-1)
 
 
+def find_channel_file(phys_dir: str, needle: str) -> Optional[str]:
+    """Pick the raw physiology file for a channel inside ``phys_dir``.
+
+    Prefers an exact basename match; otherwise matches by substring but
+    excludes derived channels (Dia/Mean/Systolic/Rate) so e.g. 'BP_mmHg' does
+    not accidentally select 'LA Mean BP_mmHg'. Returns None when nothing
+    matches (or ``phys_dir`` does not exist).
+
+    Module-level (not nested in :func:`build_session`) so inspection tools read
+    exactly the same file the converter would pick for a channel.
+    """
+    names = sorted(os.listdir(phys_dir)) if os.path.isdir(phys_dir) else []
+    needle_l = needle.lower()
+    exact = [f for f in names if f.lower() == needle_l]
+    if exact:
+        return os.path.join(phys_dir, exact[0])
+    excluded = ('dia', 'mean', 'systolic', 'diastolic', 'rate')
+    cand = [f for f in names
+            if needle_l in f.lower()
+            and not any(tok in f.lower() for tok in excluded)]
+    return os.path.join(phys_dir, cand[0]) if cand else None
+
+
+def resolve_channels(phys_dir: str) -> Dict[str, str]:
+    """Map every canonical channel in ``CHANNEL_FILES`` to its raw file.
+
+    Returns only the channels whose file exists; compare against
+    ``CHANNEL_FILES`` to detect the missing ones.
+    """
+    found: Dict[str, str] = {}
+    for col, needle in CHANNEL_FILES.items():
+        p = find_channel_file(phys_dir, needle)
+        if p is not None:
+            found[col] = p
+    return found
+
+
 def resample_antialiased(x: np.ndarray, fs_in: float, fs_out: float,
                          n_out: int) -> np.ndarray:
     """Low-pass (anti-alias) then linear-interp to ``n_out`` samples."""
@@ -181,29 +218,7 @@ def build_session(raw_root: str, out_root: str, subject: str, task: str,
         shutil.copy2(tir_src, tir_dst)
 
     # ---- physiology channels --------------------------------------------- #
-    def _find_channel(needle: str) -> Optional[str]:
-        """Pick the raw file for a canonical channel.
-
-        Prefers an exact basename match; otherwise matches by substring but
-        excludes derived channels (Dia/Mean/Systolic/Rate) so e.g. 'BP_mmHg'
-        does not accidentally select 'LA Mean BP_mmHg'.
-        """
-        names = sorted(os.listdir(phys_src))
-        needle_l = needle.lower()
-        exact = [f for f in names if f.lower() == needle_l]
-        if exact:
-            return os.path.join(phys_src, exact[0])
-        excluded = ('dia', 'mean', 'systolic', 'diastolic', 'rate')
-        cand = [f for f in names
-                if needle_l in f.lower()
-                and not any(tok in f.lower() for tok in excluded)]
-        return os.path.join(phys_src, cand[0]) if cand else None
-
-    found: Dict[str, str] = {}
-    for col, needle in CHANNEL_FILES.items():
-        p = _find_channel(needle)
-        if p is not None:
-            found[col] = p
+    found: Dict[str, str] = resolve_channels(phys_src)
     missing = [c for c in CHANNEL_FILES if c not in found]
     if missing:
         return {'session': session, 'ok': False,
