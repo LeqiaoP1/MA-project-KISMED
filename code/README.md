@@ -555,6 +555,80 @@ is reported with a plain 20 s moving-average tonic/phasic split plus the LSB
 step (an attempt to report SCR events/min was removed -- without NeuroKit2 it
 produced meaningless 2-20 /min rates on traces whose whole range was ADC noise).
 
+**Raw AU occurrence coding (`AUCoding/AU_OCC/*.csv`) -- corpus statistics:**
+
+`runners/run_inspect_au.py` (+ `scripts/local/inspect_au.sh`) reads the raw
+BP4D+ FACS **occurrence** csvs straight out of the raw tree -- the same files
+`data/au_dataset.py` feeds to the AU probe -- and summarises the WHOLE corpus
+instead of one session. Figures + JSON land in
+`output/inspect_data/AUCoding/` (not in a `<subject>_<task>/` folder, because
+the unit of analysis here is the annotation corpus):
+
+```bash
+source scripts/env_local.sh
+python runners/run_inspect_au.py                       # 560 files, all figures
+python runners/run_inspect_au.py --list                # what is on disk?
+python runners/run_inspect_au.py --task T7 --no-plot   # one task, JSON only
+python runners/run_inspect_au.py --au_list 6,7,10,12,14
+TASK=T7 bash scripts/local/inspect_au.sh               # env-style overrides
+```
+
+| Figure | What it answers |
+| --- | --- |
+| `AU_presence.png` | how often every AU fires (9 excluded) + its missing rate |
+| `AU_cooccurrence.png` | pairwise Jaccard, all AUs and the default subset |
+| `AU_active_count.png` | how many AUs are active in a frame (how degenerate it is) |
+| `AU_segments.png` | number and duration of activation segments per AU |
+| `AU_session_spread.png` | per-session spread of the subset AUs, and by task |
+| `AU_task_presence.png` | subset occurrence rate split by T1/T6/T7/T8 |
+| `AU_session_timeline.png` | one session's coding as a raster (`--timeline_session`) |
+| `AU_session_coverage.png` | where the coded blocks sit in the videos |
+
+`AU_summary.json` carries every number behind the figures (per-AU table,
+co-occurrence matrices, per-task and per-session rows); `AU_index.json` lists
+what was inspected. `--au_list` selects which AUs are treated as the target
+subset (highlighted in the figures, broken down per task/session) and defaults
+to `data.au_dataset.DEFAULT_AU_LIST`; `--au_list all` uses all 34.
+
+**Format and the AU99 trap.** A csv has a header row (a frame-column label, then
+35 AU ids) and one row per coded video frame: `frame,au1,au2,...` with values
+`0` absent / `1` present / `9` missing, and frame `f` mapping to canonical rgb
+frame `f - 1`. **AU99 is not an AU -- it is a per-frame "coding unreliable"
+flag**: the 944 frames of the corpus that contain a `9` are exactly the frames
+with `AU99 == 1` (923 of them have *all* 34 real AU columns at `9`, 21 have a
+partial `9`). The runner therefore drops AU99 and excludes those frames from
+every occurrence rate, while `n_missing` still counts the `9` codes -- over ALL
+frames, because that is where they live. The upshot: corpus missingness is a
+whole-frame property (~0.48% uniformly on every AU), not a per-AU one.
+
+Measured on all 560 local files (140 subjects x {T1,T6,T7,T8}, 82 F + 58 M,
+197,875 coded rows = 131.9 min):
+
+* **AU7 66.3%, AU10 64.8%, AU14 60.1%, AU12 57.9%, AU6 49.8%, AU11 41.1%,
+  AU16 32.9%, AU23 16.7%, AU20 14.8%, AU17 13.0%, AU15 10.7%, AU1 9.7%,
+  AU2 8.2%, AU4 5.8%, AU24 3.9%** (share of frames with the AU active);
+  AU29/AU35/AU36 never fire at all, AU13/27/29/33-37 stay under 0.2%.
+* the default 12-AU subset averages **3.67 active AUs per frame (30.6% of the
+  subset)**, of 4.71 active of all 34, and 84.9% of frames have at least one AU.
+* the expressive-block AUs co-fire: Jaccard **0.58-0.79** inside
+  {6,7,10,12,14} and 0.53 for AU1-AU2, while cross-block pairs stay near 0.1.
+* segments: AU16/AU23/AU17 are short-and-frequent (median 0.44-0.60 s at
+  1200-1800 segments) while AU7/AU10/AU12 hold for ~3.6-3.9 s at a time
+  (longest single activations 80-110 s).
+* per-session activity is task-dependent: mean active subset AUs per frame
+  **T1 4.38, T6 4.64, T7 4.10, T8 1.74** -- T8 is by far the calmest task.
+* every session is ONE contiguous coding block of 83-700 frames (median 376),
+  but it starts anywhere from frame 1 to frame 2248. The tasks differ: T1
+  starts early (median frame 150), T6/T7 are spread over frames 200-1400, and
+  **~73 of the 140 T8 codings start at frame ~1125**. Clip sampling must respect
+  both video boundaries.
+
+Caveat that matters for the probe: AU coding covers the MOST EXPRESSIVE part of
+a task, so the frequent AUs are near-constant ON there. A degenerate
+all-positive head therefore already scores a high macro-F1 on an AU-coded val
+split -- keep reporting the trivial baseline next to the probe's F1 (the
+`active/frame` and spread numbers above quantify exactly how degenerate it is).
+
 **Lichtenberg HPC (sbatch):**
 
 ```bash
