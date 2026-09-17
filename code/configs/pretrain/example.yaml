@@ -1,7 +1,7 @@
 # Example Stage-2 pre-training config (MultiMAE-style YAML: values are argparse
 # defaults, CLI flags override them). Copy & adapt.
 # Run from code/:  python runners/run_pretrain.py -c configs/pretrain/example.yaml
-# Tuned variants: stage2_local.yaml (tiny smoke), stage2_local_pretrained.yaml
+# Tuned variants: stage2_local.yaml (local smoke), stage2_local_pretrained.yaml
 # (Stage-1 inheritance), stage2_multimodal.yaml (full-data HPC template).
 
 model: project_multimae_base       # 768-d/12-layer -- the NAME sets the geometry

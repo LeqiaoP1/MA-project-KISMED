@@ -91,13 +91,12 @@ STREAM_CHANNELS = {'rgb': 3, 'tir': 3, 'bvp': 1, 'resp': 1, 'eda': 1}
 #: timm-style convention as the ``project_vit_*`` family in :mod:`core.model`),
 #: so a config only needs ``model: project_multimae_base`` and embed_dim /
 #: depth / heads follow from it -- they can no longer contradict the
-#: ``pretrained_encoder`` checkpoint. ``tiny`` (192/6/6) is this project's
-#: small local-dev geometry (the ``MultiModalMAE`` default); ``small`` matches
-#: ``project_vit_small_patch16_224``. Set ``enc_embed_dim`` / ``enc_depth`` /
-#: ``enc_num_heads`` explicitly only to OVERRIDE (e.g. an ablation).
+#: ``pretrained_encoder`` checkpoint. **Only ``base`` and ``large`` are
+#: supported** (the project's two operating sizes, and the two sizes the Stage-1
+#: weights are published for); ``small`` / ``huge`` remain registered model
+#: entrypoints with no checkpoint source. Set ``enc_embed_dim`` /
+#: ``enc_depth`` / ``enc_num_heads`` explicitly only to OVERRIDE.
 MULTIMAE_VARIANTS: Dict[str, Dict[str, int]] = {
-    'project_multimae_tiny': {'embed_dim': 192, 'enc_depth': 6,
-                              'enc_num_heads': 6},
     'project_multimae_small': {'embed_dim': 384, 'enc_depth': 12,
                                'enc_num_heads': 6},
     'project_multimae_base': {'embed_dim': 768, 'enc_depth': 12,
@@ -177,8 +176,8 @@ class MultiModalMAE(nn.Module):
 
     def __init__(self, streams: Sequence[str] = ('rgb', 'tir', 'bvp'),
                  stream_channels: Optional[Dict[str, int]] = None,
-                 embed_dim: int = 192, enc_depth: int = 6,
-                 enc_num_heads: int = 6, mlp_ratio: float = 4.0,
+                 embed_dim: int = 768, enc_depth: int = 12,
+                 enc_num_heads: int = 12, mlp_ratio: float = 4.0,
                  dec_depth: int = 2, drop_rate: float = 0.0,
                  attn_drop_rate: float = 0.0, drop_path_rate: float = 0.0,
                  tubelet: Tuple[int, int, int] = (2, 16, 16),
@@ -677,9 +676,9 @@ def build_pretraining_model(args):
     return MultiModalMAE(
         streams=streams,
         stream_channels={'tir': int(getattr(args, 'tir_channels', 3))},
-        embed_dim=_geo('enc_embed_dim', 'embed_dim', 192),
-        enc_depth=_geo('enc_depth', 'enc_depth', 6),
-        enc_num_heads=_geo('enc_num_heads', 'enc_num_heads', 6),
+        embed_dim=_geo('enc_embed_dim', 'embed_dim', 768),
+        enc_depth=_geo('enc_depth', 'enc_depth', 12),
+        enc_num_heads=_geo('enc_num_heads', 'enc_num_heads', 12),
         mlp_ratio=float(getattr(args, 'mlp_ratio', 4.0)),
         dec_depth=int(getattr(args, 'dec_depth', 2)),
         tubelet=tubelet,
@@ -934,12 +933,6 @@ def _build_multimae(geom: Dict[str, int], **kwargs):
     return MultiModalMAE(embed_dim=geom['embed_dim'],
                          enc_depth=geom['enc_depth'],
                          enc_num_heads=geom['enc_num_heads'], **kwargs)
-
-
-@register_model
-def project_multimae_tiny(**kwargs):
-    """192-d / 6-layer / 6-head (local-dev geometry)."""
-    return _build_multimae(MULTIMAE_VARIANTS['project_multimae_tiny'], **kwargs)
 
 
 @register_model

@@ -47,7 +47,7 @@ def get_args():
 
     # model / task
     parser.add_argument('--model', default='project_multimae_base', type=str,
-                        help='project_multimae_{tiny,small,base,large,huge} -> '
+                        help='project_multimae_{base,large} -> '
                              'Stage-2 multimodal encoder + temporal waveform '
                              'head (the Stage-3 path; the NAME sets the ViT '
                              'geometry and MUST match the Stage-2 run). Any '

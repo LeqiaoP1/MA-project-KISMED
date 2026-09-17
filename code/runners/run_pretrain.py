@@ -29,11 +29,11 @@ def get_args():
     add_common_args(parser)
 
     # model
-    parser.add_argument('--model', default='project_multimae_tiny', type=str,
-                        help='registered model name. project_multimae_{tiny,'
-                             'small,base,large,huge} run the multimodal masked '
-                             'pre-training (the NAME sets the ViT geometry); '
-                             'any project_vit_* runs the single-stream path')
+    parser.add_argument('--model', default='project_multimae_base', type=str,
+                        help='registered model name. project_multimae_{base,'
+                             'large} run the multimodal masked pre-training '
+                             '(the NAME sets the ViT geometry); any project_vit_* '
+                             'runs the single-stream path')
     # ViT geometry comes from the --model variant; 0 = "unset" => take it from
     # the name. Set a value only to OVERRIDE (e.g. an ablation).
     parser.add_argument('--enc_embed_dim', default=0, type=int)

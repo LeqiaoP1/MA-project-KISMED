@@ -7,7 +7,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."   # code/
 PY="${PYTHON:-python}"                       # use the project .venv, e.g. PYTHON=.venv/bin/python
 
-# C2 (Stage-2 from-scratch encoder) linear probe -- tiny 192-d Stage-2 run.
+# C2 (Stage-2 from-scratch encoder) linear probe -- 768-d Stage-2 run.
 # 4 workers by default (the configs also set num_workers: 4; YAML beats
 # $NUM_WORKERS, so override a single run with --num_workers N).
 NUM_WORKERS=4 "$PY" runners/run_au_probe.py -c configs/finetune/au_local.yaml "$@"

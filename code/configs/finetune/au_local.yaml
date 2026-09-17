@@ -1,19 +1,20 @@
-# AU-occurrence probe -- LOCAL smoke / dev (linear probe, small geometry).
+# AU-occurrence probe -- LOCAL smoke / dev (linear probe).
 # ADD-ON diagnostic: does the Stage-2 shared encoder linearly separate FACS
-# AU occurrence? This config probes the TINY from-scratch Stage-2 encoder
-# (stage2_local). Its MAE-ViT-Base counterpart is
+# AU occurrence? This config probes the FROM-SCRATCH Stage-2 encoder
+# (stage2_local_scratch, 768/12/12). Its Stage-1-inherited counterpart is
 # configs/finetune/au_local_pretrained.yaml (probes stage2_local_pretrained,
 # 768/12/12 @ clip 4.0 s, batch 2, top-5 frequent AUs). Both are variants of
 # the SAME control: within one geometry keep every protocol knob (mode, split,
 # AU set, LR) fixed and change only the probed checkpoint:
 #   C0 random init   : finetune: ''            (lower bound)
-#   C2 Stage-2       : finetune: ../output/pretrain/stage2_local/checkpoints/checkpoint-0039.pth
+#   C1 Stage-1       : finetune: base          (videomae:base)
+#   C2 Stage-2       : finetune: ../output/pretrain/stage2_local_scratch/checkpoints/checkpoint-0039.pth
 #
 # IMPORTANT (geometry contract): every encoder field below (tubelet,
 # input_size, clip_duration -> num_frames, enc_embed_dim, enc_depth,
 # enc_num_heads, mlp_ratio) MUST reproduce the geometry of the Stage-2 run
-# whose checkpoint is probed. Here it mirrors configs/pretrain/stage2_local.yaml
-# (enc 192/6/6, clip_duration 4.0 s => num_frames 100, input 64).
+# whose checkpoint is probed. Here it mirrors configs/pretrain/stage2_local_scratch.yaml
+# (enc 768/12/12, clip_duration 4.0 s => num_frames 100, input 64).
 #
 # Run from code/:  python runners/run_au_probe.py -c configs/finetune/au_local.yaml
 
@@ -37,23 +38,23 @@ tubelet: 2,16,16
 fps: 25.0
 clip_duration: 4.0            # num_frames = 100 (even, symmetric window)
 input_size: 64
-enc_embed_dim: 192
-enc_depth: 6
-enc_num_heads: 6
+enc_embed_dim: 768
+enc_depth: 12
+enc_num_heads: 12
 mlp_ratio: 4.0
 
 # ---- probe mode / init ----
 probe: linear                 # linear = frozen encoder + head (diagnostic)
 pool: mean
-finetune: ../output/pretrain/stage2_local/checkpoints/checkpoint-0039.pth
+finetune: ../output/pretrain/stage2_local_scratch/checkpoints/checkpoint-0039.pth
 
 # ---- dev caps (remove for the real run on full data) ----
 max_entries: 48               # per split; keeps local image I/O cheap
 max_sessions: 4
 
-# ---- training (tiny local smoke) ----
+# ---- training (local smoke; 768-d so keep the batch small) ----
 epochs: 30
-batch_size: 4
+batch_size: 2
 update_freq: 1
 eval_freq: 1
 save_ckpt_freq: 10

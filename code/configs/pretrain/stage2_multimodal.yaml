@@ -1,5 +1,5 @@
 # Stage 2 -- multimodal masked pre-training on BP4D+ (HPC / full-data TEMPLATE).
-# Copy & adapt; the small local version is configs/pretrain/stage2_local.yaml.
+# Copy & adapt; the small local version is configs/pretrain/stage2_local_scratch.yaml.
 # Run from code/:  python runners/run_pretrain.py -c configs/pretrain/stage2_multimodal.yaml
 
 model: project_multimae_base       # 768-d/12-layer -- the NAME sets the geometry
@@ -38,7 +38,7 @@ mask_ratio_bvp: 0.90
 mask_ratio_resp: 0.90
 mask_ratio_eda: 0.90
 
-# ---- loss: weighted sum of per-modality masked MSE (see stage2_local.yaml) ----
+# ---- loss: weighted sum of per-modality masked MSE (see stage2_local_scratch.yaml) ----
 signal_weight: 0.5
 
 # ---- data ----

@@ -70,8 +70,8 @@ class MultiModalMAEProbe(nn.Module):
 
     def __init__(self, streams: Sequence[str] = ('rgb',),
                  stream_channels: Optional[Dict[str, int]] = None,
-                 embed_dim: int = 192, enc_depth: int = 6,
-                 enc_num_heads: int = 6, mlp_ratio: float = 4.0,
+                 embed_dim: int = 768, enc_depth: int = 12,
+                 enc_num_heads: int = 12, mlp_ratio: float = 4.0,
                  num_classes: int = 12, pool: str = 'mean',
                  drop_rate: float = 0.0, attn_drop_rate: float = 0.0,
                  drop_path_rate: float = 0.0,
@@ -208,9 +208,9 @@ def build_au_probe_model(args, num_classes: int):
     return MultiModalMAEProbe(
         streams=streams,
         stream_channels={'tir': int(getattr(args, 'tir_channels', 3))},
-        embed_dim=int(getattr(args, 'enc_embed_dim', 192)),
-        enc_depth=int(getattr(args, 'enc_depth', 6)),
-        enc_num_heads=int(getattr(args, 'enc_num_heads', 6)),
+        embed_dim=int(getattr(args, 'enc_embed_dim', 768)),
+        enc_depth=int(getattr(args, 'enc_depth', 12)),
+        enc_num_heads=int(getattr(args, 'enc_num_heads', 12)),
         mlp_ratio=float(getattr(args, 'mlp_ratio', 4.0)),
         num_classes=int(num_classes), pool=pool,
         drop_rate=float(getattr(args, 'drop_rate', 0.0)),

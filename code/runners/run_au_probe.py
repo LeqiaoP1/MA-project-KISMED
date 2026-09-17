@@ -74,9 +74,9 @@ def get_args():
     parser.add_argument('--num_frames', default=0, type=int,
                         help='clip length in frames (0 => clip_duration*fps)')
     parser.add_argument('--input_size', default=64, type=int)
-    parser.add_argument('--enc_embed_dim', default=192, type=int)
-    parser.add_argument('--enc_depth', default=6, type=int)
-    parser.add_argument('--enc_num_heads', default=6, type=int)
+    parser.add_argument('--enc_embed_dim', default=768, type=int)
+    parser.add_argument('--enc_depth', default=12, type=int)
+    parser.add_argument('--enc_num_heads', default=12, type=int)
     parser.add_argument('--mlp_ratio', default=4.0, type=float)
     parser.add_argument('--drop_rate', default=0.0, type=float)
     parser.add_argument('--drop_path_rate', default=0.0, type=float)

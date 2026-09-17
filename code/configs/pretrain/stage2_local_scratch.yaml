@@ -1,22 +1,22 @@
-# Stage 2 -- FIRST LOCAL overfit/smoke slice (do NOT run on HPC as-is).
-# Goal: prove adapters <-> encoder <-> decoder <-> loss wiring end-to-end (the
-# masked loss should drop towards ~0 here before any real run).
-# FROM SCRATCH (no Stage-1 init). The counterpart that DOES inherit the
-# VideoMAE encoder is configs/pretrain/stage2_local_pretrained.yaml. The two are
-# deliberately NOT the same recipe: this file is the cheapest possible WIRING
-# proof (2 streams, 2 sessions, 8 clips), while the pretrained one is a bounded
-# run over all local sessions with a second physio stream (3 streams, 11
-# sessions, 32 clips) and its own output_dir. To compare the two INITS strictly,
-# align streams / max_sessions / max_entries first.
+# Stage 2 -- LOCAL run, FROM SCRATCH (no downloaded Stage-1 weights).
+# This is the INIT A/B twin of configs/pretrain/stage2_local_pretrained.yaml:
+# the ONLY differences between the two files are the init block
+# (`pretrained_encoder` / `inflate_rgb_patch`) and `output_dir`.
+# Everything else -- streams, geometry, masking, loss weights, LR schedule,
+# epochs, session/clip counts -- is identical on purpose, so the pair isolates
+# the effect of the Stage-1 weight inheritance and nothing else. **If you change
+# a knob here, mirror it in the other file.**
 #
-# Run from code/:  python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml
+# Run from code/:  python runners/run_pretrain.py -c configs/pretrain/stage2_local_scratch.yaml
 
 model: project_multimae_base       # 768-d/12-layer/12-head -- the NAME sets it
+pretrained_encoder: ''             # '' = FROM SCRATCH (random init); the A/B
+                                   # twin uses `videomae:base` here
 
-# ---- streams & tokenizer geometry ----
+# ---- streams & tokenizer geometry (identical to stage2_local_pretrained) ----
 # Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bvp/resp/eda).
 # All five = rgb,tir,bvp,resp,eda; ablate by trimming (e.g. rgb,bvp).
-streams: rgb,bvp
+streams: rgb,bvp,resp
 
 tir_channels: 3                    # thermal is a false-colour render, not gray
 tubelet: 2,16,16                   # (temporal, H, W) tubelet
@@ -58,6 +58,7 @@ mask_ratio_eda: 0.90
 # so the 1-D signal does not dominate the gradient, low -> 1.0 so it is not
 # ignored (loss_weights overrides per stream, one float per --streams modality).
 signal_weight: 0.5
+sig_kernel: 8
 
 # NOTE: the ViT geometry (embed_dim/depth/heads) comes from `model` above;
 # mlp_ratio, dec_depth and sig_kernel keep their defaults. Set any of them here
@@ -65,13 +66,13 @@ signal_weight: 0.5
 
 # ---- data (canonical layout from data/prepare_bp4d.py) ----
 data_path: ../data/processed/bp4d_canonical
-max_sessions: 2
-max_entries: 8
+max_sessions: 11
+max_entries: 32
 # Overlapping windows (more samples). For the real HPC run over ALL sessions set
 # e.g. clip_stride: 1.0 with clip_duration: 4.0 to reach ~10-20k clips; 0 =
 # non-overlapping (stride == clip_duration).
 
-# ---- training (local smoke: correctness/overfit only) ----
+# ---- training (local scale: correctness + a real loss curve) ----
 epochs: 40
 batch_size: 2
 save_ckpt_freq: 10
@@ -86,5 +87,5 @@ weight_decay: 0.05
 num_workers: 4
 
 # ---- logging ----
-output_dir: ../output/pretrain/stage2_local
+output_dir: ../output/pretrain/stage2_local_scratch
 log_wandb: false

@@ -1,4 +1,10 @@
 # Stage 2 -- LOCAL run WITH Stage-1 encoder inheritance.
+# This is the INIT A/B twin of configs/pretrain/stage2_local_scratch.yaml: the
+# ONLY differences between the two files are the init block below
+# (`pretrained_encoder` / `inflate_rgb_patch`) and `output_dir`. Everything else --
+# streams, geometry, masking, loss weights, LR schedule, epochs, session/clip
+# counts -- is identical on purpose. **If you change a knob here, mirror it in
+# the other file.**
 # The shared encoder's transformer blocks AND the RGB tubelet patch embed are
 # initialised from a **VideoMAE ViT-B** checkpoint (Kinetics-400, tube-masked
 # video MAE): its patch embed IS a Conv3d(3, 768, (2,16,16)) tubelet filter, so
@@ -11,9 +17,9 @@
 #
 # The 'base' spec resolves to videomae:base and downloads the checkpoint once
 # into ../models/initial/ (see `python runners/run_download_weights.py --list`);
-# a plain path works too. Frames per clip match stage2_local.yaml; the input
-# size, batch and clip count are kept small so this still fits a LOCAL GPU --
-# switch to the larger geometry (input_size 224, all sessions) on the HPC.
+# a plain path works too. The input size, batch and clip count are kept small so
+# this still fits a LOCAL GPU -- switch to the larger geometry (input_size 224,
+# all sessions) on the HPC.
 #
 # Run from code/:  python runners/run_pretrain.py -c configs/pretrain/stage2_local_pretrained.yaml
 
@@ -61,7 +67,7 @@ mask_ratio_eda: 0.90
 
 # ---- loss: per-modality masked MSE (masked positions only), then a weighted
 # sum. lambda = 1.0 for rgb/tir; lambda = signal_weight for each physio stream
-# (see stage2_local.yaml for how to pick it).
+# (see stage2_local_scratch.yaml for how to pick it).
 signal_weight: 0.5
 sig_kernel: 8
 
@@ -73,7 +79,7 @@ max_entries: 32
 # e.g. clip_stride: 1.0 with clip_duration: 4.0 to reach ~10-20k clips; 0 =
 # non-overlapping (stride == clip_duration).
 
-# ---- training (tiny: correctness/overfit only) ----
+# ---- training (local smoke: correctness/overfit only) ----
 epochs: 40
 batch_size: 2                      # 768-d encoder: keep small on a local GPU
 save_ckpt_freq: 10

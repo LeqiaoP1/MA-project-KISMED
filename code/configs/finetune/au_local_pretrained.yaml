@@ -2,14 +2,14 @@
 # (enc ViT-Base 768/12/12, mirrored from configs/pretrain/stage2_local_pretrained.yaml:
 # clip_duration 4.0 s => num_frames 100, input 64, tubelet 2,16,16).
 #
-# COUNTERPART of configs/finetune/au_local.yaml (which probes the TINY
-# from-scratch encoder stage2_local, 192/6/6 @ clip 4.0 s, batch 4, full 12-AU
-# subset). Both are probe variants of the SAME linear-decodability control; the
+# COUNTERPART of configs/finetune/au_local.yaml (which probes the FROM-SCRATCH
+# encoder stage2_local_scratch, 768/12/12 @ clip 4.0 s, full 12-AU subset). Both are
+# probe variants of the SAME linear-decodability control; the
 # geometry below MUST reproduce the probed checkpoint (stage2_local_pretrained,
 # MAE ViT-Base inherited) and protocol knobs must stay fixed across the
-# C0/C1/C2 runs of THIS geometry. RESOURCE RATIONALE: the 768-d encoder is
-# ~16x the 192-d one of au_local.yaml, so batch_size is 2 (not 4) to keep it on
-# a LOCAL GPU. The window length matches au_local.yaml (4.0 s => num_frames 100)
+# runs of THIS geometry. RESOURCE RATIONALE: a 768-d encoder needs a small
+# batch to fit a LOCAL GPU, so batch_size is 2 (same as au_local.yaml). The
+# window length matches au_local.yaml (4.0 s => num_frames 100)
 # and the dev caps below limit the number of clips.
 #
 # NOTE (AU set): this config deliberately probes the 5 most-frequent /
@@ -64,7 +64,7 @@ finetune: ../output/pretrain/stage2_local_pretrained/checkpoints/checkpoint-0039
 max_entries: 48
 max_sessions: 4
 
-# ---- training (tiny local smoke; 768-d so keep the batch small) ----
+# ---- training (local smoke; 768-d so keep the batch small) ----
 epochs: 30
 batch_size: 2
 update_freq: 1
