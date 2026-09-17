@@ -58,7 +58,7 @@ python runners/run_inspect_physio.py --subject F001 --task T1 --channel all
 
 # (1) Stage-2 multimodal masked pre-training (local milestone)
 #   from-scratch tiny slice (192-d) ......... configs/pretrain/stage2_local.yaml
-#   MAE ViT-Base inheritance (768-d) ........ configs/pretrain/stage2_local_pretrained.yaml
+#   VideoMAE/MAE ViT-Base inheritance (768-d) . configs/pretrain/stage2_local_pretrained.yaml
 python runners/run_pretrain.py -c configs/pretrain/stage2_local_pretrained.yaml
 
 # (2) Stage-3 waveform fine-tuning per branch (needs a Stage-2 encoder ckpt)
@@ -141,7 +141,7 @@ subsection above.)
 
 | Plan stage                                                                             | Supported here                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Still to port (thesis work)                                                                                                                                                                                                                                                                                            |
 | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Stage 1 — ImageNet init of ViT-Base encoder                                           | `core/model.py` entrypoints (`project_vit_base_patch16_224`)                                                                                                                                                                                                                                                                                                                                                                                                           | official ImageNet-1K timm classifier converter (MAE ViT-Base inheritance already implemented:`core/multimae.py::load_pretrained_encoder`, 2-D -> 3-D rgb tubelet inflation via `--pretrained_encoder`; variant specs (`small                                                                                       |
+| Stage 1 — ImageNet init of ViT-Base encoder                                           | `core/model.py` entrypoints (`project_vit_base_patch16_224`)                                                                                                                                                                                                                                                                                                                                                                                                           | official ImageNet-1K timm classifier converter; encoder inheritance IMPLEMENTED (`core/multimae.py::load_pretrained_encoder` + `canonicalise_vit_state_dict` -- 3-D tubelet kernel transferred verbatim for VideoMAE, 2-D filter boxcar-inflated for MAE, `--inflate_rgb_patch` to disable) via `--pretrained_encoder`; variant specs (`small                                                                                       |
 | Stage 2 — multimodal masked pre-training on BP4D+ (RGB/TIR 50-75%, BVP/RESP/EDA 90%+) | `core/input_adapters.py` (`SignalInputAdapter`), `data/masking_generator.py` (`MultiModalMaskingGenerator` asymmetric), `core/criterion.py` (`MaskedMSELoss`), configs `configs/pretrain/stage2_local.yaml` (tiny smoke) + `stage2_local_pretrained.yaml` (base + Stage-1 init) + HPC template `stage2_multimodal.yaml`; implemented local milestone: `core/multimae.py` (`MultiModalMAE`) + `PairedPretrainDataset` + `runners/run_pretrain.py` | separate deeper decoders; full-data HPC run at larger 224 geometry. Local five-stream milestone (rgb+tir+bvp+resp+eda) is implemented & run:`core/multimae.py` (`MultiModalMAE`), `data/paired_dataset.PairedPretrainDataset`, `runners/run_pretrain.py`, `configs/pretrain/stage2_local{,_pretrained}.yaml` |
 | Stage 3 — three branches BVP, RESP & EDA, unified spatio-temporal-spectral loss       | `core/waveform_losses.py` (`WaveformJointLoss`: L1 + Pearson + MR-STFT; 64/128/256 for BVP/RESP, 256/512/1024 for EDA), regression head (`ProjectViT(output_len=...)`, baseline CLS->seq), `runners/run_waveform.py`, configs `configs/finetune/{bvp,resp,eda}.yaml`                                                                                                                                                                                             | lightweight conv decoder over all tokens for finer temporal resolution; session-level whole-waveform reconstruction/stitching (offline inference, not yet implemented)                                                                                                                                                 |
 | Evaluation — Tier 1/2/3 post-processing                                               | `evaluation/metrics.py` (MAE/RMSE/Pearson; Welch PSD), `evaluation/clinical.py` (NeuroKit2 RMSSD/pNN50/MedianNN/ShanEn), `runners/run_evaluate.py`                                                                                                                                                                                                                                                                                                                   | —                                                                                                                                                                                                                                                                                                                     |
@@ -214,12 +214,12 @@ session.
 
 Measured 2026-09 on 1392x1040 jpgs (`F004_T2`, cold session, 60 frames):
 
-| step                                                              | ms/frame |
-| ----------------------------------------------------------------- | -------- |
-| read the jpg bytes, **no decode**                                 | 0.6      |
-| read + **full decode** (the old path)                             | 11.6     |
-| full decode of bytes already in RAM (**no filesystem at all**)    | 9.2      |
-| `IMREAD_REDUCED_COLOR_4` decode of bytes already in RAM           | 6.3      |
+| step                                                                 | ms/frame |
+| -------------------------------------------------------------------- | -------- |
+| read the jpg bytes,**no decode**                               | 0.6      |
+| read +**full decode** (the old path)                           | 11.6     |
+| full decode of bytes already in RAM (**no filesystem at all**) | 9.2      |
+| `IMREAD_REDUCED_COLOR_4` decode of bytes already in RAM            | 6.3      |
 
 ~90 % of the per-frame cost is libjpeg decoding a 1.4 MP image whose pixels are
 then 97 % discarded for a 224 px target; the filesystem contributes well under
@@ -237,11 +237,11 @@ the image is never upscaled. Non-JPEG inputs, `target_size=None` and sources
 smaller than the scale keep the previous full decode.
 
 | `target_size` | flag chosen (1392x1040 source) | mean abs diff vs full decode | speedup |
-| ------------- | ------------------------------ | ---------------------------- | ------- |
-| `None`        | `IMREAD_UNCHANGED`             | 0 (byte-identical)           | 1.00x   |
-| 512           | `IMREAD_REDUCED_COLOR_2`       | 0.55/255                     | 1.15x   |
-| 224           | `IMREAD_REDUCED_COLOR_4`       | 0.69/255                     | 1.38x   |
-| 64            | `IMREAD_REDUCED_COLOR_8`       | 0.50/255                     | 1.34x   |
+| --------------- | ------------------------------ | ---------------------------- | ------- |
+| `None`        | `IMREAD_UNCHANGED`           | 0 (byte-identical)           | 1.00x   |
+| 512             | `IMREAD_REDUCED_COLOR_2`     | 0.55/255                     | 1.15x   |
+| 224             | `IMREAD_REDUCED_COLOR_4`     | 0.69/255                     | 1.38x   |
+| 64              | `IMREAD_REDUCED_COLOR_8`     | 0.50/255                     | 1.34x   |
 
 Shapes are unchanged for every `target_size` x `gray` combination, and a 10 s /
 250-frame clip at 224 px drops from ~3450 ms to ~2630 ms (the clip-level gain is
@@ -277,8 +277,8 @@ independent, self-contained module that re-uses the Stage-2 shared encoder
 * **Probe modes & controls** (identical protocol; only `--finetune` differs):
   * `--probe linear` (default) freezes the encoder ⇒ the formal diagnostic;
     `--probe ft` fine-tunes the whole model.
-  * C0 random init (`--finetune ''`), C1 Stage-1 MAE/ImageNet
-    (`--finetune base`, or that checkpoint's path), **C2 Stage-2** (headline).
+  * C0 random init (`--finetune ''`), C1 Stage-1 (`--finetune base` =
+    `videomae:base`, or that checkpoint's path), **C2 Stage-2** (headline).
 * **Configurable AU set.** `--au_list` (explicit, string or YAML list) **or**
   `--au_freq_topk N` (top-N by presence rate over the full AU corpus;
   `5` ⇒ AU6/7/10/12/14); default = the BP4D 12-AU subset. The head width,
@@ -355,14 +355,36 @@ matching checkpoint is downloaded **once** into `<repo>/models/initial/`
 
 | spec                        | source                                                        | geometry (dim/depth/heads) |
 | --------------------------- | ------------------------------------------------------------- | -------------------------- |
-| `small` \| `deit:small` | DeiT-Small distilled, ImageNet-1k                             | 384/12/6                   |
-| `base` \| `mae:base`    | MAE ViT-Base, self-supervised                                 | 768/12/12                  |
-| `large` \| `mae:large`  | MAE ViT-Large                                                 | 1024/24/16                 |
-| `huge` \| `mae:huge`    | MAE ViT-Huge (~2.5 GB)                                        | 1280/32/16                 |
+| `base` \| `videomae:base` | **VideoMAE ViT-Base, tube-masked video MAE (Kinetics-400)** | 768/12/12                  |
+| `mae:base`                | MAE ViT-Base, self-supervised ImageNet-1k                     | 768/12/12                  |
+| `large` \| `videomae:large` | VideoMAE ViT-Large                                          | 1024/24/16                 |
+| `mae:large`               | MAE ViT-Large                                                 | 1024/24/16                 |
 | `timm:<model_id>`         | any timm/HF checkpoint, e.g.`timm:vit_base_patch16_224.mae` | as named                   |
 
-There is no ViT-**S** MAE release, so `small` resolves to DeiT-S (the exact
-`project_vit_small_patch16_224` geometry) - an ImageNet control, not a MAE one.
+**VideoMAE is the default Stage-1 source for `base`/`large`, and it is the
+better one.** Its `patch_embed.proj` is a `Conv3d(3, D, (2,16,16))` tubelet
+filter -- the *exact* shape this repo's adapters use (`tubelet: 2,16,16`) -- so
+the tokenizer transfers **verbatim**: the learned temporal kernel is inherited
+instead of being faked by averaging two frames (a plain MAE source leaves the
+model motion-blind at init), and its objective (tube-masked *video* MAE) is the
+same family as Stage 2. Verified on the real checkpoint: 148 encoder tensors
+loaded, 0 shape-mismatched, 102 pre-training/decoder keys dropped. Weights are
+**CC-BY-NC 4.0** (fine for academic work -- state it if you redistribute).
+
+Both on-disk layouts are accepted by `core.multimae.canonicalise_vit_state_dict`:
+the official MCG-NJU/MAE key layout, and the HuggingFace `transformers` one
+(`videomae.encoder.layer.N.layernorm_before.*` etc., where Q/K/V are re-fused
+into one `attn.qkv` with MAE's zero-key-bias convention). `--inflate_rgb_patch 0`
+skips the tokenizer transfer entirely (encoder blocks only) as an ablation.
+Because a 5-D source kernel must equal the model's `tubelet`, a mismatch raises
+instead of being quietly counted as a shape mismatch.
+
+There is **no ViT-S MAE release** and no VideoMAE ViT-S/ViT-H on the Hub, so
+only `base`/`large` have a built-in Stage-1 source (the DeiT-Small and MAE
+ViT-Huge sources were dropped with the `small`/`huge` weight variants: the
+project plan no longer uses those geometries). The `small`/`huge` *model*
+entrypoints still exist for an explicit checkpoint path, and `timm:<model_id>`
+reaches any other backbone.
 For Stage 2 the model name sets the ViT geometry, so `model: project_multimae_base` pairs with `pretrained_encoder: base`
 (`enc_embed_dim`/`enc_depth`/`enc_num_heads` remain explicit overrides). The
 multimodal/probe loaders raise on mismatch instead of silently loading nothing.
@@ -370,6 +392,7 @@ multimodal/probe loaders raise on mismatch instead of silently loading nothing.
 ```bash
 python runners/run_download_weights.py --list        # variants + geometry
 python runners/run_download_weights.py base          # pre-fetch (login node!)
+python runners/run_download_weights.py mae:base      # plain MAE alternative
 python runners/run_finetune.py --finetune large ...  # downloads on demand
 python runners/run_au_probe.py -c configs/finetune/au_local_pretrained.yaml \
     --finetune base                                  # C1 Stage-1 (768-d)
@@ -464,16 +487,16 @@ rate, 10 s zoom, plus a third panel). They are merged into the channel's JSON as
 `family_components[]`, with `family_files[]` listing them and a warning if one is
 missing:
 
-| Channel | Figure | Raw files |
-| --- | --- | --- |
-| `bvp` | `BP_overview.png` | `BP_mmHg.txt`, `LA Systolic BP_mmHg.txt`, `LA Mean BP_mmHg.txt`, `BP Dia_mmHg.txt` |
-| `resp` | `Resp_overview.png` | `Resp_Volts.txt`, `Respiration Rate_BPM.txt` |
+| Channel  | Figure                | Raw files                                                                                  |
+| -------- | --------------------- | ------------------------------------------------------------------------------------------ |
+| `bvp`  | `BP_overview.png`   | `BP_mmHg.txt`, `LA Systolic BP_mmHg.txt`, `LA Mean BP_mmHg.txt`, `BP Dia_mmHg.txt` |
+| `resp` | `Resp_overview.png` | `Resp_Volts.txt`, `Respiration Rate_BPM.txt`                                           |
 
-| Raw file | Kind | Unit |
-| --- | --- | --- |
-| `BP_mmHg.txt`, `Resp_Volts.txt` | continuous **waveform** (changes every sample) | mmHg, V |
-| `LA Systolic` / `LA Mean` / `BP Dia` | vendor-derived **per-beat** value, step-held | mmHg |
-| `Respiration Rate_BPM.txt` | vendor-derived, step-held (updated every few s) | BPM |
+| Raw file                                   | Kind                                                | Unit    |
+| ------------------------------------------ | --------------------------------------------------- | ------- |
+| `BP_mmHg.txt`, `Resp_Volts.txt`        | continuous**waveform** (changes every sample) | mmHg, V |
+| `LA Systolic` / `LA Mean` / `BP Dia` | vendor-derived**per-beat** value, step-held   | mmHg    |
+| `Respiration Rate_BPM.txt`               | vendor-derived, step-held (updated every few s)     | BPM     |
 
 The waveform/step-held distinction is real and measured: on `F001_T1` the
 systolic series holds `114.433` for >300 samples (about a whole beat) before
@@ -573,16 +596,16 @@ python runners/run_inspect_au.py --au_list 6,7,10,12,14
 TASK=T7 bash scripts/local/inspect_au.sh               # env-style overrides
 ```
 
-| Figure | What it answers |
-| --- | --- |
-| `AU_presence.png` | how often every AU fires (9 excluded) + its missing rate |
-| `AU_cooccurrence.png` | pairwise Jaccard, all AUs and the default subset |
-| `AU_active_count.png` | how many AUs are active in a frame (how degenerate it is) |
-| `AU_segments.png` | number and duration of activation segments per AU |
-| `AU_session_spread.png` | per-session spread of the subset AUs, and by task |
-| `AU_task_presence.png` | subset occurrence rate split by T1/T6/T7/T8 |
+| Figure                      | What it answers                                           |
+| --------------------------- | --------------------------------------------------------- |
+| `AU_presence.png`         | how often every AU fires (9 excluded) + its missing rate  |
+| `AU_cooccurrence.png`     | pairwise Jaccard, all AUs and the default subset          |
+| `AU_active_count.png`     | how many AUs are active in a frame (how degenerate it is) |
+| `AU_segments.png`         | number and duration of activation segments per AU         |
+| `AU_session_spread.png`   | per-session spread of the subset AUs, and by task         |
+| `AU_task_presence.png`    | subset occurrence rate split by T1/T6/T7/T8               |
 | `AU_session_timeline.png` | one session's coding as a raster (`--timeline_session`) |
-| `AU_session_coverage.png` | where the coded blocks sit in the videos |
+| `AU_session_coverage.png` | where the coded blocks sit in the videos                  |
 
 `AU_summary.json` carries every number behind the figures (per-AU table,
 co-occurrence matrices, per-task and per-session rows); `AU_index.json` lists

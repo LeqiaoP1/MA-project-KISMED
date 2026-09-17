@@ -5,7 +5,8 @@
 # (Stage-1 inheritance), stage2_multimodal.yaml (full-data HPC template).
 
 model: project_multimae_base       # 768-d/12-layer -- the NAME sets the geometry
-pretrained_encoder: ''             # '' = from scratch, 'base' = MAE ViT-B, or a path
+pretrained_encoder: ''             # '' = from scratch, 'base' = VideoMAE ViT-B,
+                                   # or 'mae:base' / a path
 
 # ---- streams & tokenizer geometry ----
 # Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bvp/resp/eda).

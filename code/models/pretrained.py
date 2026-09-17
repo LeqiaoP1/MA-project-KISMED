@@ -8,8 +8,14 @@ This module knows which checkpoint belongs to which ViT **variant** and caches
 the download under::
 
     <project_root>/models/initial/
+    <project_root>/models/initial/videomae_base_patch16_224.pth
     <project_root>/models/initial/mae_pretrain_vit_base.pth
-    <project_root>/models/initial/deit_small_patch16_224-cd65a155.pth
+
+Only the ``base`` and ``large`` variants are served (see
+``PRETRAINED_SOURCES``); the DeiT-Small and MAE ViT-Huge sources were removed
+with the ``small``/``huge`` variants, because the project plan no longer uses
+those geometries. Any other backbone is still reachable as
+``timm:<model_id>`` or as a local path.
 
 (``<project_root>`` is the repository root, i.e. the parent of ``code/``. Use
 the ``INITIAL_MODELS_DIR`` environment variable or ``--weights_dir`` to place
@@ -21,11 +27,9 @@ The runners accept a *variant spec* everywhere a checkpoint path is expected
 (``--finetune``, ``--pretrained_encoder``)::
 
     ''            random init, no download                  (control C0)
-    small         default source for that variant (see DEFAULT_SOURCE)
-    base          -> mae:base
-    large         -> mae:large
-    huge          -> mae:huge
-    mae:base      explicit source: ``mae`` | ``deit`` | ``timm``
+    base          -> videomae:base    (Stage-1 default)
+    large         -> videomae:large
+    mae:base      explicit source: ``videomae`` | ``mae`` | ``timm``
     timm:vit_base_patch16_224.mae
                   any timm/HF checkpoint name when the built-in table has no
                   entry for what you want
@@ -34,22 +38,30 @@ The runners accept a *variant spec* everywhere a checkpoint path is expected
 Examples (all from ``code/``)::
 
     python runners/run_download_weights.py --list
-    python runners/run_download_weights.py base          # MAE ViT-Base
-    python runners/run_download_weights.py small         # DeiT-S (384-d)
-    python runners/run_download_weights.py --all         # small+base+large+huge
+    python runners/run_download_weights.py base          # VideoMAE ViT-Base
+    python runners/run_download_weights.py mae:base      # plain MAE ViT-Base
+    python runners/run_download_weights.py --all         # base + large
     python runners/run_finetune.py --finetune large ...  # downloads, then trains
 
 Sources
 -------
-``mae``   Facebook AI MAE (``dl.fbaipublicfiles.com``): ViT-B / ViT-L / ViT-H.
-          There is **no ViT-S MAE release** -- use ``deit:small`` or a
-          ``timm:`` entry for the small variant.
-``deit``  Facebook AI DeiT (``deit_small_patch16_224``, 384-d/12/6 = the exact
-          geometry of ``project_vit_small_patch16_224``). Supervised ImageNet-1k
-          *distillation*, i.e. a Stage-1 ImageNet control, not a MAE one.
+``videomae``
+          MCG-NJU **VideoMAE** (HuggingFace Hub ``MCG-NJU/videomae-*``, mirrored
+          via ``HF_ENDPOINT``): ViT-B / ViT-L. **The Stage-1 source of
+          choice**: ``patch_embed.proj`` is a ``Conv3d(3, D, (2,16,16))``
+          tubelet filter -- the exact shape this repo's adapters use -- so the
+          tokenizer transfers verbatim (no boxcar inflation and no
+          motion-blind init), and the objective (tube-masked video MAE) is the
+          same family as Stage 2. Hosted in the HF `transformers` layout, which
+          the loader maps back to MAE keys. Licence: CC-BY-NC 4.0 (fine for
+          academic work; state it if you redistribute).
+``mae``   Facebook AI MAE (``dl.fbaipublicfiles.com``): ViT-B / ViT-L. The 2-D
+          control for the VideoMAE source (same 148 tensors transfer, but the
+          patch filter is boxcar-inflated instead of a real 3-D tubelet).
+          ``timm`` also ships ``*.mae`` recipes, e.g.
+          ``vit_base_patch16_224.mae``.
 ``timm``  HuggingFace-hosted ``timm`` weights. Honours the ``HF_ENDPOINT``
-          environment variable (mirrors for restricted networks). timm also
-          ships ``*.mae`` recipes, e.g. ``vit_base_patch16_224.mae``.
+          environment variable (mirrors for restricted networks).
 
 Download mechanics
 ------------------
@@ -57,14 +69,17 @@ Streamed with stdlib ``urllib`` (no extra dependency), written to a ``.part``
 file with HTTP-Range **resume**, atomically renamed, and cached -- a second run
 is a no-op. Under DDP only rank 0 downloads (the others wait on a barrier).
 ``--verify`` additionally ``torch.load``s the file and checks that it looks like
-a ViT state dict; it is opt-in because the largest checkpoint is ~2.5 GB.
+a ViT state dict; it is opt-in because the largest checkpoint is ~1.3 GB.
 
 .. note::
    The loader functions (``core.multimae.load_pretrained_encoder``,
    ``core.au_probe.load_au_probe_weights``) map MAE/timm key layouts
    (``blocks.*`` -> ``enc_blocks.*``, ``patch_embed.proj.*`` -> the RGB tubelet
-   adapter). They raise on a geometry mismatch, so pick the variant that matches
-   your ``enc_embed_dim``/``enc_depth``/``enc_num_heads``.
+   adapter) and the HF VideoMAE layout
+   (``core.multimae.canonicalise_vit_state_dict``). A 3-D ``Conv3d`` patch
+   embed is copied verbatim, a 2-D one is boxcar-inflated over the tubelet.
+   They raise on a geometry mismatch, so pick the variant that matches your
+   ``enc_embed_dim``/``enc_depth``/``enc_num_heads``.
 """
 import argparse
 import json
@@ -92,18 +107,52 @@ _FBAI = 'https://dl.fbaipublicfiles.com'
 
 #: ViT geometry per variant (matches the ``@register_model`` entrypoints in
 #: :mod:`core.model`). Used for user-facing hints and error messages.
+#: NOTE: only the variants that still have a Stage-1 checkpoint source are
+#: listed. The ``small`` (384/12/6) and ``huge`` (1280/32/16) geometries still
+#: exist as model entrypoints, but their only sources (DeiT-S and MAE ViT-H)
+#: were dropped with the plan; build them with an explicit path or a
+#: ``timm:<model_id>`` spec if ever needed.
 VIT_VARIANTS: Dict[str, Dict[str, int]] = {
-    'small': {'embed_dim': 384, 'depth': 12, 'num_heads': 6},
     'base': {'embed_dim': 768, 'depth': 12, 'num_heads': 12},
     'large': {'embed_dim': 1024, 'depth': 24, 'num_heads': 16},
-    'huge': {'embed_dim': 1280, 'depth': 32, 'num_heads': 16},
 }
 
 #: ``source -> variant -> recipe``. ``candidates`` is a list of
 #: ``(url, kind)`` pairs tried in order (``kind`` is ``'torch'`` or
 #: ``'safetensors'``; the latter is converted to a ``.pth`` after download).
 #: ``file`` is the final, cache-checked file name inside ``models/initial/``.
+#: A candidate URL may contain ``{hf}``, which :func:`_lookup` substitutes with
+#: the CURRENT ``$HF_ENDPOINT`` (mirrors for restricted networks).
 PRETRAINED_SOURCES: Dict[str, Dict[str, dict]] = {
+    'videomae': {
+        # The Stage-1 source of choice: the patch embed IS a tubelet
+        # Conv3d(3, D, (2,16,16)), i.e. the exact shape this repo's adapters
+        # use, so the tokenizer transfers verbatim (no boxcar inflation) and
+        # the model is not motion-blind at init. Objective (tube-masked video
+        # MAE) also matches Stage 2. Weights: CC-BY-NC 4.0.
+        'base': {
+            'file': 'videomae_base_patch16_224.pth',
+            'candidates': [
+                ('{hf}/MCG-NJU/videomae-base/resolve/main/pytorch_model.bin',
+                 'torch'),
+                ('{hf}/MCG-NJU/videomae-base/resolve/main/model.safetensors',
+                 'safetensors'),
+            ],
+            'note': 'VideoMAE ViT-B (768/12/12), tube-masked video MAE on '
+                    'Kinetics-400; 3-D tubelet patch embed 2x16x16',
+        },
+        'large': {
+            'file': 'videomae_large_patch16_224.pth',
+            'candidates': [
+                ('{hf}/MCG-NJU/videomae-large/resolve/main/pytorch_model.bin',
+                 'torch'),
+                ('{hf}/MCG-NJU/videomae-large/resolve/main/model.safetensors',
+                 'safetensors'),
+            ],
+            'note': 'VideoMAE ViT-L (1024/24/16), tube-masked video MAE on '
+                    'Kinetics-400; 3-D tubelet patch embed 2x16x16',
+        },
+    },
     'mae': {
         'base': {
             'file': 'mae_pretrain_vit_base.pth',
@@ -119,36 +168,20 @@ PRETRAINED_SOURCES: Dict[str, Dict[str, dict]] = {
             ],
             'note': 'MAE ViT-Large, self-supervised on ImageNet-1k',
         },
-        'huge': {
-            'file': 'mae_pretrain_vit_huge.pth',
-            'candidates': [
-                (f'{_FBAI}/mae/pretrain/mae_pretrain_vit_huge.pth', 'torch'),
-            ],
-            'note': 'MAE ViT-Huge, self-supervised on ImageNet-1k (~2.5 GB)',
-        },
-    },
-    'deit': {
-        'small': {
-            'file': 'deit_small_patch16_224-cd65a155.pth',
-            'candidates': [
-                (f'{_FBAI}/deit/deit_small_patch16_224-cd65a155.pth', 'torch'),
-            ],
-            'note': 'DeiT-Small distilled on ImageNet-1k (384-d/12/6)',
-        },
     },
 }
 
 #: Variant -> source used when the spec does not name one explicitly.
+#: ``base``/``large`` prefer VideoMAE: a real 3-D tubelet tokenizer transfers
+#: verbatim (see ``PRETRAINED_SOURCES['videomae']``). ``mae:base`` /
+#: ``mae:large`` are the 2-D ImageNet controls.
 DEFAULT_SOURCE: Dict[str, str] = {
-    'small': 'deit',    # no MAE ViT-S exists
-    'base': 'mae',
-    'large': 'mae',
-    'huge': 'mae',
+    'base': 'videomae',
+    'large': 'videomae',
 }
 
 #: Convenience ``timm:`` suggestions shown when a variant is missing upstream.
 _TIMM_SUGGESTIONS = {
-    'small': 'vit_small_patch16_224.augreg_in21k',
     'base': 'vit_base_patch16_224.mae',
     'large': 'vit_large_patch16_224.mae',
 }
@@ -237,8 +270,8 @@ def _split_spec(spec: str) -> Tuple[str, str, str]:
         choices = ', '.join(sorted(VIT_VARIANTS))
         raise KeyError(
             f'Unknown variant {spec!r}. Choose one of {choices}, use a '
-            f'<source>:<variant> spec (e.g. mae:large, deit:small), or a timm '
-            f"model id as 'timm:<model_id>'.")
+            f'<source>:<variant> spec (e.g. videomae:base, mae:large), or a '
+            f"timm model id as 'timm:<model_id>'.")
     return 'remote', DEFAULT_SOURCE[variant], variant
 
 
@@ -274,7 +307,12 @@ def _lookup(source: str, name: str) -> Tuple[str, dict]:
             f"Source {source!r} has no entry for variant {name!r}. Available "
             f"in {source!r}: {', '.join(sorted(table))}. "
             + (f'Alternatives for {name!r}: {", ".join(alts)}.' if alts else ''))
-    return name, table[name]
+    recipe = table[name]
+    if any('{hf}' in url for url, _ in recipe['candidates']):
+        # resolve $HF_ENDPOINT at CALL time (mirrors must work without reimport)
+        recipe = dict(recipe, candidates=[(url.format(hf=_hf_endpoint()), kind)
+                                          for url, kind in recipe['candidates']])
+    return name, recipe
 
 
 def plan_download(spec: str, dest_dir: Optional[str] = None) -> dict:
@@ -316,7 +354,7 @@ def describe_sources() -> str:
         '',
         f"{'spec':<22} {'geometry (dim/depth/heads)':<27} file / example",
     ]
-    for variant in ('small', 'base', 'large', 'huge'):
+    for variant in ('base', 'large'):
         geo = VIT_VARIANTS[variant]
         geom = f"{geo['embed_dim']}/{geo['depth']}/{geo['num_heads']}"
         default = f'{DEFAULT_SOURCE[variant]}:{variant}'
@@ -339,6 +377,9 @@ def describe_sources() -> str:
         'HF_ENDPOINT for a mirror.',
         'Overloads anywhere a checkpoint path is accepted, e.g. '
         '--finetune base --pretrained_encoder mae:large',
+        'stage2_local_pretrained.yaml pairs project_multimae_base with '
+        "pretrained_encoder: videomae:base (3-D tubelet tokenizer transfers "
+        'verbatim; a 5-D source kernel must equal `tubelet`).',
     ]
     return '\n'.join(lines)
 
@@ -405,8 +446,17 @@ def _verify_checkpoint(path: Path):
             if isinstance(obj.get(key), dict):
                 state = obj[key]
                 break
-    if not isinstance(state, dict) or not any(
-            k.endswith('attn.qkv.weight') for k in state):
+    if not isinstance(state, dict):
+        raise RuntimeError(f'{path} does not look like a ViT checkpoint '
+                           f'(not a state dict)')
+    # Normalise the HF transformers VideoMAE layout first, so a perfectly good
+    # `videomae.encoder.layer.*` file is not rejected for lacking `attn.qkv`.
+    try:                                                  # pragma: no cover
+        from core.multimae import canonicalise_vit_state_dict
+        state = canonicalise_vit_state_dict(state)[0]
+    except Exception:
+        pass
+    if not any(k.endswith('attn.qkv.weight') for k in state):
         raise RuntimeError(f'{path} does not look like a ViT checkpoint '
                            f'(no "*.attn.qkv.weight" key)')
 
@@ -538,7 +588,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help='re-download even if a cached file exists')
     parser.add_argument('--verify', action='store_true',
                         help='torch.load the file and check it is a ViT '
-                             'state dict (slow for ViT-H)')
+                             'state dict (slow: hundreds of MB)')
     parser.add_argument('--quiet', action='store_true')
     args = parser.parse_args(argv)
 

@@ -27,7 +27,8 @@ import torch
 import torch.nn as nn
 
 from .blocks import Block, trunc_normal_
-from .multimae import STREAM_CHANNELS, TubeletEmbed, _PosMask
+from .multimae import (STREAM_CHANNELS, TubeletEmbed, _PosMask,
+                       canonicalise_vit_state_dict, fit_visual_patch_embed)
 
 __all__ = ['MultiModalMAEProbe', 'build_au_probe_model', 'load_au_probe_weights']
 
@@ -223,14 +224,19 @@ def build_au_probe_model(args, num_classes: int):
 # --------------------------------------------------------------------------- #
 # checkpoint loading (Stage-2 multimodal OR Stage-1 MAE/ViT)
 # --------------------------------------------------------------------------- #
-def load_au_probe_weights(model: MultiModalMAEProbe, path: str):
+def load_au_probe_weights(model: MultiModalMAEProbe, path: str,
+                          inflate_rgb_patch: bool = True):
     """Load encoder weights from either checkpoint layout:
 
     * Stage-2 multimodal MAE (``enc_blocks.*`` / ``enc_norm`` / ``adapters.*``
       / ``positions.*``): matched directly.
-    * MAE / timm ViT (``blocks.*`` / ``norm.*`` / ``patch_embed.proj.*``): keys
-      mapped ``blocks->enc_blocks``, ``norm->enc_norm``; the 2-D rgb Conv2d is
-      inflated along the tubelet time axis into the rgb Conv3d.
+    * Stage-1 ViT (``blocks.*`` / ``norm.*`` / ``patch_embed.proj.*``): keys
+      mapped ``blocks->enc_blocks``, ``norm->enc_norm``. Both the official
+      MAE/VideoMAE layout and the HF ``transformers`` VideoMAE one
+      (``videomae.encoder.layer.N.*``, fused back into ``attn.qkv``) are
+      accepted -- see ``core.multimae.canonicalise_vit_state_dict``. A 3-D
+      (Conv3d) patch embed is copied verbatim, a 2-D (Conv2d) one is inflated
+      along the tubelet time axis.
 
     The head, decoder, and any non-visual stream weights are not used.
     """
@@ -246,6 +252,12 @@ def load_au_probe_weights(model: MultiModalMAEProbe, path: str):
                 break
     if isinstance(state, dict) and isinstance(state.get('module'), dict):
         state = state['module']
+    # Only HF-transformer VideoMAE states are rewritten; MAE/timm AND Stage-2
+    # checkpoints (`enc_blocks.*`) pass through canonicalise untouched.
+    is_stage2 = any(k.startswith('enc_blocks.') for k in state)
+    state, layout = canonicalise_vit_state_dict(state)
+    if is_stage2:
+        layout = 'stage2'
 
     cur = model.state_dict()
     # --- geometry guard (never silently load nothing) ---------------------- #
@@ -276,11 +288,13 @@ def load_au_probe_weights(model: MultiModalMAEProbe, path: str):
         elif src_key in ('patch_embed.proj.weight', 'patch_embed.proj.bias'):
             name = src_key.rsplit('.', 1)[-1]
             dst_key = f'adapters.rgb.patch_embed.{name}'
-            if name == 'weight' and dst_key in cur and v.ndim == 4 \
-                    and cur[dst_key].ndim == 5:
-                t = model.tubelet[0]
-                # [out, in, ph, pw] -> [out, in, t, ph, pw] (averaged tube)
-                v = v.unsqueeze(2).expand(-1, -1, t, -1, -1).contiguous() / t
+            if name == 'weight' and dst_key in cur:
+                v = fit_visual_patch_embed(model, v, dst_key,
+                                           cur[dst_key].shape,
+                                           inflate=inflate_rgb_patch)
+                if v is None:
+                    mism.append(src_key)
+                    continue
         # cls_token / pos_embed(MAE) / decoder / heads / signals: unused
         if dst_key is None:
             continue
@@ -294,8 +308,9 @@ def load_au_probe_weights(model: MultiModalMAEProbe, path: str):
         loaded.append(src_key)
 
     model.load_state_dict(new_state, strict=False)
-    print(f'[au_probe] loaded {len(loaded)} encoder tensors from {path}, '
-          f'{len(skipped)} skipped, {len(mism)} shape-mismatched.')
+    print(f'[au_probe] loaded {len(loaded)} encoder tensors from {path} '
+          f'(layout {layout}), {len(skipped)} skipped, {len(mism)} '
+          f'shape-mismatched.')
     if mism:
         print(f'[au_probe] shape-mismatched keys (first 5): {mism[:5]}')
     return {'loaded': len(loaded), 'skipped': len(skipped),

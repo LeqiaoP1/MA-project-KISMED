@@ -201,8 +201,8 @@ inflated patch embed). Requires the loader fix in §11.8.
 | inherited | not inherited |
 |---|---|
 | `enc_blocks.*` (12 blocks) | all `positions.*` (incl. the time basis) |
-| `enc_norm.*` | the tubelet's temporal kernel (boxcar at init -> motion-blind) |
-| `adapters.rgb.patch_embed.*` (verbatim for VideoMAE) | `adapters.bvp`/`adapters.resp`, the decoder, all `heads.*` |
+| `enc_norm.*` | `adapters.bvp`/`adapters.resp`, the decoder, all `heads.*` |
+| `adapters.rgb.patch_embed.*` — **verbatim for VideoMAE** (3-D tubelet kernel included: NOT motion-blind at init); boxcar-inflated from a 2-D MAE filter otherwise | the TIR adapter (still random) |
 
 **Stride 2 is a project-wide lock.** `positions.<s>` is `[1, G_t*Gh*Gw, D]` =
 `[1, 9800, 768]` for video and `[1, 50, D]` for physio — different shapes from the
@@ -349,7 +349,7 @@ eval_mask_ratio: 0.0                # headline numbers on dense video
 | 5 | contiguous **span** masking for the 1-D streams | `core/multimae.py` (new `_span_mask`) | scattered dropout is locally solvable |
 | 6 | per-**session** z-score target (instead of per-token `_targets()` normalisation) | `data/paired_dataset.py::_signal_at`, `core/multimae.py::_targets` | objective alignment with Stage 3 **and** the stitching requirement (§9) |
 | 7 | zero-init modality embeddings + `no_weight_decay()` over `positions.*`/`modality_embeds.*` | `core/multimae.py` | `bvp`/`resp` are shape- and init-identical; `positions.*` currently sits inside the weight-decay group |
-| 8 | accept a 3-D (Conv3d) `patch_embed` source; wire `inflate_rgb_patch` to a CLI flag | `core/multimae.py::load_pretrained_encoder` | a VideoMAE checkpoint is otherwise silently skipped under `shape_mismatch` |
+| 8 | ~~accept a 3-D (Conv3d) `patch_embed` source; wire `inflate_rgb_patch` to a CLI flag~~ **DONE 2026-09-17**: 3-D sources copied verbatim (`fit_visual_patch_embed`), HF `transformers` VideoMAE layout mapped (`canonicalise_vit_state_dict`), tubelet mismatch raises, `--inflate_rgb_patch` wired into run_pretrain/run_au_probe, `videomae:base`/`videomae:large` are the new `DEFAULT_SOURCE` | `core/multimae.py::load_pretrained_encoder`, `models/pretrained.py` | a VideoMAE checkpoint used to be silently skipped under `shape_mismatch` |
 | 9 | xavier-init the tubelet/signal convs (MultiMAE convention) | `core/multimae.py::_init_weights` | convs currently keep PyTorch defaults; matters most from scratch |
 | 10 | Stage-3 masking support (relax the `n_visual` assertion, gather visible tokens, mean over visible patches only) | `core/waveform_model.py` | the Stage-3 masking mixture (§8) |
 | 11 | `heads.<signal> -> waveform_head` transfer | `core/waveform_model.py::load_stage2_encoder` | identical shapes; avoids a random Stage-3 head |

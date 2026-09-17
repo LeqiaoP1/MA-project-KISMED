@@ -18,4 +18,4 @@ NUM_WORKERS=4 "$PY" runners/run_au_probe.py -c configs/finetune/au_local.yaml "$
 # Controls (same geometry/config, change only the checkpoint):
 #   C0 random:  ... -c configs/finetune/au_local.yaml --finetune ''
 #   C1 Stage-1: ... -c configs/finetune/au_local_pretrained.yaml \
-#                  --finetune base      # downloads MAE ViT-B into ../models/initial/
+#                  --finetune base      # downloads VideoMAE ViT-B into ../models/initial/

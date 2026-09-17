@@ -35,7 +35,7 @@ def get_args():
     parser.add_argument('--finetune', default=env_or('MODEL_PATH'), type=str,
                         help='pretrained checkpoint to fine-tune from: a local '
                              'path OR a Stage-1 variant spec '
-                             '(small|base|large|huge, or <source>:<variant> '
+                             '(base|large, or <source>:<variant> '
                              'e.g. mae:large). Variants are downloaded once '
                              'into <project_root>/models/initial')
     # data

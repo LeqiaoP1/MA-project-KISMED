@@ -20,9 +20,9 @@
 #
 # Controls with an IDENTICAL probe protocol (only --finetune changes):
 #   C0 random (lower bound):  finetune: ''
-#   C1 Stage-1 (MAE/ImageNet only) -- 'base' downloads MAE ViT-B once into
-#       ../models/initial/ (a local path works too):
-#        finetune: base            # or ../models/initial/mae_pretrain_vit_base.pth
+#   C1 Stage-1 (VideoMAE/ImageNet only) -- 'base' downloads VideoMAE ViT-B once
+#       into ../models/initial/ (a local path works too; 'mae:base' = plain MAE):
+#        finetune: base            # or ../models/initial/videomae_base_patch16_224.pth
 #   C2 Stage-2 (Stage-1 init + BP4D multimodal masked pre-training):
 #        finetune: ../output/pretrain/stage2_local_pretrained/checkpoints/checkpoint-0039.pth
 #
@@ -43,7 +43,7 @@ au_list: 6, 7, 10, 12, 14
 
 # input modality (RGB only for probe)
 streams: rgb
-train_ratio: 0.75
+train_ratio: 0.9
 
 # ---- probe geometry (ViT-Base stage-2_local_pretrained) ----
 tubelet: 2,16,16

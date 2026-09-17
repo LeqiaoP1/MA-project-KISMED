@@ -70,7 +70,8 @@ from .criterion import MaskedMSELoss
 from .registry import register_model
 
 __all__ = ['TubeletEmbed', 'MultiModalMAE', 'build_pretraining_model',
-           'load_pretrained_encoder', 'MULTIMAE_VARIANTS', 'multimae_variant',
+           'load_pretrained_encoder', 'canonicalise_vit_state_dict',
+           'fit_visual_patch_embed', 'MULTIMAE_VARIANTS', 'multimae_variant',
            'STREAM_CHANNELS']
 
 _EPS = 1e-6
@@ -694,25 +695,159 @@ def build_pretraining_model(args):
 
 
 # --------------------------------------------------------------------------- #
-# weight inheritance: load an ImageNet / MAE ViT encoder into the shared
-# encoder of a MultiModalMAE (spatial priors, plan Stage 1 -> Stage 2)
-# --------------------------------------------------------------------------- #
+# weight inheritance: load an ImageNet / MAE / VideoMAE ViT encoder into the
+# shared encoder of a MultiModalMAE (space-time priors, Stage 1 -> Stage 2)
+# ---------------------------------------------------------------------------
+#: HF ``transformers`` VideoMAE block sub-module -> ``core.blocks.Block`` name.
+#: ``layernorm_before``/``layernorm_after`` are the pre-attention/pre-MLP norms
+#: (= MAE's ``norm1``/``norm2``); Q/K/V are fused by
+#: :func:`canonicalise_vit_state_dict`.
+_VIDEOMAE_BLOCK_MAP = (
+    ('layernorm_before.', 'norm1.'),
+    ('layernorm_after.', 'norm2.'),
+    ('attention.output.dense.', 'attn.proj.'),
+    ('intermediate.dense.', 'mlp.fc1.'),
+    ('output.dense.', 'mlp.fc2.'),
+)
+
+#: The five per-layer attention parameters of the HF VideoMAE layout (Q/K/V are
+#: bias-free there and the bias is carried by separate ``q_bias``/``v_bias``).
+_VIDEOMAE_QKV_PARTS = ('query', 'key', 'value', 'q_bias', 'v_bias')
+
+
+def canonicalise_vit_state_dict(state: Dict[str, 'torch.Tensor']):
+    """Normalise a Stage-1 checkpoint to the MAE-style key layout.
+
+    Two layouts are understood, and both come out as ``blocks.N.*`` /
+    ``norm.*`` / ``patch_embed.proj.*`` (which is what
+    :func:`load_pretrained_encoder` and
+    ``core.au_probe.load_au_probe_weights`` map from):
+
+    * **official MAE / VideoMAE** (``dl.fbaipublicfiles.com``, the MCG-NJU
+      releases) -- already canonical, returned unchanged.
+    * **HF ``transformers`` VideoMAE** (the ``MCG-NJU/videomae-*`` Hub repos,
+      a ``VideoMAEForPreTraining`` bundle) -- keys look like
+      ``videomae.encoder.layer.0.layernorm_before.weight`` and Q/K/V are three
+      separate bias-free projections plus ``q_bias``/``v_bias``. Those are
+      fused back into one ``attn.qkv`` here using MAE's convention of a ZERO
+      key bias (``bias = [q_bias, 0, v_bias]``). The decoder half of the
+      pre-training bundle (``decoder.*``, ``encoder_to_decoder``,
+      ``mask_token``, ``position_embeddings``) is dropped -- the encoder is the
+      only part Stage 1 wants.
+
+    :param state: loaded checkpoint state dict (tensors only).
+    :return: ``(state, layout)`` with ``layout`` in ``{'mae', 'videomae-hf'}``.
+    """
+    if not any(k.startswith('videomae.') for k in state):
+        return dict(state), 'mae'
+
+    out: Dict[str, 'torch.Tensor'] = {}
+    qkv: Dict[str, Dict[str, 'torch.Tensor']] = {}
+    for key, v in state.items():
+        name = key[len('videomae.'):] if key.startswith('videomae.') else key
+        if name.startswith('embeddings.patch_embeddings.projection.'):
+            # Conv3d tubelet filter -- same role as MAE's patch_embed.proj
+            out['patch_embed.proj.' + name.rsplit('.', 1)[-1]] = v
+        elif name in ('layernorm.weight', 'layernorm.bias'):
+            out['norm.' + name.rsplit('.', 1)[-1]] = v
+        elif name.startswith('encoder.layer.'):
+            idx, _, tail = name[len('encoder.layer.'):].partition('.')
+            mapped = False
+            for src, dst in _VIDEOMAE_BLOCK_MAP:
+                if tail.startswith(src):
+                    out[f'blocks.{idx}.{dst}{tail[len(src):]}'] = v
+                    mapped = True
+                    break
+            if not mapped:
+                for part in _VIDEOMAE_QKV_PARTS:
+                    if tail in (f'attention.attention.{part}',
+                                f'attention.attention.{part}.weight'):
+                        qkv.setdefault(idx, {})[part] = v
+                        break
+        # decoder.* / encoder_to_decoder / mask_token / position_embeddings:
+        # dropped on purpose (not part of the encoder we reuse).
+
+    for idx, parts in qkv.items():
+        if all(p in parts for p in ('query', 'key', 'value')):
+            out[f'blocks.{idx}.attn.qkv.weight'] = torch.cat(
+                [parts['query'], parts['key'], parts['value']], dim=0)
+        if 'q_bias' in parts and 'v_bias' in parts:
+            out[f'blocks.{idx}.attn.qkv.bias'] = torch.cat(
+                [parts['q_bias'], torch.zeros_like(parts['v_bias']),
+                 parts['v_bias']], dim=0)
+    return out, 'videomae-hf'
+
+
+def fit_visual_patch_embed(model: 'MultiModalMAE',
+                           tensor: 'torch.Tensor', dst_key: str,
+                           target_shape, inflate: bool = True):
+    """Adapt an RGB patch-embed tensor to this model's tubelet ``Conv3d``.
+
+    * **5-D** ``[out, in, t, ph, pw]`` (VideoMAE): copied **verbatim**. Its
+      temporal kernel is real prior knowledge -- re-averaging it would throw
+      away exactly the part a 2-D source cannot provide, and with
+      ``tubelet 2,16,16`` the shape matches the model's adapter exactly. A
+      kernel that does NOT equal the model's ``tubelet`` raises, because the
+      inherited temporal filter would then be meaningless; that case used to be
+      counted as a quiet shape mismatch instead.
+    * **4-D** ``[out, in, ph, pw]`` (MAE / timm): the only honest
+      conversion is a boxcar -- broadcast along the tubelet axis and average.
+      The model is then motion-blind at init (the documented Stage-1
+      limitation), which is the whole reason a 3-D source is preferred.
+
+    :param target_shape: the destination tensor's shape (``cur[dst_key].shape``).
+    :param inflate: set ``False`` to skip the 4-D conversion entirely (ablation
+        knob, ``--inflate_rgb_patch 0``): the adapter then stays random.
+    :return: the tensor to store, or ``None`` when it cannot be adapted.
+
+    .. note::
+       This is for the conv **weight** only. The ``Conv3d`` bias is a plain
+       ``[out]`` vector that needs no adaptation, so callers must not route it
+       through here (a 1-D tensor would be rejected as unadaptable).
+    """
+    if tensor.ndim == 5:
+        tubelet = tuple(int(x) for x in model.tubelet)
+        if tuple(tensor.shape[2:]) != tubelet:
+            raise ValueError(
+                f'{dst_key}: checkpoint tubelet kernel '
+                f'{tuple(tensor.shape[2:])} != model tubelet {tubelet}. Set '
+                f'`tubelet` to the source geometry (VideoMAE and this repo\'s '
+                f'default are 2,16,16) so the inherited temporal filter stays '
+                f'meaningful.')
+        return tensor
+    if tensor.ndim == 4:
+        if not inflate or len(tuple(target_shape)) != 5:
+            return None
+        t = int(tuple(model.tubelet)[0])
+        # [out, in, ph, pw] -> [out, in, t, ph, pw], averaged over the tube
+        return tensor.unsqueeze(2).expand(-1, -1, t, -1, -1).contiguous() / t
+    return None
+
+
 def load_pretrained_encoder(model: 'MultiModalMAE', path: str,
                             inflate_rgb_patch: bool = True) -> Dict[str, int]:
-    """Copy a (MAE/ViT) checkpoint's transformer weights into the encoder.
+    """Copy a (MAE / VideoMAE / timm) checkpoint's transformer weights in.
 
-    Handles MAE/timm-style key layouts::
+    Two source layouts are accepted (see :func:`canonicalise_vit_state_dict`),
+    after which the mapping is always the same::
 
         blocks.{i}.*  -> enc_blocks.{i}.*
         norm.*        -> enc_norm.*
-        patch_embed.proj.{weight,bias} -> adapters.rgb.patch_embed.*  (2-D
-                    Conv2d inflated along the tubelet time axis into Conv3d)
+        patch_embed.proj.{weight,bias} -> adapters.rgb.patch_embed.*
+                    (copied VERBATIM for a 3-D VideoMAE source; inflated from a
+                    2-D Conv2d for MAE/timm -- see
+                    :func:`fit_visual_patch_embed`)
+
+    A VideoMAE source is preferred over a plain ImageNet/MAE one: its
+    ``patch_embed.proj`` IS a ``Conv3d(3, D, (2,16,16))`` tubelet filter, so the
+    temporal prior transfers instead of being faked by averaging two frames,
+    and its objective (tube-masked video MAE) matches Stage 2.
 
     Everything else (cls_token / pos_embed / head / non-rgb adapters / signal
     streams) is left at its random initialisation. Encoder geometry must match
     the checkpoint (e.g. embed_dim=768, depth=12, heads=12 for ViT-Base).
 
-    :return: counts dict {loaded, skipped, mismatch_shapes, keys}.
+    :return: counts dict {loaded, skipped, shape_mismatch, layout, keys}.
     """
     import torch
 
@@ -725,6 +860,8 @@ def load_pretrained_encoder(model: 'MultiModalMAE', path: str,
                 break
     if isinstance(state, dict) and isinstance(state.get('module'), dict):
         state = state['module']
+    # MAE/VideoMAE-on-disk or the HF transformers VideoMAE layout -> MAE keys
+    state, layout = canonicalise_vit_state_dict(state)
 
     cur = model.state_dict()
     new_state = {}
@@ -750,10 +887,16 @@ def load_pretrained_encoder(model: 'MultiModalMAE', path: str,
         elif src_key in ('patch_embed.proj.weight', 'patch_embed.proj.bias'):
             name = src_key.rsplit('.', 1)[-1]
             dst_key = f'adapters.rgb.patch_embed.{name}'
-            if name == 'weight' and inflate_rgb_patch and dst_key in cur:
-                t = model.tubelet[0]
-                # [out, in, ph, pw] -> [out, in, t, ph, pw] (averaged tube)
-                v = v.unsqueeze(2).expand(-1, -1, t, -1, -1).contiguous() / t
+            if name == 'weight' and dst_key in cur:
+                # 3-D source -> verbatim; 2-D source -> boxcar inflation (or
+                # left random when inflate_rgb_patch=False). Raises on a
+                # tubelet-geometry mismatch rather than skipping quietly.
+                v = fit_visual_patch_embed(model, v, dst_key,
+                                           cur[dst_key].shape,
+                                           inflate_rgb_patch)
+                if v is None:
+                    shape_mismatch.append(src_key)
+                    continue
         # cls_token / pos_embed / head / others: intentionally not loaded
         if dst_key is None:
             continue
@@ -768,13 +911,14 @@ def load_pretrained_encoder(model: 'MultiModalMAE', path: str,
 
     n_loaded = len(loaded)
     model.load_state_dict(new_state, strict=False)
-    print(f'[pretrained] {path}: loaded {n_loaded} encoder tensors, '
-          f'{len(skipped)} skipped, {len(shape_mismatch)} shape-mismatched.')
+    print(f'[pretrained] {path}: loaded {n_loaded} encoder tensors '
+          f'(layout {layout}), {len(skipped)} skipped, '
+          f'{len(shape_mismatch)} shape-mismatched.')
     if shape_mismatch:
         print(f'[pretrained] first shape-mismatched keys: '
               f'{shape_mismatch[:5]}')
     return {'loaded': n_loaded, 'skipped': len(skipped),
-            'shape_mismatch': len(shape_mismatch)}
+            'shape_mismatch': len(shape_mismatch), 'layout': layout}
 
 
 # --------------------------------------------------------------------------- #
@@ -800,7 +944,7 @@ def project_multimae_tiny(**kwargs):
 
 @register_model
 def project_multimae_small(**kwargs):
-    """384-d / 12-layer / 6-head."""
+    """384-d / 12-layer / 6-head (no Stage-1 checkpoint is shipped)."""
     return _build_multimae(MULTIMAE_VARIANTS['project_multimae_small'],
                            **kwargs)
 
@@ -820,6 +964,6 @@ def project_multimae_large(**kwargs):
 
 @register_model
 def project_multimae_huge(**kwargs):
-    """1280-d / 32-layer / 16-head (MAE ViT-Huge geometry)."""
+    """1280-d / 32-layer / 16-head (no Stage-1 checkpoint is shipped)."""
     return _build_multimae(MULTIMAE_VARIANTS['project_multimae_huge'],
                            **kwargs)

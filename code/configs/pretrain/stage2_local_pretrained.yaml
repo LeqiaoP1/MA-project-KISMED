@@ -1,23 +1,30 @@
 # Stage 2 -- LOCAL run WITH Stage-1 encoder inheritance.
-# The shared encoder's transformer blocks + the RGB tubelet patch embed are
-# initialised from a MAE ViT-Base checkpoint; the TIR/signal adapters, position
-# embeddings, cls_token and head stay random (no ImageNet counterpart).
+# The shared encoder's transformer blocks AND the RGB tubelet patch embed are
+# initialised from a **VideoMAE ViT-B** checkpoint (Kinetics-400, tube-masked
+# video MAE): its patch embed IS a Conv3d(3, 768, (2,16,16)) tubelet filter, so
+# the tokenizer transfers VERBATIM -- the temporal kernel is inherited instead
+# of being faked by averaging two frames, and the objective matches Stage 2.
+# A plain MAE/ImageNet ViT-B (`mae:base`) also works: it transfers the same 148
+# tensors, but its 2-D patch filter is boxcar-inflated (motion-blind at init).
+# The TIR/signal adapters, position embeddings, cls_token and head stay random
+# (no counterpart in either source).
 #
-# The 'base' spec downloads the checkpoint once into ../models/initial/ (see
-# `python runners/run_download_weights.py --list`); a plain path works too.
-# Frames per clip match stage2_local.yaml; the input size, batch and clip count
-# are kept small so this still fits a LOCAL GPU -- switch to the larger geometry
-# (input_size 224, all sessions) on the HPC.
+# The 'base' spec resolves to videomae:base and downloads the checkpoint once
+# into ../models/initial/ (see `python runners/run_download_weights.py --list`);
+# a plain path works too. Frames per clip match stage2_local.yaml; the input
+# size, batch and clip count are kept small so this still fits a LOCAL GPU --
+# switch to the larger geometry (input_size 224, all sessions) on the HPC.
 #
 # Run from code/:  python runners/run_pretrain.py -c configs/pretrain/stage2_local_pretrained.yaml
 
 model: project_multimae_base       # 768-d/12-layer -- MUST match pretrained_encoder
-pretrained_encoder: base           # or a path: ../models/initial/mae_pretrain_vit_base.pth
+pretrained_encoder: videomae:base  # 'base' = same; mae:base = plain MAE; or a path
+inflate_rgb_patch: 1               # 0 = encoder blocks only, tokenizer random
 
 # ---- streams & tokenizer geometry (small for a local GPU) ----
 # Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bvp/resp/eda).
 # All five = rgb,tir,bvp,resp,eda; ablate by trimming (e.g. rgb,bvp).
-streams: rgb,bvp
+streams: rgb,bvp,resp
 #streams: tir, resp
 
 tir_channels: 3                    # thermal is a false-colour render, not gray

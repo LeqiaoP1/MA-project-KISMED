@@ -3,7 +3,10 @@
 # Run from code/:  python runners/run_pretrain.py -c configs/pretrain/stage2_multimodal.yaml
 
 model: project_multimae_base       # 768-d/12-layer -- the NAME sets the geometry
-pretrained_encoder: base           # Stage-1 init; '' = from scratch
+pretrained_encoder: base           # Stage-1 init: 'base' = videomae:base
+                                   # (3-D tubelet tokenizer transfers
+                                   # verbatim); mae:base = 2-D, inflated;
+                                   # '' = from scratch
 
 # ---- streams & tokenizer geometry ----
 # Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bvp/resp/eda).

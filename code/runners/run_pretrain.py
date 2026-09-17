@@ -107,11 +107,23 @@ def get_args():
                              'prior at init, since the Stage-1 MAE pos_embed '
                              'cannot be reused); \'random\' = trunc_normal.')
     parser.add_argument('--pretrained_encoder', default='', type=str,
-                        help='MAE/ImageNet ViT checkpoint to initialise the '
-                             'shared encoder from (Stage-1 spatial priors): a '
-                             'local path OR a variant spec, e.g. base, '
-                             'mae:large, deit:small (downloaded once into '
-                             '<project_root>/models/initial)')
+                        help='Stage-1 ViT checkpoint to initialise the shared '
+                             'encoder from: a local path OR a variant spec, '
+                             'e.g. base = videomae:base (downloads into '
+                             '<project_root>/models/initial) or mae:base as '
+                             'the 2-D control. VideoMAE is the default for '
+                             'base/large: its patch embed IS a tubelet '
+                             'Conv3d(3, D, (2,16,16)), so the tokenizer '
+                             'transfers verbatim (a 2-D MAE source is '
+                             'boxcar-inflated and leaves the model '
+                             'motion-blind at init)')
+    parser.add_argument('--inflate_rgb_patch', default=1, type=int,
+                        choices=[0, 1],
+                        help='1 (default) = transfer the RGB patch embed: a '
+                             '3-D Conv3d source is copied verbatim, a 2-D '
+                             'Conv2d source is averaged over the tubelet. '
+                             '0 = leave the tokenizer random (ablation: '
+                             'encoder blocks only)')
     # training
     parser.add_argument('--batch_size', default=64, type=int)
     parser.add_argument('--epochs', default=800, type=int)
@@ -157,7 +169,9 @@ def main(args):
         if getattr(args, 'pretrained_encoder', ''):
             from models.pretrained import resolve_encoder_weights
             ckpt = resolve_encoder_weights(args.pretrained_encoder)
-            load_pretrained_encoder(model, ckpt)
+            load_pretrained_encoder(
+                model, ckpt,
+                inflate_rgb_patch=bool(getattr(args, 'inflate_rgb_patch', 1)))
     else:
         from models import create_model
         model = create_model(args.model)

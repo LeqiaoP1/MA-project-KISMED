@@ -6,7 +6,7 @@ frozen (linear) or fine-tuned encoder linearly separate facial-action
 semantics? Compare controls by pointing ``--finetune`` at different
 checkpoints with an identical probe protocol:
   * random init          (no --finetune)                -- lower bound C0
-  * Stage-1 MAE/ImageNet (--finetune base)              -- C1
+  * Stage-1 VideoMAE     (--finetune base)              -- C1 (default source)
   * Stage-2 BP4D multimodal MAE (output/pretrain/...)   -- C2 (headline)
 
 Usage (from ``code/``)::
@@ -90,10 +90,20 @@ def get_args():
                         help='token pooling (only "mean" implemented)')
     parser.add_argument('--finetune', default=env_or('MODEL_PATH'), type=str,
                         help='checkpoint to probe: Stage-2 MAE or Stage-1 '
-                             'MAE/ImageNet. Either a local path or a variant '
-                             'spec (base, mae:large, deit:small) that is '
-                             'downloaded into <project_root>/models/initial. '
-                             'Empty => random init (C0).')
+                             'ViT. Either a local path or a variant spec '
+                             '(base = videomae:base, mae:base) '
+                             'that is downloaded into '
+                             '<project_root>/models/initial. Empty => random '
+                             'init (C0).')
+    parser.add_argument('--inflate_rgb_patch', default=1, type=int,
+                        choices=[0, 1],
+                        help='1 (default) = transfer the RGB patch embed from '
+                             'a Stage-1 checkpoint: a 3-D Conv3d source is '
+                             'copied verbatim, a 2-D Conv2d source is '
+                             'averaged over the tubelet. 0 = leave the '
+                             'tokenizer random (ablation). No effect on a '
+                             'Stage-2 checkpoint (`adapters.rgb.*` is loaded '
+                             'directly).')
 
     # --- training -------------------------------------------------------- #
     parser.add_argument('--batch_size', default=16, type=int)
@@ -139,7 +149,9 @@ def main(args):
 
     if args.finetune:
         from models.pretrained import resolve_encoder_weights
-        load_au_probe_weights(model, resolve_encoder_weights(args.finetune))
+        load_au_probe_weights(
+            model, resolve_encoder_weights(args.finetune),
+            inflate_rgb_patch=bool(getattr(args, 'inflate_rgb_patch', 1)))
     if args.probe == 'linear':
         model.freeze_features()
         n_head = sum(p.numel() for p in model.head.parameters())

@@ -18,7 +18,7 @@ export OUTPUT_DIR="${OUTPUT_DIR:-$REPO_DIR/output}"
 export NUM_WORKERS="${NUM_WORKERS:-4}"
 
 # Stage-1 initial (downloaded) ViT encoder weights. Runners accept a variant
-# spec for --finetune/--pretrained_encoder (small|base|large|huge) and cache the
+# spec for --finetune/--pretrained_encoder (base|large) and cache the
 # checkpoint here; see runners/run_download_weights.py --list.
 export INITIAL_MODELS_DIR="${INITIAL_MODELS_DIR:-$REPO_DIR/models/initial}"
 
