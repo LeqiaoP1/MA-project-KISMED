@@ -59,6 +59,15 @@ mask_ratio_eda: 0.90
 # ignored (loss_weights overrides per stream, one float per --streams modality).
 signal_weight: 0.5
 
+# ---- 1-D periodicity prior: multi-resolution STFT magnitude loss -----------
+# Adds an MR-STFT magnitude term on the ASSEMBLED clip waveform (see
+# stage2_local_scratch.yaml for the full rationale and the target_norm: clip
+# requirement). 0.0 = off = masked-MSE-only.
+target_norm: clip
+spectral_weight: 0.1
+spectral_fft_sizes: 64,128,256     # fs=100 Hz -> 1.56 / 0.78 / 0.39 Hz bins
+spectral_hop_ratio: 0.25
+
 # NOTE: the ViT geometry (embed_dim/depth/heads) comes from `model` above;
 # mlp_ratio, dec_depth and sig_kernel keep their defaults. Set any of them here
 # only to OVERRIDE (an ablation).

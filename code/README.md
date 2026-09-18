@@ -98,6 +98,40 @@ per-stream override (one comma value per `--streams` modality, in order; empty
 ⇒ policy above). `MultiModalMAE.forward` returns `losses_mse` (raw per-modality
 masked MSE) and `losses` (weighted contributions); `loss = Σ losses`.
 
+#### Optional periodicity prior: multi-resolution STFT loss on the 1-D streams
+
+A per-token masked MSE constrains **amplitude** only — a low-frequency
+surrogate can lower it without ever modelling the cardiac/respiratory cycle.
+Setting **`--spectral_weight`** (default **0.0 = off**) adds a
+**multi-resolution STFT magnitude loss**
+(`core/waveform_losses.MultiResolutionSTFTLoss`) on the **assembled** clip
+waveform, so the shared encoder gets a direct gradient on periodicity:
+
+```math
+L = Σ_s ( λ_s·MSE_s + w_s·STFT_s ) ,      w_physio = spectral weight ,      w_RGB = w_TIR = 0
+```
+
+* **Assembled waveform:** `[B, n_signal*sig_kernel]` — the concatenated
+  per-token windows (`SignalEmbed` uses kernel == stride), i.e. the whole clip.
+* **`--target_norm clip` is REQUIRED** (the model raises under the default
+  `token` norm): one mean/std per (sample, stream) instead of one per token, so
+  the token windows reassemble into a *coherent* waveform. Under per-token
+  normalization every token is independently rescaled, so its spectrum carries
+  token-boundary artefacts instead of the physiological band the loss is meant
+  to enforce. It also aligns the Stage-2 target space with Stage 3.
+* **Knobs:** `--spectral_fft_sizes` (default `64,128,256` ⇒ 1.56 / 0.78 /
+  0.39 Hz resolution at fs = 100 Hz, covering BVP 1.0–2.5 Hz and RESP
+  0.16–0.4 Hz), `--spectral_hop_ratio` (default 0.25 ⇒ 75 % overlap), and
+  `--spectral_weights` — a FULL per-stream override (one comma value per
+  `--streams` modality, same convention as `--loss_weights`; a positive value on
+  a video stream is rejected). Start at ~0.1 and tune.
+* **Diagnostics:** `forward` also returns `losses_spectral` (raw MR-STFT per
+  stream) and the engine logs `mse_<stream>` / `spec_<stream>` per epoch, so the
+  term's effect is visible without a separate probe.
+* **Comparability:** enabling it switches the 1-D targets from per-token to
+  per-clip normalization, so the reported loss scale is **not** comparable with
+  runs made before it.
+
 ### Stage-2 streams — flexible modality contract
 
 The pretraining modalities are configured with `--streams` (or `streams:` in

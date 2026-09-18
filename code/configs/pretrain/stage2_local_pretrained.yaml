@@ -71,6 +71,17 @@ mask_ratio_eda: 0.90
 signal_weight: 0.5
 sig_kernel: 8
 
+# ---- 1-D periodicity prior: multi-resolution STFT magnitude loss -----------
+# Mirrors stage2_local_scratch.yaml (the A/B twin): `target_norm: clip` +
+# `spectral_weight: 0.1` add an MR-STFT magnitude term on the ASSEMBLED clip
+# waveform, so the encoder gets a direct gradient on periodicity that a
+# per-token masked MSE cannot express. 0.0 = off. Must stay identical in both
+# files, otherwise the Stage-1 init A/B is confounded by a loss change.
+target_norm: clip
+spectral_weight: 0.1
+spectral_fft_sizes: 64,128,256     # fs=100 Hz -> 1.56 / 0.78 / 0.39 Hz bins
+spectral_hop_ratio: 0.25
+
 # ---- data (canonical layout from data/prepare_bp4d.py) ----
 data_path: ../data/processed/bp4d_canonical
 max_sessions: 11

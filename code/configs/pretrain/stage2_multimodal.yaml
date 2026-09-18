@@ -41,6 +41,16 @@ mask_ratio_eda: 0.90
 # ---- loss: weighted sum of per-modality masked MSE (see stage2_local_scratch.yaml) ----
 signal_weight: 0.5
 
+# ---- 1-D periodicity prior: multi-resolution STFT magnitude loss -----------
+# Adds an MR-STFT magnitude term on the ASSEMBLED clip waveform so the encoder
+# is pushed to model the cardiac/respiratory cycle, not just token amplitude
+# (see stage2_local_scratch.yaml for the full rationale). Requires target_norm:
+# clip (one mean/std per clip); 0.0 = off = masked-MSE-only.
+target_norm: clip
+spectral_weight: 0.1
+spectral_fft_sizes: 64,128,256     # fs=100 Hz -> 1.56 / 0.78 / 0.39 Hz bins
+spectral_hop_ratio: 0.25
+
 # ---- data ----
 data_path: /path/to/bp4d_canonical
 clip_stride: 1.0                   # overlapping windows (more clips/session)

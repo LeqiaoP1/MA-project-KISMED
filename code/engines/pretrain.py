@@ -81,6 +81,16 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable,
         metric_logger.update(lr=optimizer.param_groups[0]['lr'])
         if grad_norm is not None:
             metric_logger.update(grad_norm=grad_norm.item())
+        # Per-stream diagnostics for the multimodal MAE: the RAW masked MSE of
+        # every stream plus the RAW MR-STFT term where it is enabled (the
+        # weighted contributions would hide which stream actually moved). A
+        # placeholder/single-stream model, or spectral_weight 0.0, simply logs
+        # nothing extra.
+        if isinstance(out, dict):
+            for key, prefix in (('losses_mse', 'mse'),
+                                ('losses_spectral', 'spec')):
+                for name, value in (out.get(key) or {}).items():
+                    metric_logger.update(**{f'{prefix}_{name}': value})
 
     metric_logger.synchronize_between_processes()
     print('Averaged stats:', metric_logger)

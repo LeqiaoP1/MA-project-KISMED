@@ -89,6 +89,45 @@ def get_args():
                              'tokens: high variance -> ~0.5 so the 1-D signal '
                              'does not dominate the gradient; low variance -> '
                              '~1.0 so it is not ignored.')
+    parser.add_argument('--target_norm', default='token', type=str,
+                        choices=['token', 'clip'],
+                        help="normalisation of the 1-D reconstruction target. "
+                             "'token' (default) = per-token z-score: every "
+                             'sig_kernel window is rescaled by its OWN '
+                             "mean/std. 'clip' = per-clip z-score: ONE "
+                             'mean/std per (sample, stream), so the token '
+                             'windows reassemble into a coherent waveform and '
+                             'the Stage-2 target space matches Stage 3. REQUIRED '
+                             'to be clip when --spectral_weight > 0.')
+    parser.add_argument('--spectral_weight', default=0.0, type=float,
+                        help='weight of the multi-resolution STFT MAGNITUDE '
+                             'loss (see --spectral_fft_sizes) on the ASSEMBLED '
+                             '1-D waveform of every physio stream. 0.0 '
+                             '(default) = OFF = the previous masked-MSE-only '
+                             'objective. Requires --target_norm clip. The '
+                             'per-token masked MSE constrains amplitude only, '
+                             'so a low-frequency surrogate can lower it '
+                             'without modelling the cardiac/respiratory cycle; '
+                             'this term gives the shared encoder a direct '
+                             'gradient on periodicity. Start ~0.1 and tune.')
+    parser.add_argument('--spectral_weights', default='', type=str,
+                        help='FULL per-stream override of the spectral '
+                             'weights: comma list, ONE value per --streams '
+                             'modality in order (same convention as '
+                             '--loss_weights; empty = --spectral_weight for '
+                             'every physio stream, 0.0 for the video streams). '
+                             'A positive value on a video stream is rejected.')
+    parser.add_argument('--spectral_fft_sizes', default='64,128,256',
+                        type=str,
+                        help='MR-STFT FFT window sizes in samples (comma '
+                             'list). At fs=100 Hz: 64 -> 1.56 Hz, 128 -> '
+                             '0.78 Hz, 256 -> 0.39 Hz resolution, i.e. the BVP '
+                             '(1.0-2.5 Hz) and RESP (0.16-0.4 Hz) bands are '
+                             'both covered. Windows longer than the clip are '
+                             'dropped, and the model raises if none remain.')
+    parser.add_argument('--spectral_hop_ratio', default=0.25, type=float,
+                        help='STFT hop as a fraction of the FFT window '
+                             '(0.25 = 75 %% overlap).')
     parser.add_argument('--dec_depth', default=2, type=int)
     parser.add_argument('--mlp_ratio', default=4.0, type=float)
     parser.add_argument('--sig_kernel', default=8, type=int,

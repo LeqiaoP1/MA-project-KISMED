@@ -60,6 +60,22 @@ mask_ratio_eda: 0.90
 signal_weight: 0.5
 sig_kernel: 8
 
+# ---- 1-D periodicity prior: multi-resolution STFT magnitude loss -----------
+# A per-token masked MSE constrains AMPLITUDE only, so a low-frequency
+# surrogate can lower it without modelling the cardiac/respiratory cycle. A
+# positive `spectral_weight` adds an MR-STFT magnitude term on the ASSEMBLED
+# clip waveform, so the shared encoder gets a direct gradient on periodicity.
+# It REQUIRES `target_norm: clip` (ONE mean/std per clip, so the token windows
+# reassemble into a coherent waveform -- the model raises otherwise), which also
+# aligns the Stage-2 target space with Stage 3. `spectral_weight: 0.0` = off =
+# the masked-MSE-only objective with the per-token target norm.
+# NOTE: enabling this changes the MSE scale, so epoch losses are NOT comparable
+# with runs made before it (and the physio MSE is no longer per-token-normalised).
+target_norm: clip
+spectral_weight: 0.1               # start here and tune (~0.05-0.5)
+spectral_fft_sizes: 64,128,256     # fs=100 Hz -> 1.56 / 0.78 / 0.39 Hz bins
+spectral_hop_ratio: 0.25           # hop = 25% of the window (75% overlap)
+
 # NOTE: the ViT geometry (embed_dim/depth/heads) comes from `model` above;
 # mlp_ratio, dec_depth and sig_kernel keep their defaults. Set any of them here
 # only to OVERRIDE (an ablation).

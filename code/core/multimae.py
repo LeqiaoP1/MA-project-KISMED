@@ -19,6 +19,16 @@ rejected. Pipeline inside ``MultiModalMAE.forward``:
     positions only, then combined as a WEIGHTED sum: visual streams (rgb/tir)
     keep lambda = 1.0 while physio (1-D) streams get lambda = ``signal_weight``
     (default 0.5; ``loss_weights`` gives a full per-stream override).
+  * OPTIONAL periodicity prior on the 1-D streams: a multi-resolution STFT
+    MAGNITUDE loss (``core.waveform_losses.MultiResolutionSTFTLoss``) on the
+    ASSEMBLED clip waveform, weighted by ``spectral_weight`` (``spectral_weights``
+    overrides per stream). OFF by default (0.0), so the previous objective is
+    reproduced exactly. Rationale: a per-token masked MSE constrains amplitude
+    only, so a low-frequency surrogate can lower it without modelling the
+    cardiac/respiratory cycle; the STFT term gives the shared encoder a direct
+    gradient on periodicity. It REQUIRES ``target_norm='clip'`` (one mean/std
+    per sample+stream) so the token windows reassemble into a coherent
+    waveform -- enforced at construction, not assumed.
 
 SPACE-TIME ATTENTION AND ALIGNMENT (checked, not assumed)
 ---------------------------------------------------------
@@ -68,6 +78,7 @@ import torch.nn as nn
 from .blocks import Block, trunc_normal_
 from .criterion import MaskedMSELoss
 from .registry import register_model
+from .waveform_losses import MultiResolutionSTFTLoss
 
 __all__ = ['TubeletEmbed', 'MultiModalMAE', 'build_pretraining_model',
            'load_pretrained_encoder', 'canonicalise_vit_state_dict',
@@ -188,7 +199,12 @@ class MultiModalMAE(nn.Module):
                  mask_ratios: Optional[Dict[str, float]] = None,
                  signal_weight: float = 0.5,
                  loss_weights: Optional[Dict[str, float]] = None,
-                 pos_init: str = 'sincos3d'):
+                 pos_init: str = 'sincos3d',
+                 target_norm: str = 'token',
+                 spectral_weight: float = 0.0,
+                 spectral_weights: Optional[Dict[str, float]] = None,
+                 spectral_fft_sizes: Sequence[int] = (64, 128, 256),
+                 spectral_hop_ratio: float = 0.25):
         super().__init__()
         self.streams = list(streams)
         # per-stream input channels (tir = 3 by default; see STREAM_CHANNELS)
@@ -253,6 +269,63 @@ class MultiModalMAE(nn.Module):
                 f'got {pos_init!r}')
         self.pos_init = pos_init
 
+        # ---- normalisation of the reconstruction target ------------------- #
+        # 'token': per-token z-score -- every token window is rescaled by its
+        #   OWN mean/std (the pre-2026-09 behaviour).
+        # 'clip' : per-clip z-score -- ONE mean/std per (sample, stream), so
+        #   the token windows concatenate back into a coherent waveform. This
+        #   is what the spectral term below requires: per-token rescaling puts
+        #   a step at every token boundary, i.e. broadband energy the STFT loss
+        #   would chase instead of the physiological band.
+        if target_norm not in ('token', 'clip'):
+            raise ValueError(
+                f"MultiModalMAE: target_norm must be 'token' or 'clip'; "
+                f'got {target_norm!r}')
+        self.target_norm = target_norm
+
+        # ---- optional spectral (MR-STFT magnitude) loss on the 1-D streams - #
+        # Default 0.0 => OFF, i.e. the masked-MSE-only objective is unchanged.
+        self.spectral_weights = {
+            s: (0.0 if s in self.visual else float(spectral_weight))
+            for s in self.streams}
+        if spectral_weights:
+            self.spectral_weights.update(
+                {s: float(w) for s, w in spectral_weights.items()
+                 if s in self.streams})
+        bad = [s for s in self.visual if self.spectral_weights.get(s, 0.0) > 0]
+        if bad:
+            raise ValueError(
+                f'MultiModalMAE: the spectral (MR-STFT) term is defined on 1-D '
+                f'waveforms only, but spectral_weights sets a positive weight '
+                f'for video stream(s) {bad}. Use it on the physio streams '
+                f'({self.signal}).')
+        self.spectral_fft_sizes = [int(n) for n in spectral_fft_sizes]
+        self.spectral_hop_ratio = float(spectral_hop_ratio)
+        # streams that actually carry the term (empty => no spectral graph at all)
+        self._spectral_streams = [s for s in self.signal
+                                  if self.spectral_weights.get(s, 0.0) > 0]
+        self.spectral_fn = None
+        if self._spectral_streams:
+            if self.target_norm != 'clip':
+                raise ValueError(
+                    'MultiModalMAE: a positive spectral_weight requires '
+                    "target_norm='clip'. The MR-STFT term is computed on the "
+                    'ASSEMBLED [B, n_signal*sig_kernel] waveform; under the '
+                    'per-token target normalisation the assembled target is '
+                    'independently rescaled inside every token, so its '
+                    'spectrum carries token-boundary artefacts instead of the '
+                    'physiological band the loss is meant to enforce.')
+            n_samples = self.n_signal * self.sig_kernel
+            fft_sizes = [n for n in self.spectral_fft_sizes if n <= n_samples]
+            if not fft_sizes:
+                raise ValueError(
+                    f'MultiModalMAE: none of the spectral_fft_sizes '
+                    f'{self.spectral_fft_sizes} fits the assembled waveform '
+                    f'({n_samples} samples = seq_len). Use a longer clip or '
+                    f'smaller FFT windows.')
+            self.spectral_fft_sizes = fft_sizes
+            self.spectral_fn = MultiResolutionSTFTLoss(
+                fft_sizes=fft_sizes, hop_ratio=self.spectral_hop_ratio)
 
         # default asymmetric ratios (visual 50-75 %, signals 90 %+)
         ratios = {'rgb': 0.75, 'tir': 0.50, 'bvp': 0.90}
@@ -503,8 +576,18 @@ class MultiModalMAE(nn.Module):
             x = x.view(B, C, Gt, t, Gh, ph, Gw, pw)
             x = x.permute(0, 2, 4, 6, 1, 3, 5, 7).contiguous()
             x = x.view(B, Gt * Gh * Gw, -1)          # [B, N, C*t*ph*pw]
-        else:
-            x = x.reshape(x.shape[0], self.n_signal, self.sig_kernel)
+            mean = x.mean(dim=-1, keepdim=True)
+            var = x.var(dim=-1, unbiased=False, keepdim=True)
+            return (x - mean) / torch.sqrt(var + _EPS)
+        x = x.reshape(x.shape[0], self.n_signal, self.sig_kernel)
+        if self.target_norm == 'clip':
+            # ONE mean/std per (sample, stream) -- the flattening inverse of
+            # this (tokens are consecutive non-overlapping windows) reproduces
+            # exactly the z-scored clip waveform, which is what makes the
+            # assembled prediction/target pair a coherent STFT input.
+            mean = x.mean(dim=(1, 2), keepdim=True)
+            var = x.var(dim=(1, 2), unbiased=False, keepdim=True)
+            return (x - mean) / torch.sqrt(var + _EPS)
         mean = x.mean(dim=-1, keepdim=True)
         var = x.var(dim=-1, unbiased=False, keepdim=True)
         return (x - mean) / torch.sqrt(var + _EPS)
@@ -567,8 +650,9 @@ class MultiModalMAE(nn.Module):
         z = self.enc_norm(z)
 
         # --- per-stream decode + masked reconstruction loss -----------------
-        losses = {}        # per-modality weighted masked-MSE contributions
-        losses_mse = {}    # per-modality raw masked MSE (before weighting)
+        losses = {}          # per-modality weighted MSE (+ spectral) sum
+        losses_mse = {}      # per-modality raw masked MSE (before weighting)
+        losses_spectral = {}  # per-modality raw MR-STFT (only where enabled)
         preds = {}
         start = 0
         for s in self.streams:
@@ -588,12 +672,26 @@ class MultiModalMAE(nn.Module):
             # masked MSE on this modality's MASKED positions only, then scaled
             # by its per-modality weight (losses[s] = weighted contribution)
             losses_mse[s] = self.loss_fn(pred, tgt, mask_s)
-            losses[s] = self.loss_weights[s] * losses_mse[s]
+            contrib = self.loss_weights[s] * losses_mse[s]
+            if s in self._spectral_streams:
+                # Periodicity term on the ASSEMBLED clip waveform. SignalEmbed
+                # uses kernel == stride, so the tokens are consecutive
+                # non-overlapping windows and [B, N, sig_kernel] ->
+                # [B, n_signal*sig_kernel] IS the clip waveform (target_norm
+                # 'clip' guarantees both sides share one affine convention).
+                # float32: torch.stft is not implemented for half precision.
+                pred_w = pred.reshape(pred.shape[0], -1).float()
+                tgt_w = tgt.reshape(tgt.shape[0], -1).float()
+                losses_spectral[s] = self.spectral_fn(pred_w, tgt_w)
+                contrib = contrib + (self.spectral_weights[s]
+                                     * losses_spectral[s])
+            losses[s] = contrib
             preds[s] = pred
 
         total = torch.stack(list(losses.values())).sum()
         return {'loss': total, 'losses': losses, 'losses_mse': losses_mse,
-                'masks': masks, 'preds': preds}
+                'losses_spectral': losses_spectral, 'masks': masks,
+                'preds': preds}
 
 
 # --------------------------------------------------------------------------- #
@@ -666,6 +764,22 @@ def build_pretraining_model(args):
                 f'({len(streams)}: {streams}), got {len(vals)}')
             loss_weights = dict(zip(streams, vals))
 
+    # spectral (MR-STFT magnitude) term on the 1-D physio streams. OFF by
+    # default (0.0) => the masked-MSE-only objective is reproduced exactly.
+    # ``spectral_weight`` is the per-physio-stream lambda (video streams are
+    # forced to 0.0); a non-empty ``spectral_weights`` comma string (ONE value
+    # per stream, in --streams order) overrides it, like --loss_weights.
+    spectral_weight = float(getattr(args, 'spectral_weight', 0.0) or 0.0)
+    s_raw = str(getattr(args, 'spectral_weights', '') or '').strip()
+    spectral_weights = None
+    if s_raw:
+        vals = [float(x.strip()) for x in s_raw.split(',') if x.strip()]
+        if vals:
+            assert len(vals) == len(streams), (
+                f'--spectral_weights expects one value per stream '
+                f'({len(streams)}: {streams}), got {len(vals)}')
+            spectral_weights = dict(zip(streams, vals))
+
     # ViT geometry: the --model variant name sets it, and an explicit (>0)
     # enc_* flag/YAML value overrides it (ablation escape hatch).
     geom = multimae_variant(getattr(args, 'model', '')) or {}
@@ -690,7 +804,13 @@ def build_pretraining_model(args):
         mask_ratios=ratios,
         signal_weight=signal_weight,
         loss_weights=loss_weights,
-        pos_init=str(getattr(args, 'pos_init', 'sincos3d')))
+        pos_init=str(getattr(args, 'pos_init', 'sincos3d')),
+        target_norm=str(getattr(args, 'target_norm', 'token')),
+        spectral_weight=spectral_weight,
+        spectral_weights=spectral_weights,
+        spectral_fft_sizes=_parse_int_csv(
+            getattr(args, 'spectral_fft_sizes', '64,128,256')),
+        spectral_hop_ratio=float(getattr(args, 'spectral_hop_ratio', 0.25)))
 
 
 # --------------------------------------------------------------------------- #
