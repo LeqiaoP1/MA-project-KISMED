@@ -50,13 +50,33 @@ and reports, per session:
   ramp INTER_AREA returns values compressed toward the middle, 558.6/347920.4
   instead of 122/348355 -- so the ramp probe was replaced.  The arithmetic
   mirror itself is exact: array equality against the real function, maxdiff 0.)
+* **IR landmarks / the zero gate** -- the matching
+  ``IRFeatures/<subject>_<task>.txt`` holds the 28-point thermal landmark track
+  (one line per thermal frame, 28 ``(x, y)`` PIXEL pairs; BP4D+ user guide
+  Figure 3 -- the index map is ``IR_REGIONS`` below).  It is read BEFORE anything
+  is decoded or written, and it can DISQUALIFY the target: a line that is
+  entirely ``0.0`` is this corpus' undocumented missing-data sentinel (written
+  when the tracker cannot locate the frontal fiducials -- the head is turned
+  away; F001_T8 carries 112/227 such lines, in three contiguous blocks), and a
+  target holding ANY such line is IGNORED COMPLETELY: no decode, no figures, no
+  JSON, just one ``skipped`` row in ``thermal_index.json``.
+  ``--accept-zero-ir`` overrides the gate (and the malformed-line rejection
+  below).  A file whose lines do not all carry the same even number of numeric
+  values cannot be trusted to keep line index == frame index, so it is rejected
+  by the same gate; a MISSING file is NOT -- the video is still worth inspecting,
+  it simply carries no landmarks, and that is reported as a warning (the guide
+  ships 15 untracked sessions of glasses-wearing subjects).
+  The same points are drawn on ``TIR_frames.png``, colour-coded by region
+  (``_IR_REGION_SEL``); ``(0, 0)`` points are masked per POINT rather than per
+  line, so a partially-zero line cannot draw a marker into the image corner.
 
 Artifacts (same ``<subject>_<task>`` directory as the physiology inspector, so
 one session keeps all of its artifacts together; no file name collides with the
 physiology outputs)::
 
     <output_dir>/<subject>_<task>/
-        TIR_frames.png     # the first N decoded frames (default 6)
+        TIR_frames.png     # first N decoded frames (default 6) WITH the session's
+                           # 28 IRFeatures landmarks drawn, colour-coded by region
         TIR_overview.png   # luma / chroma / column-std / 224 px crop / hist / palette
         TIR.json           # everything above, machine-readable
     <output_dir>/thermal_index.json   # one row per session inspected so far
@@ -70,8 +90,11 @@ Usage (from ``code/``)::
     python runners/run_inspect_thermal.py --subject F001,F002 --task all \
         --frames 16 --no-plot
 
-    # what is on disk?
+    # what is on disk? a "*" marks a target the IRFeatures gate would ignore
     python runners/run_inspect_thermal.py --list
+
+    # override the gate and inspect a session whose IR track has all-zero lines
+    python runners/run_inspect_thermal.py --subject F001 --task T8 --accept-zero-ir
 
 DECODER NOTE. The pipeline reads TIR through ``video_io.open_video`` (OpenCV
 first, then decord). In THIS environment decord is NOT installed
@@ -111,6 +134,35 @@ _REPO_DIR = os.path.dirname(_CODE_DIR)
 RAW_TREE = 'Thermal'
 VIDEO_EXTS = ('.wmv', '.avi', '.mp4', '.mkv', '.mov')
 FIG_NAME = 'TIR'                       # TIR_frames.png / TIR_overview.png / TIR.json
+
+IR_TREE = 'IRFeatures'                 # <raw_root>/IRFeatures/<S>_<T>.txt (flat, like Thermal/)
+IR_EXPECTED_VALUES = 56                # 28 (x, y) landmarks per line
+IR_EXPECTED_POINTS = IR_EXPECTED_VALUES // 2
+IR_SENTINEL = 0.0                      # a (0, 0) pair = "not tracked in this frame"
+
+#: Anatomy of the 28 thermal landmarks: region -> point indices (1-based), per
+#: the BP4D+ user guide's Figure 3. The NUMBERING, not just the count, is
+#: load-bearing for any ROI use, so it is spelled out here: 1 (right eye centre),
+#: 2 (left eye centre), 3/14 brow apices, 4/15 brow inner ends, 27/28 brow outer
+#: ends, 5/6/7/8 and 16/17/18/19 the eye contours (outer corner / inner corner /
+#: upper lid / lower lid), 9/20 the nose bridge, 10/21 the nostril wings (alae),
+#: 11/22 the mouth corners, 12/13/23/24 the lips, 25/26 the lip centres.
+IR_REGIONS = {
+    'brow': (3, 4, 14, 15, 27, 28),
+    'eye': (1, 2, 5, 6, 7, 8, 16, 17, 18, 19),
+    'nose': (9, 10, 20, 21),
+    'mouth': (11, 12, 13, 22, 23, 24, 25, 26),
+}
+IR_REGION_ORDER = ('brow', 'eye', 'nose', 'mouth')
+_IR_REGION_COLOURS = {'brow': '#00e5ff', 'eye': '#7cff00',
+                      'nose': '#ffe600', 'mouth': '#ff3df2'}
+_IR_REGION_LABEL = {'brow': 'cyan', 'eye': 'green',
+                    'nose': 'yellow', 'mouth': 'magenta'}
+#: ``[(0-based indices, colour, region), ...]`` -- drawing order AND legend order.
+_IR_REGION_SEL = tuple((np.asarray(IR_REGIONS[name], dtype=np.int64) - 1,
+                        _IR_REGION_COLOURS[name], name) for name in IR_REGION_ORDER)
+assert (sorted(i for _r in IR_REGION_ORDER for i in IR_REGIONS[_r])
+        == list(range(1, IR_EXPECTED_POINTS + 1))), 'IR_REGIONS must cover 1..28'
 
 # Pixel stride for the per-frame statistics. A BP4D TIR frame is 726x480 =
 # 348 k pixels (RGB is the 1392x1040 one -- do not confuse them), and
@@ -205,6 +257,152 @@ def discover_sessions(raw_root: str):
             if os.path.splitext(name)[1].lower() in VIDEO_EXTS:
                 out.append((subj, os.path.splitext(name)[0]))
     return out
+
+
+def find_ir_features(raw_root: str, subject: str, task: str) -> str:
+    """Path of a session's 28-point thermal landmark track, or ``''``.
+
+    ``IRFeatures/`` is FLAT (``<subject>_<task>.txt``), exactly like
+    ``Thermal/`` -- and unlike ``Physiology/``, which nests one directory per
+    task.
+    """
+    base = os.path.join(raw_root, IR_TREE, f'{subject}_{task}')
+    for ext in ('.txt', '.TXT'):
+        if os.path.isfile(base + ext):
+            return base + ext
+    hits = [p for p in sorted(glob.glob(base + '.*'))
+            if os.path.splitext(p)[1].lower() == '.txt']
+    return hits[0] if hits else ''
+
+
+def _line_ranges(lines) -> list:
+    """``[105, 106, 107, 109] -> ['105-107', '109']`` -- for the printout."""
+    out = []
+    for i in sorted(int(v) for v in lines):
+        if out and i == out[-1][1] + 1:
+            out[-1][1] = i
+        else:
+            out.append([i, i])
+    return ['%d-%d' % (a, b) if a != b else str(a) for a, b in out]
+
+
+class IrFeaturesRejected(Exception):
+    """The target's ``IRFeatures`` track disqualifies the session.
+
+    Raised BEFORE the output directory is created or a single frame is decoded,
+    so "ignored" really means nothing was read or written. The parsed summary
+    travels in ``ir`` so the caller can log WHY without re-reading the file.
+    """
+
+    def __init__(self, message: str, ir: dict):
+        super().__init__(message)
+        self.ir = ir
+
+
+def load_ir_features(path: str) -> dict:
+    """Parse one ``IRFeatures`` file and classify every line. Never raises.
+
+    A missing or unparseable file comes back with ``usable=False`` and a
+    ``reject_reason``. The returned dict carries
+
+    * ``points`` -- ``[n_lines, P, 2]`` float array. A line that cannot be parsed
+      becomes an all-``NaN`` ROW rather than being dropped: the row index must
+      keep matching the frame index, otherwise every landmark after it silently
+      shifts by one frame,
+    * ``all_zero_lines`` / ``partial_zero_lines`` (1-based: line == frame) and the
+      compressed ``ranges_all_zero`` / ``ranges_partial_zero``,
+    * ``malformed_lines`` (not ``IR_EXPECTED_VALUES`` numeric values) and
+      ``points_per_line``.
+
+    An all-zero line is the corpus' missing-data sentinel (the tracker wrote
+    ``(0, 0)`` for every point because the frontal fiducials were not visible),
+    NOT a real measurement at the image origin -- which is exactly why it must
+    never be drawn or used geometrically.
+    """
+    out = {'path': path or '', 'exists': bool(path) and os.path.isfile(path),
+           'n_lines': 0, 'points_per_line': None, 'usable': False,
+           'reject_reason': '', 'points': None,
+           'all_zero_lines': [], 'partial_zero_lines': [], 'malformed_lines': [],
+           'ranges_all_zero': [], 'ranges_partial_zero': [],
+           'n_all_zero': 0, 'n_partial_zero': 0, 'n_frames_with_landmarks': 0}
+    if not out['exists']:
+        out['reject_reason'] = 'IRFeatures file absent'
+        return out
+
+    rows, widths = [], set()
+    with open(path) as fh:
+        for line in fh:
+            try:
+                vals = [float(t) for t in line.split()]
+            except ValueError:
+                vals = []
+            if not vals or len(vals) % 2:
+                rows.append(None)              # a malformed line is STILL a frame
+                continue
+            rows.append(vals)
+            widths.add(len(vals))
+    out['n_lines'] = len(rows)
+    if not rows:
+        out['reject_reason'] = 'IRFeatures file has no lines'
+        return out
+    if len(widths) > 1:
+        out['reject_reason'] = ('lines carry inconsistent numbers of values '
+                                f'({sorted(widths)})')
+        return out
+    n_pts = widths.pop() // 2
+    out['points_per_line'] = n_pts
+
+    pts = np.full((len(rows), n_pts, 2), np.nan, dtype=np.float64)
+    for k, vals in enumerate(rows):
+        if vals is not None:
+            pts[k] = np.asarray(vals, dtype=np.float64).reshape(n_pts, 2)
+    out['points'] = pts
+
+    resolved = np.isfinite(pts).all(axis=2)
+    sentinel = ((pts[:, :, 0] == IR_SENTINEL) & (pts[:, :, 1] == IR_SENTINEL))
+    all_zero = (sentinel & resolved).all(axis=1) & resolved.any(axis=1)
+    partial_zero = (sentinel & resolved).any(axis=1) & ~all_zero
+    out.update({
+        'malformed_lines': [k + 1 for k, v in enumerate(rows) if v is None],
+        'all_zero_lines': [int(i + 1) for i in np.flatnonzero(all_zero)],
+        'partial_zero_lines': [int(i + 1) for i in np.flatnonzero(partial_zero)],
+        'n_all_zero': int(all_zero.sum()),
+        'n_partial_zero': int(partial_zero.sum()),
+        'n_frames_with_landmarks': int((resolved.any(axis=1) & ~all_zero).sum()),
+    })
+    out['ranges_all_zero'] = _line_ranges(out['all_zero_lines'])
+    out['ranges_partial_zero'] = _line_ranges(out['partial_zero_lines'])
+
+    if out['malformed_lines']:
+        out['reject_reason'] = (
+            f"{len(out['malformed_lines'])} line(s) are not "
+            f"{IR_EXPECTED_VALUES} numeric values (line(s) "
+            f"{', '.join(_line_ranges(out['malformed_lines'])[:4])})")
+    elif out['n_all_zero']:
+        out['reject_reason'] = (
+            f"{out['n_all_zero']}/{out['n_lines']} line(s) are entirely "
+            f"{IR_SENTINEL:.1f} (frames {'; '.join(out['ranges_all_zero'])}) -- "
+            f"the undocumented missing-data sentinel")
+    out['usable'] = not out['reject_reason']
+    return out
+
+
+def _ir_reject_short(ir: dict) -> str:
+    """One-line reason a track is unusable; ``''`` when it is usable.
+
+    Must never invent a reason: this string is stored in every report's
+    ``ir_features.reject_short``, so a usable track returning anything but ``''``
+    would put a false accusation into the JSON of every healthy session.
+    """
+    if not ir['exists']:
+        return 'no IRFeatures file'
+    if ir['usable']:
+        return ''
+    if ir['malformed_lines']:
+        return f"{len(ir['malformed_lines'])} malformed line(s)"
+    if ir['n_all_zero']:
+        return f"{ir['n_all_zero']}/{ir['n_lines']} all-zero line(s)"
+    return ir['reject_reason'] or 'unusable IRFeatures file'
 
 
 def file_info(path: str) -> dict:
@@ -744,6 +942,27 @@ def quality_warnings(rep: dict) -> list:
         w.append(f"crop-box arithmetic does NOT reproduce "
                  f"video_io.resize_center_crop (maxdiff {geo.get('check_dmax')}) "
                  f"-- the reported box is unreliable")
+    ir = rep.get('ir_features') or {}
+    if ir.get('exists') is False:
+        w.append('no IRFeatures/<subject>_<task>.txt: there is no 28-point thermal '
+                 'track, so no landmarks are drawn and this session cannot be '
+                 'aligned spatially inside the thermal stream')
+    elif not ir.get('points_per_line'):
+        w.append('IRFeatures could not be parsed into points: no landmarks are drawn')
+    elif ir.get('points_per_line') != IR_EXPECTED_POINTS:
+        w.append(f"IRFeatures carries {ir['points_per_line']} point(s) per line, not "
+                 f'{IR_EXPECTED_POINTS}: no landmarks are drawn')
+    if ir.get('n_partial_zero'):
+        w.append(f"{ir['n_partial_zero']} IR line(s) hold SOME (0, 0) sentinel "
+                 f"pairs (frames {', '.join(ir.get('ranges_partial_zero') or [])}): "
+                 f'these markers are masked out of the figure, never interpolated')
+    if ir.get('lines_match_decoded') is False:
+        w.append(f"IRFeatures has {ir.get('n_lines')} line(s) but "
+                 f"{ir.get('n_decoded')} frame(s) decoded: line index is no longer "
+                 f'frame index, so the landmarks on TIR_frames.png are MISALIGNED')
+    if ir.get('gate_bypassed'):
+        w.append('the IRFeatures zero gate was bypassed (--accept-zero-ir): the '
+                 'all-zero lines contribute no landmarks')
     if rep.get('session_has_physio') is False:
         w.append('no matching Physiology/<subject>/<task>/ directory: this session '
                  'cannot be aligned against 1-D signals')
@@ -778,8 +997,55 @@ def _grid_shape(n: int, max_cols: int = 5):
     return int(math.ceil(n / float(cols))), cols
 
 
-def plot_frames(frames, times, out_path: str, header: str, crop_box=None) -> str:
-    """The first N decoded frames in a grid; returns the path ('' when skipped)."""
+def _ir_valid_mask(pts) -> np.ndarray:
+    """Which landmarks are real measurements?
+
+    ``[F, P]`` for an ``[F, P, 2]`` stack of frames, ``[P]`` for a single frame.
+    A point counts only when it is finite AND not exactly the ``(0, 0)``
+    sentinel: the sentinel is a "not tracked" flag, so drawing or measuring it
+    would place a landmark in the image corner.
+    """
+    q = np.asarray(pts, dtype=np.float64)
+    if q.ndim == 3:
+        return (np.isfinite(q).all(axis=2)
+                & ~((q[..., 0] == IR_SENTINEL) & (q[..., 1] == IR_SENTINEL)))
+    q = q.reshape(-1, 2)
+    return (np.isfinite(q).all(axis=1)
+            & ~((q[:, 0] == IR_SENTINEL) & (q[:, 1] == IR_SENTINEL)))
+
+
+def _draw_ir_points(ax, pts) -> int:
+    """Draw one frame's 28 landmarks; returns how many markers were drawn.
+
+    Colour-coded by region so the anatomy is readable without 28 numeric labels
+    on a 726x480 panel. Nothing is drawn when the line does not hold the
+    expected 28 points: with a different geometry the region selection would be
+    meaningless, and a silently mis-indexed overlay is worse than none.
+    """
+    q = np.asarray(pts, dtype=np.float64)
+    if q.ndim != 2 or q.shape[0] != IR_EXPECTED_POINTS:
+        return 0
+    mask = _ir_valid_mask(q)
+    drawn = 0
+    for sel, colour, _region in _IR_REGION_SEL:
+        m = mask[sel]
+        if not bool(m.any()):
+            continue
+        ax.scatter(q[sel][m, 0], q[sel][m, 1], s=11, c=colour, edgecolors='k',
+                   linewidths=0.35, zorder=3)
+        drawn += int(m.sum())
+    return drawn
+
+
+def plot_frames(frames, times, out_path: str, header: str, crop_box=None,
+                ir_points=None) -> str:
+    """The first N decoded frames in a grid; returns the path ('' when skipped).
+
+    ``ir_points`` -- optional ``[F, P, 2]`` array of the session's IRFeatures
+    landmarks in SOURCE-frame pixels (line ``k`` = frame ``k``, 0-based). The
+    points of panel ``k`` are drawn colour-coded by region; sentinel and
+    non-finite points are skipped per point.
+    """
     plt = _import_pyplot()
     if plt is None or not frames:
         return ''
@@ -800,6 +1066,8 @@ def plot_frames(frames, times, out_path: str, header: str, crop_box=None) -> str
             x0, x1, y0, y1 = crop_box
             ax.add_patch(plt.Rectangle((x0, y0), x1 - x0, y1 - y0, fill=False,
                                        edgecolor='w', lw=1.0, ls='--'))
+        if ir_points is not None and k < len(ir_points):
+            _draw_ir_points(ax, ir_points[k])
     fig.suptitle(header, fontsize=10)
     fig.savefig(out_path, dpi=130)
     plt.close(fig)
@@ -926,14 +1194,31 @@ def inspect_session(raw_root: str, subject: str, task: str, output_dir: str,
                     decoder: str = 'auto', frames_n: int = 6,
                     crop_size: int = 224, max_frames: int = 0,
                     plot: bool = True, md5: bool = True,
-                    use_ffprobe: bool = False) -> dict:
-    """Inspect one session; writes figures + ``TIR.json``; returns the report."""
+                    use_ffprobe: bool = False,
+                    accept_zero_ir: bool = False) -> dict:
+    """Inspect one session; writes figures + ``TIR.json``; returns the report.
+
+    Raises ``IrFeaturesRejected`` -- BEFORE the output directory is created or a
+    single frame is decoded -- when the session's ``IRFeatures`` track is
+    unusable: it holds all-zero lines (the missing-data sentinel) or lines that
+    are not a constant, even number of numeric values. Pass
+    ``accept_zero_ir=True`` to inspect the session anyway.
+    """
     path = find_video(raw_root, subject, task)
     if not path:
         raise FileNotFoundError(
             f'no thermal video under {os.path.join(raw_root, RAW_TREE, subject)} '
             f'for task {task} (looked for {", ".join(VIDEO_EXTS)})')
     session = f'{subject}_{task}'
+    ir_path = find_ir_features(raw_root, subject, task)
+    ir = load_ir_features(ir_path)
+    # THE GATE. Runs before makedirs/decode: "ignored" must mean nothing at all
+    # was read or written. A missing file does NOT gate -- only an unusable one.
+    if ir['exists'] and not ir['usable'] and not accept_zero_ir:
+        raise IrFeaturesRejected(
+            f'{session}: IRFeatures track unusable -- {ir["reject_reason"]} '
+            f'(line index == frame index); target ignored', ir)
+    irp = ir['points']                  # [lines, 28, 2] or None; line k == frame k
     out_dir = os.path.join(output_dir, session)
     os.makedirs(out_dir, exist_ok=True)          # BEFORE any figure is written
 
@@ -945,6 +1230,31 @@ def inspect_session(raw_root: str, subject: str, task: str, output_dir: str,
     fi = file_info(path) if md5 else {'bytes': os.path.getsize(path), 'md5': None}
     rep['file_bytes'] = fi['bytes']
     rep['md5'] = fi['md5']
+    rep['ir_features'] = {
+        'path': ir_path or None,
+        'exists': bool(ir['exists']),
+        'n_lines': ir['n_lines'],
+        'points_per_line': ir['points_per_line'],
+        'n_all_zero': ir['n_all_zero'],
+        'all_zero_lines': ir['all_zero_lines'],
+        'ranges_all_zero': ir['ranges_all_zero'],
+        'n_partial_zero': ir['n_partial_zero'],
+        'partial_zero_lines': ir['partial_zero_lines'],
+        'ranges_partial_zero': ir['ranges_partial_zero'],
+        'malformed_lines': ir['malformed_lines'],
+        'n_frames_with_landmarks': (ir['n_lines'] - ir['n_all_zero']
+                                    if ir['exists'] else None),
+        'usable': ir['usable'],
+        'reject_short': _ir_reject_short(ir),
+        'gate_bypassed': bool(accept_zero_ir and ir['exists'] and not ir['usable']),
+        'lines_match_decoded': None,
+        'n_decoded': None,
+        'panels_with_landmarks': 0,
+        'note': ('IRFeatures/<S>_<T>.txt: one line per thermal frame, 28 (x, y) '
+                 'PIXEL pairs (BP4D+ user guide Figure 3). A whole-line (0, 0) '
+                 "is the corpus' sentinel for 'not tracked in this frame' and "
+                 'is NOT a measurement at the image origin.'),
+    }
 
     # --- format info: independent views, no decoding ----------------------- #
     rep['pyav'] = probe_pyav(path)
@@ -981,6 +1291,24 @@ def inspect_session(raw_root: str, subject: str, task: str, output_dir: str,
                          else 'synthesised from the container fps'),
         'max_frames_cap': max_frames or None,
     }
+
+    # --- IR track vs the decoded clip -------------------------------------- #
+    # Cross-check the two numbering conventions that must agree for the overlay
+    # (and for any later use of these ROIs) to be meaningful. A CAPPED decode
+    # (--max_frames) makes the two counts differ by construction while the first
+    # `cap` panels stay perfectly aligned, so the check is reported as n/a
+    # instead of MISALIGNED -- a false alarm here would train the reader to
+    # ignore the real one.
+    capped = bool(max_frames)
+    rep['ir_features']['n_decoded'] = acc.n_decoded
+    rep['ir_features']['decode_capped'] = capped
+    rep['ir_features']['lines_match_decoded'] = (
+        None if (capped or not ir['exists'])
+        else bool(ir['n_lines'] == acc.n_decoded))
+    if (irp is not None and irp.size
+            and ir['points_per_line'] == IR_EXPECTED_POINTS):
+        rep['ir_features']['panels_with_landmarks'] = int(
+            _ir_valid_mask(irp[:max(0, len(acc.kept))]).any(axis=1).sum())
 
     # --- rendering checks -------------------------------------------------- #
     planes = [p for p in acc.planes if p]
@@ -1076,9 +1404,16 @@ def inspect_session(raw_root: str, subject: str, task: str, output_dir: str,
                   f"{len(acc.kept)} decoded)\nfalse-colour thermal RENDERING: the "
                   f"colours are a palette, not temperature; dashed box = "
                   f"{crop_size} px crop (keeps the full height)")
+        if ir['exists'] and ir['points_per_line'] == IR_EXPECTED_POINTS:
+            header += ('\nlandmarks = IRFeatures 28-point track: '
+                       + ', '.join(f'{_IR_REGION_LABEL[r]}={r}'
+                                   for _s, _c, r in _IR_REGION_SEL))
+            if ir['n_all_zero'] or ir['n_partial_zero']:
+                header += (f"   [{ir['n_all_zero']} all-zero line(s) masked out, "
+                           f"{ir['n_partial_zero']} partially-zero line(s)]")
         p = plot_frames(acc.kept, acc.kept_times,
                         os.path.join(out_dir, f'{FIG_NAME}_frames.png'), header,
-                        crop_box=crop_box)
+                        crop_box=crop_box, ir_points=irp)
         if p:
             figs.append(p)
         p = plot_overview(acc, rep, os.path.join(out_dir, f'{FIG_NAME}_overview.png'),
@@ -1131,6 +1466,13 @@ def get_args(argv=None):
                         'drawn (default 224, the Stage-2/3 input size)')
     p.add_argument('--ffprobe', dest='ffprobe', action='store_true', default=False,
                    help='also store the raw ffprobe JSON (a third opinion)')
+    p.add_argument('--accept-zero-ir', dest='accept_zero_ir', action='store_true',
+                   default=False,
+                   help='do NOT let the IRFeatures gate ignore the target: '
+                        'process sessions whose 28-point track contains all-zero '
+                        '(untracked) lines, and bypass the malformed-line '
+                        'rejection. Default: such a target is skipped entirely '
+                        '(no decode, no artifacts, one skipped row in the index)')
     p.add_argument('--no-md5', dest='md5', action='store_false', default=True,
                    help='skip the md5 (faster; drops the raw-vs-canonical check)')
     p.add_argument('--no-plot', dest='plot', action='store_false', default=True,
@@ -1212,6 +1554,19 @@ def _print_report(rep: dict) -> None:
                + ('INSIDE the crop' if geo.get('legend_in_crop')
                   else 'outside the crop'
                   if geo.get('static_band_x0') is not None else 'not detected'))
+    ir = rep.get('ir_features') or {}
+    if ir.get('exists'):
+        kv('IRFeat', f"{os.path.basename(ir['path'])}  {ir['n_lines']} line(s) x "
+                     f"{ir['points_per_line']} pts  all-zero {ir['n_all_zero']}"
+                     + (f" (frames {'; '.join(ir['ranges_all_zero'])})"
+                        if ir['n_all_zero'] else '')
+                     + f"  partial-zero {ir['n_partial_zero']}"
+                     + ('  [GATE BYPASSED]' if ir.get('gate_bypassed') else ''))
+        kv('', f"landmarks drawn on {ir.get('panels_with_landmarks')} of the "
+               f"{len(rep['frames'])} saved frame(s);  line == frame: "
+               f"{'n/a (decode capped)' if ir.get('decode_capped') else ir.get('lines_match_decoded')}")
+    else:
+        kv('IRFeat', 'absent -> no landmarks drawn, no spatial alignment in TIR')
     print('  frames    :')
     for fr in rep['frames']:
         print(f"      #{fr['index']:<3} t={fr['t_s']:7.3f} s  "
@@ -1231,9 +1586,20 @@ def main() -> int:
                          f'set $RAW_DATA_PATH or pass --raw_root')
     if args.list:
         print(f'raw root: {raw_root}')
-        print(f'{len(available)} session(s) under {RAW_TREE}/:')
+        print(f'{len(available)} session(s) under {RAW_TREE}/ '
+              f'(a "*" marks a target the IRFeatures gate would ignore):')
         for s in sorted({s for s, _ in available}):
-            print(f'  {s}: {" ".join(t for ss, t in available if ss == s)}')
+            parts = []
+            for t in (t for ss, t in available if ss == s):
+                ir = load_ir_features(find_ir_features(raw_root, s, t))
+                gated = (ir['exists'] and not ir['usable']
+                         and not args.accept_zero_ir)
+                parts.append(f'{t}*' if gated else t)
+                if gated:
+                    print(f'      {s}_{t}: {_ir_reject_short(ir)}')
+                    for rng in ir['ranges_all_zero']:
+                        print(f'        all-zero lines (== frames): {rng}')
+            print(f'  {s}: {" ".join(parts)}')
         if not available:
             print('  (none - is this the right --raw_root?)')
         return 0
@@ -1268,10 +1634,13 @@ def main() -> int:
     print(f'output root: {args.output_dir}')
     print(f'modality   : TIR ({RAW_TREE}/<subject>/<task>.wmv)')
     print(f'decoder    : {args.decoder}')
+    print('IR gate    : ' + ('OFF (--accept-zero-ir)' if args.accept_zero_ir else
+                             'ON -- a target whose IRFeatures track holds any '
+                             'all-zero line is IGNORED COMPLETELY'))
     print(f'sessions   : {", ".join(f"{s}_{t}" for s, t in wanted)}')
     print()
 
-    summaries, n_ok = [], 0
+    summaries, n_ok, n_skipped = [], 0, 0
     for subject, task in wanted:
         print(f'=== {subject}_{task} ===')
         try:
@@ -1280,7 +1649,25 @@ def main() -> int:
                 output_dir=args.output_dir, decoder=args.decoder,
                 frames_n=args.frames, crop_size=args.crop_size,
                 max_frames=args.max_frames, plot=args.plot, md5=args.md5,
-                use_ffprobe=args.ffprobe)
+                use_ffprobe=args.ffprobe, accept_zero_ir=args.accept_zero_ir)
+        except IrFeaturesRejected as exc:
+            ir = exc.ir
+            print(f'  [SKIP] {exc}')
+            print(f'         {ir["n_lines"]} line(s), '
+                  f'{ir["n_frames_with_landmarks"]} with landmarks; '
+                  f'nothing decoded, no artifact written')
+            print()
+            n_skipped += 1
+            summaries.append({'session': f'{subject}_{task}', 'ok': True,
+                              'skipped': True, 'reason': str(exc),
+                              'ir_lines': ir['n_lines'],
+                              'ir_frames_with_landmarks':
+                                  ir['n_frames_with_landmarks'],
+                              'ir_all_zero_lines': ir['n_all_zero'],
+                              'ir_ranges_all_zero': ir['ranges_all_zero'],
+                              'ir_reject_short': _ir_reject_short(ir),
+                              'output_dir': None})
+            continue
         except Exception as exc:
             print(f'  [FAIL] {subject}/{task}: {type(exc).__name__}: {exc}')
             summaries.append({'session': f'{subject}_{task}', 'ok': False,
@@ -1317,11 +1704,14 @@ def main() -> int:
     index_path = os.path.join(args.output_dir, 'thermal_index.json')
     payload = {'raw_root': raw_root, 'decoder': args.decoder,
                'n_sessions': len(summaries), 'n_ok': n_ok,
+               'n_skipped_zero_ir': n_skipped,
                'sessions': summaries}
     with open(index_path, 'w') as fh:
         json.dump(payload, fh, indent=2, default=_json_default)
-    print(f'{n_ok}/{len(summaries)} session(s) inspected; index: {index_path}')
-    return 0 if n_ok == len(summaries) else 1
+    print(f'{n_ok}/{len(summaries)} session(s) inspected'
+          + (f', {n_skipped} ignored by the IRFeatures gate' if n_skipped else '')
+          + f'; index: {index_path}')
+    return 0 if (n_ok + n_skipped) == len(summaries) else 1
 
 
 if __name__ == '__main__':
