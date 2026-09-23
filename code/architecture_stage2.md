@@ -1,4 +1,4 @@
-# Pre-Training to learn cross-modal representation
+# Pre-Training (stage-2 in pipeline) to learn cross-modal representation
 
 ## Input + Encoder
 
