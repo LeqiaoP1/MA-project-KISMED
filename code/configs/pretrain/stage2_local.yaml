@@ -14,9 +14,9 @@
 model: project_multimae_base       # 768-d/12-layer/12-head -- the NAME sets it
 
 # ---- streams & tokenizer geometry ----
-# Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bvp/resp/eda).
-# All five = rgb,tir,bvp,resp,eda; ablate by trimming (e.g. rgb,bvp).
-streams: rgb,bvp
+# Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bp/resp/eda).
+# All five = rgb,tir,bp,resp,eda; ablate by trimming (e.g. rgb,bp).
+streams: rgb,bp
 
 tir_channels: 3                    # thermal is a false-colour render, not gray
 tubelet: 2,16,16                   # (temporal, H, W) tubelet
@@ -48,7 +48,7 @@ pos_init: sincos3d
 mask_ratio_rgb: 0.90
 mask_ratio_tir: 0.90
 # 1-D physio streams are masked hardest (90%+) in Stage 2
-mask_ratio_bvp: 0.90
+mask_ratio_bp: 0.90
 mask_ratio_resp: 0.90
 mask_ratio_eda: 0.90
 

@@ -23,7 +23,7 @@ is by canonical name. The three canonical channels map to raw files through
 uses, so the inspector and the converter can never disagree. HR is an
 inspector-only extra (see ``raw_file`` below)::
 
-    BVP  (bvp)  <- BP_mmHg.txt            [mmHg]  pulse-pressure surrogate
+    BP  (bp)  <- BP_mmHg.txt            [mmHg]  pulse-pressure surrogate
     Resp (resp) <- Resp_Volts.txt         [V]     respiration belt
     EDA  (eda)  <- EDA_microsiemens.txt   [uS]    skin conductance
     HR   (hr)   <- Pulse Rate_BPM.txt     [BPM]   vendor heart rate
@@ -44,7 +44,7 @@ the extra files that belong with it (``CHANNEL_FAMILIES``), summarises them into
 the channel's JSON under ``family_components`` and draws them together in
 ``<FAMILY>_overview.png``:
 
-    BVP  -> BP_overview.png    BP_mmHg.txt + LA Systolic + LA Mean + BP Dia
+    BP  -> BP_overview.png    BP_mmHg.txt + LA Systolic + LA Mean + BP Dia
     Resp -> Resp_overview.png  Resp_Volts.txt + Respiration Rate_BPM.txt
 
 They are NOT all the same kind of signal, so the two kinds are treated
@@ -145,10 +145,10 @@ from data import prepare_bp4d as prep
 # channel -- so putting HR there would silently add an 'hr' column and break
 # every session that lacks Pulse Rate_BPM.txt.
 CHANNEL_META = {
-    'bvp': {
-        'name': 'BVP',
+    'bp': {
+        'name': 'BP',
         'unit': 'mmHg',
-        'label': 'blood pressure (pulse-pressure surrogate)',
+        'label': 'blood pulse (pulse-pressure surrogate)',
         'band': (0.60, 4.00),
         'band_note': 'pulse band, 36-240 bpm',
         'periodic': True,
@@ -186,14 +186,14 @@ CHANNEL_META = {
         'analysis': 'step',
     },
 }
-CHANNEL_ORDER = ['bvp', 'resp', 'eda', 'hr']
+CHANNEL_ORDER = ['bp', 'resp', 'eda', 'hr']
 
-# CLI aliases -> canonical channel key. NOTE 'pulse' stays mapped to bvp (the
-# pulse-pressure waveform, as documented); the RATE channel answers to
+# CLI aliases -> canonical channel key. NOTE 'pulse' stays mapped to bp (the
+# blood-pulse waveform, as documented); the RATE channel answers to
 # 'hr'/'heart_rate'/'pulse_rate'/'bpm' instead.
 CHANNEL_ALIASES = {
-    'bvp': 'bvp', 'bp': 'bvp', 'bp_mmhg': 'bvp', 'pulse': 'bvp',
-    'blood_pressure': 'bvp', 'pressure': 'bvp',
+    'bp': 'bp', 'bp_mmhg': 'bp', 'pulse': 'bp',
+    'blood_pulse': 'bp', 'pressure': 'bp',
     'resp': 'resp', 'respiration': 'resp', 'resp_volts': 'resp',
     'breathing': 'resp',
     'eda': 'eda', 'gsr': 'eda', 'eda_microsiemens': 'eda',
@@ -220,7 +220,7 @@ CHANNEL_ALIASES = {
 # The needles are EXACT raw basenames, so prep.find_channel_file matches them
 # directly (its Dia/Mean/Systolic exclusion only affects substring fallbacks).
 CHANNEL_FAMILIES = {
-    'bvp': {
+    'bp': {
         'name': 'BP',
         'title': 'BP family',
         'components': (
@@ -649,7 +649,7 @@ def cycle_count_rate(x: np.ndarray, fs: float, band) -> dict:
     ``p = 1/sqrt(lo*hi)``: smoothing ``0.25*p`` and minimum peak separation
     ``0.6*p`` with a prominence of ``0.35*std``. Taking the band's UPPER edge as
     the expected rate (the obvious-looking choice) is wrong for these signals --
-    it lets the dicrotic notch and the high-frequency noise inside the BVP band
+    it lets the dicrotic notch and the high-frequency noise inside the BP band
     register as extra "cycles", which inflated the pulse rate by ~40% in testing.
     """
     try:
@@ -910,7 +910,7 @@ def plot_family_overview(components, family: dict, session: str, fs: float,
                          plot_max_points: int = 0) -> str:
     """Every raw file of one channel's family, over the whole session.
 
-    Triggered by the channel (``bvp`` -> BP family, ``resp`` -> Resp family).
+    Triggered by the channel (``bp`` -> BP family, ``resp`` -> Resp family).
     Two layouts, chosen by whether the family shares a unit:
 
     * SHARED unit (BP: all mmHg) -- all series overlay on one axis, and the
@@ -1222,7 +1222,7 @@ def inspect_session(raw_root: str, subject: str, task: str, channels,
         summary['channels'][key] = _public(rep)
 
     # ---- raw files that belong with a channel (see CHANNEL_FAMILIES) ------- #
-    # "when the target is BVP, draw an overview of BP with BP_mmHg / BP Dia /
+    # "when the target is BP, draw an overview of BP with BP_mmHg / BP Dia /
     # LA Mean / LA Systolic"; likewise Resp_Volts / Respiration Rate_BPM for
     # Resp. Driven by the table, so a third family only needs a table entry.
     for fam_key, family in CHANNEL_FAMILIES.items():
@@ -1297,7 +1297,7 @@ def _parse_channels(spec: str):
             continue
         if t not in CHANNEL_ALIASES:
             raise SystemExit(
-                f'unknown channel {tok!r}; use BVP, Resp, EDA or all '
+                f'unknown channel {tok!r}; use BP, Resp, EDA or all '
                 f'(aliases: {", ".join(sorted(CHANNEL_ALIASES))})')
         k = CHANNEL_ALIASES[t]
         if k not in out:
@@ -1311,7 +1311,7 @@ def _parse_list(spec: str):
 
 
 def _parse_band(spec: str):
-    """``--band 0.5,4`` -> {'bvp': (0.5, 4.0)} / ('all' key when no channel)."""
+    """``--band 0.5,4`` -> {'bp': (0.5, 4.0)} / ('all' key when no channel)."""
     spec = (spec or '').strip()
     if not spec:
         return {}
@@ -1336,7 +1336,7 @@ def get_args(argv=None):
                    help='task id(s), comma-separated (T1) or "all"')
     p.add_argument('--channel', '--channels', '--target', dest='channel',
                    default='all',
-                   help='channel(s): BVP | Resp | EDA | all (comma-separated; '
+                   help='channel(s): BP | Resp | EDA | all (comma-separated; '
                         'case-insensitive) - default all')
     p.add_argument('--raw_root', default=default_raw_root(),
                    help='raw BP4D root (default: $RAW_DATA_PATH, else the '

@@ -1,4 +1,4 @@
-"""Stage-3 downstream waveform fine-tuning (BVP or RESP branch).
+"""Stage-3 downstream waveform fine-tuning (BP or RESP branch).
 
 Implements docs/ImplementationPlan.md Stage 3: simulated full sensor failure
 (no contact 1D streams are fed) -- only visual streams drive the prediction.
@@ -17,7 +17,7 @@ time-aligned when ``sig_kernel/fs == tubelet_t*temporal_stride/fps``.
 
 Usage (from ``code/``)::
 
-    python runners/run_waveform.py -c configs/finetune/bvp.yaml
+    python runners/run_waveform.py -c configs/finetune/bp.yaml
     python runners/run_waveform.py -c configs/finetune/resp.yaml
 
 The ``bp4d+`` dataset (``data/paired_dataset.py``) yields ``(samples, [B, T])``
@@ -60,9 +60,9 @@ def get_args():
                              'Stage-2 streams.')
     parser.add_argument('--use_tir', action='store_true', default=False,
                         help='feed TIR as a second visual stream (default off: '
-                             'the Stage-2 run in this project is rgb+bvp, so '
+                             'the Stage-2 run in this project is rgb+bp, so '
                              'the TIR adapter has no trained weights).')
-    parser.add_argument('--target', default='bvp', choices=['bvp', 'resp', 'eda'],
+    parser.add_argument('--target', default='bp', choices=['bp', 'resp', 'eda'],
                         help='which physiological waveform branch to train')
     parser.add_argument('--seq_len', default=0, type=int,
                         help='length of the predicted output waveform (samples). '
@@ -75,7 +75,7 @@ def get_args():
     parser.add_argument('--signal_norm', default='zscore', type=str,
                         choices=['none', 'ac', 'zscore'],
                         help='per-clip target normalisation. The recorded '
-                             'streams are NOT zero-mean (BP4D BVP is raw mmHg, '
+                             'streams are NOT zero-mean (BP4D BP / blood pulse is raw mmHg, '
                              'mean ~101): with "none" the head must fit a ~100 '
                              'DC offset and the MR-STFT term is dominated by '
                              'the 0 Hz bin instead of the pulsatile band. '
@@ -131,7 +131,7 @@ def get_args():
     parser.add_argument('--fft_sizes', default='64,128,256', type=str,
                         help='MR-STFT FFT window sizes (comma separated)')
 
-    # spectral band for evaluation (plan: BVP 1.0-2.5 Hz, RESP 0.16-0.4 Hz)
+    # spectral band for evaluation (plan: BP 1.0-2.5 Hz, RESP 0.16-0.4 Hz)
     parser.add_argument('--eval_band', default=None, type=str,
                         help='e.g. "1.0,2.5" to restrict spectral eval')
     return parse_args_with_config(parser)

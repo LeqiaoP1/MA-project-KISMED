@@ -152,7 +152,7 @@ def get_args():
                    help='where to write figures/ + inspect_summary.json; '
                         'default: $OUTPUT_DIR/inspect_data, else '
                         '<project_root>/output/inspect_data')
-    p.add_argument('--target', default='bvp', choices=['bvp', 'resp', 'eda'])
+    p.add_argument('--target', default='bp', choices=['bp', 'resp', 'eda'])
     # small-data controls (dev/smoke)
     p.add_argument('--max_sessions', default=3, type=int,
                    help='cap the number of sessions loaded')
@@ -364,7 +364,7 @@ def _make_figure(args, clip, sample, target, sig_cols, sig_fs, split='train'):
     axes[2, 0].axis('off')
 
     t_tgt = np.arange(target.size) / args.fs
-    names = ['bvp', 'resp', 'eda']
+    names = ['bp', 'resp', 'eda']
     # vertical reference lines (every second) + shared x-range so the panels
     # line up: lets you eyeball that blue (raw window) and orange (resampled
     # dataset target) features occur at the same times in every row

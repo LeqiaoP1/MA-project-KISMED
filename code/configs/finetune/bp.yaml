@@ -1,7 +1,7 @@
-# Stage 3 -- BVP waveform reconstruction branch (docs/ImplementationPlan.md).
+# Stage 3 -- BP waveform reconstruction branch (docs/ImplementationPlan.md).
 #
 # Goal: fine-tune the STAGE-2 cross-modal encoder for the downstream task
-# "reconstruct the BSP/BVP waveform from video alone" (simulated complete
+# "reconstruct the BSP/BP waveform from video alone" (simulated complete
 # contact-sensor failure: NO 1-D stream is fed, only RGB).
 #
 # The model is project_multimae_* = the Stage-2 multimodal encoder (Conv3d
@@ -17,14 +17,14 @@
 #   finetune: ../output/pretrain/stage2_local_pretrained/checkpoints/checkpoint-0039.pth
 #   batch_size: 2   max_sessions: 2   max_entries: 8
 #
-# Run from code/:  python runners/run_waveform.py -c configs/finetune/bvp.yaml
+# Run from code/:  python runners/run_waveform.py -c configs/finetune/bp.yaml
 
-target: bvp              # 1-D stream to reconstruct (a Stage-2 target modality)
+target: bp              # 1-D stream to reconstruct (a Stage-2 target modality)
 
 # ---- model: shared Stage-2 encoder + time-aligned waveform head ----
 model: project_multimae_base       # geometry 768-d/12-layer/12-head (= Stage 2)
 streams: rgb                       # visual input at Stage 3 (rgb, or rgb,tir)
-use_tir: false                     # no TIR: the Stage-2 run is rgb+bvp, so the
+use_tir: false                     # no TIR: the Stage-2 run is rgb+bp, so the
                                    # TIR adapter would keep random weights
 finetune: ../output/pretrain/stage2_multimodal/checkpoints/checkpoint-0799.pth
 head_hidden: 0                     # 0 = one linear head per tubelet token
@@ -42,7 +42,7 @@ input_size: 224                    # value used by stage2_multimodal.yaml
 seq_len: 0
 fs: 100                            # sampling rate (Hz)
 sig_kernel: 8                      # signal samples per token: 8/100 == 2/25 s
-# The recorded BVP column is RAW blood pressure in mmHg (mean ~101, std ~11), so
+# The recorded BP (blood pulse) column is RAW blood pressure in mmHg (mean ~101, std ~11), so
 # the target is z-scored per clip: without it the head spends capacity on a
 # ~100 DC offset and the MR-STFT term is dominated by that offset's 0 Hz bin.
 signal_norm: zscore
@@ -58,9 +58,9 @@ train_ratio: 0.8
 alpha: 1.0               # L_time   (L1 amplitude)
 beta: 1.0                # L_Pearson (phase-locking)
 gamma: 1.0               # L_MR-STFT (multi-resolution)
-fft_sizes: '64,128,256'  # >= 2x the BVP period (1-2.5 Hz at 100 Hz)
+fft_sizes: '64,128,256'  # >= 2x the BP period (1-2.5 Hz at 100 Hz)
 
-# Spectral evaluation band (BVP cardiac: ~1.0-2.5 Hz)
+# Spectral evaluation band (BP cardiac: ~1.0-2.5 Hz)
 eval_band: '1.0,2.5'
 
 # ---- training ----
@@ -84,6 +84,6 @@ clip_grad: 0.0
 num_workers: 4
 
 # ---- logging ----
-output_dir: ../output/finetune/bvp
+output_dir: ../output/finetune/bp
 log_wandb: false
 wandb_project: thesis-project

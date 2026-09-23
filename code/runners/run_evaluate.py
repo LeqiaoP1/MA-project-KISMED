@@ -2,8 +2,8 @@
 
 Usage (from ``code/``)::
 
-    python runners/run_evaluate.py --pred_path pred_bvp.npy \
-        --target_path gt_bvp.npy --fs 100 --tier 1,2,3 --waveform bvp
+    python runners/run_evaluate.py --pred_path pred_bp.npy \
+        --target_path gt_bp.npy --fs 100 --tier 1,2,3 --waveform bp
 
 Loads ``[T]`` or ``[N, T]`` numpy predictions + ground truth and prints the
 tiered metrics from ``evaluation/``:
@@ -42,7 +42,7 @@ def get_args():
     parser.add_argument('--fs', default=100.0, type=float)
     parser.add_argument('--tier', default='1,2,3', type=str,
                         help='comma-separated tiers to run')
-    parser.add_argument('--waveform', default='bvp', choices=['bvp', 'resp'])
+    parser.add_argument('--waveform', default='bp', choices=['bp', 'resp'])
     parser.add_argument('--band', default=None, type=str,
                         help='e.g. "1.0,2.5" spectral band override')
     parser.add_argument('--out', default='', type=str,
@@ -71,15 +71,15 @@ def main(args):
         if band:
             band = tuple(float(x) for x in band.split(','))
         else:
-            # plan defaults: BVP 1.0-2.5 Hz, RESP 0.16-0.4 Hz
-            band = (1.0, 2.5) if args.waveform == 'bvp' else (0.16, 0.4)
+            # plan defaults: BP 1.0-2.5 Hz, RESP 0.16-0.4 Hz
+            band = (1.0, 2.5) if args.waveform == 'bp' else (0.16, 0.4)
         r = _metrics.spectral_metrics(pred, target, fs=args.fs, band=band)
         print('Tier 2 (spectral):', r)
         results.update(r)
 
     if 3 in tiers:
-        if args.waveform != 'bvp':
-            print('Tier 3: clinical HRV metrics are defined for BVP only; skipping.')
+        if args.waveform != 'bp':
+            print('Tier 3: clinical HRV metrics are defined for BP only; skipping.')
         else:
             recs = [_clinical.extract_hrv_metrics(p, fs=args.fs) for p in pred]
             agg = {}

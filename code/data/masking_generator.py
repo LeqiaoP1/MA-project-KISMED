@@ -74,17 +74,17 @@ class MultiModalMaskingGenerator:
 
     Composes one base generator per input stream, enabling the *asymmetric*
     masking of the implementation plan: visual streams (RGB / TIR) masked at
-    50--75%, physiological 1D streams (BVP / RESP) masked at 90%+.
+    50--75%, physiological 1D streams (BP / RESP) masked at 90%+.
 
     Example::
 
         gen = MultiModalMaskingGenerator({
             'rgb':   TubeMaskingGenerator((T, H, W), 0.75),
             'tir':   TubeMaskingGenerator((T, H, W), 0.50),
-            'bvp':   RandomMaskingGenerator(N_BVP_TOKENS, 0.90),
+            'bp':   RandomMaskingGenerator(N_BP_TOKENS, 0.90),
             'resp':  RandomMaskingGenerator(N_RESP_TOKENS, 0.95),
         })
-        masks = gen()   # -> {'rgb': ..., 'tir': ..., 'bvp': ..., 'resp': ...}
+        masks = gen()   # -> {'rgb': ..., 'tir': ..., 'bp': ..., 'resp': ...}
 
     :param stream_generators: dict mapping stream name -> masking generator
         (any object with a no-arg ``__call__`` returning a token mask).

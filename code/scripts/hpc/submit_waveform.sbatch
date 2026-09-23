@@ -3,7 +3,7 @@
 # NOTE: only usable once the spatio-temporal video model front-end + a Stage-2
 # checkpoint exist (see docs/ImplementationPlan.md / code/README.md).
 # 1) edit scripts/env_hpc.sh   2) mkdir -p logs
-# 3) TARGET=bvp sbatch scripts/hpc/submit_waveform.sbatch
+# 3) TARGET=bp sbatch scripts/hpc/submit_waveform.sbatch
 #SBATCH --job-name=waveform
 #SBATCH --partition=<gpu-partition>   # EDIT
 #SBATCH --account=<account>           # EDIT (optional)
@@ -26,7 +26,7 @@ cd "$CODE_DIR"
 export MASTER_ADDR="${MASTER_ADDR:-$(scontrol show hostname "$SLURM_JOB_NODELIST" | head -n1)}"
 export MASTER_PORT="${MASTER_PORT:-29500}"
 
-TARGET="${TARGET:-bvp}"   # bvp | resp | eda
+TARGET="${TARGET:-bp}"   # bp | resp | eda
 mkdir -p "$OUTPUT_DIR/finetune/$TARGET"
 
 # one task per GPU; utils/dist.py reads SLURM_* env to init DDP

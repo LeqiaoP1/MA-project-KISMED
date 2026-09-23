@@ -9,8 +9,8 @@ pretrained_encoder: ''             # '' = from scratch, 'base' = VideoMAE ViT-B,
                                    # or 'mae:base' / a path
 
 # ---- streams & tokenizer geometry ----
-# Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bvp/resp/eda).
-streams: rgb,tir,bvp,resp,eda
+# Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bp/resp/eda).
+streams: rgb,tir,bp,resp,eda
 tubelet: 2,16,16
 fs: 100.0
 fps: 25.0

@@ -64,7 +64,7 @@ def spectral_metrics(pred, target, fs=100.0, band=None):
 
     :param fs: sampling rate (Hz) of the waveforms
     :param band: optional (f_low, f_high) band-pass region to compare, e.g.
-        (1.0, 2.5) for BVP or (0.16, 0.4) for RESP.
+        (1.0, 2.5) for BP or (0.16, 0.4) for RESP.
     """
     if _sp_signal is None:
         raise ImportError('spectral_metrics requires scipy (`pip install scipy`)')

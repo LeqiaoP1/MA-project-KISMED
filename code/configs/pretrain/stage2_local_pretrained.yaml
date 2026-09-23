@@ -28,9 +28,9 @@ pretrained_encoder: videomae:base  # 'base' = same; mae:base = plain MAE; or a p
 inflate_rgb_patch: 1               # 0 = encoder blocks only, tokenizer random
 
 # ---- streams & tokenizer geometry (small for a local GPU) ----
-# Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bvp/resp/eda).
-# All five = rgb,tir,bvp,resp,eda; ablate by trimming (e.g. rgb,bvp).
-streams: rgb,bvp,resp
+# Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bp/resp/eda).
+# All five = rgb,tir,bp,resp,eda; ablate by trimming (e.g. rgb,bp).
+streams: rgb,bp,resp
 #streams: tir, resp
 
 tir_channels: 3                    # thermal is a false-colour render, not gray
@@ -61,7 +61,7 @@ pos_init: sincos3d
 mask_ratio_rgb: 0.90
 mask_ratio_tir: 0.90
 # 1-D physio streams are masked hardest (90%+) in Stage 2
-mask_ratio_bvp: 0.90
+mask_ratio_bp: 0.90
 mask_ratio_resp: 0.90
 mask_ratio_eda: 0.90
 

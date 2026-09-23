@@ -6,7 +6,7 @@ consumes (see its module docstring):
     <data_path>/<session>/
         rgb/            # ordered jpg frames      (fps_rgb)
         tir.wmv         # single thermal video    (fps_tir)
-        signals.csv     # header: time,bvp,resp,eda   at fs Hz
+        signals.csv     # header: time,bp,resp,eda   at fs Hz
         meta.json       # provenance + probed rates/counts
 
 Raw BP4D layout handled here::
@@ -16,7 +16,7 @@ Raw BP4D layout handled here::
     <raw_root>/Physiology/<S>/<T>/<Channel>_*.txt     (one value per line)
 
 Channel mapping (canonical column <- raw file):
-    bvp  <- BP_mmHg.txt        (continuous pulse-pressure surrogate)
+    bp  <- BP_mmHg.txt        (continuous pulse-pressure surrogate)
     resp <- Resp_Volts.txt     (raw respiration belt)
     eda  <- EDA_microsiemens.txt
 
@@ -52,7 +52,7 @@ from data import video_io as vio
 
 # Canonical column name -> raw physiology file basename (contains match).
 CHANNEL_FILES = {
-    'bvp': 'BP_mmHg.txt',
+    'bp': 'BP_mmHg.txt',
     'resp': 'Resp_Volts.txt',
     'eda': 'EDA_microsiemens.txt',
 }

@@ -1,19 +1,19 @@
 # Stage 3 -- RESP regression branch (docs/ImplementationPlan.md)
 #
-# NOTE (2026-09): the Stage-2 configs currently pre-train on streams `rgb,bvp`
+# NOTE (2026-09): the Stage-2 configs currently pre-train on streams `rgb,bp`
 # only, so there is NO Stage-2 encoder for the RESP target. Either add `resp`
 # to `streams` in configs/pretrain/stage2_*.yaml and re-run Stage 2, or treat
 # this branch as a from-scratch / Stage-1-init baseline (drop `finetune`).
 # The model / clip-geometry keys must mirror the Stage-2 run exactly, see the
-# fully updated configs/finetune/bvp.yaml.
+# fully updated configs/finetune/bp.yaml.
 # Complete sensor failure: only visual streams (RGB + TIR) drive prediction.
 target: resp
-seq_len: 0               # 0 => the input clip window (see bvp.yaml)
+seq_len: 0               # 0 => the input clip window (see bp.yaml)
 fs: 100                  # sampling rate (Hz)
 
 # Model: shared Stage-2 encoder + regression head
-model: project_multimae_base       # Stage-3 path (see bvp.yaml)
-streams: rgb                       # Stage-2 was rgb+bvp -> feed RGB only
+model: project_multimae_base       # Stage-3 path (see bp.yaml)
+streams: rgb                       # Stage-2 was rgb+bp -> feed RGB only
 use_tir: false
 clip_duration: 4.0
 fps: 25.0
@@ -21,7 +21,7 @@ tubelet: 2,16,16
 temporal_stride: 1
 sig_kernel: 8
 input_size: 224
-signal_norm: zscore     # raw BP4D streams are not zero-mean (see bvp.yaml)
+signal_norm: zscore     # raw BP4D streams are not zero-mean (see bp.yaml)
 finetune: ../output/pretrain/stage2_multimodal/checkpoints/checkpoint-0799.pth
 
 # Data (canonical layout from data/prepare_bp4d.py)

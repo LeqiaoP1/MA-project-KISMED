@@ -15,8 +15,8 @@ Additional Plan — Simplified RGB-only Configuration
 |---|---|---|
 | 1 | dataset | **full BP4D+** (~140 subjects x 8 tasks ~= 1120 sessions, ~12-13 h of video) |
 | 2 | initialization | **space-time weights, patch 16x16** -> load a **VideoMAE-B** checkpoint (see §7 for why the source matters) |
-| 3 | Stage 2 | **SSL representation learning; encoder input = RGB video only**; decoder reconstructs **BVP and RESP** |
-| 4 | Stage 3 | **fine-tuning for BVP and RESP waveform construction** — two branches |
+| 3 | Stage 2 | **SSL representation learning; encoder input = RGB video only**; decoder reconstructs **BP and RESP** |
+| 4 | Stage 3 | **fine-tuning for BP and RESP waveform construction** — two branches |
 | 5 | evaluation | **session-level assembly** of the Stage-3 clip predictions, then clinical metrics |
 | 6 | TIR | **dropped from scope** (no TIR stream in Stage 2; TIR cells removed, §12) |
 | 7 | RGB mask ratio | **0.90 default, 0.95 as an ablation** (both physically motivated, §4) |
@@ -24,7 +24,7 @@ Additional Plan — Simplified RGB-only Configuration
 
 Rationale for 6: an RGB-only Stage-2 encoder leaves `adapters.tir` untrained, so a
 TIR Stage-3 cell would load a random adapter. The physically grounded cell set is
-therefore reduced from three (`RGB->BVP`, `RGB->RESP`, `TIR->RESP`) to two.
+therefore reduced from three (`RGB->BP`, `RGB->RESP`, `TIR->RESP`) to two.
 
 ---
 
@@ -63,7 +63,7 @@ set explicitly in every config (the argparse default is 8).
 
 ### **3. Streams, and what the encoder actually sees**
 
-* Stage-2 `streams`: **`rgb,bvp,resp`** (3) — satisfies the contract (>=1 video AND >=1 1-D physio).
+* Stage-2 `streams`: **`rgb,bp,resp`** (3) — satisfies the contract (>=1 video AND >=1 1-D physio).
 * Stage-3 `streams`: **`rgb`** (visual only — the sensor-failure protocol).
 
 The encoder receives **only the visible (unmasked) tokens**. Masked tokens exist
@@ -74,7 +74,7 @@ their mask ratio reaches 1.0:
 |---|---|---|---|---|
 | `rgb` | 9 800 | tube **0.90** | 176 patches x 50 = 8 800 | **20 x 50 = 1 000** |
 | `rgb` | 9 800 | tube 0.95 (ablation) | 186 x 50 = 9 300 | 10 x 50 = 500 |
-| `bvp` | 50 | contiguous span, ratio 0.9 -> 1.0 | 45 -> 50 | 5 -> **0** |
+| `bp` | 50 | contiguous span, ratio 0.9 -> 1.0 | 45 -> 50 | 5 -> **0** |
 | `resp` | 50 | contiguous span, ratio 0.9 -> 1.0 | 45 -> 50 | 5 -> **0** |
 
 So a typical step is **1 000 RGB tokens + ~10 physio tokens**, and at the end of
@@ -85,7 +85,7 @@ patches at every one of the 50 time steps, because the mask is a **tube**).
 The 1-D signals are always the **reconstruction target** and (during the ramp)
 visible **decoder-side** tokens; they are never encoder inputs past the ramp. The
 physio loss still shapes the encoder through the cross-attention decoder, whose
-queries are the masked `bvp`/`resp` tokens.
+queries are the masked `bp`/`resp` tokens.
 
 **Visual-stream dropout is inactive** in this configuration (there is only one
 visual stream, and the contract forbids dropping it). That is expected, not an
@@ -166,7 +166,7 @@ Consequences:
 
 ### **6. Sampling artefacts to be aware of**
 
-1. **12.5 fps is comfortably above the BVP Nyquist** (1.0-2.5 Hz needs > 5 Hz) and
+1. **12.5 fps is comfortably above the BP Nyquist** (1.0-2.5 Hz needs > 5 Hz) and
    trivial for RESP — but `alignment.frame_indices_at_target_rate` **point-samples**
    (`floor(t*fps_src)`), it does not low-pass first. Source content above 6.25 Hz
    (compression noise, luminance flicker, tremor) can therefore **alias into the
@@ -176,13 +176,13 @@ Consequences:
    geometry and cost**. It is rejected here only because a `(4,16,16)` Conv3d
    **breaks the exact VideoMAE `(2,16,16)` patch-embed transfer**. Keep it on
    record as a free A/B if aliasing ever looks like a problem.
-3. **BVP morphology granularity.** 160 ms video tokens span the pulse fundamental
+3. **BP morphology granularity.** 160 ms video tokens span the pulse fundamental
    and its low harmonics; the very high-frequency dicrotic-notch band is
    attenuated. HR and phase are unaffected — state this if waveform *morphology*
    fidelity is claimed.
 4. **1-D granularity coarsens**: 50 tokens of 160 ms (was 100 of 80 ms), so
    `heads.<signal> = Linear(D, 16)`. The assembled output is still 100 Hz, but a
-   per-token normalised target would span 0.16-0.4 of a BVP cycle — which is why
+   per-token normalised target would span 0.16-0.4 of a BP cycle — which is why
    the per-clip/per-session z-score change (§9) matters *more* at stride 2, not less.
 
 ---
@@ -201,13 +201,13 @@ inflated patch embed). Requires the loader fix in §11.8.
 | inherited | not inherited |
 |---|---|
 | `enc_blocks.*` (12 blocks) | all `positions.*` (incl. the time basis) |
-| `enc_norm.*` | `adapters.bvp`/`adapters.resp`, the decoder, all `heads.*` |
+| `enc_norm.*` | `adapters.bp`/`adapters.resp`, the decoder, all `heads.*` |
 | `adapters.rgb.patch_embed.*` — **verbatim for VideoMAE** (3-D tubelet kernel included: NOT motion-blind at init); boxcar-inflated from a 2-D MAE filter otherwise | the TIR adapter (still random) |
 
 **Stride 2 is a project-wide lock.** `positions.<s>` is `[1, G_t*Gh*Gw, D]` =
 `[1, 9800, 768]` for video and `[1, 50, D]` for physio — different shapes from the
 stride-1 values, so **stride-1 and stride-2 checkpoints are NOT interchangeable**.
-Set it identically in `configs/pretrain/*`, `configs/finetune/{bvp,resp}.yaml`, the
+Set it identically in `configs/pretrain/*`, `configs/finetune/{bp,resp}.yaml`, the
 **AU-probe configs**, and local smoke configs. Existing local checkpoints and the
 AU-probe C2 control are stride 1 and become a **separate lineage** (the AU probe's
 C2 control needs a stride-2 Stage-2 checkpoint).
@@ -216,10 +216,10 @@ C2 control needs a stride-2 Stage-2 checkpoint).
 
 ### **8. Stage 3 — two branches**
 
-* **Two runs** (`bvp`, `resp`), `streams: rgb`, output `[B, 800]` = one 8 s clip.
-  Branching avoids gradient interference between BVP (1.0-2.5 Hz) and RESP
+* **Two runs** (`bp`, `resp`), `streams: rgb`, output `[B, 800]` = one 8 s clip.
+  Branching avoids gradient interference between BP (1.0-2.5 Hz) and RESP
   (0.16-0.4 Hz).
-* **Matrix = 2 cells**: `rgb -> bvp`, `rgb -> resp` (the TIR cells are out, §12).
+* **Matrix = 2 cells**: `rgb -> bp`, `rgb -> resp` (the TIR cells are out, §12).
 * **Visual masking at Stage 3 is augmentation, not task** — and now also the main
   compute lever:
   * sample the ratio **per step** from a mixture centred on the Stage-2 regime and
@@ -289,11 +289,11 @@ module does not exist yet. Requirements:
 
 Marked `[new]` = needs the code change in §11; everything else exists today.
 
-**`configs/pretrain/stage2_rgb_bvp_resp.yaml`**
+**`configs/pretrain/stage2_rgb_bp_resp.yaml`**
 
 ```yaml
 model: project_multimae_base        # 768-d / 12-layer / 12-head
-streams: rgb,bvp,resp               # 1 visual + 2 physio (contract: >=1 video AND >=1 physio)
+streams: rgb,bp,resp               # 1 visual + 2 physio (contract: >=1 video AND >=1 physio)
 input_size: 224
 tubelet: 2,16,16                    # G_t = 50
 clip_duration: 8.0
@@ -305,7 +305,7 @@ seq_len: 0                          # -> 800
 clip_stride: 1.0
 pos_init: sincos3d
 mask_ratio_rgb: 0.90                # 0.95 = ablation
-mask_ratio_bvp: 0.90                # [new] span masking, ramp 0.9 -> 1.0
+mask_ratio_bp: 0.90                # [new] span masking, ramp 0.9 -> 1.0
 mask_ratio_resp: 0.90               # [new] span masking, ramp 0.9 -> 1.0
 signal_weight: 0.5                  # lambda_rgb = 1.0; physio = 0.5
 loss_weights: ''                    # or e.g. 1.0,0.5,0.5
@@ -316,7 +316,7 @@ epochs: 800
 num_workers: 16
 ```
 
-**`configs/finetune/bvp.yaml` / `resp.yaml`**
+**`configs/finetune/bp.yaml` / `resp.yaml`**
 
 ```yaml
 model: project_multimae_base
@@ -329,7 +329,7 @@ temporal_stride: 2
 fs: 100.0
 sig_kernel: 16
 seq_len: 0                          # -> output_len 800
-target: bvp                         # resp in the other run
+target: bp                         # resp in the other run
 signal_norm: zscore                 # [new] per-SESSION, not per-clip
 finetune: <stage2 ckpt>             # heads.<target> -> waveform_head transfer [new]
 train_mask_ratios: 0,0.75,0.90,0.95 # [new] Stage-3 augmentation mixture
@@ -348,7 +348,7 @@ eval_mask_ratio: 0.0                # headline numbers on dense video
 | 4 | allow mask ratio 1.0 (relax `min(N-1, ...)`) and draw the ratio **once per step** | `core/multimae.py::_tube_mask`/`_random_mask`, `make_masks` | the 1-D ramp to 1.0 and the batch-max `k` invariant |
 | 5 | contiguous **span** masking for the 1-D streams | `core/multimae.py` (new `_span_mask`) | scattered dropout is locally solvable |
 | 6 | per-**session** z-score target (instead of per-token `_targets()` normalisation) | `data/paired_dataset.py::_signal_at`, `core/multimae.py::_targets` | objective alignment with Stage 3 **and** the stitching requirement (§9) |
-| 7 | zero-init modality embeddings + `no_weight_decay()` over `positions.*`/`modality_embeds.*` | `core/multimae.py` | `bvp`/`resp` are shape- and init-identical; `positions.*` currently sits inside the weight-decay group |
+| 7 | zero-init modality embeddings + `no_weight_decay()` over `positions.*`/`modality_embeds.*` | `core/multimae.py` | `bp`/`resp` are shape- and init-identical; `positions.*` currently sits inside the weight-decay group |
 | 8 | ~~accept a 3-D (Conv3d) `patch_embed` source; wire `inflate_rgb_patch` to a CLI flag~~ **DONE 2026-09-17**: 3-D sources copied verbatim (`fit_visual_patch_embed`), HF `transformers` VideoMAE layout mapped (`canonicalise_vit_state_dict`), tubelet mismatch raises, `--inflate_rgb_patch` wired into run_pretrain/run_au_probe, `videomae:base`/`videomae:large` are the new `DEFAULT_SOURCE` | `core/multimae.py::load_pretrained_encoder`, `models/pretrained.py` | a VideoMAE checkpoint used to be silently skipped under `shape_mismatch` |
 | 9 | xavier-init the tubelet/signal convs (MultiMAE convention) | `core/multimae.py::_init_weights` | convs currently keep PyTorch defaults; matters most from scratch |
 | 10 | Stage-3 masking support (relax the `n_visual` assertion, gather visible tokens, mean over visible patches only) | `core/waveform_model.py` | the Stage-3 masking mixture (§8) |
@@ -371,8 +371,8 @@ eval_mask_ratio: 0.0                # headline numbers on dense video
 | §1.2 | drop the `TIR -> RESP` row; the difficulty-ordering claim reduces to 2 cells |
 | §1.3 | add `TIR -> RESP` to out-of-scope, reason: RGB-only Stage 2 |
 | §2.1 | **VideoMAE-B** becomes the primary source (exact `(2,16,16)` transfer); MAE = fallback |
-| §2.2 | streams -> `rgb,bvp,resp`; patch 16; **stride 2 / sig_kernel 16**; mask **0.90 default, 0.95 ablation**; new cost table; remove the visual-stream-dropout bullet (inactive) |
-| §2.3 | matrix -> 2 runs (`rgb -> bvp`, `rgb -> resp`); add the Stage-3 masking mixture + "evaluate at ratio 0" |
+| §2.2 | streams -> `rgb,bp,resp`; patch 16; **stride 2 / sig_kernel 16**; mask **0.90 default, 0.95 ablation**; new cost table; remove the visual-stream-dropout bullet (inactive) |
+| §2.3 | matrix -> 2 runs (`rgb -> bp`, `rgb -> resp`); add the Stage-3 masking mixture + "evaluate at ratio 0" |
 | §4.5 | drop the TIR nostril-ROI probe; the RGB rPPG-SNR probe becomes the critical one |
 | §4.6 | remove the TIR-cache discussion; the frame store is the sole Stage-2 bottleneck |
 | §4.7 | close blockers 1-2 (TIR channels, TIR RAM cache); keep the rest (SDPA, decoder, mask clamps, weight decay) |

@@ -21,7 +21,7 @@ V_IN --> V_EMB
 A_IN --> A_EMB
 
 node "+ Pos & Modality Emb ('video')" as V_POS
-node "+ Pos & Modality Emb ('audio')" as A_POS
+node "+ Pos & Modality Emb ('waveform')" as A_POS
 
 V_EMB --> V_POS : Video Tokens V (N_v = 19,600)
 A_EMB --> A_POS : Waveform Tokens A (N_a ≈ T/k)

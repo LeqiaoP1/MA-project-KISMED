@@ -1,7 +1,7 @@
 # Thesis codebase — scaffold
 
 Target (ImplementationPlan.md): contactless **2D RGB + Thermal-IR video →
-1D BVP / RESP / EDA waveform** recovery via a 3-stage progressive pipeline
+1D BP / RESP / EDA waveform** recovery via a 3-stage progressive pipeline
 (ImageNet init -> multimodal masked pre-training on BP4D+ -> three task-specific
 waveform fine-tuning branches).
 
@@ -62,13 +62,13 @@ python runners/run_inspect_physio.py --subject F001 --task T1 --channel all
 python runners/run_pretrain.py -c configs/pretrain/stage2_local_pretrained.yaml
 
 # (2) Stage-3 waveform fine-tuning per branch (needs a Stage-2 encoder ckpt)
-python runners/run_waveform.py -c configs/finetune/bvp.yaml
+python runners/run_waveform.py -c configs/finetune/bp.yaml
 python runners/run_waveform.py -c configs/finetune/resp.yaml
 python runners/run_waveform.py -c configs/finetune/eda.yaml
 
 # (3) offline multi-tier evaluation of saved predictions
 python runners/run_evaluate.py --pred_path out.npy --target_path gt.npy \
-    --fs 100 --tier 1,2,3 --waveform bvp
+    --fs 100 --tier 1,2,3 --waveform bp
 
 # (4) OPTIONAL ADD-ON diagnostic: AU-occurrence probe on the Stage-2 encoder
 python runners/run_au_probe.py -c configs/finetune/au_local.yaml
@@ -120,7 +120,7 @@ L = Σ_s ( λ_s·MSE_s + w_s·STFT_s ) ,      w_physio = spectral weight ,      
   token-boundary artefacts instead of the physiological band the loss is meant
   to enforce. It also aligns the Stage-2 target space with Stage 3.
 * **Knobs:** `--spectral_fft_sizes` (default `64,128,256` ⇒ 1.56 / 0.78 /
-  0.39 Hz resolution at fs = 100 Hz, covering BVP 1.0–2.5 Hz and RESP
+  0.39 Hz resolution at fs = 100 Hz, covering BP 1.0–2.5 Hz and RESP
   0.16–0.4 Hz), `--spectral_hop_ratio` (default 0.25 ⇒ 75 % overlap), and
   `--spectral_weights` — a FULL per-stream override (one comma value per
   `--streams` modality, same convention as `--loss_weights`; a positive value on
@@ -137,18 +137,18 @@ L = Σ_s ( λ_s·MSE_s + w_s·STFT_s ) ,      w_physio = spectral weight ,      
 The pretraining modalities are configured with `--streams` (or `streams:` in
 the YAML under `configs/pretrain/`) as a comma list. The **Stage-2 contract**
 requires at least TWO streams: **≥1 video** (`rgb` and/or `tir`) **plus ≥1
-physiological 1-D signal** (`bvp`, `resp`, `eda` — the waveform later
+physiological 1-D signal** (`bp`, `resp`, `eda` — the waveform later
 regressed in Stage 3). Video-only, signal-only, single-modality, empty or
 unknown lists are rejected consistently in `MultiModalMAE.__init__`,
 `build_pretraining_model` (`core/multimae.py`) and
 `PairedPretrainDataset`/`build_pretraining_dataset` (`data/`).
 
 `PairedPretrainDataset` serves **exactly** the requested streams: e.g.
-`streams: rgb,bvp` returns only `{'rgb','bvp'}`, while the default five-stream
-configs return all of `{'rgb','tir','bvp','resp','eda'}`. So trimming/ablating
+`streams: rgb,bp` returns only `{'rgb','bp'}`, while the default five-stream
+configs return all of `{'rgb','tir','bp','resp','eda'}`. So trimming/ablating
 modalities (while keeping the ≥1 video + ≥1 physio rule) is a YAML-only
 change. Per-stream mask ratios: visual `mask_ratio_rgb/tir` 50–75 %, signals
-`mask_ratio_bvp/resp/eda` 90 %+.
+`mask_ratio_bp/resp/eda` 90 %+.
 
 Implemented and run so far (see the thesis-plan table below): canonical BP4D
 conversion, the aligned `PairedSessionDataset` (+ overlapping windows via
@@ -176,18 +176,18 @@ subsection above.)
 | Plan stage                                                                             | Supported here                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Still to port (thesis work)                                                                                                                                                                                                                                                                                            |
 | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Stage 1 — ImageNet init of ViT-Base encoder                                           | `core/model.py` entrypoints (`project_vit_base_patch16_224`)                                                                                                                                                                                                                                                                                                                                                                                                           | official ImageNet-1K timm classifier converter; encoder inheritance IMPLEMENTED (`core/multimae.py::load_pretrained_encoder` + `canonicalise_vit_state_dict` -- 3-D tubelet kernel transferred verbatim for VideoMAE, 2-D filter boxcar-inflated for MAE, `--inflate_rgb_patch` to disable) via `--pretrained_encoder`; variant specs (`small                                                                                       |
-| Stage 2 — multimodal masked pre-training on BP4D+ (RGB/TIR 50-75%, BVP/RESP/EDA 90%+) | `core/input_adapters.py` (`SignalInputAdapter`), `data/masking_generator.py` (`MultiModalMaskingGenerator` asymmetric), `core/criterion.py` (`MaskedMSELoss`), configs `configs/pretrain/stage2_local_scratch.yaml` (from scratch) + `stage2_local_pretrained.yaml` (base + Stage-1 init) + HPC template `stage2_multimodal.yaml`; implemented local milestone: `core/multimae.py` (`MultiModalMAE`) + `PairedPretrainDataset` + `runners/run_pretrain.py` | separate deeper decoders; full-data HPC run at larger 224 geometry. Local five-stream milestone (rgb+tir+bvp+resp+eda) is implemented & run:`core/multimae.py` (`MultiModalMAE`), `data/paired_dataset.PairedPretrainDataset`, `runners/run_pretrain.py`, `configs/pretrain/stage2_local{_scratch,_pretrained}.yaml` |
-| Stage 3 — three branches BVP, RESP & EDA, unified spatio-temporal-spectral loss       | `core/waveform_losses.py` (`WaveformJointLoss`: L1 + Pearson + MR-STFT; 64/128/256 for BVP/RESP, 256/512/1024 for EDA), regression head (`ProjectViT(output_len=...)`, baseline CLS->seq), `runners/run_waveform.py`, configs `configs/finetune/{bvp,resp,eda}.yaml`                                                                                                                                                                                             | lightweight conv decoder over all tokens for finer temporal resolution; session-level whole-waveform reconstruction/stitching (offline inference, not yet implemented)                                                                                                                                                 |
+| Stage 2 — multimodal masked pre-training on BP4D+ (RGB/TIR 50-75%, BP/RESP/EDA 90%+) | `core/input_adapters.py` (`SignalInputAdapter`), `data/masking_generator.py` (`MultiModalMaskingGenerator` asymmetric), `core/criterion.py` (`MaskedMSELoss`), configs `configs/pretrain/stage2_local_scratch.yaml` (from scratch) + `stage2_local_pretrained.yaml` (base + Stage-1 init) + HPC template `stage2_multimodal.yaml`; implemented local milestone: `core/multimae.py` (`MultiModalMAE`) + `PairedPretrainDataset` + `runners/run_pretrain.py` | separate deeper decoders; full-data HPC run at larger 224 geometry. Local five-stream milestone (rgb+tir+bp+resp+eda) is implemented & run:`core/multimae.py` (`MultiModalMAE`), `data/paired_dataset.PairedPretrainDataset`, `runners/run_pretrain.py`, `configs/pretrain/stage2_local{_scratch,_pretrained}.yaml` |
+| Stage 3 — three branches BP, RESP & EDA, unified spatio-temporal-spectral loss       | `core/waveform_losses.py` (`WaveformJointLoss`: L1 + Pearson + MR-STFT; 64/128/256 for BP/RESP, 256/512/1024 for EDA), regression head (`ProjectViT(output_len=...)`, baseline CLS->seq), `runners/run_waveform.py`, configs `configs/finetune/{bp,resp,eda}.yaml`                                                                                                                                                                                             | lightweight conv decoder over all tokens for finer temporal resolution; session-level whole-waveform reconstruction/stitching (offline inference, not yet implemented)                                                                                                                                                 |
 | Evaluation — Tier 1/2/3 post-processing                                               | `evaluation/metrics.py` (MAE/RMSE/Pearson; Welch PSD), `evaluation/clinical.py` (NeuroKit2 RMSSD/pNN50/MedianNN/ShanEn), `runners/run_evaluate.py`                                                                                                                                                                                                                                                                                                                   | —                                                                                                                                                                                                                                                                                                                     |
 
 ```bash
 # Stage 3 example (needs a Stage-2 encoder ckpt)
-python runners/run_waveform.py -c configs/finetune/bvp.yaml
+python runners/run_waveform.py -c configs/finetune/bp.yaml
 python runners/run_waveform.py -c configs/finetune/resp.yaml
 python runners/run_waveform.py -c configs/finetune/eda.yaml
 # Offline post-processing on saved predictions
 python runners/run_evaluate.py --pred_path out.npy --target_path gt.npy \
-    --fs 100 --tier 1,2,3 --waveform bvp
+    --fs 100 --tier 1,2,3 --waveform bp
 ```
 
 ### Whole-session waveform reconstruction (planned)
@@ -197,7 +197,7 @@ deliverable — the continuous 1-D waveform of a whole session (subject/task) �
 is assembled **after** training by sliding the window over the session
 (`clip_duration` + `clip_stride`) and overlap-adding (stitching) the per-window
 predictions, then evaluated offline with Tier 1 (time), Tier 2 (spectral) and
-Tier 3 (clinical/NeuroKit2, BVP/HRV only). This stitching step is **not yet
+Tier 3 (clinical/NeuroKit2, BP/HRV only). This stitching step is **not yet
 implemented** (no training involved).
 
 ### Recorded data layout (asymmetric RGB jpg-seq + TIR .wmv)
@@ -206,7 +206,7 @@ implemented** (no training involved).
 <data_path>/<session>/
     rgb/            # ordered jpg frames  (25 fps nominal)
     tir.wmv         # single WMV ~60 s    (25 fps nominal)
-    signals.csv     # header: [time,] bvp, resp, eda   at fs Hz
+    signals.csv     # header: [time,] bp, resp, eda   at fs Hz
 ```
 
 Readers (`data/video_io.py`), temporal registration (`data/alignment.py`) and
@@ -440,8 +440,8 @@ HPC the compute nodes have no internet - pre-fetch on a login node and keep
 **Canonical data layout.** The raw BP4D layout (`2D+3D/`, `Thermal/`,
 `Physiology/*.txt`) is converted once into the per-session layout consumed by
 `data/paired_dataset.py` using `data/prepare_bp4d.py`:
-`<session>/{rgb/, tir.wmv, signals.csv (time,bvp,resp,eda), meta.json}`.
-Channel mapping: `bvp <- BP_mmHg.txt`, `resp <- Resp_Volts.txt`,
+`<session>/{rgb/, tir.wmv, signals.csv (time,bp,resp,eda), meta.json}`.
+Channel mapping: `bp <- BP_mmHg.txt`, `resp <- Resp_Volts.txt`,
 `eda <- EDA_microsiemens.txt`; raw physiology `.txt` is anti-alias resampled to
 `--fs` (default 100 Hz; raw rate `--phys_fs`, default 1000 Hz, or auto with `0`).
 
@@ -495,7 +495,7 @@ the estimated frequency, with one figure + JSON per channel:
 
 ```bash
 source scripts/env_local.sh
-# one session, every channel (BVP | Resp | EDA | all, case-insensitive)
+# one session, every channel (BP | Resp | EDA | all, case-insensitive)
 python runners/run_inspect_physio.py --subject F001 --task T1 --channel all
 python runners/run_inspect_physio.py --subject F001,F002 --task T1,T2 --channel Resp,EDA
 python runners/run_inspect_physio.py --list          # what is on disk?
@@ -514,7 +514,7 @@ writes *alongside* `run_inspect_data.py`; the two do not share file names (the
 session folders are only ever written by this runner, and
 `run_inspect_data.py --force` wipes only `figures/` + `inspect_summary.json`).
 
-**A channel pulls in its whole family of raw files.** Inspecting `bvp` or `resp`
+**A channel pulls in its whole family of raw files.** Inspecting `bp` or `resp`
 (explicitly or via `all`) also reads the session's other related raw files and
 draws them together in `<FAMILY>_overview.png` (full session at the original
 rate, 10 s zoom, plus a third panel). They are merged into the channel's JSON as
@@ -523,7 +523,7 @@ missing:
 
 | Channel  | Figure                | Raw files                                                                                  |
 | -------- | --------------------- | ------------------------------------------------------------------------------------------ |
-| `bvp`  | `BP_overview.png`   | `BP_mmHg.txt`, `LA Systolic BP_mmHg.txt`, `LA Mean BP_mmHg.txt`, `BP Dia_mmHg.txt` |
+| `bp`  | `BP_overview.png`   | `BP_mmHg.txt`, `LA Systolic BP_mmHg.txt`, `LA Mean BP_mmHg.txt`, `BP Dia_mmHg.txt` |
 | `resp` | `Resp_overview.png` | `Resp_Volts.txt`, `Respiration Rate_BPM.txt`                                           |
 
 | Raw file                                   | Kind                                                | Unit    |
@@ -562,7 +562,7 @@ reports this and it raises a warning. Neither file is read by
 `prepare_bp4d.py`, so these zeros do **not** reach the canonical `signals.csv`.
 
 Channels map through the same `data.prepare_bp4d.CHANNEL_FILES` table the
-converter uses, so the two can never disagree: `BVP <- BP_mmHg.txt` [mmHg],
+converter uses, so the two can never disagree: `BP <- BP_mmHg.txt` [mmHg],
 `Resp <- Resp_Volts.txt` [V], `EDA <- EDA_microsiemens.txt` [uS]. The derived
 `Pulse Rate_BPM.txt` / `Respiration Rate_BPM.txt` are deliberately excluded from
 that mapping.
@@ -692,7 +692,7 @@ split -- keep reporting the trivial baseline next to the probe's F1 (the
 mkdir -p logs
 sbatch scripts/hpc/submit_prepare.sbatch    # convert raw BP4D once (CPU)
 sbatch scripts/hpc/submit_inspect.sbatch    # data smoke on 1 GPU
-TARGET=bvp sbatch scripts/hpc/submit_waveform.sbatch   # (later) multi-GPU Stage-3
+TARGET=bp sbatch scripts/hpc/submit_waveform.sbatch   # (later) multi-GPU Stage-3
 ```
 
 Multi-GPU jobs run one task per GPU through `srun`; `utils/dist.py` initialises

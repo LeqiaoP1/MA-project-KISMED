@@ -9,8 +9,8 @@ pretrained_encoder: base           # Stage-1 init: 'base' = videomae:base
                                    # '' = from scratch
 
 # ---- streams & tokenizer geometry ----
-# Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bvp/resp/eda).
-streams: rgb,bvp
+# Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bp/resp/eda).
+streams: rgb,bp
 
 tir_channels: 3                    # thermal is a false-colour render, not gray
 tubelet: 2,16,16
@@ -34,7 +34,7 @@ pos_init: sincos3d
 # ---- asymmetric masking (visual 50-75%, signals 90%+) ----
 mask_ratio_rgb: 0.90
 mask_ratio_tir: 0.90
-mask_ratio_bvp: 0.90
+mask_ratio_bp: 0.90
 mask_ratio_resp: 0.90
 mask_ratio_eda: 0.90
 

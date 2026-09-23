@@ -5,13 +5,13 @@ Expected per-session layout under ``data_path``::
     <data_path>/<session>/
         rgb/            # ordered jpg frames  (25 fps nominal)
         tir.wmv         # single video ~60 s  (25 fps nominal)
-        signals.csv     # header: [time,] bvp, resp, eda  at fs Hz
+        signals.csv     # header: [time,] bp, resp, eda  at fs Hz
 
 ``PairedSessionDataset`` returns ``(samples, target)`` per clip:
   * ``samples`` : float tensor [3+C, T, H, W]  (RGB 3ch + TIR ``C``ch, temporal
     stack; ``C = tir_channels``, default 3 -> 6 channels, because the TIR
     stream is a false-colour rendering -- see ``video_io`` and ``tir_channels``)
-  * ``target``  : float tensor [seq_len]       (chosen waveform: BVP, RESP or EDA)
+  * ``target``  : float tensor [seq_len]       (chosen waveform: BP, RESP or EDA)
 
 Both videos are read on a single common time grid (see ``data/alignment.py``),
 handling any RGB/TIR fps mismatch; 1D signals are sliced on the same axis and
@@ -40,7 +40,7 @@ __all__ = ['PairedSessionDataset', 'build_paired_dataset', 'scan_sessions']
 PAIRED_DATA_SETS = ('bp4d+', 'paired')
 
 _CSV_DELIM = ','
-_SIGNAL_ALIASES = {'bvp': ('bvp', 'ppg', 'pulse'),
+_SIGNAL_ALIASES = {'bp': ('bp', 'ppg', 'pulse'),
                    'resp': ('resp', 'respiration'),
                    'eda': ('eda', 'gsr', 'scr', 'electrodermal')}
 
@@ -57,7 +57,7 @@ def _first_col(header: List[str], aliases: Tuple[str, ...]) -> Optional[str]:
 
 
 def _canonical_signals(cols: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-    """Map raw csv columns -> canonical stream names ``{'bvp','resp','eda'}``.
+    """Map raw csv columns -> canonical stream names ``{'bp','resp','eda'}``.
 
     Only streams whose csv column resolves via :data:`_SIGNAL_ALIASES` are
     included; missing streams are simply absent from the returned dict (callers
@@ -137,7 +137,7 @@ def scan_sessions(data_path: str, rgb_dir: str = 'rgb', tir_file: str = 'tir.wmv
 class PairedSessionDataset(Dataset):
     """Fixed-length synchronised clips over sessions (train/val per session)."""
 
-    def __init__(self, data_path: str, target: str = 'bvp',
+    def __init__(self, data_path: str, target: str = 'bp',
                  is_train: bool = True, test_mode: bool = False,
                  fs: float = 100.0, fps: float = 25.0,
                  clip_duration: float = 10.0,
@@ -153,7 +153,7 @@ class PairedSessionDataset(Dataset):
                  tir_channels: int = 3,
                  use_tir: bool = True,
                  signal_norm: str = 'none'):
-        assert target in ('bvp', 'resp', 'eda'), target
+        assert target in ('bp', 'resp', 'eda'), target
         assert int(tir_channels) in (1, 3), \
             f'tir_channels must be 1 or 3, got {tir_channels}'
         if signal_norm not in ('none', 'ac', 'zscore'):
@@ -162,7 +162,7 @@ class PairedSessionDataset(Dataset):
                 f'{signal_norm!r}')
         self.target = target
         #: waveform normalisation per clip. The recorded BP4D streams are NOT
-        #: zero-mean: the BVP column is raw blood pressure in mmHg (measured
+        #: zero-mean: the BP (blood pulse) column is raw blood pressure in mmHg (measured
         #: mean ~101, std ~11 on the local sessions), so a regression head would
         #: have to reproduce a ~100 offset and the MR-STFT term would be
         #: dominated by that DC component (its 0 Hz bin) instead of the
@@ -226,7 +226,7 @@ class PairedSessionDataset(Dataset):
             sig_path = s['signals_file']
             cols, fs_real = _load_signals_csv(sig_path, self.fs)
             s['fs'] = fs_real                      # per-session true sample rate
-            # cache EVERY canonical signal stream present (bvp/resp/eda) from
+            # cache EVERY canonical signal stream present (bp/resp/eda) from
             # a single csv parse, so subclasses (Stage-2 multimodal pretraining)
             # can read extra streams without re-parsing the file.
             canon = _canonical_signals(cols)
@@ -374,13 +374,13 @@ class PairedPretrainDataset(PairedSessionDataset):
     by the multimodal MAE. Exactly the streams listed in ``streams`` are
     returned, e.g.::
 
-        streams = ('rgb', 'bvp')       -> video + physio (Stage-2 minimum)
-        streams = ('rgb','tir','bvp')  -> two video + one physio
-        streams = ('rgb','tir','bvp','resp','eda') -> all five
+        streams = ('rgb', 'bp')       -> video + physio (Stage-2 minimum)
+        streams = ('rgb','tir','bp')  -> two video + one physio
+        streams = ('rgb','tir','bp','resp','eda') -> all five
 
     Stage-2 CONTRACT: ``streams`` must contain at least TWO modalities --
     >=1 video (``rgb``/``tir``) AND >=1 physiological 1-D signal
-    (``bvp``/``resp``/``eda``, the waveform later regressed in Stage 3);
+    (``bp``/``resp``/``eda``, the waveform later regressed in Stage 3);
     video-only or signal-only lists are rejected. Split policy =
     PRETRAIN-ON-ALL: every session is used (``train_ratio=1.0``). Masking is
     applied inside the model forward, not here.
@@ -393,7 +393,7 @@ class PairedPretrainDataset(PairedSessionDataset):
                  seq_len: Optional[int] = None,
                  input_size: int = 64, rgb_dir: str = 'rgb',
                  tir_file: str = 'tir.wmv', signals_file: str = 'signals.csv',
-                 streams: Sequence[str] = ('rgb', 'tir', 'bvp', 'resp', 'eda'),
+                 streams: Sequence[str] = ('rgb', 'tir', 'bp', 'resp', 'eda'),
                  max_sessions: Optional[int] = None,
                  max_clips: Optional[int] = None,
                  max_entries: Optional[int] = None,
@@ -416,7 +416,7 @@ class PairedPretrainDataset(PairedSessionDataset):
         self.signal_streams = tuple(
             s for s in streams if s not in _PRETRAIN_VISUAL_STREAMS)
         # Stage-2 contract: >=1 video (rgb/tir) AND >=1 1-D physiological
-        # (bvp/resp/eda); the physio stream(s) are the Stage-3 targets.
+        # (bp/resp/eda); the physio stream(s) are the Stage-3 targets.
         if not self.visual_streams or not self.signal_streams:
             raise ValueError(
                 'PairedPretrainDataset: Stage-2 requires >=1 video stream '
@@ -438,7 +438,7 @@ class PairedPretrainDataset(PairedSessionDataset):
             max_sessions=max_sessions, max_clips=max_clips,
             max_entries=max_entries, tir_channels=tir_channels,
             # decode/cache the TIR video ONLY when 'tir' is a requested stream:
-            # an rgb+bvp run would otherwise pay the warm .wmv decode plus up to
+            # an rgb+bp run would otherwise pay the warm .wmv decode plus up to
             # ~1.6 GB (224 px) of RAM per dataset instance for nothing.
             use_tir=('tir' in self.visual_streams))
 
@@ -472,7 +472,7 @@ def build_paired_dataset(is_train: bool, test_mode: bool, args):
     """Build a PairedSessionDataset from runner/YAML ``args``."""
     return PairedSessionDataset(
         data_path=getattr(args, 'data_path', ''),
-        target=getattr(args, 'target', 'bvp'),
+        target=getattr(args, 'target', 'bp'),
         is_train=is_train, test_mode=test_mode,
         fs=getattr(args, 'fs', 100.0),
         fps=getattr(args, 'fps', 25.0),

@@ -63,16 +63,16 @@ def get_args():
     parser.add_argument('--input_size', default=64, type=int,
                         help='frame short-side resize/crop (square)')
     # multimodal MAE (Stage 2)
-    parser.add_argument('--streams', default='rgb,tir,bvp', type=str,
+    parser.add_argument('--streams', default='rgb,tir,bp', type=str,
                         help='comma list of pretraining streams. Stage-2 '
                              'requires >=2: >=1 of rgb,tir (video) AND >=1 '
-                             'of bvp,resp,eda (1-D physio, Stage-3 target), '
-                             'e.g. rgb,bvp or rgb,tir,bvp,resp,eda')
+                             'of bp,resp,eda (1-D physio, Stage-3 target), '
+                             'e.g. rgb,bp or rgb,tir,bp,resp,eda')
     parser.add_argument('--tubelet', default='2,16,16', type=str,
                         help='tubelet (t, ph, pw) for the video tokenizer')
     parser.add_argument('--mask_ratio_rgb', default=0.75, type=float)
     parser.add_argument('--mask_ratio_tir', default=0.50, type=float)
-    parser.add_argument('--mask_ratio_bvp', default=0.90, type=float)
+    parser.add_argument('--mask_ratio_bp', default=0.90, type=float)
     parser.add_argument('--mask_ratio_resp', default=0.90, type=float)
     parser.add_argument('--mask_ratio_eda', default=0.90, type=float)
     parser.add_argument('--loss_weights', default='', type=str,
@@ -121,7 +121,7 @@ def get_args():
                         type=str,
                         help='MR-STFT FFT window sizes in samples (comma '
                              'list). At fs=100 Hz: 64 -> 1.56 Hz, 128 -> '
-                             '0.78 Hz, 256 -> 0.39 Hz resolution, i.e. the BVP '
+                             '0.78 Hz, 256 -> 0.39 Hz resolution, i.e. the BP '
                              '(1.0-2.5 Hz) and RESP (0.16-0.4 Hz) bands are '
                              'both covered. Windows longer than the clip are '
                              'dropped, and the model raises if none remain.')

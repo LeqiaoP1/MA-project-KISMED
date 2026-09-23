@@ -1,9 +1,9 @@
 """Multimodal masked autoencoder for Stage-2 pre-training.
 
 Streams: ``rgb`` + ``tir`` (3-D tubelet spatio-temporal video) plus any
-physiological 1-D signals (``bvp`` / ``resp`` / ``eda``; milestone runs
-``rgb,tir,bvp``). STAGE-2 CONTRACT: at least TWO streams -- >=1 video
-(rgb/tir) AND >=1 physiological 1-D signal (bvp/resp/eda, the waveform
+physiological 1-D signals (``bp`` / ``resp`` / ``eda``; milestone runs
+``rgb,tir,bp``). STAGE-2 CONTRACT: at least TWO streams -- >=1 video
+(rgb/tir) AND >=1 physiological 1-D signal (bp/resp/eda, the waveform
 later regressed in Stage 3). All-visual or all-signal stream lists are
 rejected. Pipeline inside ``MultiModalMAE.forward``:
 
@@ -57,7 +57,7 @@ Tensor layouts::
 
     x = {'rgb': [B, 3, T, H, W],
          'tir': [B, 3, T, H, W],   # false-colour thermal rendering (3 ch)
-         'bvp': [B, 1, S]}         # any physio stream (resp/eda share this layout)
+         'bp': [B, 1, S]}         # any physio stream (resp/eda share this layout)
 
 ``tir`` is 3-channel by default because the BP4D thermal ``.wmv`` is a
 false-colour (rainbow) thermal *rendering* with a burned-in degC legend -- not a
@@ -87,7 +87,7 @@ __all__ = ['TubeletEmbed', 'MultiModalMAE', 'build_pretraining_model',
 
 _EPS = 1e-6
 _VISUAL_STREAMS = ('rgb', 'tir')
-_SIGNAL_STREAMS = ('bvp', 'resp', 'eda')
+_SIGNAL_STREAMS = ('bp', 'resp', 'eda')
 
 #: Default input channels per stream. ``tir`` is 3, NOT 1: the BP4D thermal
 #: stream is a false-colour (rainbow) rendering with a burned-in degC legend --
@@ -96,7 +96,7 @@ _SIGNAL_STREAMS = ('bvp', 'resp', 'eda')
 #: Feeding luma only would discard the palette the camera wrote. Override per
 #: run with ``--tir_channels 1`` (legacy), but note that changes the TIR
 #: adapter geometry: Stage-2 checkpoints are only compatible within one setting.
-STREAM_CHANNELS = {'rgb': 3, 'tir': 3, 'bvp': 1, 'resp': 1, 'eda': 1}
+STREAM_CHANNELS = {'rgb': 3, 'tir': 3, 'bp': 1, 'resp': 1, 'eda': 1}
 
 #: Named multimodal encoder geometries. The NAME implies the geometry (the same
 #: timm-style convention as the ``project_vit_*`` family in :mod:`core.model`),
@@ -185,7 +185,7 @@ class _PosMask(nn.Module):
 class MultiModalMAE(nn.Module):
     """Single shared-encoder, per-stream asymmetric-masked autoencoder."""
 
-    def __init__(self, streams: Sequence[str] = ('rgb', 'tir', 'bvp'),
+    def __init__(self, streams: Sequence[str] = ('rgb', 'tir', 'bp'),
                  stream_channels: Optional[Dict[str, int]] = None,
                  embed_dim: int = 768, enc_depth: int = 12,
                  enc_num_heads: int = 12, mlp_ratio: float = 4.0,
@@ -225,7 +225,7 @@ class MultiModalMAE(nn.Module):
         self.visual = [s for s in self.streams if s in _VISUAL_STREAMS]
         self.signal = [s for s in self.streams if s not in _VISUAL_STREAMS]
         # Stage-2 contract: >=1 video (rgb/tir) AND >=1 1-D physiological
-        # (bvp/resp/eda) -- the physio stream(s) are the Stage-3 regression
+        # (bp/resp/eda) -- the physio stream(s) are the Stage-3 regression
         # targets, so video-only or signal-only runs are not allowed.
         if not self.visual or not self.signal:
             raise ValueError(
@@ -328,7 +328,7 @@ class MultiModalMAE(nn.Module):
                 fft_sizes=fft_sizes, hop_ratio=self.spectral_hop_ratio)
 
         # default asymmetric ratios (visual 50-75 %, signals 90 %+)
-        ratios = {'rgb': 0.75, 'tir': 0.50, 'bvp': 0.90}
+        ratios = {'rgb': 0.75, 'tir': 0.50, 'bp': 0.90}
         if mask_ratios:
             ratios.update(mask_ratios)
         self.mask_ratios = {s: ratios.get(s, 0.90) for s in self.streams}
@@ -704,13 +704,13 @@ def _parse_int_csv(v, dtype=int):
 def build_pretraining_model(args):
     """Construct the multimodal MAE from a run_pretrain ``args`` namespace."""
     streams = tuple(x.strip() for x in
-                    str(getattr(args, 'streams', 'rgb,tir,bvp')).split(',')
+                    str(getattr(args, 'streams', 'rgb,tir,bp')).split(',')
                     if x.strip())
     if not streams:
         raise ValueError(
             'build_pretraining_model: --streams must name at least two '
             'modalities (>=1 video rgb/tir and >=1 physiological 1-D '
-            'bvp/resp/eda).')
+            'bp/resp/eda).')
     if not any(s in _VISUAL_STREAMS for s in streams) or \
             not any(s in _SIGNAL_STREAMS for s in streams):
         raise ValueError(
@@ -745,7 +745,7 @@ def build_pretraining_model(args):
 
     ratios = {'rgb': float(getattr(args, 'mask_ratio_rgb', 0.75)),
               'tir': float(getattr(args, 'mask_ratio_tir', 0.50)),
-              'bvp': float(getattr(args, 'mask_ratio_bvp', 0.90)),
+              'bp': float(getattr(args, 'mask_ratio_bp', 0.90)),
               'resp': float(getattr(args, 'mask_ratio_resp', 0.90)),
               'eda': float(getattr(args, 'mask_ratio_eda', 0.90))}
 
@@ -1049,7 +1049,7 @@ def load_pretrained_encoder(model: 'MultiModalMAE', path: str,
 # --------------------------------------------------------------------------- #
 def _build_multimae(geom: Dict[str, int], **kwargs):
     """``MultiModalMAE`` from a variant geometry + runtime kwargs."""
-    kwargs.setdefault('streams', ('rgb', 'tir', 'bvp'))
+    kwargs.setdefault('streams', ('rgb', 'tir', 'bp'))
     return MultiModalMAE(embed_dim=geom['embed_dim'],
                          enc_depth=geom['enc_depth'],
                          enc_num_heads=geom['enc_num_heads'], **kwargs)

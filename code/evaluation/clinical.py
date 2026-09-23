@@ -12,9 +12,9 @@ __all__ = ['extract_hrv_metrics']
 
 
 def extract_hrv_metrics(signal, fs=100.0, method='elgendi'):
-    """Compute clinical HRV metrics from a single predicted BVP waveform.
+    """Compute clinical HRV metrics from a single predicted BP waveform.
 
-    :param signal: 1D numpy array (the continuous predicted BVP).
+    :param signal: 1D numpy array (the continuous predicted BP).
     :param fs: sampling rate in Hz.
     :param method: NeuroKit2 peak-detection method for ``ppg`` (e.g. 'elgendi').
     :returns: dict with keys rmssd_ms, pnn50, median_nn_ms, shannon_entropy

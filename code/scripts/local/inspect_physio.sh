@@ -9,7 +9,7 @@
 #   SUBJECT=F001,F002 TASK=T1,T2 CHANNEL=Resp,EDA bash scripts/local/inspect_physio.sh
 #   bash scripts/local/inspect_physio.sh --list            # what is on disk?
 #
-# Channel names are case-insensitive (BVP | Resp | EDA | all; BVP<-BP_mmHg.txt,
+# Channel names are case-insensitive (BP | Resp | EDA | all; BP<-BP_mmHg.txt,
 # Resp<-Resp_Volts.txt, EDA<-EDA_microsiemens.txt). Anything after the script
 # name is passed to the runner verbatim, so flags can also be given directly:
 #   bash scripts/local/inspect_physio.sh --subject F001 --task T1 --channel EDA
