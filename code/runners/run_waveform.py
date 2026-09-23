@@ -29,10 +29,12 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import numpy as np
 import torch
 
 from core import WaveformJointLoss
-from engines import evaluate_waveforms, train_one_epoch_waveform
+from engines import (evaluate_waveforms, predict_waveforms,
+                     train_one_epoch_waveform)
 from runners._common import (add_common_args, env_or, init_env,
                              make_data_loader, parse_args_with_config)
 
@@ -108,6 +110,13 @@ def get_args():
     # data (implement BP4D+ in code/data/datasets.py)
     parser.add_argument('--data_set', default=env_or('DATA_SET', 'bp4d+'), type=str)
     parser.add_argument('--data_path', default=env_or('DATA_PATH'), type=str)
+    parser.add_argument('--split_by', default='session', type=str,
+                        choices=['session', 'subject'],
+                        help="'subject' = SUBJECT-disjoint train/val, which the "
+                             "Stage-3 protocol requires (4 local subjects -> 3 "
+                             "train / F004 val). 'session' = the historical "
+                             'per-session split; use it for tiny smoke runs, '
+                             'where a subject-disjoint val split would be empty.')
 
     # training
     parser.add_argument('--batch_size', default=16, type=int)
@@ -134,6 +143,11 @@ def get_args():
     # spectral band for evaluation (plan: BP 1.0-2.5 Hz, RESP 0.16-0.4 Hz)
     parser.add_argument('--eval_band', default=None, type=str,
                         help='e.g. "1.0,2.5" to restrict spectral eval')
+    parser.add_argument('--save_preds', action='store_true', default=False,
+                        help='also write val preds.npy / targets.npy / '
+                             'entries.json into --output_dir; required by '
+                             'runners/run_evaluate_session.py for the '
+                             'session-level assembly metrics')
     return parse_args_with_config(parser)
 
 
@@ -170,7 +184,7 @@ def main(args):
         if args.finetune:
             from models.pretrained import resolve_encoder_weights
             args.finetune = resolve_encoder_weights(args.finetune)
-            load_stage2_encoder(model, args.finetune)
+            load_stage2_encoder(model, args.finetune, target=args.target)
         else:
             print('[stage3] WARNING: no --finetune checkpoint -> the encoder '
                   'starts from random weights (this is NOT Stage-3 fine-tuning).')
@@ -220,23 +234,71 @@ def main(args):
     loss_scaler = NativeScalerWithGradNormCount()
     print(f'Criterion: {criterion}')
 
+    # ----- step-level warmup + cosine LR schedule, then resume ------------ #
+    # Mirrors run_pretrain: until now --warmup_epochs / --min_lr were parsed but
+    # never used (the LR stayed constant at args.lr for every epoch) and
+    # --resume was dead, so an interrupted 100-epoch run could not continue.
+    from utils import (auto_resume_model, cosine_scheduler, get_world_size,
+                       save_model)
+    if args.warmup_epochs >= args.epochs:
+        raise SystemExit(
+            f'--warmup_epochs ({args.warmup_epochs}) must be < --epochs '
+            f'({args.epochs}); use --warmup_epochs 0 for a 1-epoch smoke run.')
+    steps_per_epoch = max(
+        1, (len(dataset_train) // (args.batch_size * get_world_size()))
+        // max(1, args.update_freq))
+    lr_schedule_values = cosine_scheduler(
+        args.lr, args.min_lr, args.epochs, steps_per_epoch,
+        warmup_epochs=args.warmup_epochs)
+    auto_resume_model(args, model_without_ddp, optimizer, loss_scaler)
+    start_epoch = int(getattr(args, 'start_epoch', 0) or 0)
+    if start_epoch >= args.epochs:
+        raise SystemExit(
+            f'nothing to do: the checkpoint in {args.output_dir}/checkpoints is '
+            f'already at epoch {start_epoch} and --epochs is {args.epochs}. '
+            f'Raise --epochs to train longer, or point --output_dir elsewhere '
+            f'/ remove latest_checkpoint.txt to start from scratch.')
+    print(f'LR schedule: {args.lr:g} -> {args.min_lr:g} over {args.epochs} '
+          f'epoch(s), warmup {args.warmup_epochs} epoch(s), '
+          f'{steps_per_epoch} steps/epoch; start_epoch={start_epoch}')
+
     # ----- training loop -------------------------------------------------- #
-    from utils import save_model
+    # artefact helpers are needed INSIDE the loop (metrics.jsonl + the refreshed
+    # training_curves.png), so import them before it starts
+    from evaluation.report import (append_jsonl, plot_training_curves,
+                                   plot_waveform_panel, save_json)
     best_pearson = -float('inf')
-    for epoch in range(args.epochs):
+    history = []                    # one dict per evaluated epoch (see below)
+    for epoch in range(start_epoch, args.epochs):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
 
-        train_one_epoch_waveform(
+        train_stats = train_one_epoch_waveform(
             model=model, criterion=criterion, data_loader=data_loader_train,
             optimizer=optimizer, device=device, epoch=epoch,
             loss_scaler=loss_scaler, max_norm=args.clip_grad,
-            update_freq=args.update_freq)
+            update_freq=args.update_freq,
+            lr_schedule_values=lr_schedule_values,
+            start_steps=epoch * steps_per_epoch)
 
         if epoch % args.eval_freq == 0 or epoch + 1 == args.epochs:
             stats = evaluate_waveforms(data_loader_val, model, device,
                                        fs=args.fs, band=args.eval_band)
             print(f'[epoch {epoch}] {args.target}: {stats}')
+            record = {'epoch': epoch, 'target': args.target,
+                      'train_loss': (train_stats or {}).get('loss'),
+                      'lr': (train_stats or {}).get('lr'), **stats}
+            history.append(record)
+            if is_main_process():
+                # one JSONL line per epoch + a refreshed figure: an interrupted
+                # run still leaves a readable evaluation record on disk
+                append_jsonl(os.path.join(args.output_dir, 'metrics.jsonl'),
+                             record)
+                plot_training_curves(
+                    history,
+                    os.path.join(args.output_dir, 'training_curves.png'),
+                    title=f'{args.target} | {args.model} | input {args.input_size} '
+                          f'| {args.epochs} epochs | {args.split_by}-disjoint split')
             pearson = stats.get('pearson', -1.0)
             if is_main_process() and pearson > best_pearson:
                 best_pearson = pearson
@@ -250,6 +312,49 @@ def main(args):
                        loss_scaler)
 
     print(f'Best Pearson ({args.target}): {best_pearson:.4f}')
+
+    # ----- final evaluation artefacts: figures + JSON (not just stdout) ----- #
+    if is_main_process():
+        from evaluation import metrics as _metrics
+        pred, target = predict_waveforms(data_loader_val, model, device)
+        if pred.size:
+            final = dict(_metrics.time_domain_metrics(pred, target))
+            try:
+                final.update(_metrics.spectral_metrics(
+                    pred, target, fs=args.fs, band=args.eval_band))
+            except ImportError:
+                final['psd_mae'] = float('nan')
+            n_pred = int(pred.shape[0])
+            save_json(os.path.join(args.output_dir, 'metrics_final.json'), {
+                'target': args.target, 'model': args.model,
+                'split_by': args.split_by, 'n_clips': n_pred,
+                'fs': args.fs, 'clip_duration': args.clip_duration,
+                'input_size': args.input_size, 'sig_kernel': args.sig_kernel,
+                'signal_norm': args.signal_norm, 'finetune': args.finetune,
+                'epochs': args.epochs, 'best_pearson': best_pearson,
+                'per_clip_metrics': final})
+            plot_waveform_panel(
+                pred, target, fs=args.fs,
+                out_png=os.path.join(args.output_dir, 'predictions_final.png'),
+                title=(f'{args.target}: predicted vs target, val split '
+                       f'(z-scored)'),
+                band=args.eval_band, metrics=final)
+            print(f'[stage3] wrote metrics_final.json + predictions_final.png to '
+                  f'{args.output_dir}')
+            if args.save_preds:
+                np.save(os.path.join(args.output_dir, 'preds.npy'), pred)
+                np.save(os.path.join(args.output_dir, 'targets.npy'), target)
+                entries = [{'session': m['session'], 't_start': float(t),
+                            'signals_file': m.get('signals_file', '')}
+                           for m, t in dataset_val.entries]
+                if len(entries) != n_pred:
+                    print(f'[stage3] WARNING: {len(entries)} dataset entries vs '
+                          f'{n_pred} predictions -- the loader was sharded '
+                          f'(DDP), so the dump is incomplete; re-run the '
+                          f'evaluation single-process for session assembly.')
+                save_json(os.path.join(args.output_dir, 'entries.json'), entries)
+                print(f'[stage3] saved preds.npy / targets.npy / entries.json '
+                      f'({n_pred} clips) for session-level evaluation')
 
 
 if __name__ == '__main__':

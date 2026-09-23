@@ -83,7 +83,7 @@ evaluation) — *not* thesis results.
 
 ---
 
-## 2. Phase 0 — configs and launcher (no code changes)
+## 2. Phase 0 — configs and launcher — **DONE 2026-09-23**
 
 ### 2.1 New configs
 
@@ -121,7 +121,7 @@ comparable.
 | `update_freq` / `save_ckpt_freq` / `eval_freq` | `1` / `10` / `1` | |
 | `opt` / `lr` / `min_lr` | `adamw` / `1e-4` / `1e-6` | |
 | `warmup_epochs` | `2` | **dead until Phase 1.3 lands** |
-| `weight_decay` / `clip_grad` | `0.05` / `0.0` | |
+| `weight_decay` / `clip_grad` | `0.05` / `0.0` | `0.0` = **no clipping** — but see §9 "Phase 3" for the bug that made this value zero every gradient |
 | `num_workers` | `4` | |
 | `output_dir` | `../output/finetune/bp_local` / `resp_local` | mind the `../` |
 | `log_wandb` / `wandb_project` | `false` / `thesis-project` | wandb flags are unwired |
@@ -156,7 +156,7 @@ Optional: add two `.vscode/launch.json` entries for the two runs, and fix the st
 
 ---
 
-## 3. Phase 1 — three surgical code fixes (must land before the runs)
+## 3. Phase 1 — code fixes — **DONE 2026-09-23** (must land before the runs)
 
 ### 3.1 Stage-2 head → Stage-3 head transfer
 
@@ -346,11 +346,11 @@ Smoke acceptance: a finite loss, a `[epoch e] <target>: {...}` Tier-1/2 line, an
 
 ## 8. Open items and risks
 
-1. **Throughput vs batch size.** Measured ~4 s/iteration at batch 2 / input 64 on the
-   local GPU (RTX 5060 Ti, 16 GB) — ~12 min per epoch at ~175 iterations, i.e. ~8 h for
-   40 epochs per branch. Option A: batch 4, 40 epochs *(default)*. Option B: batch 8 to
-   roughly halve wall-clock if VRAM allows. Option C: cap `max_clips` to shorten
-   epochs while prototyping.
+1. **Throughput vs batch size.** UPDATED from the real 2026-09-23 run: batch 4 with
+   `num_workers: 4` gives **~0.78 s/iteration** and **62 s per epoch** (80 steps plus the
+   validation pass), i.e. ~45-60 min for the full 40-epoch BP run on the local GPU. The
+   earlier ~4 s/iteration figure came from a 0-worker smoke and was data-loader bound, so
+   the batch/epoch trade-off (options A/B/C) is no longer a real constraint at this scale.
 2. **Stitched-waveform scale convention.** Option A *(default)*: report
    affine-invariant session metrics (Pearson / PSD shape / RR) and keep MAE/RMSE
    per-clip. Option B: chain-wise affine calibration between overlapping clips.
@@ -368,3 +368,242 @@ Smoke acceptance: a finite loss, a `[epoch e] <target>: {...}` Tier-1/2 line, an
    ~0.39 Hz resolution, so the RESP band (0.16-0.4 Hz) is near-degenerate at 400-sample
    windows; `evaluate_waveforms` uses `batch[:2]` and returns only macro aggregates;
    `--log_wandb` is unwired in `run_waveform.py`.
+
+---
+
+## 9. Implementation status log — 2026-09-23
+
+**Phase 0 — DONE**
+
+* `configs/finetune/bp_local.yaml`, `configs/finetune/resp_local.yaml` — twin configs; the
+  only intended differences are `target`, `eval_band` and `output_dir`.
+* `scripts/local/waveform_local.sh` — `TARGET=bp|resp`, resolves the repo `.venv`
+  automatically (`$PYTHON` wins), passes `"$@"` through to `runners/run_waveform.py`.
+
+**Phase 1 — DONE**
+
+* `core/waveform_model.py`:
+  * `load_stage2_encoder(model, path, target=None)` now transfers `heads.<target>` into
+    `waveform_head.*` when the shapes line up (`samples_per_token == sig_kernel`,
+    `head_hidden == 0`); otherwise it says so explicitly instead of silently leaving the
+    head random.
+  * `build_waveform_model` raises when `samples_per_token != sig_kernel`. Nothing checked
+    this before, so a right `output_len` with a wrong `sig_kernel` trained happily while
+    prediction and target drifted apart.
+* `data/paired_dataset.py`: new `split_by` (`'session'` | `'subject'`), implemented with a
+  local `_subject_of` (duplicated from `data.au_dataset` on purpose — that import pulls
+  pandas into the Stage-3 path). An empty split now raises instead of silently training on
+  nothing. `data/paired_dataset.py::build_paired_dataset` plumbs the value from `args`, and
+  `run_waveform` gained a real `--split_by` flag so a smoke run can override the config.
+* `runners/run_waveform.py`: step-level warmup + cosine schedule (previously
+  `--warmup_epochs` / `--min_lr` were parsed but dead and the LR stayed constant at
+  `args.lr`), `auto_resume_model(...)`, `--split_by`, a guard for an already-complete run,
+  and `--target` threaded into the loader.
+* `engines/finetune.py::train_one_epoch(..., start_steps=None)`: the LR/WD schedule index is
+  now global (`start_steps + step`) instead of restarting every epoch. `run_finetune.py` is
+  unaffected (default `None` → previous behaviour).
+
+**Two bugs found while wiring this (both fixed)**
+
+1. `utils/checkpoint.py::load_model` called `torch.load(...)` without `weights_only=False`.
+   Under torch >= 2.6 the default is `True`, so resume died with a `_pickle.UnpicklingError`
+   (the checkpoint stores the `args` namespace, which pickles numpy scalars). Resume could
+   never have worked on this environment.
+2. The Stage-2 checkpoint on disk **still uses the pre-rename head key** — `heads.bvp.*`
+   (its stored `args.streams` is `rgb,bvp,resp`, and `adapters.bvp.*` / `positions.bvp.*`
+   likewise). `load_stage2_encoder` therefore accepts the legacy name for `bp` as an
+   explicit, reported fallback rather than starting the head random.
+
+**Verified locally (2026-09-23, `.venv`, torch 2.11)**
+
+* geometry from both configs: `grid_t` 50, `n_visual` 800, `output_len` 400,
+  `samples_per_token` 8 == `sig_kernel` 8.
+* `load_stage2_encoder(model, checkpoint-0039.pth, target='bp')`: 150 encoder tensors
+  loaded, 0 shape-mismatched, `head transferred: waveform_head.weight,
+  waveform_head.bias (from heads.bvp)`; both tensors elementwise equal to the checkpoint's
+  `heads.bvp.*`, and `positions.rgb.pos_embed` equal as well.
+* subject-disjoint split: train = F001-F003 (320 clips / 9 sessions), val = F004
+  (66 clips / 2 sessions).
+* `TARGET=bp scripts/local/waveform_local.sh --epochs 1 --warmup_epochs 0 --batch_size 2
+  --num_workers 0 --max_entries 2 --output_dir /tmp/bp_smoke` → loss 4.9399, Tier-1
+  (`mae`/`rmse`/`pearson`) and Tier-2 (`psd_mae`/`dominant_freq_error_hz`) printed for `bp`,
+  `checkpoints/checkpoint-0000.pth` + `best.pth` written.
+
+**Phase 3 — first run is VOID: `clip_grad: 0.0` zeroed every gradient (fixed)**
+
+The first 40-epoch `RGB → bp` run completed and *looked* healthy, but learned nothing:
+
+| signal | epoch 0 | epoch 39 |
+| --- | --- | --- |
+| train loss | 4.8836 | 4.8789 |
+| val `mae` | — | 0.9307 (frozen) |
+| val `pearson` | 0.0004 | ~0.0002 |
+| `psd_mae` | 0.1678 | 0.2252 |
+| `dominant_freq_error_hz` | 1.10 | 1.10 (constant) |
+
+Root cause, proven by direct experiment: `utils/native_scaler.py`
+`NativeScalerWithGradNormCount.__call__` tested `if clip_grad is not None:` and then handed
+`clip_grad` straight to `torch.nn.utils.clip_grad_norm_`. With the config's `0.0` that call
+scales **every** gradient by `clip_coef = 0.0 / (total_norm + eps) = 0`:
+
+```python
+clip_grad_norm_(max_norm=0.0) -> total_norm 1.732 ; grad now [0.0, 0.0, 0.0]
+clip_grad_norm_(max_norm=1.0) -> grad now [0.577, 0.577, 0.577]
+```
+
+The returned `grad_norm` still looked plausible because it is measured *before* the scaling,
+so the log gave no hint. Two collateral findings:
+
+* This is **pre-existing and repo-wide**, not a Stage-3 issue. The AMP branches
+  `engines/pretrain.py:71` and `engines/finetune.py:72` both pass `clip_grad=max_norm`, and
+  `runners/run_pretrain.py` defaults `--clip_grad` to `0.0` — so every AMP Stage-2/Stage-3 run
+  at the default was frozen too. This is the most likely explanation for the historical
+  "Stage-2 loss trends down but slowly" observation (3.371 → 3.336 over 20 epochs).
+* Only the AMP branches are affected; the non-AMP branch in the same class guards
+  `max_norm > 0`, which is why a CPU/no-scaling run *did* learn.
+
+Fix (central, so every caller is corrected at once):
+
+```python
+if clip_grad is not None and clip_grad > 0:   # 0.0 now genuinely means "off"
+```
+
+Acceptance test — `--epochs 5 --lr 1e-3 --warmup_epochs 0 --max_entries 16` on 16 clips:
+val `mae` 1.652 → 1.781 → 1.329 → 1.143 → **1.037**, versus the frozen 0.9307 above. The
+optimiser now moves the weights.
+
+The void run's directory was moved to `output/finetune/bp_local_BROKEN_clipgrad0/` (its
+checkpoints are bit-identical copies of the Stage-2 encoder, since nothing was ever
+updated), and the real run was relaunched into a fresh `output/finetune/bp_local/`.
+
+> Launching trap: `… | tee ../output/finetune/bp_local/train.log` fails with "No such file
+> or directory" when that directory does not exist yet. `tee` exits, the pipe closes, and
+> the training process dies on `SIGPIPE` **with no visible traceback** (its stderr goes to
+> the same dead pipe). Always `mkdir -p` the output directory before relaunching.
+
+**Phase 3 (continued) — the corrected run trains, but does not learn the task**
+
+The relaunched 40-epoch run finished with every expected artefact
+(`metrics.jsonl`, `training_curves.png`, `metrics_final.json`, `predictions_final.png`,
+`preds.npy` / `targets.npy` / `entries.json`, `checkpoints/`, `best.pth`, plus the
+session-level `session_metrics.json` + `figures/session_*.png`). The optimisation is now
+real — but the task is not solved.
+
+| quantity | epoch 0 | epoch 39 |
+| --- | --- | --- |
+| train loss (noisy, 3.7-6.8 range) | 4.36 | 3.77 |
+| val `pearson` | 0.0006 | 0.0118 (best **0.0203** at epoch 25) |
+| val `mae` | 0.916 | 0.962 |
+| `psd_mae` | 0.314 | 0.101 (plateau after epoch ~15) |
+| `dominant_freq_error_hz` | 0.710 | 0.071 |
+| LR (warmup → cosine) | 5e-5 | 1e-6 |
+
+The LR curve confirms the Phase-1.3 schedule fix works, and the loss genuinely trends down,
+so the `clip_grad` fix is doing its job. The problem is that the *val* metrics never
+improve. Four independent diagnostics explain why.
+
+**1. The prediction is the same waveform for every clip.**
+
+| check | value |
+| --- | --- |
+| across-clip correlation of **predictions** | **0.9998** |
+| across-clip correlation of **targets** | −0.028 |
+| std across clips at each time index | 0.0053 (vs output std 0.393 → **1.3 %**) |
+
+**2. The encoder hands the head a near-constant feature.**
+
+`waveform_head` is a single `Linear(768, 8)` applied per time step, so `h` is the only
+thing that can carry input information. Pooled over the 16 val clips:
+
+| check | value |
+| --- | --- |
+| `h` std across clips | 0.00086 (vs `h` std overall 0.556 → **0.15 %**) |
+| &#124;h(clip0) − h(clip1)&#124; | 0.00114 |
+| &#124;h(clip0) − h(**zero input**)&#124; | 0.0348 (**31×** larger) |
+| &#124;pred(clip0) − pred(clip1)&#124; | 0.0082 |
+| &#124;pred(clip0) − pred(**zero input**)&#124; | 0.192 (**23×** larger) |
+
+So the network is not "dead" — it responds strongly to whether there is an image at all. It
+has collapsed to a **coarse global scene statistic** and discards the per-clip variation.
+
+**3. The model is worse than predicting a constant.** The target is z-scored per clip, so
+predicting 0 is the natural baseline: `mean|target| = 0.792` versus the model's
+`mean|pred − target| = 0.962`. The model adds variance without adding signal, i.e. it
+optimises L1/STFT magnitude by *shrinking* (prediction std 0.33-0.39 against a target
+std of 1.0) — the classic collapse-to-the-conditional-mean failure.
+
+**4. The information IS in the input, so this is a model/objective problem, not a data
+problem.** A one-line baseline — the frame-wise mean of the green channel, no learning —
+already recovers the pulse:
+
+| input path (same 10 s window of F004_T1) | Welch peak | corr with reference `bp` |
+| --- | --- | --- |
+| **training input** (`target_size=64`, `IMREAD_REDUCED_8` decode) | 1.30 Hz | **−0.306** |
+| full-quality decode then downscale to 64 | 1.30 Hz | −0.294 |
+| native resolution, full-frame mean | 1.30 Hz | −0.294 |
+| reference `bp` itself | 1.17 Hz | — |
+
+Against the per-clip z-scored targets on 16 val clips, the same trivial baseline scores
+`mean r = −0.19` (consistently negative on every clip — the physiologically expected
+anti-phase between the pressure wave and green-channel intensity), versus the trained
+model's `+0.017`. Two conclusions follow:
+
+* the **reduced-decode path is exonerated** — a suspected culprit that turned out to make no
+  difference (`−0.306` vs `−0.294`);
+* a **102 M-parameter network performs 10× worse than averaging green pixels**, so the fault
+  lies in the training setup, not in the data or the input pipeline.
+
+Leading explanations, in order of likelihood: (a) the loss lets the model satisfy L1 and
+MR-STFT magnitude by shrinking towards a constant, and the scale-invariant Pearson term is
+too weak to prevent it; (b) the Stage-2 encoder contributes little — it was itself trained
+under the `clip_grad` bug and its objective was RGB-dominated masked reconstruction, which
+does not reward preserving sub-1 % intensity modulation; (c) 320 clips against 102 M
+parameters gives the model an easier degenerate optimum than the intended one.
+
+Diagnostic probes used above are throwaway scripts (`/tmp/bp_input_probe.py`,
+`/tmp/bp_model_probe2.py`); re-run them from `code/` after any objective change to check
+whether the encoder has started to encode per-clip variation.
+
+* resume: re-running with `--epochs 3` auto-resumes (`start_epoch=1`) and the LR now moves
+  (epoch 1 `lr` 7.5e-5, epoch 2 `lr` 2.6e-5) instead of the old constant 1e-4; an
+  already-complete run exits with a clear message.
+
+**Phase 2 — DONE 2026-09-23 (evaluation artefacts + session assembly)**
+
+* `evaluation/report.py` (new): `save_json`, `append_jsonl`, `plot_training_curves`,
+  `plot_waveform_panel`, `plot_session_waveform` — matplotlib is imported lazily and forced
+  to the headless `Agg` backend, so the training path never needs a display; everything is
+  written as PNG/JSON.
+* `engines/waveform.py`: new `predict_waveforms(...)` returning the raw `[N, T]` arrays in
+  loader order; `evaluate_waveforms` now reuses it and keeps its metric keys.
+* `runners/run_waveform.py`: every evaluated epoch appends `<output_dir>/metrics.jsonl` and
+  refreshes `<output_dir>/training_curves.png`; the end of a run writes
+  `metrics_final.json` + `predictions_final.png`; `--save_preds` (enabled in both local
+  configs) dumps `preds.npy` / `targets.npy` / `entries.json` for the session evaluator.
+* `evaluation/assemble.py` (new): Hann overlap-add with weight-sum normalisation, offsets
+  derived as `round(t_start * fs)` from the dataset entries, plus `affine_calibrate` for the
+  amplitude metrics.
+* `runners/run_evaluate_session.py` (new): consumes the dump, rebuilds each session, and
+  writes `<pred_dir>/session_metrics.json` + `figures/session_<name>.png` with per-clip
+  macro Tier-1/2, session-level Tier-1/2 (raw **and** affine-calibrated) and Tier-3 over
+  30 s windows.
+* `evaluation/clinical.py`: Tier-3 guard raised from 2 s to **30 s** (and it now prints the
+  reason it skips), with `n_rr` and `peak_success` added to the result.
+
+**Verified**: a 2-epoch RGB→BP smoke produced `metrics.jsonl`, `training_curves.png`,
+`metrics_final.json`, `predictions_final.png`, `preds.npy`/`targets.npy`/`entries.json`,
+`checkpoints/checkpoint-000{0,1}.pth`, `best.pth`, and — from
+`runners/run_evaluate_session.py` — `session_metrics.json` +
+`figures/session_F004_T1.png`. Both figures were opened and look correct. Scale check on
+that untrained 2-epoch model: session MAE 101 (raw mmHg reference) vs 7.71 after the
+per-session affine calibration, Pearson ~0.0003 — i.e. the artefact pipeline is sound and
+the numbers are honest about the (un)trained state.
+
+**Phase 3 — started 2026-09-23, BP branch ONLY** (user decision: no RESP run for now).
+`TARGET=bp scripts/local/waveform_local.sh` with the config defaults (40 epochs, batch 4,
+`num_workers` 4); the log is teed to `output/finetune/bp_local/train.log`. **Measured
+throughput**: ~0.78 s/iteration -> epoch 0 took **62 s** including the validation pass, so
+the whole 40-epoch run is ~45-60 min (the earlier ~8 h estimate came from a 0-worker smoke
+that was data-loader bound and is superseded). The RESP branch (`TARGET=resp …`) is NOT
+started and stays ready to launch. Phase 4 (README / simplifiedPlan status + memory) is the
+remaining step.

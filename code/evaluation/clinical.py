@@ -32,10 +32,21 @@ def extract_hrv_metrics(signal, fs=100.0, method='elgendi'):
         'pnn50': np.nan,
         'median_nn_ms': np.nan,
         'shannon_entropy': np.nan,
+        'n_rr': 0,
+        'peak_success': 0.0,
     }
 
     signal = np.asarray(signal, dtype=np.float32).reshape(-1)
-    if signal.ndim != 1 or len(signal) < 2 * fs:
+    # RMSSD / pNN50 / MedianNN are INTERVAL statistics: an 8 s clip yields only
+    # 7-9 RR intervals, which is far too few to be meaningful. Require >= 30 s
+    # and say so instead of silently returning NaNs. Callers that own a longer
+    # signal (the session-level evaluator) should split it into 30-60 s windows
+    # and aggregate (median/IQR) rather than feeding one long vector.
+    min_samples = int(round(30.0 * fs))
+    if signal.ndim != 1 or len(signal) < min_samples:
+        print(f'[tier3] skipped: {len(signal)} samples = '
+              f'{len(signal) / fs:.1f} s < {min_samples / fs:.0f} s; HRV needs '
+              f'a longer window.')
         return result   # too short / malformed
 
     try:
@@ -44,6 +55,10 @@ def extract_hrv_metrics(signal, fs=100.0, method='elgendi'):
         peaks = info['PPG_Peaks']
     except Exception:
         return result
+
+    n_peaks = int(np.asarray(peaks).reshape(-1).size)
+    result['n_rr'] = max(0, n_peaks - 1)     # RR intervals = peaks - 1
+    result['peak_success'] = 1.0 if n_peaks > 1 else 0.0
 
     try:
         hrv = nk.hrv_time(peaks, sampling_rate=fs)

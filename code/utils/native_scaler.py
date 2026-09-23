@@ -18,7 +18,14 @@ class NativeScalerWithGradNormCount:
                  create_graph=False, update_grad=True):
         self._scaler.scale(loss).backward(create_graph=create_graph)
         if update_grad:
-            if clip_grad is not None:
+            # ``clip_grad`` must be POSITIVE to clip. The guard mirrors the
+            # non-AMP branch in engines/*: ``clip_grad_norm_(..., max_norm=0.0)
+            # scales EVERY gradient to exactly zero (clip_coef = 0/(norm+eps)),
+            # which silently disabled learning for every run whose config left
+            # clip_grad at its 0.0 default ("no clipping"), while still
+            # RETURNING a healthy-looking grad norm (measured before the
+            # scaling). Stage-3 bp/resp and Stage-2 were both affected.
+            if clip_grad is not None and clip_grad > 0:
                 assert parameters is not None
                 self._scaler.unscale_(optimizer)   # unscale the gradients
                 norm = torch.nn.utils.clip_grad_norm_(parameters, clip_grad)

@@ -21,7 +21,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     loss_scaler=None, max_norm: float = 0.0,
                     model_ema=None, mixup_fn=None, log_writer=None,
                     lr_schedule_values=None, wd_schedule_values=None,
-                    update_freq: int = 1):
+                    update_freq: int = 1, start_steps: int = None):
     model.train(True)
     metric_logger = MetricLogger(delimiter='  ')
     metric_logger.add_meter('lr', SmoothedValue(window_size=1, fmt='{value:.6f}'))
@@ -35,15 +35,18 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         # (samples, targets, index, bool_masked_pos).
         samples, targets = batch[:2]
         step = data_iter_step // update_freq
+        # global step index for the LR/WD schedules: without start_steps the
+        # cosine restarts every epoch (Stage-2 engines/pretrain.py does the same)
+        sched_idx = step if start_steps is None else start_steps + step
 
         # per-step LR / weight-decay update (cosine schedules)
         if lr_schedule_values is not None or wd_schedule_values is not None:
             for i, param_group in enumerate(optimizer.param_groups):
                 if lr_schedule_values is not None:
-                    param_group['lr'] = lr_schedule_values[step]
+                    param_group['lr'] = lr_schedule_values[sched_idx]
                 if (wd_schedule_values is not None
                         and param_group['weight_decay'] > 0):
-                    param_group['weight_decay'] = wd_schedule_values[step]
+                    param_group['weight_decay'] = wd_schedule_values[sched_idx]
 
         samples = samples.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)

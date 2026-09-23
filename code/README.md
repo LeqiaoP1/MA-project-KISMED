@@ -78,6 +78,43 @@ bash scripts/project/pretrain.sh
 bash scripts/project/finetune.sh
 ```
 
+### Stage-2 pre-training was silently training NOTHING (fixed 2026-09-23)
+
+`clip_grad: 0.0` means "no gradient clipping", but the AMP branch of
+`utils/native_scaler.py::NativeScalerWithGradNormCount.__call__` tested
+`if clip_grad is not None:` and handed `0.0` straight to `torch.nn.utils.clip_grad_norm_`.
+That call rescales every gradient by `clip_coef = 0.0 / (total_norm + eps) = 0`:
+
+```python
+clip_grad_norm_(max_norm=0.0) -> total_norm 1.732 ; grad now [0.0, 0.0, 0.0]
+clip_grad_norm_(max_norm=1.0) -> grad now [0.577, 0.577, 0.577]
+```
+
+The returned `grad_norm` still looked healthy because it is measured *before* the
+scaling, so the logs gave no hint. Both `run_pretrain.py` and `run_waveform.py`
+construct a real scaler, so **every Stage-2/Stage-3 AMP run at the default
+`--clip_grad 0.0` had its gradients zeroed**. The guard is now
+`if clip_grad is not None and clip_grad > 0:` (mirroring the non-AMP branch).
+
+Evidence from `output/pretrain/stage2_local_pretrained_BROKEN_clipgrad0/`: in
+`checkpoint-0039.pth` the Adam buffers `exp_avg` / `exp_avg_sq` were **exactly zero
+for all 188 parameters** (nothing ever reached the optimiser), and the 68 tensors
+that *did* differ from `checkpoint-0000.pth` differed by exactly the same factor
+`0.98280` (std `0.00000`) as the analytically predicted pure weight decay
+`prod(1 - lr_t*wd) = 0.98273` — i.e. AdamW's decoupled weight decay, no learning.
+
+**How to check any run for this class of bug:** load the checkpoint and assert that
+some `optimizer['state'][pid]['exp_avg']` is non-zero. A non-zero `grad_norm` in the
+log is NOT evidence of learning; a weight change is NOT either (weight decay moves
+weights with zero gradients). Verify with a loss **drop**.
+
+After the fix, the same 40-epoch config trains properly: loss `5.06 -> 2.21`,
+`mse_rgb 1.48 -> 0.22`, `mse_bp 1.61 -> 1.06`, `mse_resp 3.59 -> 1.49`,
+`spec_resp 6.94 -> 5.11`, 376/376 optimiser buffers non-zero, and the encoder sits
+`0.0687` (relative mean |Δ|) from its Stage-1 init versus `0.0174` for the broken
+run. The untrained run was moved to
+`output/pretrain/stage2_local_pretrained_BROKEN_clipgrad0/`.
+
 ### Stage-2 pre-training loss (weighted per-modality masked MSE)
 
 The Stage-2 (`core/multimae.py::MultiModalMAE`) reconstruction loss is a

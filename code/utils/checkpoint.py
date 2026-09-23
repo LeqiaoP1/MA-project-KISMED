@@ -37,7 +37,13 @@ def save_model(args, epoch, model, model_without_ddp, optimizer, loss_scaler,
 def load_model(args, model_without_ddp, optimizer, loss_scaler, model_ema=None):
     """Load a checkpoint (from ``args.resume``) into model/optimizer/scaler."""
     if args.resume:
-        checkpoint = torch.load(args.resume, map_location='cpu')
+        # weights_only=False: our own checkpoints store the `args` namespace,
+        # which pickles numpy scalars -- torch>=2.6 defaults to
+        # weights_only=True and refuses to unpickle them, so resume used to die
+        # with a _pickle.UnpicklingError. Same policy as
+        # core.waveform_model.load_stage2_encoder.
+        checkpoint = torch.load(args.resume, map_location='cpu',
+                                weights_only=False)
         model_without_ddp.load_state_dict(checkpoint['model'])
         print("Resume checkpoint %s" % args.resume)
         if 'optimizer' in checkpoint and 'epoch' in checkpoint:

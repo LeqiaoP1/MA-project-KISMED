@@ -277,7 +277,7 @@ def build_waveform_model(args):
         1, int(round(num_frames * temporal_stride / fps
                      * float(getattr(args, 'fs', 100.0)))))
 
-    return MultiModalWaveformRegressor(
+    model = MultiModalWaveformRegressor(
         streams=streams,
         stream_channels={'tir': int(getattr(args, 'tir_channels', 3))},
         embed_dim=_geo('enc_embed_dim', 'embed_dim', 768),
@@ -297,15 +297,38 @@ def build_waveform_model(args):
         drop_path_rate=float(getattr(args, 'drop_path_rate', 0.0)),
         pos_init=str(getattr(args, 'pos_init', 'sincos3d')))
 
+    # The head emits ``samples_per_token`` samples per tubelet time step and the
+    # 1-D target is sliced on the same grid, so one signal token MUST cover
+    # exactly the seconds of one video tubelet. Nothing enforced this before: a
+    # right output_len with a wrong sig_kernel trained happily while prediction
+    # and target drifted apart by a widening phase shift.
+    want = int(round(model.sec_per_visual_token
+                     * float(getattr(args, 'fs', 100.0))))
+    if model.samples_per_token != model.sig_kernel:
+        raise ValueError(
+            f'Stage-3 space-time misalignment: samples_per_token '
+            f'{model.samples_per_token} (= output_len {output_len} / grid_t '
+            f'{model.grid_t}) != sig_kernel {model.sig_kernel}. One token must '
+            f'span tubelet_t * temporal_stride / fps = '
+            f'{model.sec_per_visual_token:.4f} s, i.e. sig_kernel = {want} at '
+            f'fs = {float(getattr(args, "fs", 100.0)):g}. Fix sig_kernel (or '
+            f'seq_len) in the config.')
+    return model
 
-def load_stage2_encoder(model: MultiModalWaveformRegressor, path: str):
+
+def load_stage2_encoder(model: MultiModalWaveformRegressor, path: str,
+                        target: str = None):
     """Load a Stage-2 (or Stage-1 MAE/ViT) checkpoint into the encoder.
 
     Accepts BOTH layouts, like ``core.au_probe.load_au_probe_weights``:
 
     * Stage-2 ``MultiModalMAE`` -> ``adapters.*`` / ``positions.*`` /
-      ``enc_blocks.*`` / ``enc_norm.*`` are copied directly (decoder ``dec_*``,
-      per-stream ``heads.*`` and the unused physio streams are skipped);
+      ``enc_blocks.*`` / ``enc_norm.*`` are copied directly (decoder ``dec_*``
+      and the unused physio streams are skipped). With ``target`` set, the
+      Stage-2 head that pre-training learned for this waveform
+      (``heads.<target>``) is ALSO copied into ``waveform_head`` whenever the
+      shapes line up (``samples_per_token == sig_kernel`` and
+      ``head_hidden == 0``), so the regression head does not start random;
     * MAE/timm ViT -> ``core.multimae.load_pretrained_encoder`` maps
       ``blocks.*->enc_blocks.*`` and inflates the 2-D patch embed into the
       rgb Conv3d.
@@ -355,6 +378,45 @@ def load_stage2_encoder(model: MultiModalWaveformRegressor, path: str):
             f'Stage-3 config.')
 
     new_state, loaded, skipped, mism = {}, [], [], []
+
+    # --- Stage-2 per-stream head -> Stage-3 waveform head ------------------ #
+    # ``heads.<signal>`` is Linear(embed_dim, sig_kernel) in Stage 2 and
+    # ``waveform_head`` is Linear(embed_dim, samples_per_token) here, so at the
+    # aligned geometry the target's head transfers VERBATIM. Without this the
+    # Stage-3 head always started random (the reason it is not in the whitelist
+    # below). Only the single-Linear head is transferable: with
+    # ``head_hidden > 0`` the 2-layer MLP has no Stage-2 counterpart.
+    head_loaded, head_note, head_source = [], '', ''
+    if target:
+        dst_w, dst_b = 'waveform_head.weight', 'waveform_head.bias'
+        # A Stage-2 checkpoint written BEFORE the 2026-09-23 stream rename still
+        # carries the old key for the very same wave ('heads.bvp' == 'heads.bp';
+        # its args.streams is still 'rgb,bvp,resp'). The tensor is unchanged, so
+        # the legacy name is accepted as a fallback -- reported, never silent.
+        legacy = {'bp': ('bvp',)}
+        cands = [f'heads.{target}'] + [f'heads.{a}'
+                                        for a in legacy.get(target, ())]
+        src = next((n for n in cands if f'{n}.weight' in state), None)
+        if src and dst_w in cur and \
+                tuple(state[f'{src}.weight'].shape) == tuple(cur[dst_w].shape):
+            head_source = src
+            new_state[dst_w] = state[f'{src}.weight']
+            head_loaded.append(dst_w)
+            if f'{src}.bias' in state and dst_b in cur and \
+                    tuple(state[f'{src}.bias'].shape) == tuple(cur[dst_b].shape):
+                new_state[dst_b] = state[f'{src}.bias']
+                head_loaded.append(dst_b)
+        elif src:
+            head_note = (
+                f'{src} exists in the checkpoint but its shape does not match '
+                f'waveform_head -> the Stage-3 head starts RANDOM (needs '
+                f'samples_per_token == sig_kernel and head_hidden == 0)')
+        else:
+            head_note = (
+                f'the checkpoint has no heads.{target} key '
+                f'(tried {cands}) -- this target was not a Stage-2 stream -> '
+                f'the Stage-3 head starts RANDOM')
+
     for k, v in state.items():
         if not k.startswith(('enc_blocks.', 'enc_norm.', 'adapters.',
                              'positions.')):
@@ -384,7 +446,12 @@ def load_stage2_encoder(model: MultiModalWaveformRegressor, path: str):
 
     model.load_state_dict(new_state, strict=False)
     print(f'[stage3] loaded {len(loaded)} Stage-2 encoder tensors from {path}, '
-          f'{len(skipped)} skipped (decoder/heads/unused physio streams), '
-          f'{len(mism)} shape-mismatched.')
+          f'{len(skipped)} skipped (decoder/unused physio streams), '
+          f'{len(mism)} shape-mismatched'
+          + (f'; head transferred: {", ".join(head_loaded)}'
+             f' (from {head_source})' if head_loaded else ''))
+    if head_note:
+        print(f'[stage3] head: {head_note}')
     return {'loaded': len(loaded), 'skipped': len(skipped),
-            'shape_mismatch': len(mism)}
+            'shape_mismatch': len(mism), 'head_loaded': head_loaded,
+            'head_source': head_source, 'head_note': head_note}

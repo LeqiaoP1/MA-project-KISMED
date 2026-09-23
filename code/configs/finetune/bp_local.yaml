@@ -1,0 +1,85 @@
+# Stage 3 -- LOCAL, RGB-only -> BP (blood pulse) waveform reconstruction.
+#
+# This is a SIBLING of configs/pretrain/stage2_local_pretrained.yaml: it mirrors
+# that checkpoint's geometry EXACTLY, because Stage 3 re-uses the Stage-2
+# encoder verbatim:
+#   project_multimae_base (768-d / 12 layers / 12 heads), streams rgb,bp,resp,
+#   tubelet 2,16,16, clip_duration 4.0, fps 25, temporal_stride 1, fs 100,
+#   sig_kernel 8, input_size 64
+#   -> num_frames 100, grid_t 50, 4x4 spatial grid, n_visual 800,
+#      output_len 400, samples_per_token 8 == sig_kernel  (aligned)
+# Any other geometry fails loudly: load_stage2_encoder raises on a
+# positions.*.pos_embed shape mismatch and build_waveform_model raises on a
+# samples_per_token != sig_kernel misalignment (see local_downstream_plan.md §1).
+#
+# Why not input_size 224 (the thesis-scale simplifiedPlan.yaml geometry): no
+# 224 px Stage-2 checkpoint exists yet, and at 224 px the visual path is 9 800
+# tokens, which needs SDPA + Stage-3 masking before it fits in VRAM.
+#
+# Run from code/:
+#   python runners/run_waveform.py -c configs/finetune/bp_local.yaml
+# or via the launcher:
+#   TARGET=bp scripts/local/waveform_local.sh
+
+target: bp                 # the BP branch; the twin config is resp_local.yaml
+
+# ---- model: shared Stage-2 encoder + time-aligned waveform head ----
+model: project_multimae_base       # geometry 768-d/12-layer/12-head (= Stage 2)
+streams: rgb                       # sensor-failure protocol: visual input only
+use_tir: false                     # the Stage-2 run is rgb,bp,resp -> no TIR
+finetune: ../output/pretrain/stage2_local_pretrained/checkpoints/checkpoint-0039.pth
+head_hidden: 0                     # 0 = single Linear -> Stage-2 heads.bp transfers into waveform_head
+
+# ---- clip geometry -- MUST equal the Stage-2 geometry of `finetune` ----
+clip_duration: 4.0                 # 100 frames @ 25 fps -> 50 tubelet steps
+fps: 25.0
+tubelet: 2,16,16
+temporal_stride: 1
+input_size: 64                     # value used by stage2_local_pretrained.yaml
+seq_len: 0                         # 0 => 400 samples: the head reconstructs the clip's own window
+fs: 100
+sig_kernel: 8                      # 8/100 == 2/25 s -> one signal token == one video tubelet
+# The recorded BP column is RAW blood pressure in mmHg (mean ~101, std ~11), so
+# the target is z-scored per clip: without it the head spends capacity on a
+# ~100 DC offset and the MR-STFT term is dominated by that offset's 0 Hz bin.
+signal_norm: zscore
+
+# ---- data (canonical layout from data/prepare_bp4d.py) ----
+data_set: bp4d+
+data_path: ../data/processed/bp4d_canonical
+train_ratio: 0.8
+split_by: subject                  # SUBJECT-disjoint: 4 local subjects -> 3 train / 1 val (F004)
+clip_stride: 1.0                   # overlapping windows -> ~4x more clips on this small corpus
+
+# ---- joint spatio-temporal-spectral loss ----
+alpha: 1.0                 # L_time (L1 amplitude)
+beta: 1.0                  # L_Pearson (phase locking)
+gamma: 1.0                 # L_MR-STFT (multi-resolution)
+fft_sizes: '64,128,256'    # >= 2x the BP period (1-2.5 Hz at 100 Hz)
+eval_band: '1.0,2.5'       # BP cardiac band
+
+# ---- training ----
+epochs: 40
+batch_size: 4                      # local GPU; drop to 2 on CUDA OOM
+update_freq: 1
+save_ckpt_freq: 10
+eval_freq: 1                       # val Tier-1/2 every epoch (printed; drives best.pth)
+
+# ---- optimizer (warmup + cosine are now actually applied per step) ----
+opt: adamw
+lr: 1e-4
+min_lr: 1e-6
+warmup_epochs: 2
+weight_decay: 0.05
+clip_grad: 0.0                     # 0.0 = OFF (no clipping). WARNING: before the
+                                   # 2026-09-23 fix in utils/native_scaler.py this 0.0
+                                   # zeroed EVERY gradient through the AMP path, so the
+                                   # run could not learn at all.
+
+num_workers: 4
+save_preds: true                   # write preds.npy/targets.npy/entries.json for the session-level evaluator
+
+# ---- logging ----
+output_dir: ../output/finetune/bp_local
+log_wandb: false
+wandb_project: thesis-project

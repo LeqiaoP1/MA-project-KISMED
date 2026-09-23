@@ -48,6 +48,16 @@ _SIGNAL_ALIASES = {'bp': ('bp', 'ppg', 'pulse'),
 _PRETRAIN_VISUAL_STREAMS = ('rgb', 'tir')
 
 
+def _subject_of(session: str) -> str:
+    """``'F001_T1' -> 'F001'`` (the BP4D session prefix is the subject id).
+
+    Deliberately duplicated from ``data.au_dataset``: importing that module
+    drags pandas and the AU-coding tables into the Stage-3 path for one
+    string operation.
+    """
+    return str(session).rsplit('_', 1)[0]
+
+
 def _first_col(header: List[str], aliases: Tuple[str, ...]) -> Optional[str]:
     low = [h.strip().lower() for h in header]
     for alias in aliases:
@@ -145,6 +155,7 @@ class PairedSessionDataset(Dataset):
                  temporal_stride: int = 1,
                  seq_len: Optional[int] = None,
                  input_size: int = 224, train_ratio: float = 0.8,
+                 split_by: str = 'session',
                  rgb_dir: str = 'rgb', tir_file: str = 'tir.wmv',
                  signals_file: str = 'signals.csv',
                  max_sessions: Optional[int] = None,
@@ -160,6 +171,10 @@ class PairedSessionDataset(Dataset):
             raise ValueError(
                 f"signal_norm must be 'none', 'ac' or 'zscore'; got "
                 f'{signal_norm!r}')
+        if split_by not in ('session', 'subject'):
+            raise ValueError(
+                f"split_by must be 'session' or 'subject'; got {split_by!r}")
+        self.split_by = split_by
         self.target = target
         #: waveform normalisation per clip. The recorded BP4D streams are NOT
         #: zero-mean: the BP (blood pulse) column is raw blood pressure in mmHg (measured
@@ -207,14 +222,29 @@ class PairedSessionDataset(Dataset):
         if max_sessions is not None and max_sessions > 0:
             sessions = sessions[:max_sessions]
 
-        # deterministic per-session split (no frame-level leakage)
-        n_train = max(1, int(round(len(sessions) * train_ratio)))
-        if is_train:
-            sessions = sessions[:n_train]
-        elif test_mode:
-            sessions = sessions[n_train:]
+        # deterministic split with no frame-level leakage.
+        # 'session' = the historical behaviour (one subject's tasks may straddle
+        # the split). 'subject' = SUBJECT-DISJOINT, which the Stage-3 protocol
+        # requires: every session of a subject lands on the same side, so the
+        # model can never see the evaluated subject during training.
+        if split_by == 'subject':
+            subjects = sorted({_subject_of(s['session']) for s in sessions})
+            n_sub = max(1, int(round(len(subjects) * train_ratio)))
+            keep = set(subjects[:n_sub] if is_train else subjects[n_sub:])
+            sessions = [s for s in sessions
+                        if _subject_of(s['session']) in keep]
+            if not sessions:
+                raise ValueError(
+                    f"split_by='subject' left the "
+                    f"{'train' if is_train else 'val'} split empty: "
+                    f'{len(subjects)} subject(s) with train_ratio '
+                    f'{train_ratio} gives {n_sub} train subject(s). Lower '
+                    f'train_ratio or add subjects.')
+            print(f"[data] split_by=subject: {'train' if is_train else 'val'} "
+                  f'= {sorted(keep)} ({len(sessions)} sessions)')
         else:
-            sessions = sessions[n_train:]
+            n_train = max(1, int(round(len(sessions) * train_ratio)))
+            sessions = sessions[:n_train] if is_train else sessions[n_train:]
 
         self.entries = []          # (session_meta, t_start_s)
         self._tir_cache = {}
@@ -482,6 +512,7 @@ def build_paired_dataset(is_train: bool, test_mode: bool, args):
         seq_len=getattr(args, 'seq_len', None),
         input_size=getattr(args, 'input_size', 224),
         train_ratio=getattr(args, 'train_ratio', 0.8),
+        split_by=str(getattr(args, 'split_by', 'session')),
         rgb_dir=getattr(args, 'rgb_dir', 'rgb'),
         tir_file=getattr(args, 'tir_file', 'tir.wmv'),
         signals_file=getattr(args, 'signals_file', 'signals.csv'),

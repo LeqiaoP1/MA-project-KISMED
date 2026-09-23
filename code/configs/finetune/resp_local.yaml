@@ -1,0 +1,77 @@
+# Stage 3 -- LOCAL, RGB-only -> RESP waveform reconstruction.
+#
+# Twin of configs/finetune/bp_local.yaml: identical model / geometry / data /
+# loss / optimizer. The ONLY intended differences are the three below:
+#   target          bp          | resp
+#   eval_band       '1.0,2.5'   | '0.16,0.4'
+#   output_dir      .../bp_local| .../resp_local
+# Keep them in sync (same Stage-2 checkpoint, same geometry, same schedule),
+# otherwise the two branches stop being comparable.
+#
+# Unlike the 224 px configs/finetune/resp.yaml (which predates the local pair),
+# the RESP branch here DOES have a pre-trained head: the Stage-2 run used
+# streams rgb,bp,resp, so `heads.resp` exists and is transferred into
+# waveform_head by load_stage2_encoder(target='resp').
+#
+# Run from code/:
+#   python runners/run_waveform.py -c configs/finetune/resp_local.yaml
+# or via the launcher:
+#   TARGET=resp scripts/local/waveform_local.sh
+
+target: resp
+
+# ---- model: shared Stage-2 encoder + time-aligned waveform head ----
+model: project_multimae_base
+streams: rgb
+use_tir: false
+finetune: ../output/pretrain/stage2_local_pretrained/checkpoints/checkpoint-0039.pth
+head_hidden: 0                     # 0 = single Linear -> Stage-2 heads.resp transfers
+
+# ---- clip geometry -- MUST equal the Stage-2 geometry of `finetune` ----
+clip_duration: 4.0                 # ~1 respiratory cycle at 15 bpm (period ~4 s)
+fps: 25.0
+tubelet: 2,16,16
+temporal_stride: 1
+input_size: 64
+seq_len: 0                         # 0 => 400 samples
+fs: 100
+sig_kernel: 8                      # 8/100 == 2/25 s -> one signal token == one video tubelet
+signal_norm: zscore                # the raw RESP column is volts, not zero-mean
+
+# ---- data (canonical layout from data/prepare_bp4d.py) ----
+data_set: bp4d+
+data_path: ../data/processed/bp4d_canonical
+train_ratio: 0.8
+split_by: subject                  # SUBJECT-disjoint (same split as the BP branch)
+clip_stride: 1.0
+
+# ---- joint spatio-temporal-spectral loss ----
+alpha: 1.0
+beta: 1.0
+gamma: 1.0
+fft_sizes: '64,128,256'    # NOTE: 0.39 Hz resolution at fs=100 -> the RESP band 0.16-0.4 Hz
+                           # spans few bins; interpret psd_mae accordingly
+eval_band: '0.16,0.4'      # RESP breathing band
+
+# ---- training ----
+epochs: 40
+batch_size: 4
+update_freq: 1
+save_ckpt_freq: 10
+eval_freq: 1
+
+# ---- optimizer ----
+opt: adamw
+lr: 1e-4
+min_lr: 1e-6
+warmup_epochs: 2
+weight_decay: 0.05
+clip_grad: 0.0                     # 0.0 = OFF (no clipping); see the note in bp_local.yaml
+
+num_workers: 4
+save_preds: true                   # write preds.npy/targets.npy/entries.json for the session-level evaluator
+
+# ---- logging ----
+output_dir: ../output/finetune/resp_local
+log_wandb: false
+wandb_project: thesis-project

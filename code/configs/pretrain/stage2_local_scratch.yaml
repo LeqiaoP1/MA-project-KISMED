@@ -44,13 +44,14 @@ pos_init: sincos3d
 # visual information (VideoMAE's 0.90 is normally used on a 14x14 grid at
 # input_size 224). Raise to 224 or drop to 0.75 for the local 64 px debug.
 
-# ---- asymmetric masking (visual 50-75%, signals 90%+) ----
-mask_ratio_rgb: 0.90
+# ---- asymmetric masking (visual 0.90, waveform 0.50) ----
+mask_ratio_rgb: 0.90               # unchanged
 mask_ratio_tir: 0.90
-# 1-D physio streams are masked hardest (90%+) in Stage 2
-mask_ratio_bp: 0.90
-mask_ratio_resp: 0.90
-mask_ratio_eda: 0.90
+# 1-D waveform streams at 0.50; the visible physio token count is the encoder's
+# only gradient path for that stream (see the note in the twin config).
+mask_ratio_bp: 0.50
+mask_ratio_resp: 0.50
+mask_ratio_eda: 0.50
 
 # ---- loss: per-modality masked MSE (masked positions only), then a weighted
 # sum. lambda = 1.0 for rgb/tir; lambda = signal_weight for each physio stream.
@@ -83,10 +84,14 @@ spectral_hop_ratio: 0.25           # hop = 25% of the window (75% overlap)
 # ---- data (canonical layout from data/prepare_bp4d.py) ----
 data_path: ../data/processed/bp4d_canonical
 max_sessions: 11
-max_entries: 32
-# Overlapping windows (more samples). For the real HPC run over ALL sessions set
-# e.g. clip_stride: 1.0 with clip_duration: 4.0 to reach ~10-20k clips; 0 =
-# non-overlapping (stride == clip_duration).
+max_entries: 0                     # 0 = NO cap: use every derived clip. (The old
+                                   # 32 sliced entries[:32] AFTER the session
+                                   # split, silently leaving ONE subject -- see the
+                                   # note in the twin config.)
+clip_stride: 3.0                   # window hop in SECONDS: a 4.0 s window with
+                                   # 1.0 s (25 %) overlap. 0 / unset = non-overlapping.
+                                   # Local ceiling at this setting: 132 clips
+                                   # (110 train F001-F003 / 22 val F004).
 
 # ---- training (local scale: correctness + a real loss curve) ----
 epochs: 40
@@ -99,6 +104,8 @@ lr: 1.0e-3
 min_lr: 1.0e-4                     # keep the cosine tail learning
 warmup_epochs: 5
 weight_decay: 0.05
+clip_grad: 0.0                     # 0.0 = OFF (no clipping); see the note in
+                                   # stage2_local_pretrained.yaml / code/README.md
 # data loading: the run is JPEG-decoding bound, so decode frames in parallel
 num_workers: 4
 

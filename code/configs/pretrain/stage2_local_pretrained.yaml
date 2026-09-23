@@ -17,9 +17,9 @@
 #
 # The 'base' spec resolves to videomae:base and downloads the checkpoint once
 # into ../models/initial/ (see `python runners/run_download_weights.py --list`);
-# a plain path works too. The input size, batch and clip count are kept small so
-# this still fits a LOCAL GPU -- switch to the larger geometry (input_size 224,
-# all sessions) on the HPC.
+# a plain path works too. The input size and batch are kept small (64 px) so this
+# still fits a LOCAL GPU; switch to the larger geometry (input_size 224) on the
+# HPC. The data block below now uses ALL locally available clips.
 #
 # Run from code/:  python runners/run_pretrain.py -c configs/pretrain/stage2_local_pretrained.yaml
 
@@ -57,13 +57,19 @@ pos_init: sincos3d
 # 14x14 grid at input_size 224). Use 224 for the real run, or drop to 0.75 to
 # debug at 64 px.
 
-# ---- asymmetric masking ----
-mask_ratio_rgb: 0.90
+# ---- asymmetric masking (visual 0.90, waveform 0.50) ----
+mask_ratio_rgb: 0.90               # UNCHANGED (VideoMAE-style, aggressive)
 mask_ratio_tir: 0.90
-# 1-D physio streams are masked hardest (90%+) in Stage 2
-mask_ratio_bp: 0.90
-mask_ratio_resp: 0.90
-mask_ratio_eda: 0.90
+# 1-D waveform streams are masked at 0.50, NOT 0.90. A stream's decoder is fed
+# `cat([z[:, visible], mask_token...])`, so the VISIBLE physio token count is
+# the encoder's only gradient path for that stream: at 0.90 only ~5 of 50 were
+# visible (a very thin path -- and with 0 visible the path is exactly zero),
+# while 0.50 gives ~25. This is the lever for the measured failure that the
+# encoder's pooled rgb features varied only 0.4 % across clips (2.9 % at init)
+# and bp/resp reconstruction never beat a constant predictor.
+mask_ratio_bp: 0.50
+mask_ratio_resp: 0.50
+mask_ratio_eda: 0.50               # waveform family (unused while streams=rgb,bp,resp)
 
 # ---- loss: per-modality masked MSE (masked positions only), then a weighted
 # sum. lambda = 1.0 for rgb/tir; lambda = signal_weight for each physio stream
@@ -85,12 +91,21 @@ spectral_hop_ratio: 0.25
 # ---- data (canonical layout from data/prepare_bp4d.py) ----
 data_path: ../data/processed/bp4d_canonical
 max_sessions: 11
-max_entries: 32
-# Overlapping windows (more samples). For the real HPC run over ALL sessions set
-# e.g. clip_stride: 1.0 with clip_duration: 4.0 to reach ~10-20k clips; 0 =
-# non-overlapping (stride == clip_duration).
+max_entries: 0                     # 0 = NO cap: use every derived clip. The old
+                                   # value 32 sliced entries[:32] AFTER the session
+                                   # split, so the training set silently collapsed
+                                   # to ONE subject (F001_T1 16 + F001_T2 5 +
+                                   # F001_T6 11) out of nine sessions.
+clip_stride: 3.0                   # window hop in SECONDS: a 4.0 s window with
+                                   # 1.0 s (25 %) overlap. 0 / unset = non-overlapping.
+                                   # LOCAL ceiling at a 4 s window by overlap:
+                                   # 0 s -> 101 clips / 1 s -> 132 / 2 s -> 196
+                                   # / 3 s -> 386. The train split F001-F003 takes
+                                   # 84 / 110 / 162 / 320 respectively.
+                                   # On the full BP4D set over all sessions,
+                                   # clip_stride 1.0 (3 s overlap) reaches ~10-20k.
 
-# ---- training (local smoke: correctness/overfit only) ----
+# ---- training (local run: full local clip budget at 64 px) ----
 epochs: 40
 batch_size: 2                      # 768-d encoder: keep small on a local GPU
 save_ckpt_freq: 10
@@ -101,6 +116,11 @@ lr: 1.0e-3
 min_lr: 1.0e-4                     # keep the cosine tail learning
 warmup_epochs: 5
 weight_decay: 0.05
+clip_grad: 0.0                     # 0.0 = OFF (no clipping), which is fine NOW.
+                                   # Before the 2026-09-23 fix in
+                                   # utils/native_scaler.py this 0.0 zeroed EVERY
+                                   # gradient through the AMP path, so the run
+                                   # trained nothing (see code/README.md).
 # data loading: the run is JPEG-decoding bound, so decode frames in parallel
 num_workers: 4
 
