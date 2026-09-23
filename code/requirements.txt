@@ -7,7 +7,7 @@ einops>=0.7.0
 # Data / numerics
 numpy>=1.24
 scipy>=1.10
-pandas>=2.0
+pandas>=2.0,<3.0  # <3.0 is forced by neurokit2 0.2.13 (Tier-3 evaluation), see the evaluation block at the end
 opencv-python>=4.8
 pillow>=10.0
 # decord>=0.6  # optional ffmpeg decoder for .wmv (OpenCV may lack WMV3/VC-1)
@@ -23,5 +23,18 @@ scikit-learn>=1.3
 fvcore
 iopath
 
-# Offline clinical evaluation (Tier 3, docs/ImplementationPlan.md)
-neurokit2  # optional, required only by runners/run_evaluate.py --tier 3
+# --- Waveform evaluation (code/evaluation/, engines/waveform.py, runners/run_evaluate*.py) ---
+# Tier 1 (MAE / RMSE / Pearson) and Tier 2 (Welch PSD) need numpy + scipy ONLY -- both
+# listed above. evaluation/metrics.py imports scipy lazily, so without it
+# spectral_metrics raises ImportError and the run reports psd_mae = nan instead of failing.
+#
+# Tier 3 (clinical HRV: RMSSD / pNN50 / MedianNN / Shannon entropy, in
+# evaluation/clinical.py) needs NeuroKit2. It is imported lazily and raises a clear
+# ImportError when missing, so installing it is OPTIONAL -- only `run_evaluate.py --tier 3`
+# (bp branch only) and the planned session-level evaluator use it.
+#
+# neurokit2 0.2.13 (2026-03-02) is the version that DECLARES numpy>=2.0 support, which this
+# environment needs (numpy 2.4.x); it also requires python>=3.10, scipy, pandas<3.0.0,
+# scikit-learn>=1.0, matplotlib>=3.5 and pywavelets>=1.4 (all installed, or pulled in
+# automatically). The pandas<3.0.0 cap is why pandas is pinned in the Data/numerics block above.
+neurokit2>=0.2.13  # optional: Tier-3 clinical metrics only

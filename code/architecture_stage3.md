@@ -114,21 +114,14 @@ skinparam ComponentStyle rectangle
 title Part 3: Evaluation (not part of the loss graph)
 
 node "PER-CLIP PREDICTION (B, output_len = 400)" as PRED
-node "PER-CLIP TARGET (B, output_len = 400)" as TGT
-node "IN-TRAINING EVALUATION evaluate_waveforms over the val loader" as INEVAL
-node "PRINTED ONLY mae, rmse, pearson, psd_mae, dominant_freq_error_hz" as PRINT
-node "BEST.PTH overwritten when val Pearson improves" as BEST
+
 node "SAVE PREDICTIONS (planned) preds.npy, targets.npy, entries.json" as SAVE
 node "SESSION ASSEMBLY (planned) Hann overlap-add with weight-sum normalisation" as ASSEMBLE
 node "SESSION REFERENCE read from that session signals.csv" as REF
-node "TIER-1 and TIER-2 recomputed on the assembled session waveform" as SESS
+node "TIER-1 and TIER-2 recomputed on the assembled session waveform" as SESS #PINK
 node "TIER-3 HRV via NeuroKit2, needs at least 30 s, offline only" as T3
 node "SESSION METRICS JSON (planned) written by run_evaluate_session.py" as JSON
 
-PRED --> INEVAL
-TGT --> INEVAL
-INEVAL --> PRINT
-INEVAL --> BEST
 PRED --> SAVE
 SAVE --> ASSEMBLE
 REF --> SESS
@@ -136,11 +129,6 @@ ASSEMBLE --> SESS
 SESS --> T3
 SESS --> JSON
 T3 --> JSON
-
-note right of PRINT
-  The only numbers the training run produces;
-  capture them with tee if they must be kept
-end note
 
 note right of SAVE
   Nothing saves predictions today: the offline evaluator
