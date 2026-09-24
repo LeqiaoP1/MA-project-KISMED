@@ -50,7 +50,7 @@ code/
 
 ```bash
 cd code
-# (0) data: convert raw sessions once, then inspect a few
+# (0) data: convert raw sessions once, then pinspect a few
 python data/prepare_bp4d.py --raw_root ../data/raw/BP4D --out_root ../data/processed/bp4d_canonical --limit_sessions 8
 python runners/run_inspect_data.py --data_path ../data/processed/bp4d_canonical --clip_duration 2 --input_size 64 --plot
 # raw physiology only (min/max/length/estimated frequency, original sample rate)
@@ -210,12 +210,12 @@ subsection above.)
 > on the Stage-2 encoder — it is not part of the three-stage pipeline above.
 > See the dedicated AU-probe subsection below and `code/ImplementationPlan.md` §5.
 
-| Plan stage                                                                             | Supported here                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Still to port (thesis work)                                                                                                                                                                                                                                                                                            |
-| -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Stage 1 — ImageNet init of ViT-Base encoder                                           | `core/model.py` entrypoints (`project_vit_base_patch16_224`)                                                                                                                                                                                                                                                                                                                                                                                                           | official ImageNet-1K timm classifier converter; encoder inheritance IMPLEMENTED (`core/multimae.py::load_pretrained_encoder` + `canonicalise_vit_state_dict` -- 3-D tubelet kernel transferred verbatim for VideoMAE, 2-D filter boxcar-inflated for MAE, `--inflate_rgb_patch` to disable) via `--pretrained_encoder`; variant specs (`small                                                                                       |
-| Stage 2 — multimodal masked pre-training on BP4D+ (RGB/TIR 50-75%, BP/RESP/EDA 90%+) | `core/input_adapters.py` (`SignalInputAdapter`), `data/masking_generator.py` (`MultiModalMaskingGenerator` asymmetric), `core/criterion.py` (`MaskedMSELoss`), configs `configs/pretrain/stage2_local_scratch.yaml` (from scratch) + `stage2_local_pretrained.yaml` (base + Stage-1 init) + HPC template `stage2_multimodal.yaml`; implemented local milestone: `core/multimae.py` (`MultiModalMAE`) + `PairedPretrainDataset` + `runners/run_pretrain.py` | separate deeper decoders; full-data HPC run at larger 224 geometry. Local five-stream milestone (rgb+tir+bp+resp+eda) is implemented & run:`core/multimae.py` (`MultiModalMAE`), `data/paired_dataset.PairedPretrainDataset`, `runners/run_pretrain.py`, `configs/pretrain/stage2_local{_scratch,_pretrained}.yaml` |
-| Stage 3 — three branches BP, RESP & EDA, unified spatio-temporal-spectral loss       | `core/waveform_losses.py` (`WaveformJointLoss`: L1 + Pearson + MR-STFT; 64/128/256 for BP/RESP, 256/512/1024 for EDA), regression head (`ProjectViT(output_len=...)`, baseline CLS->seq), `runners/run_waveform.py`, configs `configs/finetune/{bp,resp,eda}.yaml`                                                                                                                                                                                             | lightweight conv decoder over all tokens for finer temporal resolution; session-level whole-waveform reconstruction/stitching (offline inference, not yet implemented)                                                                                                                                                 |
-| Evaluation — Tier 1/2/3 post-processing                                               | `evaluation/metrics.py` (MAE/RMSE/Pearson; Welch PSD), `evaluation/clinical.py` (NeuroKit2 RMSSD/pNN50/MedianNN/ShanEn), `runners/run_evaluate.py`                                                                                                                                                                                                                                                                                                                   | —                                                                                                                                                                                                                                                                                                                     |
+| Plan stage                                                                            | Supported here                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Still to port (thesis work)                                                                                                                                                                                                                                                                                                                           |
+| ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Stage 1 — ImageNet init of ViT-Base encoder                                          | `core/model.py` entrypoints (`project_vit_base_patch16_224`)                                                                                                                                                                                                                                                                                                                                                                                                                     | official ImageNet-1K timm classifier converter; encoder inheritance IMPLEMENTED (`core/multimae.py::load_pretrained_encoder` + `canonicalise_vit_state_dict` -- 3-D tubelet kernel transferred verbatim for VideoMAE, 2-D filter boxcar-inflated for MAE, `--inflate_rgb_patch` to disable) via `--pretrained_encoder`; variant specs (`small |
+| Stage 2 — multimodal masked pre-training on BP4D+ (RGB/TIR 50-75%, BP/RESP/EDA 90%+) | `core/input_adapters.py` (`SignalInputAdapter`), `data/masking_generator.py` (`MultiModalMaskingGenerator` asymmetric), `core/criterion.py` (`MaskedMSELoss`), configs `configs/pretrain/stage2_local_scratch.yaml` (from scratch) + `stage2_local_pretrained.yaml` (base + Stage-1 init) + HPC template `stage2_multimodal.yaml`; implemented local milestone: `core/multimae.py` (`MultiModalMAE`) + `PairedPretrainDataset` + `runners/run_pretrain.py` | separate deeper decoders; full-data HPC run at larger 224 geometry. Local five-stream milestone (rgb+tir+bp+resp+eda) is implemented & run:`core/multimae.py` (`MultiModalMAE`), `data/paired_dataset.PairedPretrainDataset`, `runners/run_pretrain.py`, `configs/pretrain/stage2_local{_scratch,_pretrained}.yaml`                         |
+| Stage 3 — three branches BP, RESP & EDA, unified spatio-temporal-spectral loss       | `core/waveform_losses.py` (`WaveformJointLoss`: L1 + Pearson + MR-STFT; 64/128/256 for BP/RESP, 256/512/1024 for EDA), regression head (`ProjectViT(output_len=...)`, baseline CLS->seq), `runners/run_waveform.py`, configs `configs/finetune/{bp,resp,eda}.yaml`                                                                                                                                                                                                         | lightweight conv decoder over all tokens for finer temporal resolution; session-level whole-waveform reconstruction/stitching (offline inference, not yet implemented)                                                                                                                                                                                |
+| Evaluation — Tier 1/2/3 post-processing                                              | `evaluation/metrics.py` (MAE/RMSE/Pearson; Welch PSD), `evaluation/clinical.py` (NeuroKit2 RMSSD/pNN50/MedianNN/ShanEn), `runners/run_evaluate.py`                                                                                                                                                                                                                                                                                                                             | —                                                                                                                                                                                                                                                                                                                                                    |
 
 ```bash
 # Stage 3 example (needs a Stage-2 encoder ckpt)
@@ -327,6 +327,96 @@ removes it: measured 4.5 ms/clip from page cache (71 ms cold) instead of
 building all 11 sessions takes ~2.5 min once. This is a *CPU* fix rather than a
 disk fix, and it would also remove the per-rank startup TIR decode under DDP.
 
+### Thermal -> respiration dataset (`BP4DPlusTIRRespDataset`, ADD-ON)
+
+A second, independent read-out of the same raw corpus as the AU probe, and an
+ADD-ON like it: **no Stage-1/2/3 file is touched**. One sample is one thermal
+clip plus the respiration waveform over exactly the same time span:
+
+```
+'tir_video'    float32 [3, T, H, W]   T = clip_seconds * 25 fps   (8 s -> 200)
+'resp_signal'  float32 [L]            L = clip_seconds * 1000 Hz  (8 s -> 8000)
+'subject_task' str                    e.g. 'F001_T1'
+```
+
+It reads the **raw** tree (no `prepare_bp4d.py` copy needed):
+
+```
+<raw_root>/Thermal/<S>/<T>.wmv                 # 25 fps, 726x480 false-colour TIR
+<raw_root>/IRFeatures/<S>_<T>.txt              # 28 (x, y) PIXEL pairs per frame
+<raw_root>/Physiology/<S>/<T>/Resp_Volts.txt   # 1000 Hz, one value per line
+```
+
+* **IRFeatures format.** One line per thermal frame, 56 floats = 28 `(x, y)`
+  pairs in raw 726x480 pixel coordinates; **line `n` == frame `n` (1-based)**
+  (verified: `F001_T1` has 1612 lines, the video decodes 1612 frames at
+  25.000 fps). `(0, 0)` is the corpus' undocumented **missing-data sentinel**
+  (written when the tracker loses the frontal fiducials -- the head is turned
+  away), and it is all-or-nothing per frame: F001_T8 has 112/227 such lines.
+* **Two skip rules.** (1) A session with **no** `IRFeatures` file is skipped
+  gracefully (the guide ships 15 untracked, glasses-wearing sequences, e.g.
+  `F016_T2..T4`, `M045_T2`, `M049_T1..T10`; locally `F002/F003/F004` are the
+  examples). (2) **Any clip whose frame range touches a `(0,0)` line is dropped
+  entirely** and the next window is tried -- the sentinel would otherwise drag
+  the ROI box to the image corner. Every skip and every dropped window is
+  recorded (`ds.skipped`, `ds.stats['clips_dropped_sentinel']`) instead of
+  being swallowed, and a file whose lines do NOT all carry 56 values raises,
+  because then line/frame alignment can no longer be trusted.
+* **ROI = one CLIP-STATIC box.** For the 12 mouth+nose landmarks (1-indexed
+  user-guide labels `[9,10,11,12,13,20,21,22,23,24,25,26]` = nose bridge 9/20,
+  nostrils 10/21, mouth corners 11/22, lips 12/13/23/24, lip centres 25/26) of
+  all 200 frames: take the global `(x_min, x_max, y_min, y_max)`, extend each
+  side by `roi_padding * extent` (0.2 -> +40 % overall), clamp to the frame, and
+  crop **all 200 frames with that one box**, each resized to `input_size` with
+  `cv2.resize`. A per-clip (not per-frame) box means the patch cannot jitter
+  spatially -- the visible cost is that a moving head is covered by a slightly
+  loose box (measured over F001_T1's 8 clips: 84x98 .. 125x111 px, i.e. 2.5-4.5x
+  the mouth+nose area of a single frame, except the last clip where the subject
+  turns away and it reaches 118x162 px = 7.5x, out of 726x480), which is what
+  the padding is for. Reduce `roi_padding` (0 = the tight union) or shorten the
+  clip to tighten it.
+* **Alignment is by TIME, not a hand-tuned offset.** A clip starting at frame
+  `f` covers `[f/25, (f+T)/25)` s and the respiration slice is that window on
+  the `[L] = clip_seconds * 1000` grid; at the corpus' nominal rates the mapping
+  is the exact integer slice `resp[f*40 : f*40 + 8000]`. `Resp_Volts.txt` holds
+  64597 samples over the 64.48 s of `F001_T1` = 1001.8 Hz, i.e. the 1000 Hz
+  nominal rate. Note the raw resp trace **rails at exactly -10.0000 V** in some
+  sessions (F001 T2/T6/T7/T8) -- the dataset returns it as measured; drop or
+  mask those windows before drawing conclusions about amplitude.
+* **Normalisation.** Thermal frames -> `[0, 1]` by `/255`; respiration is
+  z-scored **per clip** (`(y - mu) / (sigma + 1e-8)`, the default, matching the
+  Stage-2 `target_norm: clip` convention). `norm='session'` uses whole-session
+  statistics and `norm='none'` returns raw volts (needed for any clinical
+  amplitude comparison).
+* **Clips are non-overlapping by default** (`clip_stride=None`); pass
+  `clip_stride` in SECONDS for a hop. **No split is applied here** -- this
+  dataset exposes one stream per session, and the subject-disjoint split is the
+  caller's job (do not split by clip).
+* Cost: `CV2ClipReader.read_range` / `DecordClipReader.read_range` (new,
+  2026-09-24) seek instead of decoding from frame 0, verified **frame-exact**
+  against a full sequential decode on `F001_T2` (k = 0/1/100/200/399/400/550,
+  maxdiff 0). A 64 px compile-free clip still costs ~0.7-2.4 s of decode, so the
+  same decode-CPU argument as above applies; `preload=True` materialises all
+  clip tensors at init (2.5 MB per 64 px clip) when epochs are re-read.
+
+```bash
+# verify the dataset: skip rules, shapes, [0,1] range, z-score, ROI box,
+# tensor==crop, temporal alignment, resp window vs a raw-file slice
+python data/tir_resp_dataset.py --n_check 3
+
+# inspect one or more clips (figure + JSON per clip) via the wrapper
+bash scripts/local/inspect_tir_resp.sh --list
+SUBJECT=F001 TASK=T1 CLIPS=0,7 bash scripts/local/inspect_tir_resp.sh
+```
+
+Files: `data/tir_resp_dataset.py` (dataset + `parse_ir_features` +
+`roi_box_from_landmarks` + `main` self-test),
+`runners/run_inspect_tir_resp.py` (per-clip figure + JSON reports),
+`scripts/local/inspect_tir_resp.sh`. Verified locally on the only session that
+is usable at all (`F001_T1`: 8 clips, 0 dropped) plus `F001_T2/T6/T7` (23 clips
+total) and the two negative paths (`F001_T8` -> all windows dropped;
+`F002/F003/F004` -> skipped, no `IRFeatures`).
+
 ### AU-occurrence probe — Semantic Representation Quality (ADD-ON)
 
 A **diagnostic control, not a Stage-1/2/3 step**. Its claim: Stage-2
@@ -424,13 +514,13 @@ matching checkpoint is downloaded **once** into `<repo>/models/initial/`
 (already git-ignored via `models/*`; relocate with `$INITIAL_MODELS_DIR` or
 `--weights_dir`, e.g. a scratch volume on the HPC).
 
-| spec                        | source                                                        | geometry (dim/depth/heads) |
-| --------------------------- | ------------------------------------------------------------- | -------------------------- |
-| `base` \| `videomae:base` | **VideoMAE ViT-Base, tube-masked video MAE (Kinetics-400)** | 768/12/12                  |
-| `mae:base`                | MAE ViT-Base, self-supervised ImageNet-1k                     | 768/12/12                  |
-| `large` \| `videomae:large` | VideoMAE ViT-Large                                          | 1024/24/16                 |
-| `mae:large`               | MAE ViT-Large                                                 | 1024/24/16                 |
-| `timm:<model_id>`         | any timm/HF checkpoint, e.g.`timm:vit_base_patch16_224.mae` | as named                   |
+| spec                            | source                                                            | geometry (dim/depth/heads) |
+| ------------------------------- | ----------------------------------------------------------------- | -------------------------- |
+| `base` \| `videomae:base`   | **VideoMAE ViT-Base, tube-masked video MAE (Kinetics-400)** | 768/12/12                  |
+| `mae:base`                    | MAE ViT-Base, self-supervised ImageNet-1k                         | 768/12/12                  |
+| `large` \| `videomae:large` | VideoMAE ViT-Large                                                | 1024/24/16                 |
+| `mae:large`                   | MAE ViT-Large                                                     | 1024/24/16                 |
+| `timm:<model_id>`             | any timm/HF checkpoint, e.g.`timm:vit_base_patch16_224.mae`     | as named                   |
 
 **VideoMAE is the default Stage-1 source for `base`/`large`, and it is the
 better one.** Its `patch_embed.proj` is a `Conv3d(3, D, (2,16,16))` tubelet
@@ -532,7 +622,7 @@ the estimated frequency, with one figure + JSON per channel:
 
 ```bash
 source scripts/env_local.sh
-# one session, every channel (BP | Resp | EDA | all, case-insensitive)
+# one session, every channel (BP | Resp | EDA | all, case-ctinsensitive)
 python runners/run_inspect_physio.py --subject F001 --task T1 --channel all
 python runners/run_inspect_physio.py --subject F001,F002 --task T1,T2 --channel Resp,EDA
 python runners/run_inspect_physio.py --list          # what is on disk?
@@ -560,7 +650,7 @@ missing:
 
 | Channel  | Figure                | Raw files                                                                                  |
 | -------- | --------------------- | ------------------------------------------------------------------------------------------ |
-| `bp`  | `BP_overview.png`   | `BP_mmHg.txt`, `LA Systolic BP_mmHg.txt`, `LA Mean BP_mmHg.txt`, `BP Dia_mmHg.txt` |
+| `bp`   | `BP_overview.png`   | `BP_mmHg.txt`, `LA Systolic BP_mmHg.txt`, `LA Mean BP_mmHg.txt`, `BP Dia_mmHg.txt` |
 | `resp` | `Resp_overview.png` | `Resp_Volts.txt`, `Respiration Rate_BPM.txt`                                           |
 
 | Raw file                                   | Kind                                                | Unit    |

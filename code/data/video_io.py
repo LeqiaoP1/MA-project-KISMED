@@ -221,6 +221,57 @@ class CV2ClipReader:
                           f'may be missing from this OpenCV build.')
         return np.stack(frames, axis=0)          # [T, H, W(, C)]
 
+    def read_range(self, start: int = 0, n: Optional[int] = None,
+                   gray: bool = False):
+        """Decode ``[start, start+n)`` frames -> uint8 ``[T, H, W(, C)]``.
+
+        Unlike :meth:`read_all` this SEEKs (``CAP_PROP_POS_FRAMES``) instead of
+        decoding from the beginning, so a dataset can pull one clip per access
+        without paying for the preceding frames. ``n=None`` reads to the end;
+        both bounds are clamped to ``[0, num_frames)`` and a short read (a
+        truncated container or a decoder that cannot seek) raises instead of
+        silently returning fewer frames.
+        NOTE: ``start`` is absolute only on a FRESH reader. When ``start == 0``
+        no seek is issued (that is the safest call for exotic decoders), so a
+        reader that was already advanced continues from its current position --
+        the same behaviour as :meth:`read_all`. Open a reader per range, or
+        pass ``start > 0``, when the absolute index matters.        """
+        total = self.num_frames if self.num_frames > 0 else None
+        start = max(0, int(start))
+        if total is not None:
+            start = min(start, total)
+        if n is None:
+            count = None if total is None else max(0, total - start)
+        else:
+            count = max(0, int(n))
+            if total is not None:
+                count = min(count, total - start)
+        if count == 0:
+            raise ValueError(
+                f'Empty read range start={start} n={n} over {total} frames of '
+                f'{self.path}')
+
+        if start > 0 and not self._cap.set(self.cv2.CAP_PROP_POS_FRAMES, start):
+            raise IOError(f'Could not seek to frame {start} of {self.path}')
+        frames = []
+        while count is None or len(frames) < count:
+            ok, frame = self._cap.read()
+            if not ok:
+                break
+            if gray and frame.ndim == 3:
+                frame = self.cv2.cvtColor(frame, self.cv2.COLOR_BGR2GRAY)
+            elif frame.ndim == 3:
+                frame = self.cv2.cvtColor(frame, self.cv2.COLOR_BGR2RGB)
+            frames.append(frame)
+        if not frames:
+            raise IOError(f'No frames decoded from {self.path} at '
+                          f'start={start}')
+        if count is not None and len(frames) != count:
+            raise IOError(
+                f'Short read on {self.path}: asked for {count} frames at '
+                f'start={start}, decoded {len(frames)}')
+        return np.stack(frames, axis=0)          # [T, H, W(, C)]
+
     def __enter__(self):
         return self
 
@@ -260,6 +311,34 @@ class DecordClipReader:
         if target_size:
             frames = _np.stack([resize_center_crop(f, target_size)
                                 for f in frames])
+        return frames
+
+    def read_range(self, start: int = 0, n: Optional[int] = None,
+                   gray: bool = False):
+        """Decode ``[start, start+n)`` frames -> uint8 ``[T, H, W(, C)]``.
+
+        Same contract as :meth:`CV2ClipReader.read_range`: bounds are clamped
+        to ``[0, num_frames)`` and a short read raises.
+        """
+        import numpy as _np
+        total = self.num_frames
+        start = max(0, min(int(start), total))
+        end = total if n is None else min(total, start + max(0, int(n)))
+        if end <= start:
+            raise ValueError(
+                f'Empty read range start={start} n={n} over {total} frames of '
+                f'{self.path}')
+        frames = self._vr.get_batch(list(range(start, end))).asnumpy()
+        if frames.ndim == 3:
+            frames = frames[..., None]
+        if gray and frames.shape[-1] != 1:
+            import cv2
+            frames = _np.stack([cv2.cvtColor(f, cv2.COLOR_RGB2GRAY)
+                                for f in frames])
+        if len(frames) != end - start:
+            raise IOError(
+                f'Short read on {self.path}: asked for {end - start} frames '
+                f'at start={start}, decoded {len(frames)}')
         return frames
 
     def __enter__(self):

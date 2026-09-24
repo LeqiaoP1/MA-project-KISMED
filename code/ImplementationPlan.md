@@ -209,3 +209,70 @@ An **ADD-ON / diagnostic** module (separate from Stages 1-3; it re-uses the Stag
 * **Code (all ADD-ON files).** `data/au_dataset.py` (`AuOccurrenceDataset`, `build_au_datasets` subject split), `core/au_probe.py` (`MultiModalMAEProbe` = Stage-2 encoder reuse + mean-pool + head; `load_au_probe_weights` loads Stage-2 or MAE checkpoints with a geometry guard; `weights_only=False`), `engines/au_probe.py` (`train_one_epoch_au`, `evaluate_au`), `runners/run_au_probe.py`, configs `configs/finetune/au_local{,_pretrained}.yaml` (geometry MUST reproduce the probed Stage-2 checkpoint: `tubelet/input_size/clip_duration→num_frames/enc_embed_dim/enc_depth/enc_num_heads`), `scripts/local/au_smoke.sh`. Visual-stream-only input (no physio leakage).
 * **Status.** End-to-end local smoke passes on `F001..F004_T1` (subject split, Stage-2 ckpt load: 78 encoder tensors, forward `[B,12]`, BCE+per-AU F1, best-ckpt saved). Real numbers need full media on HPC; the loader cost is RGB *decode* CPU rather than the disk (see §4.4, §4.6 and the README's *Data-loading throughput*), so `num_workers` is the effective knob.
 * **Stage-1 decision ladder (run it in the Stage-3 metric space, not on AU F1).** (1) random init -> S3; (2) pretrained init -> S3; (3) random init -> S2 (from scratch) -> S3; (4) pretrained init -> S2 -> S3; (5) optional: no Stage 2 at all (direct supervised). If (3)/(4) match or beat (1)/(2) on subject-disjoint Stage-3 metrics, Stage 1 is dead weight and can be dropped **with evidence** — which is itself a reportable result.
+
+---
+
+### **6. Thermal -> Respiration Dataset (ADD-ON)**
+
+A second ADD-ON beside §5, again with **no Stage-1/2/3 code touched**: it turns
+the thermal stream into a supervised *clip -> waveform* dataset, i.e. the
+`resp` branch of the thesis taken from thermal-only input at 1000 Hz. One
+sample is `'tir_video' [3, T, H, W]` + `'resp_signal' [L]` + `'subject_task'`
+(`T = clip_seconds*25`, `L = clip_seconds*1000`; 8 s -> 200 frames / 8000
+samples). It reads the RAW tree (`Thermal/<S>/<T>.wmv`,
+`IRFeatures/<S>_<T>.txt`, `Physiology/<S>/<T>/Resp_Volts.txt`), so no
+`prepare_bp4d.py` conversion is involved and the respiration target stays at
+its original 1000 Hz instead of the canonical 100 Hz grid.
+
+* **Data facts (verified 2026-09-24, see also §5's + the README's).**
+  `IRFeatures/<S>_<T>.txt` is one line per thermal frame, 56 floats = 28
+  `(x, y)` PIXEL pairs in the 726x480 frame, and **line `n` == frame `n`**
+  (F001_T1: 1612 lines = 1612 decoded frames @ 25.0000 fps). `(0, 0)` is the
+  undocumented missing-data sentinel, all-or-nothing per frame (F001_T8:
+  112/227 lines), caused by a strongly turned head rather than a decode fault.
+  `Resp_Volts.txt` = 64597 samples over 64.48 s = 1001.8 Hz (nominal 1000) and
+  rails at exactly -10.0000 V in some sessions. Locally only `F001_T1/T2/T6/T7`
+  are usable at all: `F002/F003/F004` have NO `IRFeatures` file, so the
+  "skip untracked sequence" path is exercised by real data rather than by a
+  synthetic case.
+* **Specs.** Clip window 200 frames (8 s, non-overlapping by default,
+  `clip_stride` in seconds for overlap). ROI = the 12 mouth+nose landmarks
+  (1-indexed labels `[9,10,11,12,13,20,21,22,23,24,25,26]`), reduced to ONE box
+  per clip: global min/max over all 200 frames, each side extended by
+  `roi_padding * extent` (0.2 -> +40 % total), clamped to the frame, and all
+  200 frames cropped with that identical box and resized (`cv2.resize`) to
+  `input_size`. A clip touching ANY `(0,0)` line is dropped whole. Frames ->
+  `[0, 1]` by `/255`; respiration z-scored per clip
+  (`(y - mu) / (sigma + 1e-8)`), with `session`/`none` alternatives. Alignment
+  is by time (`resp[f*fps_ratio : ...]`), which at 25 fps / 1000 Hz is the exact
+  integer slice `f*40`.
+* **Design note to state in the thesis.** The box is clip-static on purpose
+  (no per-frame jitter, no spatial warping), and the measured consequence is
+  that the box is only as tight as the head movement of that 8 s window allows
+  (F001_T1 calm clip 85x103 px vs mobile clip 103x160 px of 726x480). Tighter
+  alternatives are `roi_padding: 0` (the tight union) or shorter windows; do not
+  fix it by cropping per frame.
+* **Verification (all checks pass locally).** `python data/tir_resp_dataset.py`
+  (its `main`) checks the key set, `[3, T, S, S]` / `[L]` shapes and dtypes,
+  the `[0, 1]` range, the per-clip z-score (mean 0, std 1), ROI containment of
+  every target landmark, the box against an independent min/max+padding
+  recomputation, `tir_video[:, 0]` against the actual `cv2.resize` of the crop
+  (so the tensor really is that box's crop, not a centred re-crop), the seek
+  against a full sequential decode, and the respiration window against a
+  brute-force slice of the raw file. The two negative paths are asserted too
+  (`F001_T8` -> 0 clips; an untracked subject -> 0 clips, reason recorded).
+  23 clips from 4 sessions; 224 px / 4 s / 50 % overlap configurations also
+  verified.
+* **Files.** `data/tir_resp_dataset.py` (`parse_ir_features`,
+  `missing_frame_mask`, `roi_box_from_landmarks`, `discover_sessions`,
+  `BP4DPlusTIRRespDataset`, `main`), `data/video_io.py` gained
+  `read_range()` on both readers (additive; frame-exact seek),
+  `runners/run_inspect_tir_resp.py` (per-clip 4-panel figure + JSON report +
+  index), `scripts/local/inspect_tir_resp.sh`, README section.
+* **Not implemented / open.** No train/val split (the subject-disjoint protocol
+  is the caller's job and is deliberately not duplicated here -- never split by
+  clip). No caching strategy beyond `preload` (2.5 MB per 64 px clip); the
+  0.7-2.4 s per-clip decode is the same CPU-bound JPEG/WMV decode cost
+  documented in §4.4. The dataset returns ONE session's stream without
+  cross-session resampling, so a future Stage-3 "thermal -> resp" run must add
+  the split and the head geometry mapping (T*W*H -> L) itself.
