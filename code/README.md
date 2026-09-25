@@ -629,6 +629,12 @@ python runners/run_inspect_physio.py --list          # what is on disk?
 bash scripts/local/inspect_physio.sh                 # SUBJECT/TASK/CHANNEL env-style
 ```
 
+`--list` checks PRESENCE, not just the directory tree: a session dir that holds
+no channel file is marked `[empty]`, and a tree where nothing holds a channel
+file raises a warning instead of listing sessions. A half-transferred raw root
+(Lichtenberg: 1400 empty `Physiology/<subj>/<task>/` dirs, 0 files) otherwise
+looks like a complete dataset until every single session is inspected and fails.
+
 Output goes to `output/inspect_data/<subject>_<task>/`: `<Channel>.png` (the
 full native-rate trace, a 10 s zoom, and the amplitude distribution),
 `<Channel>.json`, `physio_summary.json` and an `overview.png` stacking the
@@ -819,8 +825,24 @@ split -- keep reporting the trivial baseline next to the probe's F1 (the
 mkdir -p logs
 sbatch scripts/hpc/submit_prepare.sbatch    # convert raw BP4D once (CPU)
 sbatch scripts/hpc/submit_inspect.sbatch    # data smoke on 1 GPU
+sbatch scripts/hpc/submit_inspect_physio.sbatch   # raw 1-D physiology (CPU, no GPU)
 TARGET=bp sbatch scripts/hpc/submit_waveform.sbatch   # (later) multi-GPU Stage-3
 ```
+
+Three cluster rules the `submit_*.sbatch` files already encode (verified with
+`sbatch --test-only` on `lcluster`):
+
+- **Submit from `code/`.** `sbatch` COPIES the script into the spool dir and runs
+  that copy, so `$0` is `/var/spool/slurmd/job<id>/slurm_script` -- not the repo
+  path. The scripts locate `scripts/env_hpc.sh` through `$SLURM_SUBMIT_DIR`, and
+  abort with a message if it is not there.
+- **`--mem-per-cpu`, never `--mem`** (the LUA `job_submit` plugin rejects `--mem`).
+  Total memory is `--mem-per-cpu * cpus-per-task * ntasks`, and `DefMemPerCPU`
+  is 3800 MB, so omitting the line is also fine on CPU partitions.
+- **Partitions**: `deflt_short` (30 min) / `deflt` (1 day) / `long` (7 days) for
+  CPU work, `acc_short` / `acc` / `acc_long` for GPU work -- there is no `gpu`
+  partition on Lichtenberg II. `--account` may be omitted; the plugin bills your
+  default project either way.
 
 Multi-GPU jobs run one task per GPU through `srun`; `utils/dist.py` initialises
 DDP from the SLURM environment (`SLURM_PROCID`/`SLURM_NTASKS`/`SLURM_LOCALID`)

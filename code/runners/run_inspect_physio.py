@@ -104,8 +104,13 @@ Usage (from ``code/``)::
     python runners/run_inspect_physio.py --subject F001,F002 --task T1,T2 \
         --channel Resp,EDA --phys_fs 0
 
-    # what is on disk?
+    # what is on disk? (marks session dirs that hold no channel file)
     python runners/run_inspect_physio.py --list
+
+``--list`` verifies PRESENCE, not just the directory tree: a session directory
+that holds no channel file is marked ``[empty]`` and a tree with no channel file
+anywhere raises a warning, because a half-transferred or skeleton raw root
+otherwise looks like a full set of sessions until each one is inspected.
 
 Paths default to ``$RAW_DATA_PATH`` (raw BP4D root) and ``$OUTPUT_DIR`` (see
 ``scripts/env_local.sh``); without the env profile they fall back to the
@@ -295,6 +300,25 @@ def discover_sessions(raw_root: str):
         for task in sorted(os.listdir(pdir)):
             if os.path.isdir(os.path.join(pdir, task)):
                 out.append((subj, task))
+    return out
+
+
+def present_channels(raw_root: str, subject: str, task: str):
+    """``[(channel key, raw basename), ...]`` for the channel files that EXIST.
+
+    Resolved through the same two functions :func:`inspect_session` uses
+    (:func:`channel_raw_file` + ``prep.find_channel_file``), so ``--list``
+    cannot advertise a channel the inspector would then reject. An EMPTY list
+    means the session directory exists but is a skeleton -- a partial download
+    or an unpack that created only directories (seen on Lichtenberg: 1400 empty
+    ``Physiology/<subj>/<task>/`` dirs, 0 files).
+    """
+    phys_dir = os.path.join(raw_root, 'Physiology', subject, task)
+    out = []
+    for key in CHANNEL_ORDER:
+        path = prep.find_channel_file(phys_dir, channel_raw_file(key))
+        if path is not None:
+            out.append((key, os.path.basename(path)))
     return out
 
 
@@ -1364,7 +1388,8 @@ def get_args(argv=None):
                    help='write the JSON summaries only, skip the figures')
     p.add_argument('--list', action='store_true',
                    help='list the (subject, task) sessions found in the raw '
-                        'tree and exit')
+                        'tree (marking dirs that hold no channel file) and '
+                        'exit')
     return p.parse_args(argv)
 
 
@@ -1377,13 +1402,31 @@ def main() -> int:
                          f'set $RAW_DATA_PATH or pass --raw_root')
     if args.list:
         print(f'raw root: {raw_root}')
-        print(f'{len(available)} session(s) under Physiology/:')
-        subj = sorted({s for s, _ in available})
-        for s in subj:
-            tasks = [t for ss, t in available if ss == s]
-            print(f'  {s}: {" ".join(tasks)}')
+        # A session DIRECTORY can exist while holding no channel file, so report
+        # what is really there: otherwise `--list` promises sessions that
+        # inspect_session() can only reject (this is how an unmounted or
+        # half-transferred raw tree looks).
+        found = {st: present_channels(raw_root, *st) for st in available}
+        n_ready = sum(1 for chans in found.values() if chans)
+        n_subj = len({s for s, _ in available})
+        print(f'{len(available)} session dir(s) under {n_subj} subject(s), '
+              f'{n_ready} holding at least one channel file:')
         if not available:
             print('  (none - is this the right --raw_root?)')
+        elif not n_ready:
+            # A skeleton tree (1400 empty dirs) is the common failure mode, and
+            # printing a line per subject would bury the warning - collapse it.
+            print('  WARNING: every session dir is EMPTY - this is a skeleton '
+                  'tree (directories only, no channel files). Copy the raw\n'
+                  '  Physiology/*.txt in first, e.g.\n'
+                  '    rsync -av <local-BP4D>/Physiology/ '
+                  '"$RAW_DATA_PATH/Physiology/"')
+        else:
+            for s in sorted({s for s, _ in available}):
+                # iterate `available` (not a set) to keep the existing task order
+                cells = [t if found[(ss, t)] else f'{t}[empty]'
+                         for ss, t in available if ss == s]
+                print(f'  {s}: {" ".join(cells)}')
         return 0
 
     if not args.subject:

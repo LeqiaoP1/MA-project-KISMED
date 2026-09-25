@@ -18,7 +18,11 @@ __pycache__/
 # ignore output files
 output/*
 
+# SLURM job logs (code/logs/*.out, *.err)
+code/logs/
+
 # ignore temporary files
 tmp/
-output/
+
+# symlinks to output directories
 output

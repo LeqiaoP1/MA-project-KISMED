@@ -4,19 +4,21 @@
 set -a
 
 # --- Python environment (Lichtenberg supports venv) ------------------------ #
-export VENV="${VENV:-/path/to/your/venv}"            # EDIT: e.g. $HOME/.venvs/kismed
+export VENV="${VENV:-$HOME/MA-project-KISMED/.env}"            # EDIT: e.g. $HOME/.venvs/kismed
 # optional alternative: use a conda env instead
 export CONDA_ENV="${CONDA_ENV:-}"                    # EDIT (leave empty if using VENV)
 
 # --- paths on the cluster -------------------------------------------------- #
-export RAW_DATA_PATH="${RAW_DATA_PATH:-/path/on/hpc/data/raw/BP4D}"          # EDIT
-export DATA_PATH="${DATA_PATH:-/path/on/hpc/data/processed/bp4d_canonical}"  # EDIT
-export OUTPUT_DIR="${OUTPUT_DIR:-/path/on/hpc/output}"                       # EDIT
-export CODE_DIR="${CODE_DIR:-$SLURM_SUBMIT_DIR/code}"
+export RAW_DATA_PATH="${WORK_PROJ}/BP4D+"          # EDIT
+export DATA_PATH="${HOME}/MA-project-KISMED/data/processed/bp4d_canonical"  # EDIT
+export PROJ_DIR="${HOME}/MA-project-KISMED"
+export OUTPUT_DIR="${PROJ_DIR}/output"                       # EDIT
+export CODE_DIR="${PROJ_DIR}/code"
+
 # Stage-1 initial (downloaded) ViT encoder weights. Must be on a path every
 # compute node can read: pre-fetch with runners/run_download_weights.py on a
 # LOGIN node (compute nodes have no internet), then reuse the cache.
-export INITIAL_MODELS_DIR="${INITIAL_MODELS_DIR:-$(dirname "$CODE_DIR")/models/initial}"
+export INITIAL_MODELS_DIR="${INITIAL_MODELS_DIR:-$(dirname "$PROJ_DIR")/models/initial}"
 export DATA_SET="${DATA_SET:-bp4d+}"
 export NUM_WORKERS="${NUM_WORKERS:-4}"
 
