@@ -21,3 +21,4 @@ output/*
 # ignore temporary files
 tmp/
 output/
+output
