@@ -5,6 +5,8 @@ data/raw/*
 !data/processed/README.md
 !data/raw/README.md
 .venv/
+.env/
+
 *.tar.gz
 
 # Ignore downloaded model weight files
@@ -18,3 +20,4 @@ output/*
 
 # ignore temporary files
 tmp/
+output/
