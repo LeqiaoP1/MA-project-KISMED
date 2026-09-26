@@ -41,6 +41,22 @@ def get_args():
     parser.add_argument('--enc_num_heads', default=0, type=int)
     # data / clip geometry (the multimodal dataset & model read these)
     parser.add_argument('--data_path', default=env_or('DATA_PATH'), type=str)
+    parser.add_argument('--data_set', default='bp4d+', type=str,
+                        help="Stage-2 data source: 'bp4d+' (default) = the "
+                             "canonical paired layout; 'tir_roi' = the ADD-ON "
+                             "thermal-ROI + respiration dataset built from the "
+                             "RAW tree (see code/TirROI_Resp_plan.md).")
+    parser.add_argument('--raw_root', default=env_or('RAW_DATA_PATH', ''),
+                        type=str,
+                        help='raw BP4D root for data_set=tir_roi; default: '
+                             '$RAW_DATA_PATH, else <repo>/data/raw/BP4D')
+    parser.add_argument('--roi_padding', default=0.2, type=float,
+                        help='tir_roi only: fraction of the landmark-box '
+                             'extent added on EACH side before the crop')
+    parser.add_argument('--subjects', default='', type=str,
+                        help='tir_roi only: comma list of subjects (empty=all)')
+    parser.add_argument('--tasks', default='', type=str,
+                        help='tir_roi only: comma list of tasks (empty=all)')
     parser.add_argument('--fs', default=100.0, type=float,
                         help='signal sample rate (Hz)')
     parser.add_argument('--fps', default=25.0, type=float,

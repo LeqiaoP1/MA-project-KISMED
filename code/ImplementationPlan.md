@@ -222,7 +222,10 @@ sample is `'tir_video' [3, T, H, W]` + `'resp_signal' [L]` + `'subject_task'`
 samples). It reads the RAW tree (`Thermal/<S>/<T>.wmv`,
 `IRFeatures/<S>_<T>.txt`, `Physiology/<S>/<T>/Resp_Volts.txt`), so no
 `prepare_bp4d.py` conversion is involved and the respiration target stays at
-its original 1000 Hz instead of the canonical 100 Hz grid.
+its original 1000 Hz instead of the canonical 100 Hz grid. With a
+`temporal_stride N` the clip holds `T = clip_seconds*fps/N` frames (rounded down
+to a tubelet multiple) and `L = T*N/fps*fs` samples, and `sig_kernel` MUST be
+rescaled to `tubelet_t*N/fps*fs` (stride 2 -> 16) or the model refuses to build.
 
 * **Data facts (verified 2026-09-24, see also §5's + the README's).**
   `IRFeatures/<S>_<T>.txt` is one line per thermal frame, 56 floats = 28
@@ -231,10 +234,12 @@ its original 1000 Hz instead of the canonical 100 Hz grid.
   undocumented missing-data sentinel, all-or-nothing per frame (F001_T8:
   112/227 lines), caused by a strongly turned head rather than a decode fault.
   `Resp_Volts.txt` = 64597 samples over 64.48 s = 1001.8 Hz (nominal 1000) and
-  rails at exactly -10.0000 V in some sessions. Locally only `F001_T1/T2/T6/T7`
-  are usable at all: `F002/F003/F004` have NO `IRFeatures` file, so the
-  "skip untracked sequence" path is exercised by real data rather than by a
-  synthetic case.
+  rails at exactly -10.0000 V in some sessions. **The local corpus was expanded
+  on 2026-09-26 to 40 sessions** (4 subjects x T1..T10, 45 858 frames =
+  30.6 min, `IRFeatures` for every video, `lines == frames` on all 40); three
+  sessions carry `(0,0)` sentinel lines (F001_T8 112/227, F002_T7 2/1111,
+  F003_T3 70/1852) and none is untracked, so the "skip untracked sequence" path
+  is verified against a synthetic tree instead.
 * **Specs.** Clip window 200 frames (8 s, non-overlapping by default,
   `clip_stride` in seconds for overlap). ROI = the 12 mouth+nose landmarks
   (1-indexed labels `[9,10,11,12,13,20,21,22,23,24,25,26]`), reduced to ONE box
@@ -261,8 +266,25 @@ its original 1000 Hz instead of the canonical 100 Hz grid.
   against a full sequential decode, and the respiration window against a
   brute-force slice of the raw file. The two negative paths are asserted too
   (`F001_T8` -> 0 clips; an untracked subject -> 0 clips, reason recorded).
-  23 clips from 4 sessions; 224 px / 4 s / 50 % overlap configurations also
-  verified.
+  431 clips from 40 sessions at 4 s (9 windows dropped) / 843 at a 2 s hop /
+  1663 at 1 s; 224 px, 8 s and overlapping configurations also verified.
+* **Stage-2 TIR-ROI run (2026-09-26): stable recipe found, physio collapse
+  reproduced.** The first real run (`streams: tir,resp`, 8 s clips, batch 4,
+  `lr 1e-3`, `clip_grad 0.0`, `spectral_weight 0.1`) DIVERGED: at
+  `checkpoint-0010` `mse_tir 11.96`, `mse_resp 556 017`, `max|pred_resp| 1371`.
+  Parameter norms stayed within 2x of init -- it was an ACTIVATION runaway (the
+  residual stream, not the weights), and the trigger was the **MR-STFT term**
+  (`spec_resp` up to 3.7e8, `grad_norm ~5e8` pre-clip in single steps).
+  `spectral_weight: 0.0` + `clip_grad: 5.0` + `lr: 3e-4` removes the spikes
+  (epoch average tracks the last step: `loss 0.901` vs `0.857`, `grad_norm`
+  2.9): `mse_tir 0.376` (visual stream learns, far below the 1.0 constant-
+  predictor floor) but `mse_resp 1.052` = exactly that floor, i.e. the same
+  Stage-2 physio collapse as the `rgb,bp` runs, now in the thermal-only setting.
+  Also verified here: `loss = mse_tir + 0.5*mse_resp + 0.1*spec_resp` exactly,
+  and under `target_norm: clip` the target is ALWAYS bounded (`|z| <= 1`), so a
+  huge masked MSE can only mean the prediction exploded. Turning the STFT off
+  also UNBLOCKS `target_norm: token` (the next lever against the collapse).
+  Full record: `code/TirROI_Resp_plan.md` §7.
 * **Files.** `data/tir_resp_dataset.py` (`parse_ir_features`,
   `missing_frame_mask`, `roi_box_from_landmarks`, `discover_sessions`,
   `BP4DPlusTIRRespDataset`, `main`), `data/video_io.py` gained

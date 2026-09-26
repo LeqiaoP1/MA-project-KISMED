@@ -91,7 +91,8 @@ __all__ = ['NUM_LANDMARKS', 'TARGET_LANDMARKS', 'TARGET_LANDMARK_IDX',
            'DEFAULT_RESP_FS', 'parse_ir_features', 'missing_frame_mask',
            'roi_box_from_landmarks', 'discover_sessions', 'find_thermal_video',
            'find_ir_features', 'find_resp_file', 'default_raw_root',
-           'BP4DPlusTIRRespDataset']
+           'BP4DPlusTIRRespDataset', 'TirRoiRespPretrainDataset',
+           'build_tir_roi_pretrain_dataset']
 
 #: 28 landmarks per frame in the IRFeatures track (user-guide Figure 3).
 NUM_LANDMARKS = 28
@@ -766,6 +767,171 @@ class BP4DPlusTIRRespDataset(Dataset):
 
 
 # --------------------------------------------------------------------------- #
+# Stage-2 (masked pre-training) view of the same clips
+# --------------------------------------------------------------------------- #
+def _as_list(value) -> Optional[List[str]]:
+    """``None``/``''`` -> ``None``; ``'a,b'`` or ``['a','b']`` -> ``['a','b']``."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        items = [v.strip() for v in value.split(',') if v.strip()]
+        return items or None
+    items = [str(v) for v in value]
+    return items or None
+
+
+class TirRoiRespPretrainDataset(Dataset):
+    """Stage-2 masked-pretraining dataset: thermal ROI -> respiration.
+
+    Wraps :class:`BP4DPlusTIRRespDataset` (clip enumeration, ROI crop, raw
+    respiration) and returns exactly the stream dict ``MultiModalMAE`` consumes::
+
+        {'tir':  float32 [3, T, input_size, input_size]   ROI crop, [0, 1]
+         'resp': float32 [1, L]                           RAW volts}
+
+    The respiration values are deliberately RAW: the model z-scores a clip
+    internally under ``target_norm: clip`` (the same contract
+    ``PairedPretrainDataset`` follows for ``bp``/``resp``/``eda``). Do not
+    normalize here as well.
+
+    Geometry mirrors ``core.multimae.build_pretraining_model`` exactly::
+
+        n = round(clip_duration * fps / temporal_stride)
+        T = n rounded DOWN to a multiple of ``tubelet_t``  (>= tubelet_t)
+        L = round((T * temporal_stride / fps) * fs)
+
+    so ``grid_t = T / tubelet_t`` equals ``n_signal = L / sig_kernel`` and the
+    model's hard space-time alignment check passes. ``tubelet_t`` MUST be the
+    first component of the run's ``--tubelet``.
+
+    This is an ADD-ON path: it does not touch ``PairedPretrainDataset``, and
+    every existing ``rgb``/``bp`` config keeps using that class.
+    """
+
+    def __init__(self, raw_root: Optional[str] = None,
+                 streams: Sequence[str] = ('tir', 'resp'),
+                 fs: float = 100.0, fps: float = DEFAULT_FPS,
+                 clip_duration: float = 4.0,
+                 clip_stride: Optional[float] = None,
+                 temporal_stride: int = 1,
+                 tubelet_t: int = 2,
+                 input_size: int = DEFAULT_INPUT_SIZE,
+                 roi_padding: float = DEFAULT_ROI_PADDING,
+                 target_landmarks: Sequence[int] = TARGET_LANDMARKS,
+                 resp_fs: float = DEFAULT_RESP_FS,
+                 subjects=None, tasks=None,
+                 max_clips_per_session: Optional[int] = None,
+                 max_entries: Optional[int] = None,
+                 verbose: bool = False):
+        self.streams = tuple(str(s).strip() for s in streams if str(s).strip())
+        if not self.streams:
+            raise ValueError('TirRoiRespPretrainDataset: empty streams list')
+        unknown = [s for s in self.streams if s not in ('tir', 'resp')]
+        if unknown:
+            raise ValueError(
+                f'TirRoiRespPretrainDataset: unknown stream(s) {unknown}; this '
+                f'path serves exactly (tir, resp).')
+        if 'tir' not in self.streams or 'resp' not in self.streams:
+            raise ValueError(
+                'TirRoiRespPretrainDataset: Stage 2 needs BOTH streams -- the '
+                f'thermal ROI visual + the respiration waveform; got '
+                f'{self.streams}.')
+
+        self.fs = float(fs)
+        self.fps = float(fps)
+        self.clip_duration = float(clip_duration)
+        self.temporal_stride = max(1, int(temporal_stride))
+        self.tubelet_t = max(1, int(tubelet_t))
+        self.resp_fs = float(resp_fs)
+        self.input_size = int(input_size)
+        self.roi_padding = float(roi_padding)
+
+        # ---- geometry, identical to build_pretraining_model ----------------
+        n = max(1, int(round(self.clip_duration * self.fps / self.temporal_stride)))
+        if n % self.tubelet_t:
+            n -= n % self.tubelet_t
+        self.num_frames = max(self.tubelet_t, n)
+        kept_seconds = self.num_frames * self.temporal_stride / self.fps
+        self.seq_len = max(1, int(round(kept_seconds * self.fs)))
+
+        # ---- clips: the ROI + respiration base dataset (RAW values) -------
+        self.base = BP4DPlusTIRRespDataset(
+            raw_root=raw_root, subjects=_as_list(subjects),
+            tasks=_as_list(tasks), clip_seconds=self.clip_duration,
+            fps=self.fps, resp_fs=self.resp_fs, input_size=self.input_size,
+            clip_stride=clip_stride, roi_padding=self.roi_padding,
+            target_landmarks=target_landmarks, norm='none',
+            max_clips_per_session=max_clips_per_session,
+            max_entries=max_entries, verbose=verbose)
+        self.entries = self.base.entries
+        self.stats = self.base.stats
+
+        # the respiration grid of one clip is fixed -> precompute the mapping
+        self._resp_idx = (np.arange(self.seq_len) / self.fs) * self.resp_fs
+
+    # ------------------------------------------------------------------ item
+    def __getitem__(self, index: int) -> dict:
+        item = self.base[index]                       # tir [3,nf,S,S] + volts
+        tir = item['tir_video']
+        if self.temporal_stride > 1:
+            tir = tir[:, ::self.temporal_stride]      # decimate INSIDE the window
+        tir = tir[:, :self.num_frames]                # drop the tubelet tail
+        if tir.shape[1] != self.num_frames:
+            raise RuntimeError(
+                f'{self.entries[index]["session"]}: ROI clip has '
+                f'{tir.shape[1]} frames, geometry needs {self.num_frames}')
+
+        raw = item['resp_signal'].numpy()             # [nf_resp] raw volts
+        resp = np.interp(self._resp_idx, np.arange(raw.shape[0], dtype=np.float64),
+                         raw.astype(np.float64)).astype(np.float32)
+
+        out = {}
+        if 'tir' in self.streams:
+            out['tir'] = tir.contiguous()
+        if 'resp' in self.streams:
+            out['resp'] = torch.from_numpy(resp).unsqueeze(0)      # [1, L]
+        return out
+
+    def __len__(self) -> int:
+        return len(self.entries)
+
+    def describe(self) -> str:
+        return (f'TirRoiRespPretrainDataset streams={list(self.streams)}\n'
+                f'  clips {len(self)} from {len(self.base.sessions)} session(s), '
+                f'ROI {self.input_size}px padding {self.roi_padding:g}\n'
+                f'  geometry T={self.num_frames} frames '
+                f'({self.num_frames * self.temporal_stride / self.fps:.4f} s), '
+                f'L={self.seq_len} @ {self.fs:g} Hz, '
+                f'temporal_stride={self.temporal_stride}\n' + self.base.describe())
+
+
+def build_tir_roi_pretrain_dataset(args) -> TirRoiRespPretrainDataset:
+    """Build the Stage-2 TIR-ROI + RESP dataset from a run_pretrain ``args``.
+
+    Selected by ``data_set: tir_roi`` (see ``data/datasets.py``). Only
+    ``getattr``-reads, so an args namespace from any runner/config works.
+    """
+    tubelet = str(getattr(args, 'tubelet', '2,16,16')).split(',')
+    return TirRoiRespPretrainDataset(
+        raw_root=getattr(args, 'raw_root', None) or default_raw_root(),
+        streams=tuple(s.strip() for s in
+                      str(getattr(args, 'streams', 'tir,resp')).split(',')
+                      if s.strip()),
+        fs=getattr(args, 'fs', 100.0),
+        fps=getattr(args, 'fps', DEFAULT_FPS),
+        clip_duration=getattr(args, 'clip_duration', 4.0),
+        clip_stride=getattr(args, 'clip_stride', None) or None,
+        temporal_stride=int(getattr(args, 'temporal_stride', 1) or 1),
+        tubelet_t=int(tubelet[0]),
+        input_size=getattr(args, 'input_size', DEFAULT_INPUT_SIZE),
+        roi_padding=float(getattr(args, 'roi_padding', DEFAULT_ROI_PADDING)),
+        subjects=getattr(args, 'subjects', None),
+        tasks=getattr(args, 'tasks', None),
+        max_clips_per_session=getattr(args, 'max_clips', None),
+        max_entries=getattr(args, 'max_entries', None))
+
+
+# --------------------------------------------------------------------------- #
 # data verification / shape tests
 # --------------------------------------------------------------------------- #
 def _check_clip(ds: BP4DPlusTIRRespDataset, index: int) -> List[str]:
@@ -915,6 +1081,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f'[ok] discovered {len(ds)} clip(s) from {len(ds.sessions)} session(s)')
 
     # Requirement 1: an untracked sequence (no IRFeatures) must NOT raise.
+    # The corpus currently ships IRFeatures for every thermal video, so the
+    # rule is verified against a SYNTHETIC tree (symlinks + an empty IRFeatures
+    # dir) instead of relying on whichever sequences happen to be downloadless.
     tracked_subj = sorted({e['subject'] for e in ds.entries})
     untracked = sorted({s['subject'] for s in ds.skipped
                         if s['reason'] == 'missing_ir_features'})
@@ -928,7 +1097,32 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f'[FAIL] {untracked[0]} should have been skipped as untracked')
             return 1
     else:
-        print('[--] no untracked sequence in this selection to probe')
+        import tempfile
+        src = next((s for s in discover_sessions(args.raw_root,
+                                                subjects=split(args.subject),
+                                                tasks=split(args.task))
+                    if s['ir_file'] and s['resp_file']), None)
+        if src is None:
+            print('[--] no session to build the synthetic untracked probe from')
+        else:
+            with tempfile.TemporaryDirectory() as tmp:
+                # NOTE: the relpath ALREADY starts with the tree name
+                # ('Thermal/...', 'Physiology/...'), so it is not re-joined.
+                for path in (src['video'], src['resp_file']):
+                    dst = os.path.join(tmp, os.path.relpath(path, args.raw_root))
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    os.symlink(path, dst)
+                    if not os.path.isfile(dst):
+                        raise RuntimeError(f'probe symlink is dangling: {dst}')
+                os.makedirs(os.path.join(tmp, IR_TREE), exist_ok=True)  # empty!
+                probe = build(raw_root=tmp)
+                if len(probe) == 0 and any(
+                        s['reason'] == 'missing_ir_features' for s in probe.skipped):
+                    print(f'[ok] synthetic {src["session"]} without '
+                          f'{IR_TREE} -> skipped gracefully, 0 clips')
+                else:
+                    print('[FAIL] a session without IRFeatures was not skipped')
+                    return 1
 
     # Requirement 2: no surviving clip may overlap a (0,0) sentinel line.
     sentinel_sess = None

@@ -944,7 +944,8 @@ def fit_visual_patch_embed(model: 'MultiModalMAE',
 
 
 def load_pretrained_encoder(model: 'MultiModalMAE', path: str,
-                            inflate_rgb_patch: bool = True) -> Dict[str, int]:
+                            inflate_rgb_patch: bool = True,
+                            patch_stream: str = '') -> Dict[str, int]:
     """Copy a (MAE / VideoMAE / timm) checkpoint's transformer weights in.
 
     Two source layouts are accepted (see :func:`canonicalise_vit_state_dict`),
@@ -962,11 +963,20 @@ def load_pretrained_encoder(model: 'MultiModalMAE', path: str,
     temporal prior transfers instead of being faked by averaging two frames,
     and its objective (tube-masked video MAE) matches Stage 2.
 
-    Everything else (cls_token / pos_embed / head / non-rgb adapters / signal
+    Everything else (cls_token / pos_embed / head / other adapters / signal
     streams) is left at its random initialisation. Encoder geometry must match
     the checkpoint (e.g. embed_dim=768, depth=12, heads=12 for ViT-Base).
 
-    :return: counts dict {loaded, skipped, shape_mismatch, layout, keys}.
+    :param patch_stream: which VISUAL stream receives the tokenizer. ``''``
+        (default) resolves to ``rgb`` when that adapter exists and otherwise to
+        the first available visual adapter. So an ``rgb,...`` run behaves
+        exactly as before, while a ``tir,...`` run (Stage 2 with the thermal ROI
+        as the only visual stream) inherits the VideoMAE tubelet into
+        ``adapters.tir`` instead of leaving its tokenizer random -- the
+        checkpoint's patch embed used to be routed at a non-existent
+        ``adapters.rgb`` and silently counted as skipped.
+    :return: counts dict {loaded, skipped, shape_mismatch, layout,
+        patch_stream}.
     """
     import torch
 
@@ -985,6 +995,15 @@ def load_pretrained_encoder(model: 'MultiModalMAE', path: str,
     cur = model.state_dict()
     new_state = {}
     loaded, skipped, shape_mismatch = [], [], []
+
+    # --- which visual adapter receives the patch embed? -------------------- #
+    if not patch_stream:
+        for vis in _VISUAL_STREAMS:
+            if f'adapters.{vis}.patch_embed.weight' in cur:
+                patch_stream = vis
+                break
+    dst_patch = (f'adapters.{patch_stream}.patch_embed' if patch_stream
+                 else 'adapters.rgb.patch_embed')
 
     # --- geometry guard (avoids silently loading nothing) ------------------ #
     src_qkv = state.get('blocks.0.attn.qkv.weight')
@@ -1005,7 +1024,7 @@ def load_pretrained_encoder(model: 'MultiModalMAE', path: str,
             dst_key = 'enc_norm.' + src_key[len('norm.'):]
         elif src_key in ('patch_embed.proj.weight', 'patch_embed.proj.bias'):
             name = src_key.rsplit('.', 1)[-1]
-            dst_key = f'adapters.rgb.patch_embed.{name}'
+            dst_key = f'{dst_patch}.{name}'
             if name == 'weight' and dst_key in cur:
                 # 3-D source -> verbatim; 2-D source -> boxcar inflation (or
                 # left random when inflate_rgb_patch=False). Raises on a
@@ -1031,13 +1050,15 @@ def load_pretrained_encoder(model: 'MultiModalMAE', path: str,
     n_loaded = len(loaded)
     model.load_state_dict(new_state, strict=False)
     print(f'[pretrained] {path}: loaded {n_loaded} encoder tensors '
-          f'(layout {layout}), {len(skipped)} skipped, '
+          f'(layout {layout}, patch embed -> '
+          f'adapters.{patch_stream or "?"}), {len(skipped)} skipped, '
           f'{len(shape_mismatch)} shape-mismatched.')
     if shape_mismatch:
         print(f'[pretrained] first shape-mismatched keys: '
               f'{shape_mismatch[:5]}')
     return {'loaded': n_loaded, 'skipped': len(skipped),
-            'shape_mismatch': len(shape_mismatch), 'layout': layout}
+            'shape_mismatch': len(shape_mismatch), 'layout': layout,
+            'patch_stream': patch_stream}
 
 
 # --------------------------------------------------------------------------- #

@@ -21,7 +21,11 @@ YAML config via ``data_set``.
 from typing import Callable, Dict, Optional
 
 __all__ = ['build_dataset', 'build_pretraining_dataset', 'register_dataset',
-           'list_datasets']
+           'list_datasets', 'TIR_ROI_DATA_SETS']
+
+#: ``data_set`` values that select the ADD-ON thermal-ROI + respiration Stage-2
+#: dataset (RAW tree) instead of the canonical paired layout.
+TIR_ROI_DATA_SETS = ('tir_roi', 'tir_roi_resp', 'tir-roi')
 
 #: name -> builder(is_train, test_mode, args) -> Dataset
 _DATASET_BUILDERS: Dict[str, Callable] = {}
@@ -66,12 +70,27 @@ def build_dataset(is_train: bool, test_mode: bool, args):
 def build_pretraining_dataset(args):
     """Build the masked pre-training dataset (Stage 2, multimodal MAE).
 
-    The dataset serves exactly the modalities listed in ``args.streams``.
-    Stage-2 CONTRACT: at least TWO modalities -- >=1 video (``rgb``/``tir``)
-    AND >=1 physiological 1-D signal (``bp``/``resp``/``eda``, the Stage-3
-    reconstruction target). PRETRAIN-ON-ALL: no split, every session is used.
-    Per-stream masks are produced inside the multimodal MAE forward pass.
+    Two sources, selected by ``args.data_set``:
+
+    * ``tir_roi`` / ``tir_roi_resp`` -> :class:`TirRoiRespPretrainDataset`, the
+      ADD-ON thermal-ROI + respiration path over the RAW BP4D tree (the ROI
+      crop needs native-resolution frames and the ``IRFeatures`` landmark
+      track, neither of which exists in the canonical session layout).
+    * anything else (default) -> :class:`PairedPretrainDataset` over the
+      canonical ``<data_path>/<session>/`` layout, exactly as before.
+
+    For the paired path: the dataset serves exactly the modalities listed in
+    ``args.streams``. Stage-2 CONTRACT: at least TWO modalities -- >=1 video
+    (``rgb``/``tir``) AND >=1 physiological 1-D signal (``bp``/``resp``/``eda``,
+    the Stage-3 reconstruction target). PRETRAIN-ON-ALL: no split, every session
+    is used. Per-stream masks are produced inside the multimodal MAE forward
+    pass.
     """
+    name = str(getattr(args, 'data_set', '') or '').strip().lower()
+    if name in TIR_ROI_DATA_SETS:
+        from .tir_resp_dataset import build_tir_roi_pretrain_dataset
+        return build_tir_roi_pretrain_dataset(args)
+
     from .paired_dataset import PairedPretrainDataset
 
     streams = tuple(s.strip() for s in

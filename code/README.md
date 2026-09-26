@@ -73,6 +73,10 @@ python runners/run_evaluate.py --pred_path out.npy --target_path gt.npy \
 # (4) OPTIONAL ADD-ON diagnostic: AU-occurrence probe on the Stage-2 encoder
 python runners/run_au_probe.py -c configs/finetune/au_local.yaml
 
+# (5) OPTIONAL ADD-ON Stage 2: thermal ROI (visual) -> RESPIRATION (1-D)
+#     procedure of record: code/TirROI_Resp_plan.md
+python runners/run_pretrain.py -c configs/pretrain/stage2_local_tir_roi_resp.yaml
+
 # multi-GPU (HPC)
 bash scripts/project/pretrain.sh
 bash scripts/project/finetune.sh
@@ -170,7 +174,6 @@ L = Σ_s ( λ_s·MSE_s + w_s·STFT_s ) ,      w_physio = spectral weight ,      
   runs made before it.
 
 ### Stage-2 streams — flexible modality contract
-
 The pretraining modalities are configured with `--streams` (or `streams:` in
 the YAML under `configs/pretrain/`) as a comma list. The **Stage-2 contract**
 requires at least TWO streams: **≥1 video** (`rgb` and/or `tir`) **plus ≥1
@@ -195,6 +198,19 @@ conversion, the aligned `PairedSessionDataset` (+ overlapping windows via
 step-level warmup/cosine schedule via `utils/lr_sched.py`), MAE ViT-Base
 encoder inheritance (`load_pretrained_encoder`), and the Stage-3 waveform
 scaffold (`run_waveform.py`, `WaveformJointLoss`, `evaluation/`).
+
+**Second Stage-2 source (`data_set: tir_roi`).** `--data_set` selects the
+dataset behind `build_pretraining_dataset`: the default `bp4d+` keeps
+`PairedPretrainDataset` (canonical sessions), while `tir_roi` builds the
+ADD-ON thermal-ROI + respiration dataset from the RAW tree and is the only
+path whose visual stream is the landmark-derived mouth/nose crop. The first
+such run is `configs/pretrain/stage2_local_tir_roi_resp.yaml` (`streams: tir,resp`);
+its procedure of record is `code/TirROI_Resp_plan.md`. It needs no model
+change, and with `streams: tir,...` the Stage-1 loader now routes the
+checkpoint's tubelet into `adapters.tir` instead of leaving it random
+(`load_pretrained_encoder` resolves the destination visual adapter; an
+`rgb,...` run is unaffected). The canonical `rgb,bp*` configs and
+`PairedPretrainDataset` are untouched.
 
 Not yet implemented: a finer Stage-3 temporal decoder, and the *session-level*
 reconstruction/stitching that turns per-clip predictions into one continuous
@@ -334,10 +350,17 @@ ADD-ON like it: **no Stage-1/2/3 file is touched**. One sample is one thermal
 clip plus the respiration waveform over exactly the same time span:
 
 ```
-'tir_video'    float32 [3, T, H, W]   T = clip_seconds * 25 fps   (8 s -> 200)
-'resp_signal'  float32 [L]            L = clip_seconds * 1000 Hz  (8 s -> 8000)
+'tir_video'    float32 [3, T, H, W]   T = clip_seconds * 25 fps / temporal_stride
+'resp_signal'  float32 [L]            L = T * temporal_stride / 25 * 100 Hz
 'subject_task' str                    e.g. 'F001_T1'
 ```
+
+`temporal_stride` (8 s clip): 1 -> `T=200`, `L=800`, 1600 visual tokens
+(`sig_kernel 8`); 2 (the shipped config) -> `T=100`, `L=800`, 800 tokens
+(`sig_kernel 16`). A stride change is a **new geometry** (different pos-embed
+token count, so checkpoints are not interchangeable) and **must** be matched by
+`sig_kernel = tubelet_t * temporal_stride / fps * fs`, which the model enforces
+with a hard error naming the value to use.
 
 It reads the **raw** tree (no `prepare_bp4d.py` copy needed):
 
@@ -355,8 +378,7 @@ It reads the **raw** tree (no `prepare_bp4d.py` copy needed):
   away), and it is all-or-nothing per frame: F001_T8 has 112/227 such lines.
 * **Two skip rules.** (1) A session with **no** `IRFeatures` file is skipped
   gracefully (the guide ships 15 untracked, glasses-wearing sequences, e.g.
-  `F016_T2..T4`, `M045_T2`, `M049_T1..T10`; locally `F002/F003/F004` are the
-  examples). (2) **Any clip whose frame range touches a `(0,0)` line is dropped
+  `F016_T2..T4`, `M045_T2`, `M049_T1..T10`). (2) **Any clip whose frame range touches a `(0,0)` line is dropped
   entirely** and the next window is tried -- the sentinel would otherwise drag
   the ROI box to the image corner. Every skip and every dropped window is
   recorded (`ds.skipped`, `ds.stats['clips_dropped_sentinel']`) instead of
@@ -410,12 +432,17 @@ SUBJECT=F001 TASK=T1 CLIPS=0,7 bash scripts/local/inspect_tir_resp.sh
 ```
 
 Files: `data/tir_resp_dataset.py` (dataset + `parse_ir_features` +
-`roi_box_from_landmarks` + `main` self-test),
-`runners/run_inspect_tir_resp.py` (per-clip figure + JSON reports),
-`scripts/local/inspect_tir_resp.sh`. Verified locally on the only session that
-is usable at all (`F001_T1`: 8 clips, 0 dropped) plus `F001_T2/T6/T7` (23 clips
-total) and the two negative paths (`F001_T8` -> all windows dropped;
-`F002/F003/F004` -> skipped, no `IRFeatures`).
+`roi_box_from_landmarks` + `TirRoiRespPretrainDataset` for Stage 2 + `main`
+self-test), `runners/run_inspect_tir_resp.py` (per-clip figure + JSON reports),
+`scripts/local/inspect_tir_resp.sh`. Verified on the **40-session** local corpus
+(4 subjects x T1..T10, 45 858 thermal frames = 30.6 min): 431 clips at 4 s
+non-overlapping / 843 at a 2 s hop / 1663 at 1 s, 9-34 windows dropped for
+sentinels depending on the hop, 0 sessions skipped, and every one of the 40
+`IRFeatures` tracks has `lines == video frames`. The two negative paths are
+asserted too -- `F001_T8` (112 sentinel lines) keeps only its one clean 4 s
+window, and a SYNTHETIC tree with a thermal video but no `IRFeatures` is skipped
+with 0 clips, so the rule is verified even though no shipped sequence is
+untracked any more.
 
 ### AU-occurrence probe — Semantic Representation Quality (ADD-ON)
 

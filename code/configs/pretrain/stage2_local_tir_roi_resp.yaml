@@ -1,0 +1,155 @@
+# Stage 2 -- LOCAL run: thermal ROI (visual) -> RESPIRATION (1-D target).
+#
+# ADD-ON experiment, procedure of record: code/TirROI_Resp_plan.md.
+# The counterpart of configs/pretrain/stage2_local_pretrained.yaml for the
+# thermal-only setting: the ONLY visual information is the mouth+nose ROI of the
+# thermal rendering, and the ONLY waveform is respiration.
+#
+# Nothing here affects the existing rgb,bp* runs -- they keep using
+# data_set: bp4d+ (PairedPretrainDataset). This file selects the new
+# data_set: tir_roi path, which reads the RAW tree (Thermal/, IRFeatures/,
+# Physiology/Resp_Volts.txt) because the ROI crop needs native-resolution frames
+# plus the 28-point landmark track. See the plan doc for why the canonical
+# layout cannot serve a clip-dependent ROI crop.
+#
+# The ROI is ONE static box per clip (min/max of the 12 landmark points over all
+# frames of the window + roi_padding), so the patch cannot jitter spatially.
+# A clip touching a (0,0) sentinel line (the undocumented "tracker lost the
+# face" marker) is dropped whole by the dataset.
+#
+# Init: the shared encoder blocks AND the tubelet tokenizer come from VideoMAE
+# ViT-B. With streams: tir,resp there is no rgb adapter, so
+# load_pretrained_encoder routes the checkpoint's Conv3d(3, 768, (2,16,16))
+# patch embed into adapters.tir VERBATIM (same 3 channels, same tubelet) -- the
+# temporal kernel is inherited rather than faked by boxcar averaging.
+# From-scratch A/B twin = a CLI override:
+#     --pretrained_encoder '' --output_dir ../output/pretrain/stage2_local_tir_roi_resp_scratch
+#
+# Run from code/ (ALWAYS with `-u`: without it stdout is block-buffered through
+# `tee`, so an interrupted run leaves a log with NO epoch lines):
+#     python -u runners/run_pretrain.py -c configs/pretrain/stage2_local_tir_roi_resp.yaml \
+#         2>&1 | tee ../output/pretrain/stage2_local_tir_roi_resp/train.log
+# Smoke first (--warmup_epochs 0 is REQUIRED: epochs < warmup trips the
+# pre-existing cosine_scheduler assert in utils/lr_sched.py):
+#     python -u runners/run_pretrain.py -c configs/pretrain/stage2_local_tir_roi_resp.yaml \
+#         --epochs 1 --warmup_epochs 0 --max_entries 2 --num_workers 0 \
+#         --output_dir /tmp/tir_roi_probe
+
+data_set: tir_roi
+# --raw_root defaults to $RAW_DATA_PATH (scripts/env_local.sh), else
+# <repo>/data/raw/BP4D. The local corpus is 40 thermal sessions (4 subjects x
+# T1..T10, 45 858 frames = 30.6 min); at 8 s / 4 s hop that is 388 clips.
+subjects: ''                       # '' = all; 'F001' to pin one subject
+tasks: ''                          # '' = all
+
+model: project_multimae_base       # 768-d/12-layer -- MUST match pretrained_encoder
+pretrained_encoder: videomae:base  # 'base' = same; mae:base = plain MAE (2-D -> boxcar)
+inflate_rgb_patch: 1               # unused for a 3-D source (copied verbatim)
+
+# ---- streams & tokenizer geometry (small for a local GPU) ----
+# Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bp/resp/eda).
+streams: tir,resp
+tir_channels: 3                    # thermal is a false-colour render, not gray
+tubelet: 2,16,16                   # first value MUST match the geometry below
+fs: 100.0                          # respiration is resampled 1000 -> 100 Hz
+fps: 25.0
+clip_duration: 8.0                 # 200 source frames @ 25 fps, decimated by
+                                   # temporal_stride 2 -> 100 frames -> 50
+                                   # temporal tubelets
+clip_stride: 4.0                   # window hop (seconds) -- 4 s overlap
+temporal_stride: 2                 # decimate INSIDE the window (1=every frame;
+                                   # 2/4/8 -> 12.5/6.25/3.125 fps). NOT the
+                                   # window hop (that is clip_stride).
+                                   # REQUIRES sig_kernel 16 (see below) and is
+                                   # a DIFFERENT geometry: the video pos-embed
+                                   # token count halves (1600 -> 800), so a
+                                   # checkpoint from another stride cannot be
+                                   # loaded without re-init. Nyquist: 12.5 fps
+                                   # is ample for respiration (<1 Hz); bvp
+                                   # would need <=2.
+seq_len: 0                         # 0 => round(kept_seconds*fs) = 800 samples
+input_size: 64                     # ROI patch side after cv2.resize (16 px patches
+                                   # -> 4x4 spatial grid per frame)
+roi_padding: 0.2                   # landmark-box margin added on EACH side
+# ---- space-time alignment (checked hard by the model) ----
+# tubelet_t*temporal_stride/fps == sig_kernel/fs -> 2*2/25 == 16/100 == 160 ms,
+# and 100/2 == 800/16 == 50 tokens per stream; the model raises otherwise.
+# RULE: sig_kernel = tubelet_t * temporal_stride / fps * fs. Raising
+# temporal_stride WITHOUT rescaling sig_kernel is the one way to break this
+# config, and the model refuses to build with an explicit recommendation.
+sig_kernel: 16
+pos_init: sincos3d                 # 3-D (t,h,w) sincos for video positions +
+                                   # the same 1-D temporal sincos for physio
+
+# ---- masking (asymmetric) ----
+mask_ratio_tir: 0.90               # the thermal ROI is now the PRIMARY visual
+                                   # stream, so it gets the visual budget. 0.90
+                                   # on a 4x4 grid leaves only 2 visible patches
+                                   # per frame -- use 224 px for that.
+mask_ratio_resp: 0.50              # NOT 0.90: a physio stream's only gradient
+                                   # path to the encoder is its VISIBLE tokens
+                                   # (dec = cat([z_visible, mask_tokens])), so
+                                   # 0.90 leaves ~5 of 50 and 1.0 would zero it.
+mask_ratio_rgb: 0.90               # unused while streams=tir,resp
+mask_ratio_bp: 0.50                # unused
+mask_ratio_eda: 0.50               # unused
+
+# ---- loss: per-modality masked MSE (masked positions only) ----
+signal_weight: 0.5                 # lambda for every physio stream (visual 1.0)
+target_norm: clip                  # per-clip z-score inside the model. The
+                                   # dataset therefore returns RAW VOLTS -- do
+                                   # not normalize twice. Also required by the
+                                   # spectral term, and it removes the per-token
+                                   # z-score shortcut that lets the decoder
+                                   # reconstruct from position alone.
+spectral_weight: 0.0               # MR-STFT OFF -- MEASURED 2026-09-26: it was the
+                                   # SPIKE TRIGGER. With 0.1 the run produced
+                                   # spec_resp up to 3.7e8 and grad_norm ~5e8 in
+                                   # single steps (reported pre-clip), which
+                                   # permanently destroyed the weights
+                                   # (checkpoint-0010: mse_tir 11.96,
+                                   # mse_resp 556017, max|pred_resp| 1371).
+                                   # With 0.0 the epoch averages track the last
+                                   # step (loss 0.877 vs 0.857, grad_norm 2.45)
+                                   # and mse_tir 0.36 / mse_resp 1.04.
+                                   # To re-add the periodicity prior later: turn
+                                   # it on at a small weight AFTER the run is
+                                   # healthy, keep clip_grad on, and re-check
+                                   # the epoch average against the last step.
+                                   # NOTE turning it off also UNBLOCKS
+                                   # target_norm: token (the model refuses
+                                   # spectral_weight > 0 with token norm), which
+                                   # is the next lever against the resp collapse.
+spectral_fft_sizes: 64,128,256     # 1.56 / 0.78 / 0.39 Hz at fs 100
+spectral_hop_ratio: 0.25
+
+# ---- training (local: the whole local clip budget at 64 px) ----
+epochs: 40
+batch_size: 4                      # 768-d encoder: keep small on a local GPU
+save_ckpt_freq: 10
+opt: adamw
+# ABSOLUTE peak LR. On the HPC (large batch) drop `lr` and set `blr` instead:
+# lr = blr*batch*world/256 would be ~1e-6 at batch 2 and never learn.
+lr: 3.0e-4                         # was 1e-3: at batch 4 / 8 s clips the
+                                   # per-step update is ~2x the tokens of the
+                                   # 4 s smoke, and 1e-3 was the second half of
+                                   # the divergence. 3e-4 is measured-stable.
+min_lr: 1.0e-4                     # keep the cosine tail learning
+warmup_epochs: 5
+weight_decay: 0.05
+clip_grad: 5.0                     # ON (was 0.0). 0.0 = OFF, and with the
+                                   # resp branch's occasional huge gradients the
+                                   # run diverged. 5.0 clips those spikes while
+                                   # barely touching normal steps (normal
+                                   # grad_norm here is 1-30); note the printed
+                                   # grad_norm is measured BEFORE clipping, so
+                                   # a huge epoch average still shows the spike
+                                   # even though the applied step was clipped.
+num_workers: 4                     # the run is video-decode bound (the ROI path
+                                   # decodes each clip's frames on demand)
+max_sessions: 0                    # 0 = no cap
+max_entries: 0                     # 0 = no cap
+
+# ---- logging ----
+output_dir: ../output/pretrain/stage2_local_tir_roi_resp
+log_wandb: false
