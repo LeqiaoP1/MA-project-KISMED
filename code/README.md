@@ -141,6 +141,20 @@ masked MSE) and `losses` (weighted contributions); `loss = Σ losses`.
 
 #### Optional periodicity prior: multi-resolution STFT loss on the 1-D streams
 
+> **NOT USED IN STAGE 2 — decision 2026-09-26.** The spectral/periodicity loss
+> belongs to **Stage-3 finetuning** of the targeted 1-D signal
+> (`core.waveform_losses.WaveformJointLoss`, `gamma = 1.0`, on the FINAL
+> waveform). Every shipped `configs/pretrain/*.yaml` therefore sets
+> `spectral_weight: 0.0`, and a positive Stage-2 weight now prints a warning.
+> Two measured reasons: as a masked-reconstruction term it is satisfied by
+> within-modality interpolation (a linear interpolator of the visible resp
+> beats the trained model on the very spectral metric — `TirROI_Resp_plan.md`
+> §9), and it was the spike trigger (a railed `-10 V` respiration window
+> z-scores to *exactly* zero, so the scale-invariant `‖P−T‖/(‖T‖+ε)` term
+> divides by ~0 → `spec_resp 4.3e10` — §7.5). The mechanism is kept for
+> ablation runs, and `MultiResolutionSTFTLoss` now guards against
+> zero-variance targets.
+
 A per-token masked MSE constrains **amplitude** only — a low-frequency
 surrogate can lower it without ever modelling the cardiac/respiratory cycle.
 Setting **`--spectral_weight`** (default **0.0 = off**) adds a

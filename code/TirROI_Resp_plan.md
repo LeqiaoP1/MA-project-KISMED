@@ -212,10 +212,23 @@ OPT-IN term, folded into the physio stream's contribution as
 waveform (`pred.reshape(B, -1)`; legal because `SignalEmbed` uses
 kernel == stride, so the concatenated tokens ARE the clip in order). It is
 defined on 1-D waveforms only (a positive weight on a video stream raises) and
-requires `target_norm: clip` (it raises with token norm). It was switched off
-because it was the divergence trigger — see §7. Stage 3 keeps its own
-`gamma·MR-STFT` term (`WaveformJointLoss`, gamma = 1.0 in the finetune configs),
-so the periodicity prior still exists downstream.
+requires `target_norm: clip` (it raises with token norm).
+
+**DECISION 2026-09-26 (user): the spectral loss is NOT part of Stage 2.** It
+belongs to the **Stage-3 finetuning** of the targeted 1-D signal, where it is a
+FULL-weight term on the FINAL waveform: `WaveformJointLoss` `gamma = 1.0` in
+every `configs/finetune/*.yaml` (unchanged, and per-branch `fft_sizes`). The
+Stage-2 term is therefore **0.0 in every shipped `configs/pretrain/*.yaml`**, a
+positive Stage-2 weight now prints a warning, and the shared loss gained a
+degenerate-target guard. Why (both measured, §7.5 and §9): as a masked-
+reconstruction term it is satisfied by within-modality interpolation — a linear
+interpolator of the visible resp BEATS the trained model on the very spectral
+metric (`spec_resp 0.98` vs `~5.0`) — and it is the spike trigger
+(`spec_resp` up to `4.3e10` from a railed target whose z-score is exactly zero).
+**Consequence for the collapse:** Stage 2 now has NO spectral lever, so the
+`mse_resp ~ 1.05` floor must be attacked by MASKING (§9.4 levers 1-3: span
+masking, near-complete masking, `target_norm: token`) — the E1-E3 span ladder is
+the path, not a spectral prior.
 
 * `mask_ratio_tir: 0.90` (as shipped) — the thermal stream is now the *primary*
   visual stream, so it gets the visual budget. NOTE `0.90` on a 4x4 patch grid
@@ -348,10 +361,13 @@ Diagnosis, in order of discovery:
 5. **The EXACT mechanism (measured, next run with `spectral_weight 0.1` and
    windows `128,256,512`): a zero-variance TARGET makes the scale-invariant
    denominator vanish.** `spec_resp` hit **4.3e10 in a single step** while every
-   *instantaneous* value in the log stayed at 4.7-8.8 (the constant-predictor
-   floor is ~5), so the model never exploded -- one batch carried the spike and
-   the epoch AVERAGE stayed polluted for the rest of the epoch (1.2e9 at step 10
-   -> 2.8e8 at step 96). Root cause, term by term:
+   **median** value in the log stayed at 4.7-8.8 — the parenthesis, i.e. the
+   epoch global average, is what blew up (the median is a robust statistic; see
+   the log-reading note above) — so the model never exploded: one batch carried
+   the spike and the epoch AVERAGE stayed polluted for the rest of the epoch
+   (1.2e9 at step 10 -> 2.8e8 at step 96; over 97 steps that is ~2.7e10 summed,
+   i.e. 2 spikes of ~1.4e10, matching the predicted 3.07 % of batches). Root
+   cause, term by term:
 
    * the spectral-convergence term is `||P - T|| / (||T|| + 1e-8)`, i.e.
      SCALE-INVARIANT in the target;
@@ -405,9 +421,17 @@ lr:               3.0e-4   # was 1e-3
 2 epochs of the fixed config: epoch 0 `loss 2.69 / mse_tir 0.483 /
 mse_resp 4.418`, epoch 1 `loss 0.901 / mse_tir 0.376 / mse_resp 1.052`,
 `grad_norm` avg 2.91, **67 s/epoch** (385 clips, batch 4) -> 40 epochs ~ 45 min.
-The last step of an epoch is the number to read; a huge epoch AVERAGE with a
-sane last step still means a spike happened (the printed `grad_norm` is measured
-BEFORE clipping, so it shows the spike even though the applied step was clipped).
+
+**How to read the log (corrected 2026-09-26).** `SmoothedValue`'s default format
+is `'{median:.4f} ({global_avg:.4f})'` (`utils/logger.py:31`), so the FIRST
+number is the **median of the last 20 steps** — NOT the current step — and the
+parenthesis is the **epoch global average**. That matters exactly here: the
+median is deliberately spike-resistant, so a huge AVERAGE next to a sane MEDIAN
+IS the signature of a rare outlier batch (this is how the §7.5 spike was
+spotted, and it is why the median column stayed 4.7-8.8 while the average went
+to 1e9). The parenthesis is the number a single bad step destroys. `grad_norm`
+is measured BEFORE clipping, so it shows the spike even though the applied step
+was clipped; `time`/`data_time` use plain `{avg:.4f}`.
 
 **Still open after the fix: `mse_resp = 1.05` is exactly the constant-predictor
 floor.** The visual stream learns (`mse_tir 0.38`, far below 1.0) but the
@@ -601,4 +625,16 @@ logs `spec_resp` with `loss = mse_tir + 0.5·mse_resp + 0.05·spec_resp` exactly
 The **term stays OFF** in every shipped Stage-2 config (`spectral_weight: 0.0`),
 so this changed the plumbing, not the objective — the E0 objective is untouched
 (the whole spectral block is skipped when no stream carries a weight).
+
+**SCOPE DECISION 2026-09-26 (user): the spectral loss is a Stage-3 concern.**
+Stage 2 never uses it (every `configs/pretrain/*.yaml` is `0.0`, and a positive
+Stage-2 weight prints a warning); Stage 3 applies it at FULL weight to the
+FINAL waveform (`WaveformJointLoss`, `gamma = 1.0`). That makes the
+zero-variance-target failure in §7.5 a Stage-3 risk too — the same railed
+respiration windows are z-scored by `data/paired_dataset.py`
+(`signal_norm: 'zscore'`, `(w - mean)/(std + 1e-6)`), so a constant window is
+also exactly zero there and would divide by ~0 inside a `gamma = 1.0` term (10x
+the Stage-2 weight). `MultiResolutionSTFTLoss` therefore now EXCLUDES samples
+whose `||T||` is (near-)zero and warns once; for an all-valid batch the value is
+bit-identical to before, so no existing Stage-2/3 result changes.
 

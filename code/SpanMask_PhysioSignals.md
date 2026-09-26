@@ -392,6 +392,13 @@ buys the Stage-3-aligned condition at the cost of the encoder path.
 
 ## 5. Why the STFT loss becomes helpful *under span masking*
 
+> **Scope, 2026-09-26:** the spectral term is **not used in Stage-2
+> pre-training** (user decision) — it belongs to **Stage-3 finetuning** of the
+> targeted 1-D signal (`WaveformJointLoss`, `gamma`). This section therefore
+> describes the Stage-3 objective (and what a Stage-2 ablation would be): the
+> masking design above is what the ENCODER needs, and the spectral term is what
+> the FINAL waveform is scored with.
+
 The argument is not "spectral losses are for periodic signals, so use one". It is
 that span masking changes the *failure mode* of the reconstruction from
 "interpolation error" to "plausible-but-wrong waveform", and the magnitude

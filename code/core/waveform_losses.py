@@ -52,13 +52,39 @@ class MultiResolutionSTFTLoss(nn.Module):
     For every window in ``fft_sizes`` a short-time Fourier transform is taken
     and the error between magnitudes is penalised with both spectral
     convergence (scale-invariant) and log-magnitude L1 terms.
+
+    DEGENERATE-TARGET GUARD. The spectral-convergence term is
+    ``||P - T|| / (||T|| + eps)``, i.e. SCALE-INVARIANT in the target, so it is
+    **undefined when the target has no spectral energy at all**: a CONSTANT
+    target (a disconnected/railed sensor channel, a flat baseline window)
+    becomes exactly zero after the usual per-clip z-scoring upstream, and the
+    ratio then explodes to ``||P|| / eps``. Measured on a real railed
+    respiration clip (flat at ``-10.0000 V``) vs a normal one, same prediction::
+
+        normal target   ||T|| 343 / 455 / 613   sc 1.21 / 1.24 / 1.29
+        flat target     ||T||   0 /   0 /   0   sc 2.8e10 / 4.0e10 / 5.9e10
+
+    ONE such sample in a batch of 4 produced ``4.3e10`` of loss and a pre-clip
+    ``grad_norm`` of ~2.5e9 (``TirROI_Resp_plan.md`` §7.5), which is fatal
+    without gradient clipping. Samples whose target has (near-)zero energy are
+    therefore EXCLUDED from the term, and when none qualify the term contributes
+    0 instead of a garbage value. For any batch in which every sample is valid
+    -- the normal case -- the returned value is BIT-IDENTICAL to the unguarded
+    formula, so no existing result changes.
+
+    :param target_norm_floor: a sample counts as "no energy" when
+        ``||T|| <= target_norm_floor * max_batch(||T||)``, i.e. relative to the
+        batch's own energy scale (1e-6 sits ~6 orders of magnitude below the
+        spread seen in practice).
     """
 
     def __init__(self, fft_sizes: List[int] = (64, 128, 256),
-                 hop_ratio: float = 0.25):
+                 hop_ratio: float = 0.25, target_norm_floor: float = 1e-6):
         super().__init__()
         self.fft_sizes = list(fft_sizes)
         self.hop_ratio = hop_ratio
+        self.target_norm_floor = float(target_norm_floor)
+        self._warned_degenerate = False
 
     def _magnitude(self, x: torch.Tensor, n_fft: int) -> torch.Tensor:
         hop = max(1, int(n_fft * self.hop_ratio))
@@ -72,16 +98,41 @@ class MultiResolutionSTFTLoss(nn.Module):
         p = _to_1d(pred)
         t = _to_1d(target)
         total = torch.tensor(0.0, device=p.device, dtype=p.dtype)
+        n_skipped = 0
         for n_fft in self.fft_sizes:
             p_mag = self._magnitude(p, n_fft)
             t_mag = self._magnitude(t, n_fft)
-            # spectral convergence term
-            sc = (torch.norm(p_mag - t_mag, dim=(-1, -2))
-                  / (torch.norm(t_mag, dim=(-1, -2)) + _EPS)).mean()
-            # log-magnitude L1 term
-            lm = torch.mean(torch.abs(
-                torch.log(p_mag + 1e-6) - torch.log(t_mag + 1e-6)))
+            t_norm = torch.norm(t_mag, dim=(-1, -2))
+            # a SCALE-INVARIANT ratio needs a non-zero reference; the floor is
+            # relative to the batch, so it works on any input scale
+            valid = t_norm > self.target_norm_floor * float(t_norm.detach().max())
+            if not bool(valid.any()):
+                n_skipped += int(t_norm.numel())
+                continue
+            if bool(valid.all()):
+                # ---- unguarded path: kept byte-for-byte for the normal case --
+                sc = (torch.norm(p_mag - t_mag, dim=(-1, -2))
+                      / (t_norm + _EPS)).mean()
+                lm = torch.mean(torch.abs(
+                    torch.log(p_mag + 1e-6) - torch.log(t_mag + 1e-6)))
+            else:
+                n_skipped += int((~valid).sum())
+                # spectral convergence term
+                sc = (torch.norm(p_mag - t_mag, dim=(-1, -2))[valid]
+                      / (t_norm[valid] + _EPS)).mean()
+                # log-magnitude L1 term (also meaningless against a zero target)
+                lm = torch.mean(torch.abs(
+                    torch.log(p_mag[valid] + 1e-6)
+                    - torch.log(t_mag[valid] + 1e-6)))
             total = total + sc + lm
+        if n_skipped and not self._warned_degenerate:
+            self._warned_degenerate = True
+            print(f'[stft] WARNING: {n_skipped} sample-window(s) with a '
+                  f'(near-)constant target excluded from the MR-STFT term '
+                  f'(||T|| ~ 0 makes the scale-invariant ratio undefined; a '
+                  f'railed/dead sensor channel, or a flat baseline window). '
+                  f'Check the target data -- see '
+                  f'TirROI_Resp_plan.md §7.5.')
         return total / len(self.fft_sizes)
 
 

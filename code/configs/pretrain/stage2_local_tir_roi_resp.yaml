@@ -117,24 +117,39 @@ target_norm: clip                  # per-clip z-score inside the model. The
                                    # spectral term, and it removes the per-token
                                    # z-score shortcut that lets the decoder
                                    # reconstruct from position alone.
-spectral_weight: 0.1               # MR-STFT OFF -- MEASURED 2026-09-26: it was the
-                                   # SPIKE TRIGGER. With 0.1 the run produced
-                                   # spec_resp up to 3.7e8 and grad_norm ~5e8 in
-                                   # single steps (reported pre-clip), which
-                                   # permanently destroyed the weights
-                                   # (checkpoint-0010: mse_tir 11.96,
-                                   # mse_resp 556017, max|pred_resp| 1371).
-                                   # With 0.0 the epoch averages track the last
-                                   # step (loss 0.877 vs 0.857, grad_norm 2.45)
-                                   # and mse_tir 0.36 / mse_resp 1.04.
-                                   # To re-add the periodicity prior later: turn
-                                   # it on at a small weight AFTER the run is
-                                   # healthy, keep clip_grad on, and re-check
-                                   # the epoch average against the last step.
-                                   # NOTE turning it off also UNBLOCKS
-                                   # target_norm: token (the model refuses
-                                   # spectral_weight > 0 with token norm), which
-                                   # is the next lever against the resp collapse.
+spectral_weight: 0.0               # DECISION 2026-09-26 (user): the spectral
+                                   # (MR-STFT periodicity) loss is NOT part of
+                                   # Stage-2 pre-training. It belongs to the
+                                   # Stage-3 FINETUNING of the targeted 1-D
+                                   # signal (core/waveform_losses
+                                   # .WaveformJointLoss, gamma = 1.0, on the
+                                   # FINAL waveform).
+                                   # MEASURED reasons (both 2026-09-26):
+                                   # (1) on the masked stream the term is
+                                   #     satisfied by within-modality
+                                   #     interpolation, so a linear interpolator
+                                   #     of the visible resp BEATS the trained
+                                   #     model on the very spectral metric
+                                   #     (0.98 vs ~5.0) -- TirROI_Resp_plan.md
+                                   #     §9, SpanMask_PhysioSignals.md §5;
+                                   # (2) it was the SPIKE TRIGGER: spec_resp
+                                   #     3.7e8-4.3e10 in single steps with
+                                   #     pre-clip grad_norm ~5e8. With
+                                   #     clip_grad 0.0 that destroyed the
+                                   #     weights (ckpt-0010: mse_tir 11.96,
+                                   #     mse_resp 556017). ROOT CAUSE: a railed
+                                   #     (-10 V) respiration window z-scores to
+                                   #     EXACTLY zero, so the scale-invariant
+                                   #     ||P-T||/(||T||+eps) divides by ~0 ->
+                                   #     TirROI_Resp_plan.md §7.5.
+                                   # The code path is KEPT for ablation runs
+                                   # (0.0 is also the runner default), but a
+                                   # Stage-2 run with a positive weight now
+                                   # prints a warning, and the shared loss has
+                                   # a degenerate-target guard.
+                                   # Off also UNBLOCKS target_norm: token,
+                                   # which is the next lever against the resp
+                                   # collapse.
 spectral_fft_sizes: 128,256,512     # MR-STFT windows in SAMPLES, resolved PER
                                    # PHYSIO STREAM -- one window set cannot
                                    # police both BP (1.0-2.5 Hz) and RESP

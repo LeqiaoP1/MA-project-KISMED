@@ -1096,6 +1096,11 @@ def build_pretraining_model(args):
     # ``spectral_weight`` is the per-physio-stream lambda (video streams are
     # forced to 0.0); a non-empty ``spectral_weights`` comma string (ONE value
     # per stream, in --streams order) overrides it, like --loss_weights.
+    # RETIRED FROM STAGE 2 (decision 2026-09-26): the spectral/periodicity loss
+    # belongs to Stage-3 finetuning on the FINAL waveform
+    # (core.waveform_losses.WaveformJointLoss). The code path is kept for
+    # ablation runs, but a positive Stage-2 weight is almost certainly a
+    # mistake, so it is loudly flagged rather than silently honoured.
     spectral_weight = float(getattr(args, 'spectral_weight', 0.0) or 0.0)
     s_raw = str(getattr(args, 'spectral_weights', '') or '').strip()
     spectral_weights = None
@@ -1106,6 +1111,20 @@ def build_pretraining_model(args):
                 f'--spectral_weights expects one value per stream '
                 f'({len(streams)}: {streams}), got {len(vals)}')
             spectral_weights = dict(zip(streams, vals))
+    if spectral_weight > 0 or any(w > 0
+                                  for w in (spectral_weights or {}).values()):
+        print(
+            '[spectral] WARNING: Stage-2 pre-training is not supposed to use '
+            'the MR-STFT periodicity term (decision 2026-09-26: the spectral '
+            'loss belongs to Stage-3 finetuning on the FINAL waveform, '
+            'WaveformJointLoss gamma). Measured reasons: as a masked-'
+            'reconstruction term it is satisfied by within-modality '
+            'interpolation (a linear interpolator of the visible resp beats '
+            'the trained model on its own spectral metric) AND it is the spike '
+            'trigger (spec_resp up to 4.3e10, from zero-variance railed '
+            'targets). See code/TirROI_Resp_plan.md §7.5 + §9 and '
+            'code/SpanMask_PhysioSignals.md §5. Every shipped '
+            'configs/pretrain/*.yaml sets spectral_weight: 0.0.')
 
     # ViT geometry: the --model variant name sets it, and an explicit (>0)
     # enc_* flag/YAML value overrides it (ablation escape hatch).
@@ -1771,6 +1790,43 @@ def spectral_self_test(verbose: bool = True) -> int:
     check('build_pretraining_model with an empty spec -> per-modality default',
           m_auto_built.spectral_fft_sizes == {'bp': [64], 'resp': [64]},
           m_auto_built.spectral_fft_sizes)
+
+    # ---- the SHARED loss's degenerate-target guard (Stage 3 uses it too) --- #
+    # A z-scored target that is CONSTANT is exactly zero -> ||T|| = 0 -> the
+    # scale-invariant ratio explodes. Measured 4.3e10 on a real railed clip
+    # (TirROI_Resp_plan.md §7.5); these checks pin the guard.
+    stft = MultiResolutionSTFTLoss(fft_sizes=(32, 64), hop_ratio=0.25)
+    torch.manual_seed(0)
+    p_probe = torch.randn(4, 256)
+    t_ok = torch.randn(4, 256)
+    t_flat = torch.zeros(4, 256)
+
+    def _unguarded(pred, tgt):
+        tot = torch.tensor(0.0)
+        for n in stft.fft_sizes:
+            pm, tm = stft._magnitude(pred, n), stft._magnitude(tgt, n)
+            tot = tot + ((torch.norm(pm - tm, dim=(-1, -2))
+                          / (torch.norm(tm, dim=(-1, -2)) + 1e-8)).mean()
+                         + torch.mean(torch.abs(torch.log(pm + 1e-6)
+                                                - torch.log(tm + 1e-6))))
+        return tot / len(stft.fft_sizes)
+
+    check('MR-STFT on an all-valid batch is bit-identical to the unguarded '
+          'formula',
+          torch.equal(stft(p_probe, t_ok), _unguarded(p_probe, t_ok)),
+          f'{float(stft(p_probe, t_ok)):.6g} vs {float(_unguarded(p_probe, t_ok)):.6g}')
+    v_flat = float(stft(p_probe, t_flat))
+    check('MR-STFT on an all-flat target returns 0 instead of ~1e10',
+          v_flat == 0.0, f'{v_flat:.6g} (unguarded would be '
+                         f'{float(_unguarded(p_probe, t_flat)):.3g})')
+    check('the guard reports the degenerate sample (once)',
+          stft._warned_degenerate is True)
+    t_mix = t_ok.clone()
+    t_mix[0] = 0.0
+    v_mix = float(stft(p_probe, t_mix))
+    check('MR-STFT with 1 of 4 samples flat stays bounded',
+          v_mix < 10.0, f'{v_mix:.4g} (unguarded '
+                        f'{float(_unguarded(p_probe, t_mix)):.3g})')
 
     if verbose:
         print('spectral_self_test: ' + ('ALL PASS' if not fails

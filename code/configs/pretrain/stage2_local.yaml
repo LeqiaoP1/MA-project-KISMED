@@ -64,7 +64,10 @@ signal_weight: 0.5
 # stage2_local_scratch.yaml for the full rationale and the target_norm: clip
 # requirement). 0.0 = off = masked-MSE-only.
 target_norm: clip
-spectral_weight: 0.1
+spectral_weight: 0.0               # RETIRED FROM STAGE 2 (decision 2026-09-26);
+                                   # the spectral loss lives in Stage 3
+                                   # finetuning. See TirROI_Resp_plan.md
+                                   # §7.5 + §9.
 spectral_fft_sizes: 64,128,256     # fs=100 Hz -> 1.56 / 0.78 / 0.39 Hz bins
 spectral_hop_ratio: 0.25
 
