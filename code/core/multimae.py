@@ -23,7 +23,13 @@ rejected. Pipeline inside ``MultiModalMAE.forward``:
     MAGNITUDE loss (``core.waveform_losses.MultiResolutionSTFTLoss``) on the
     ASSEMBLED clip waveform, weighted by ``spectral_weight`` (``spectral_weights``
     overrides per stream). OFF by default (0.0), so the previous objective is
-    reproduced exactly. Rationale: a per-token masked MSE constrains amplitude
+    reproduced exactly. The FFT windows are resolved PER STREAM
+    (``spectral_fft_sizes``; see :func:`parse_fft_sizes` and
+    :data:`SPECTRAL_FFT_DEFAULTS`), because one window set cannot police both
+    the BP (1-2.5 Hz) and the RESP (0.16-0.4 Hz) band; the per-modality
+    defaults mirror the Stage-3 finetune configs one for one, so a stream gets
+    the same spectral objective in both stages. Rationale: a per-token masked
+    MSE constrains amplitude
     only, so a low-frequency surrogate can lower it without modelling the
     cardiac/respiratory cycle; the STFT term gives the shared encoder a direct
     gradient on periodicity. It REQUIRES ``target_norm='clip'`` (one mean/std
@@ -68,7 +74,7 @@ luma-only path, which is what checkpoints trained before 2026-09 expect.
 TODO(extend): MultiMAE-style prediction-task sampling, separate deeper
 per-stream decoders, 3-D sincos pos-embed, visual-stream weight sharing.
 """
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import math
 
@@ -203,8 +209,10 @@ class MultiModalMAE(nn.Module):
                  target_norm: str = 'token',
                  spectral_weight: float = 0.0,
                  spectral_weights: Optional[Dict[str, float]] = None,
-                 spectral_fft_sizes: Sequence[int] = (64, 128, 256),
-                 spectral_hop_ratio: float = 0.25):
+                 spectral_fft_sizes=None,
+                 spectral_hop_ratio: float = 0.25,
+                 physio_mask: str = 'random',
+                 mask_span_s=None):
         super().__init__()
         self.streams = list(streams)
         # per-stream input channels (tir = 3 by default; see STREAM_CHANNELS)
@@ -299,39 +307,132 @@ class MultiModalMAE(nn.Module):
                 f'waveforms only, but spectral_weights sets a positive weight '
                 f'for video stream(s) {bad}. Use it on the physio streams '
                 f'({self.signal}).')
-        self.spectral_fft_sizes = [int(n) for n in spectral_fft_sizes]
         self.spectral_hop_ratio = float(spectral_hop_ratio)
         # streams that actually carry the term (empty => no spectral graph at all)
         self._spectral_streams = [s for s in self.signal
                                   if self.spectral_weights.get(s, 0.0) > 0]
-        self.spectral_fn = None
+        # FFT windows are resolved PER PHYSIO STREAM, not once for the whole
+        # run: BP (1-2.5 Hz) and RESP (0.16-0.4 Hz) differ by ~10x in period,
+        # so a single window set cannot police both bands -- and the Stage-3
+        # finetune configs already carry one set PER BRANCH (configs/finetune/
+        # {bp,resp,eda}.yaml --fft_sizes). Accepted forms (see parse_fft_sizes):
+        #   None/''/'auto'                      -> SPECTRAL_FFT_DEFAULTS
+        #   '64,128,256' / [64,128,256] / 256   -> the SAME set for EVERY physio
+        #                                          stream (pre-2026-09 behaviour)
+        #   'resp=128/256/512,bp=64/128/256'    -> per stream (CLI)
+        #   {'resp': [128, 256, 512]}           -> per stream (YAML)
+        # With an empty spec each stream falls back to the window set its own
+        # Stage-3 branch uses, so Stage-2 pretraining imposes the same spectral
+        # objective the downstream branch will fine-tune with.
+        fft_spec = parse_fft_sizes(spectral_fft_sizes)
+        #: resolved {stream: [windows]} after the <= clip filter below
+        self.spectral_fft_sizes: Dict[str, List[int]] = {}
+        #: resolved {stream: MultiResolutionSTFTLoss}; streams with identical
+        #: windows share ONE instance (so the uniform case is byte-identical to
+        #: the single-module version this replaced)
+        self.spectral_fns: Dict[str, MultiResolutionSTFTLoss] = {}
+        if self._spectral_streams and self.target_norm != 'clip':
+            raise ValueError(
+                'MultiModalMAE: a positive spectral_weight requires '
+                "target_norm='clip'. The MR-STFT term is computed on the "
+                'ASSEMBLED [B, n_signal*sig_kernel] waveform; under the '
+                'per-token target normalisation the assembled target is '
+                'independently rescaled inside every token, so its '
+                'spectrum carries token-boundary artefacts instead of the '
+                'physiological band the loss is meant to enforce.')
         if self._spectral_streams:
-            if self.target_norm != 'clip':
-                raise ValueError(
-                    'MultiModalMAE: a positive spectral_weight requires '
-                    "target_norm='clip'. The MR-STFT term is computed on the "
-                    'ASSEMBLED [B, n_signal*sig_kernel] waveform; under the '
-                    'per-token target normalisation the assembled target is '
-                    'independently rescaled inside every token, so its '
-                    'spectrum carries token-boundary artefacts instead of the '
-                    'physiological band the loss is meant to enforce.')
             n_samples = self.n_signal * self.sig_kernel
-            fft_sizes = [n for n in self.spectral_fft_sizes if n <= n_samples]
-            if not fft_sizes:
-                raise ValueError(
-                    f'MultiModalMAE: none of the spectral_fft_sizes '
-                    f'{self.spectral_fft_sizes} fits the assembled waveform '
-                    f'({n_samples} samples = seq_len). Use a longer clip or '
-                    f'smaller FFT windows.')
-            self.spectral_fft_sizes = fft_sizes
-            self.spectral_fn = MultiResolutionSTFTLoss(
-                fft_sizes=fft_sizes, hop_ratio=self.spectral_hop_ratio)
+            print(f'[spectral] MR-STFT (hop_ratio '
+                  f'{self.spectral_hop_ratio:g}, target_norm '
+                  f'{self.target_norm}) on the assembled waveform '
+                  f'({n_samples} samples = {n_samples / self.fs:.2f} s at '
+                  f'fs {self.fs:g} Hz); windows are PER STREAM:')
+            by_windows: Dict[Tuple[int, ...], MultiResolutionSTFTLoss] = {}
+            for s in self._spectral_streams:
+                raw = fft_spec.get(s, fft_spec.get('*'))
+                if raw is None:
+                    raw = SPECTRAL_FFT_DEFAULTS.get(s, SPECTRAL_FFT_FALLBACK)
+                    src = 'per-modality default'
+                else:
+                    src = 'requested'
+                sizes = [int(n) for n in raw]
+                kept = [n for n in sizes if n <= n_samples]
+                dropped = [n for n in sizes if n > n_samples]
+                if not kept:
+                    raise ValueError(
+                        f'MultiModalMAE: none of the {src} spectral_fft_sizes '
+                        f'for stream {s!r} ({sizes} samples) fits the '
+                        f'assembled waveform ({n_samples} samples = seq_len = '
+                        f'{n_samples / self.fs:.2f} s). Use a longer clip '
+                        f'(-c clip_duration) or smaller FFT windows; the '
+                        f'per-modality defaults are {SPECTRAL_FFT_DEFAULTS}.')
+                self.spectral_fft_sizes[s] = kept
+                fn = by_windows.get(tuple(kept))
+                if fn is None:
+                    fn = MultiResolutionSTFTLoss(
+                        fft_sizes=kept, hop_ratio=self.spectral_hop_ratio)
+                    by_windows[tuple(kept)] = fn
+                self.spectral_fns[s] = fn
+                drop = (f'  [DROPPED {"/".join(str(n) for n in dropped)} '
+                        f'(> clip {n_samples} samples = '
+                        f'{n_samples / self.fs:.2f} s)]' if dropped else '')
+                print(f'[spectral]   {s}: weight '
+                      f'{self.spectral_weights[s]:g}, {src}: '
+                      f'{_window_summary(kept, self.fs)}{drop}')
 
         # default asymmetric ratios (visual 50-75 %, signals 90 %+)
         ratios = {'rgb': 0.75, 'tir': 0.50, 'bp': 0.90}
         if mask_ratios:
             ratios.update(mask_ratios)
         self.mask_ratios = {s: ratios.get(s, 0.90) for s in self.streams}
+
+        # ---- 1-D masking pattern: scattered dropout or contiguous SPANS ---- #
+        # 'random' (default) = the historical `_random_mask`, byte-identical
+        # behaviour for every existing config. 'span' = contiguous blocks, which
+        # removes the "interpolate the gap from its visible neighbours" shortcut
+        # that makes a scattered mask locally solvable -- see
+        # code/SpanMask_PhysioSignals.md.
+        #
+        # The span geometry is resolved ONCE here, per stream, from
+        # ``mask_span_s`` (seconds, per stream) and the stream's mask ratio:
+        #     span_tokens = round(span_s * fs / sig_kernel)
+        #     n_spans     = round(ratio * n_signal / span_tokens)   (>= 1)
+        # Both are CONSTANTS of the run (not drawn per sample), which keeps the
+        # visible-token count identical for every sample in a batch. That is
+        # required, not cosmetic: `forward` gathers visible tokens with a
+        # BATCH-MAX k, so unequal counts would leak masked tokens into the
+        # encoder. Only the span PLACEMENT is random per sample.
+        self.physio_mask = str(physio_mask or 'random').lower()
+        if self.physio_mask not in ('random', 'span'):
+            raise ValueError(
+                f"physio_mask must be 'random' or 'span', got "
+                f"{self.physio_mask!r}")
+        self.mask_span_s: Dict[str, float] = {}
+        self.mask_span_tokens: Dict[str, int] = {}
+        self.mask_n_spans: Dict[str, int] = {}
+        if self.physio_mask == 'span':
+            spec = parse_mask_span(mask_span_s)
+            wildcard = spec.get('*')
+            for s in self.signal:
+                secs = spec.get(s, wildcard)
+                if secs is None:
+                    secs = MASK_SPAN_DEFAULTS.get(s, self.seq_len / self.fs)
+                span = max(1, int(round(float(secs) * self.fs / self.sig_kernel)))
+                span = min(span, max(1, self.n_signal - 1))
+                n = max(1, int(round(self.mask_ratios[s] * self.n_signal / span)))
+                n = max(1, min(n, max(1, (self.n_signal - 1) // span)))
+                self.mask_span_s[s] = float(secs)
+                self.mask_span_tokens[s] = span
+                self.mask_n_spans[s] = n
+                eff = n * span / self.n_signal
+                note = ('' if abs(eff - self.mask_ratios[s]) < 0.02
+                        else f'  [NOTE: configured ratio '
+                             f'{self.mask_ratios[s]:.3f} -> effective '
+                             f'{eff:.3f}; adjust mask_span_s/mask_ratio_*]')
+                print(f'[mask] {s}: span {secs:g} s = {span} tokens '
+                      f'({span * self.sig_kernel / self.fs:.2f} s) x {n} '
+                      f'span(s) -> effective masked fraction {eff:.3f}'
+                      f'{note}')
 
         # per-modality weights of the final weighted masked-MSE sum.
         # default policy: lambda = 1.0 for the visual streams (rgb/tir) and
@@ -554,14 +655,50 @@ class MultiModalMAE(nn.Module):
         m.scatter_(1, hidden, 1)
         return m
 
+    def _span_mask(self, B: int, device, N: int, n_spans: int, span: int):
+        """Contiguous-block mask: ``n_spans`` spans of ``span`` tokens.
+
+        The masked COUNT is ``min(n_spans * span, N - 1)`` for every sample in
+        the batch (the ``N - 1`` clamp keeps >= 1 visible token, which is the
+        physio stream's only gradient path to the encoder); only the PLACEMENT
+        is random per sample. That uniformity is what makes the batch-max
+        visible gather in ``forward`` exact -- see
+        ``code/SpanMask_PhysioSignals.md`` §4.3.
+        """
+        span = max(1, int(span))
+        n_spans = max(1, int(n_spans))
+        while n_spans > 1 and n_spans * span > N - 1:
+            n_spans -= 1
+        span = min(span, max(1, N - 1))
+        total = min(n_spans * span, N - 1)
+
+        # distribute the slack (positions the spans may start at) over the
+        # n_spans + 1 gaps, so the spans never overlap and never run past the end
+        slack = max(0, N - total)
+        cut = torch.rand(B, n_spans + 1, device=device)
+        cut = cut / cut.sum(dim=1, keepdim=True)
+        gap = (cut * slack).long()                        # [B, n_spans + 1]
+        offs = torch.cumsum(gap[:, :-1], dim=1)           # start offset of span j
+        starts = offs + torch.arange(n_spans, device=device) * span
+        idx = (starts.unsqueeze(-1)
+               + torch.arange(span, device=device))       # [B, n_spans, span]
+        m = torch.zeros(B, N, device=device, dtype=torch.long)
+        m.scatter_(1, idx.reshape(B, -1), 1)
+        return m
+
     def make_masks(self, B: int, device):
-        return {
-            s: (self._tube_mask(B, device, self.mask_ratios[s])
-                if s in self.visual
-                else self._random_mask(B, device, self.n_signal,
-                                       self.mask_ratios[s]))
-            for s in self.streams
-        }
+        out = {}
+        for s in self.streams:
+            if s in self.visual:
+                out[s] = self._tube_mask(B, device, self.mask_ratios[s])
+            elif self.physio_mask == 'span' and self.mask_span_tokens.get(s):
+                out[s] = self._span_mask(B, device, self.n_signal,
+                                         self.mask_n_spans[s],
+                                         self.mask_span_tokens[s])
+            else:
+                out[s] = self._random_mask(B, device, self.n_signal,
+                                           self.mask_ratios[s])
+        return out
 
     # ------------------------------------------------------------------ #
     # reconstruction targets (normalized flat patches)
@@ -682,7 +819,11 @@ class MultiModalMAE(nn.Module):
                 # float32: torch.stft is not implemented for half precision.
                 pred_w = pred.reshape(pred.shape[0], -1).float()
                 tgt_w = tgt.reshape(tgt.shape[0], -1).float()
-                losses_spectral[s] = self.spectral_fn(pred_w, tgt_w)
+                # windows are PER STREAM (see __init__ / parse_fft_sizes): the
+                # module for ``s`` already carries the window set resolved for
+                # ``s``, so a BP and a RESP stream in the same run are scored at
+                # their own resolutions instead of one shared compromise.
+                losses_spectral[s] = self.spectral_fns[s](pred_w, tgt_w)
                 contrib = contrib + (self.spectral_weights[s]
                                      * losses_spectral[s])
             losses[s] = contrib
@@ -697,6 +838,192 @@ class MultiModalMAE(nn.Module):
 # --------------------------------------------------------------------------- #
 # builder (mirrors run_pretrain argparse/YAML defaults)
 # --------------------------------------------------------------------------- #
+#: default span length (SECONDS) per 1-D stream, used when ``mask_span_s`` does
+#: not name the stream. Anchored on the target's own period/correlation time so
+#: that the gap is no longer fillable from its visible edges (see
+#: ``code/SpanMask_PhysioSignals.md``): bp 1-2.5 Hz -> 1.0 s, resp 0.16-0.4 Hz
+#: -> 4.0 s, eda aperiodic (2-10 s tonic scale) -> 8.0 s.
+MASK_SPAN_DEFAULTS = {'bp': 1.0, 'resp': 4.0, 'eda': 8.0}
+
+
+def parse_mask_span(spec) -> Dict[str, float]:
+    """Normalise a ``mask_span_s`` argument to ``{stream: seconds}``.
+
+    Accepts every form a runner/config can produce:
+
+    * a number or numeric string (``4.0``, ``'4.0'``) -> keyed ``'*'``, i.e.
+      every physio stream;
+    * a mapping (YAML ``mask_span_s: {resp: 4.0, bp: 1.0}``);
+    * a comma list of ``stream=seconds`` (``'resp=4.0,bp=1.0'``, the CLI form).
+
+    ``None``/``''``/``0`` yield an empty mapping => per-stream defaults
+    (:data:`MASK_SPAN_DEFAULTS`).
+    """
+    if spec is None:
+        return {}
+    if isinstance(spec, dict):
+        return {str(k).strip(): float(v) for k, v in spec.items()}
+    if isinstance(spec, (int, float)):
+        return {'*': float(spec)}
+    text = str(spec).strip()
+    if not text:
+        return {}
+    if '=' in text:
+        out = {}
+        for part in text.split(','):
+            part = part.strip()
+            if not part:
+                continue
+            key, _, val = part.partition('=')
+            out[key.strip()] = float(val)
+        return out
+    return {'*': float(text)}
+
+
+#: default MR-STFT FFT window sizes (SAMPLES) per 1-D stream, applied when
+#: ``spectral_fft_sizes`` is empty ("auto"). They mirror the Stage-3 finetune
+#: configs ONE FOR ONE (``configs/finetune/{bp,resp,eda}.yaml`` -> the Stage-3
+#: ``--fft_sizes``), so a given stream gets the SAME spectral objective in
+#: Stage 2 and Stage 3 instead of the single global window set Stage 2 used to
+#: force on every stream.
+#:
+#: Rationale (see ``code/TirROI_Resp_plan.md`` §9 and
+#: ``code/SpanMask_PhysioSignals.md`` §4.1): a window must span at least ONE
+#: period of the band it is meant to police, otherwise the magnitude term
+#: measures local waveform shape rather than rate. At fs = 100 Hz:
+#:   bp   1.0-2.5 Hz  -> period 0.4-1.0 s   -> 64/128/256 (1.56/0.78/0.39 Hz bins)
+#:   resp 0.16-0.4 Hz -> period 2.5-6.25 s  -> 64/128/256 (the shipped Stage-3
+#:        choice: it polices multi-scale SHAPE; 128/256/512 = 1.28/2.56/5.12 s
+#:        is the ">= one breath per window" alternative -- if you switch, change
+#:        it HERE *and* in configs/finetune/resp*.yaml so both stages stay
+#:        aligned, and note that ``spec_resp`` is NOT comparable across sets)
+#:   eda  aperiodic, tonic 2-10 s          -> 256/512/1024 (2.56/5.12/10.24 s)
+#: ``eda`` needs a clip of >= 10.24 s: shorter clips DROP 1024 (logged) and a
+#: clip shorter than 2.56 s leaves nothing and raises.
+SPECTRAL_FFT_DEFAULTS = {'bp': (64, 128, 256), 'resp': (64, 128, 256),
+                         'eda': (256, 512, 1024)}
+#: windows for a physio stream the table above does not name
+SPECTRAL_FFT_FALLBACK = (64, 128, 256)
+
+
+def _window_set(v) -> Tuple[int, ...]:
+    """``[128, 256]`` / ``'128/256'`` / ``'128,256'`` / ``256`` -> ``(128, 256)``."""
+    if isinstance(v, (list, tuple, set)):
+        items = list(v)
+    elif isinstance(v, (int, float)):
+        items = [v]
+    else:
+        items = [p for p in str(v).replace('/', ',').replace(';', ',')
+                 .split(',') if p.strip()]
+    try:
+        sizes = sorted({int(round(float(x))) for x in items})
+    except (TypeError, ValueError):
+        raise ValueError(
+            f'parse_fft_sizes: {v!r} is not a list of FFT window sizes')
+    if not sizes or sizes[0] < 2:
+        raise ValueError(
+            f'parse_fft_sizes: {v!r} -> {sizes}; every FFT window must be an '
+            f'integer number of samples >= 2')
+    return tuple(sizes)
+
+
+def parse_fft_sizes(spec) -> Dict[str, Tuple[int, ...]]:
+    """Normalise a ``spectral_fft_sizes`` argument to ``{stream: windows}``.
+
+    ``'*'`` means "every physio stream". Accepted forms:
+
+    * ``None`` / ``''`` / ``'auto'`` -> ``{}``: the per-stream
+      :data:`SPECTRAL_FFT_DEFAULTS` (the recommended form);
+    * a plain comma string (``'64,128,256'``), a list/tuple, or a number ->
+      keyed ``'*'``, i.e. the SAME windows for every physio stream -- the
+      pre-2026-09 behaviour, kept so no existing config changes meaning;
+    * a ``stream=w1/w2/...`` comma list (``'resp=128/256/512,bp=64/128/256'``,
+      the CLI form: ``,`` separates STREAMS, ``/`` separates the windows of
+      one stream -- a comma inside a value would be ambiguous);
+    * a mapping (YAML ``spectral_fft_sizes: {resp: [128, 256, 512]}``); a value
+      may also be a scalar or a string (``{resp: '128,256'}``).
+
+    Window sets are de-duplicated and sorted ascending, so the printed order is
+    the resolution order (coarsest bin first).
+    """
+    if spec is None:
+        return {}
+    if isinstance(spec, dict):
+        return {str(k).strip(): _window_set(v) for k, v in spec.items()}
+    if isinstance(spec, (list, tuple, set)):
+        return {'*': _window_set(spec)}
+    if isinstance(spec, (int, float)):
+        return {'*': _window_set(spec)}
+    text = str(spec).strip()
+    if not text or text.lower() == 'auto':
+        return {}
+    if '=' in text:
+        out = {}
+        for part in text.split(','):
+            part = part.strip()
+            if not part:
+                continue
+            key, _, val = part.partition('=')
+            if not val.strip():
+                raise ValueError(
+                    f'parse_fft_sizes: {part!r} names a stream but no '
+                    f"windows. Use 'stream=128/256/512' -- the COMMA "
+                    f"separates streams, '/' separates the windows of one "
+                    f"stream.")
+            out[key.strip()] = _window_set(val)
+        if not out:
+            raise ValueError(
+                f'parse_fft_sizes: {text!r} does not name any stream')
+        return out
+    for part in text.split(','):
+        if part.strip() and not part.strip().lstrip('+-').replace('.', '', 1).isdigit():
+            raise ValueError(
+                f'parse_fft_sizes: cannot parse {text!r}. Use either a plain '
+                f'comma list of window sizes (64,128,256 = every physio '
+                f"stream) or the per-stream form "
+                f"(resp=128/256/512,bp=64/128/256).")
+    return {'*': _window_set(text)}
+
+
+def _fft_sizes_spec(args):
+    """Resolve ``spectral_fft_sizes`` from a run_pretrain/args namespace.
+
+    ``--fft_sizes`` is the **Stage-3 spelling** of the same knob (Stage 3's
+    ``runners/run_waveform.py``), so a Stage-3 config line can be pasted into a
+    Stage-2 config without silently doing nothing: it is accepted both as a CLI
+    alias of ``--spectral_fft_sizes`` and as a YAML key (an unknown YAML key is
+    absorbed by ``parser.set_defaults`` and would otherwise be ignored).
+
+    Precedence: an explicit ``spectral_fft_sizes`` > ``fft_sizes`` > auto
+    (:data:`SPECTRAL_FFT_DEFAULTS`). Returns ``None`` for auto, which is what
+    :class:`MultiModalMAE` expects.
+    """
+    spec = getattr(args, 'spectral_fft_sizes', None)
+    alias = getattr(args, 'fft_sizes', None)
+
+    def _empty(v) -> bool:
+        if v is None:
+            return True
+        if isinstance(v, str):
+            return not v.strip() or v.strip().lower() == 'auto'
+        return isinstance(v, (list, tuple, set)) and not len(v)
+
+    if _empty(spec):
+        spec = alias
+    elif not _empty(alias) and str(alias).strip() != str(spec).strip():
+        print(f"[spectral] both 'spectral_fft_sizes' ({spec!r}) and the "
+              f"Stage-3 alias 'fft_sizes' ({alias!r}) are set and differ; "
+              f'using spectral_fft_sizes')
+    return None if _empty(spec) else spec
+
+
+def _window_summary(sizes, fs: float) -> str:
+    """``[64, 128]`` at fs 100 -> ``'64,128 samples = 0.64/1.28 s -> ...'``."""
+    return (', '.join(str(n) for n in sizes)
+            + ' samples = ' + '/'.join(f'{n / fs:.2f}' for n in sizes) + ' s'
+            + ' -> ' + '/'.join(f'{fs / n:.2f}' for n in sizes) + ' Hz bins')
+
+
 def _parse_int_csv(v, dtype=int):
     return tuple(dtype(x) for x in str(v).split(','))
 
@@ -808,8 +1135,9 @@ def build_pretraining_model(args):
         target_norm=str(getattr(args, 'target_norm', 'token')),
         spectral_weight=spectral_weight,
         spectral_weights=spectral_weights,
-        spectral_fft_sizes=_parse_int_csv(
-            getattr(args, 'spectral_fft_sizes', '64,128,256')),
+        spectral_fft_sizes=_fft_sizes_spec(args),
+        physio_mask=str(getattr(args, 'physio_mask', 'random') or 'random'),
+        mask_span_s=getattr(args, 'mask_span_s', None),
         spectral_hop_ratio=float(getattr(args, 'spectral_hop_ratio', 0.25)))
 
 
@@ -1101,3 +1429,355 @@ def project_multimae_huge(**kwargs):
     """1280-d / 32-layer / 16-head (no Stage-1 checkpoint is shipped)."""
     return _build_multimae(MULTIMAE_VARIANTS['project_multimae_huge'],
                            **kwargs)
+
+
+# --------------------------------------------------------------------------- #
+# masking self-test -- the span-mask invariants fail SILENTLY, so they are
+# checked by a runnable self-test rather than by reading the code
+# --------------------------------------------------------------------------- #
+def _tiny_model(**over):
+    """Smallest MultiModalMAE that satisfies the space-time alignment check.
+
+    20 frames @25 fps = 0.8 s -> grid_t 10 (= 10 resp tokens of 8 samples at
+    100 Hz), 1 spatial patch at input_size 16, tubelet_t 2 -> 0.08 s per token.
+    """
+    kw = dict(streams=('tir', 'resp'), embed_dim=64, enc_depth=1,
+              enc_num_heads=4, dec_depth=1, mlp_ratio=4.0,
+              num_frames=20, input_size=16, sig_kernel=8, seq_len=80,
+              fps=25.0, fs=100.0, temporal_stride=1,
+              mask_ratios={'tir': 0.5, 'resp': 0.5})
+    kw.update(over)
+    return MultiModalMAE(**kw)
+
+
+def _longest_run(row) -> int:
+    best = cur = 0
+    for v in row:
+        cur = cur + 1 if v else 0
+        best = max(best, cur)
+    return best
+
+
+def mask_self_test(verbose: bool = True) -> int:
+    """Verify the 1-D masking invariants. Returns the number of failures.
+
+    Covers (see ``code/SpanMask_PhysioSignals.md`` §4.3-§4.5):
+
+    * ``_span_mask`` produces exactly ``min(n_spans * span, N - 1)`` masked
+      tokens, **the same count for every sample of the batch** -- the batch-max
+      visible gather in :meth:`MultiModalMAE.forward` silently leaks masked
+      tokens into the encoder when counts differ;
+    * runs are contiguous, at least ``span`` long, and never cover the whole
+      stream (>= 1 visible token = the physio stream's only encoder path);
+    * the gathered visible set really contains no masked token;
+    * ``mask_span_s`` parses from a number, a ``stream=seconds`` CSV and a
+      mapping, defaults per stream, and clamps an impossible span;
+    * the default ``physio_mask='random'`` leaves the span tables empty (the
+      historical path is untouched).
+    """
+    fails = []
+
+    def check(name, cond, extra=''):
+        if verbose:
+            print(f'  [{"ok" if cond else "FAIL"}] {name}'
+                  f'{(" -- " + str(extra)) if extra != "" else ""}')
+        if not cond:
+            fails.append(name)
+
+    m = _tiny_model(physio_mask='span', mask_span_s={'resp': 0.32})
+    N = m.n_signal
+    if verbose:
+        print(f'mask_self_test: N={N} tokens, span={m.mask_span_tokens}, '
+              f'n_spans={m.mask_n_spans}')
+    check('0.32 s span -> 4 tokens at fs 100 / sig_kernel 8',
+          m.mask_span_tokens.get('resp') == 4, m.mask_span_tokens)
+
+    dev = torch.device('cpu')
+    for n_spans, span in ((1, 4), (2, 2), (1, 1)):
+        B = 8
+        mask = m._span_mask(B, dev, N, n_spans, span)
+        exp = min(n_spans * span, N - 1)
+        counts = [int(c) for c in mask.sum(dim=1)]
+        check(f'span {n_spans}x{span}: count {exp} for all {B} samples',
+              all(c == exp for c in counts), counts)
+        check(f'span {n_spans}x{span}: runs >= span',
+              all(_longest_run(mask[b].tolist()) >= span or exp == 0
+                  for b in range(B)))
+        check(f'span {n_spans}x{span}: <= N-1 masked (>= 1 visible)',
+              all(c <= N - 1 for c in counts))
+        # the encoder gather must not pick up a masked token
+        ids = torch.argsort(mask, dim=1, stable=True)
+        k = int((mask == 0).sum(dim=1).max())
+        check(f'span {n_spans}x{span}: visible gather (k={k}) has no masked token',
+              int(torch.gather(mask, 1, ids[:, :k]).sum()) == 0)
+
+    check('scattered mask is NOT contiguous (contrast)',
+          _longest_run(m._random_mask(1, dev, N, 0.5)[0].tolist()) < N // 2)
+
+    # clamping + per-stream independence + spec forms
+    m_big = _tiny_model(physio_mask='span', mask_span_s={'resp': 99.0})
+    check('impossible span clamps to N-1', m_big.mask_span_tokens['resp'] == N - 1,
+          m_big.mask_span_tokens)
+    m_two = _tiny_model(streams=('tir', 'bp', 'resp'), physio_mask='span',
+                        mask_span_s={'bp': 0.16, 'resp': 0.32},
+                        mask_ratios={'tir': 0.5, 'bp': 0.5, 'resp': 0.5})
+    check('per-stream spans differ (bp 2 tokens, resp 4)',
+          m_two.mask_span_tokens == {'bp': 2, 'resp': 4}, m_two.mask_span_tokens)
+    for form, label in ((0.32, 'number'), ('0.32', 'numeric string'),
+                        ('resp=0.32', 'stream=seconds CSV'),
+                        ({'resp': 0.32}, 'mapping')):
+        mm = _tiny_model(physio_mask='span', mask_span_s=form)
+        check(f'mask_span_s as {label} -> 4 tokens',
+              mm.mask_span_tokens.get('resp') == 4)
+    check('MASK_SPAN_DEFAULTS covers bp/resp/eda',
+          set(MASK_SPAN_DEFAULTS) == {'bp', 'resp', 'eda'}, MASK_SPAN_DEFAULTS)
+
+    # the historical path: no physio_mask -> scattered, no span state
+    m_rand = _tiny_model()
+    check("default physio_mask is 'random'", m_rand.physio_mask == 'random')
+    check('random mode keeps the span tables empty',
+          not m_rand.mask_span_tokens and not m_rand.mask_n_spans)
+    check('random mode still masks round(ratio*N) tokens',
+          int(m_rand.make_masks(4, dev)['resp'][0].sum()) == int(0.5 * N))
+
+    if verbose:
+        print('mask_self_test: ' + ('ALL PASS' if not fails
+                                    else f'{len(fails)} FAILURE(S): {fails}'))
+    return len(fails)
+
+
+def spectral_self_test(verbose: bool = True) -> int:
+    """Verify the PER-STREAM MR-STFT window plumbing. Returns failure count.
+
+    The window resolution fails in the worst way when it is wrong: a wrong set
+    still trains and still logs a plausible ``spec_<stream>``. So the
+    invariants are checked by a runnable self-test -- the spec forms, the
+    per-modality defaults, the ``<= clip`` filter, module sharing, and
+    (crucially) that two streams with different windows really are scored at
+    different resolutions instead of through one shared module.
+    """
+    from types import SimpleNamespace
+    fails = []
+
+    def check(name, cond, extra=''):
+        if verbose:
+            print(f'  [{"ok" if cond else "FAIL"}] {name}'
+                  f'{(" -- " + str(extra)) if extra != "" else ""}')
+        if not cond:
+            fails.append(name)
+
+    if verbose:
+        print('spectral_self_test:')
+
+    # ---- spec parsing ----------------------------------------------------- #
+    for form, label, want in (
+            (None, 'None -> auto', {}),
+            ('', 'empty -> auto', {}),
+            ('auto', "'auto' -> auto", {}),
+            ('64,128,256', "comma string -> '*'", {'*': (64, 128, 256)}),
+            ([64, 128, 256], "list -> '*'", {'*': (64, 128, 256)}),
+            (256, "scalar -> '*'", {'*': (256,)}),
+            ('256,64,128,64', 'sorted + de-duplicated', {'*': (64, 128, 256)}),
+            ('resp=128/256/512,bp=64/128/256', 'CLI per-stream',
+             {'resp': (128, 256, 512), 'bp': (64, 128, 256)}),
+            ('resp=256', 'CLI single window', {'resp': (256,)}),
+            ({'resp': [128, 256, 512]}, 'mapping of lists',
+             {'resp': (128, 256, 512)}),
+            ({'resp': '128/256'}, 'mapping of strings', {'resp': (128, 256)}),
+            ({'resp': '128,256', 'bp': 64}, 'mixed mapping values',
+             {'resp': (128, 256), 'bp': (64,)})):
+        got = parse_fft_sizes(form)
+        check(f'parse_fft_sizes {label} -> {want}', got == want, got)
+    for bad, label in (('resp=128,256', 'a comma inside a per-stream value'),
+                       ('resp=', 'a stream without windows'),
+                       ('resp=1', 'a window < 2 samples'),
+                       ('resp=128/abc', 'a non-numeric window')):
+        try:
+            parse_fft_sizes(bad)
+            raised = False
+        except ValueError:
+            raised = True
+        check(f'parse_fft_sizes rejects {label}', raised, repr(bad))
+
+    check('SPECTRAL_FFT_DEFAULTS covers bp/resp/eda',
+          set(SPECTRAL_FFT_DEFAULTS) == {'bp', 'resp', 'eda'},
+          SPECTRAL_FFT_DEFAULTS)
+    check('per-modality defaults mirror configs/finetune/*.yaml --fft_sizes',
+          SPECTRAL_FFT_DEFAULTS == {'bp': (64, 128, 256),
+                                    'resp': (64, 128, 256),
+                                    'eda': (256, 512, 1024)},
+          SPECTRAL_FFT_DEFAULTS)
+
+    # ---- '--fft_sizes' = the Stage-3 alias of the same knob --------------- #
+    def _ns(**kw):
+        base = {'spectral_fft_sizes': '', 'fft_sizes': None}
+        base.update(kw)
+        return SimpleNamespace(**base)
+
+    check('alias: an empty spectral_fft_sizes -> the fft_sizes value',
+          _fft_sizes_spec(_ns(fft_sizes='64,128')) == '64,128')
+    check('alias: an explicit spectral_fft_sizes wins',
+          _fft_sizes_spec(_ns(spectral_fft_sizes='16,32',
+                              fft_sizes='64,128')) == '16,32')
+    check("alias: neither set -> None (=> per-modality defaults)",
+          _fft_sizes_spec(_ns()) is None)
+    check("alias: 'auto' -> None",
+          _fft_sizes_spec(_ns(spectral_fft_sizes='auto')) is None)
+
+    # ---- model-level resolution (toy clip: 80 samples = 0.8 s) ------------ #
+    B = 2
+    streams = ('tir', 'bp', 'resp')
+    ratios = {'tir': 0.5, 'bp': 0.5, 'resp': 0.5}
+
+    def _inputs(m):
+        return {'tir': torch.randn(B, 3, m.num_frames, m.input_size,
+                                   m.input_size),
+                'bp': torch.randn(B, 1, m.seq_len),
+                'resp': torch.randn(B, 1, m.seq_len)}
+
+    m_uni = _tiny_model(streams=streams, mask_ratios=ratios,
+                        target_norm='clip', spectral_weight=0.1,
+                        spectral_fft_sizes='16,32')
+    check('uniform spec -> the same windows for every physio stream',
+          m_uni.spectral_fft_sizes == {'bp': [16, 32], 'resp': [16, 32]},
+          m_uni.spectral_fft_sizes)
+    check('uniform spec -> ONE shared module (the pre-2026-09 behaviour)',
+          m_uni.spectral_fns['bp'] is m_uni.spectral_fns['resp'])
+    check('video streams never get a spectral module',
+          set(m_uni.spectral_fns) == set(m_uni.signal),
+          set(m_uni.spectral_fns))
+    out_uni = m_uni(_inputs(m_uni))
+    check('uniform windows train: finite spec_bp/spec_resp',
+          torch.isfinite(out_uni['loss'])
+          and all(torch.isfinite(out_uni['losses_spectral'][s])
+                  for s in m_uni.signal),
+          {k: round(v.item(), 4)
+           for k, v in out_uni['losses_spectral'].items()})
+
+    m_sep = _tiny_model(streams=streams, mask_ratios=ratios,
+                        target_norm='clip', spectral_weight=0.1,
+                        spectral_fft_sizes='bp=8/16,resp=32/64')
+    check('per-stream spec resolves independently (not one global set)',
+          m_sep.spectral_fft_sizes == {'bp': [8, 16], 'resp': [32, 64]},
+          m_sep.spectral_fft_sizes)
+    check('different windows -> different modules',
+          m_sep.spectral_fns['bp'] is not m_sep.spectral_fns['resp'])
+    check('each module carries ITS OWN stream windows',
+          m_sep.spectral_fns['bp'].fft_sizes == [8, 16]
+          and m_sep.spectral_fns['resp'].fft_sizes == [32, 64],
+          {s: m.fft_sizes for s, m in m_sep.spectral_fns.items()})
+    probe = torch.randn(4, m_sep.n_signal * m_sep.sig_kernel)
+    ref = probe.roll(3, dims=-1) * 0.7
+    check('the two window sets really differ numerically on one waveform',
+          not torch.allclose(m_sep.spectral_fns['bp'](probe, ref),
+                             m_sep.spectral_fns['resp'](probe, ref)))
+    check('hop_ratio is shared by every per-stream module',
+          {m.hop_ratio for m in m_sep.spectral_fns.values()}
+          == {m_sep.spectral_hop_ratio},
+          {s: m.hop_ratio for s, m in m_sep.spectral_fns.items()})
+    out_sep = m_sep(_inputs(m_sep))
+    check('heterogeneous windows train: finite spec_bp/spec_resp',
+          all(torch.isfinite(out_sep['losses_spectral'][s]) for s in m_sep.signal),
+          {k: round(v.item(), 4)
+           for k, v in out_sep['losses_spectral'].items()})
+    check('total = sum of the per-stream contributions',
+          torch.allclose(out_sep['loss'],
+                         torch.stack(list(out_sep['losses'].values())).sum()))
+
+    m_drop = _tiny_model(streams=streams, mask_ratios=ratios,
+                         target_norm='clip', spectral_weight=0.1,
+                         spectral_fft_sizes='16,1024')
+    check('windows longer than the clip are DROPPED, not fatal',
+          m_drop.spectral_fft_sizes == {'bp': [16], 'resp': [16]},
+          m_drop.spectral_fft_sizes)
+    try:
+        _tiny_model(streams=streams, mask_ratios=ratios, target_norm='clip',
+                    spectral_weight=0.1, spectral_fft_sizes='1024,2048')
+        raised = False
+    except ValueError:
+        raised = True
+    check('no window fits the clip -> raises instead of training blind',
+          raised)
+
+    # ---- auto spec: the per-modality table (needs a 10.24 s toy clip) ----- #
+    m_auto = _tiny_model(streams=('tir', 'bp', 'resp', 'eda'),
+                         mask_ratios=dict(ratios, eda=0.5),
+                         num_frames=256, seq_len=1024,
+                         target_norm='clip', spectral_weight=0.1,
+                         spectral_fft_sizes='')
+    check('empty spec -> SPECTRAL_FFT_DEFAULTS per stream',
+          m_auto.spectral_fft_sizes == {'bp': [64, 128, 256],
+                                        'resp': [64, 128, 256],
+                                        'eda': [256, 512, 1024]},
+          m_auto.spectral_fft_sizes)
+    check('bp/resp share a module, eda gets its own',
+          m_auto.spectral_fns['bp'] is m_auto.spectral_fns['resp']
+          and m_auto.spectral_fns['eda'] is not m_auto.spectral_fns['bp'])
+    try:
+        _tiny_model(streams=('tir', 'eda'), target_norm='clip',
+                    spectral_weight=0.1, spectral_fft_sizes='')
+        raised = False
+    except ValueError:
+        raised = True
+    check('eda defaults need a >= 2.56 s clip (raise on the 0.8 s toy clip)',
+          raised)
+
+    # ---- OFF: the historical objective, bit for bit ---------------------- #
+    m_off = _tiny_model(streams=streams, mask_ratios=ratios)
+    check('spectral OFF: no windows resolved and no modules built',
+          m_off.spectral_fns == {} and m_off.spectral_fft_sizes == {})
+    out_off = m_off(_inputs(m_off))
+    check('spectral OFF: losses_spectral stays empty',
+          out_off['losses_spectral'] == {} and torch.isfinite(out_off['loss']))
+    check('spectral OFF: total is exactly the weighted masked MSE',
+          torch.allclose(out_off['loss'], torch.stack(
+              [m_off.loss_weights[s] * v
+               for s, v in out_off['losses_mse'].items()]).sum()))
+
+    # ---- the two guards on the term itself ------------------------------- #
+    for kw, label in (({'streams': ('tir', 'bp'), 'spectral_weight': 0.1,
+                        'target_norm': 'token'},
+                       "spectral_weight > 0 with target_norm 'token'"),
+                      ({'streams': ('tir', 'bp'), 'target_norm': 'clip',
+                        'spectral_weights': {'tir': 0.1}},
+                       'a positive weight on a VIDEO stream')):
+        try:
+            _tiny_model(**kw)
+            raised = False
+        except ValueError:
+            raised = True
+        check(f'still rejected: {label}', raised)
+
+    # ---- the run_pretrain builder path ----------------------------------- #
+    def _build_ns(**kw):
+        base = dict(streams='tir,bp,resp', clip_duration=0.96, fps=25.0,
+                    fs=100.0, seq_len=0, sig_kernel=8, input_size=16,
+                    target_norm='clip', spectral_weight=0.1,
+                    enc_embed_dim=64, enc_depth=1, enc_num_heads=4,
+                    spectral_fft_sizes='resp=32/64,bp=16/32')
+        base.update(kw)
+        return SimpleNamespace(**base)
+
+    m_built = build_pretraining_model(_build_ns())
+    check('build_pretraining_model plumbs the per-stream spec',
+          m_built.spectral_fft_sizes == {'bp': [16, 32], 'resp': [32, 64]},
+          m_built.spectral_fft_sizes)
+    m_alias = build_pretraining_model(
+        _build_ns(spectral_fft_sizes='', fft_sizes='16,32'))
+    check("build_pretraining_model accepts the Stage-3 'fft_sizes' alias",
+          m_alias.spectral_fft_sizes == {'bp': [16, 32], 'resp': [16, 32]},
+          m_alias.spectral_fft_sizes)
+    m_auto_built = build_pretraining_model(_build_ns(spectral_fft_sizes=''))
+    check('build_pretraining_model with an empty spec -> per-modality default',
+          m_auto_built.spectral_fft_sizes == {'bp': [64], 'resp': [64]},
+          m_auto_built.spectral_fft_sizes)
+
+    if verbose:
+        print('spectral_self_test: ' + ('ALL PASS' if not fails
+                                        else f'{len(fails)} FAILURE(S): '
+                                             f'{fails}'))
+    return len(fails)
+
+
+if __name__ == '__main__':
+    raise SystemExit(1 if (mask_self_test() + spectral_self_test()) else 0)

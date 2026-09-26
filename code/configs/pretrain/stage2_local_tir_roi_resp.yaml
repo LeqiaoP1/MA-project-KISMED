@@ -93,6 +93,21 @@ mask_ratio_resp: 0.50              # NOT 0.90: a physio stream's only gradient
 mask_ratio_rgb: 0.90               # unused while streams=tir,resp
 mask_ratio_bp: 0.50                # unused
 mask_ratio_eda: 0.50               # unused
+# ---- 1-D masking PATTERN (see code/SpanMask_PhysioSignals.md) ----
+# 'random' = the shipped scattered dropout (E0 baseline, byte-identical).
+# 'span'   = contiguous blocks: the measured fix for the resp collapse, because
+#            a scattered mask in a 16x-oversampled band-limited signal is
+#            solvable by interpolating the visible neighbours (mse_resp 0.129 /
+#            spec_resp 0.98 with ZERO video, vs the trained model's 1.05/5.0).
+#            With one 4 s span the same interpolator becomes WORSE than a
+#            constant (1.459 > 0.976).
+# Span length is per stream; the span COUNT is derived from the ratio, so
+# mask_span_s must satisfy mask_span_s <= mask_ratio_<stream> * clip_duration.
+#   E1: mask_span_s: {resp: 1.5}   (0.6 breath)   E2: {resp: 2.0}
+#   E3: mask_span_s: {resp: 4.0}   (= 1 breath at 0.25 Hz; 25 of 50 tokens ->
+#                                    n_spans derives to exactly 1)
+physio_mask: random                # flip to 'span' for E1-E3
+mask_span_s: {resp: 4.0}           # ignored while physio_mask: random
 
 # ---- loss: per-modality masked MSE (masked positions only) ----
 signal_weight: 0.5                 # lambda for every physio stream (visual 1.0)
@@ -120,7 +135,32 @@ spectral_weight: 0.0               # MR-STFT OFF -- MEASURED 2026-09-26: it was 
                                    # target_norm: token (the model refuses
                                    # spectral_weight > 0 with token norm), which
                                    # is the next lever against the resp collapse.
-spectral_fft_sizes: 64,128,256     # 1.56 / 0.78 / 0.39 Hz at fs 100
+spectral_fft_sizes: 64,128,256     # MR-STFT windows in SAMPLES, resolved PER
+                                   # PHYSIO STREAM -- one window set cannot
+                                   # police both BP (1.0-2.5 Hz) and RESP
+                                   # (0.16-0.4 Hz): a window should span >=
+                                   # one period of the band it polices. Forms:
+                                   #   64,128,256  -> the SAME windows for
+                                   #                  every physio stream
+                                   #   resp=128/256/512,bp=64/128/256 -> per
+                                   #                  stream; the COMMA
+                                   #                  separates streams, "/"
+                                   #                  the windows of one
+                                   #   {resp: [128, 256, 512]}        -> per
+                                   #                  stream (YAML mapping)
+                                   #   '' / auto  -> the per-modality
+                                   #                  defaults bp/resp
+                                   #                  64,128,256, eda
+                                   #                  256,512,1024 -- what
+                                   #                  configs/finetune/*.yaml
+                                   #                  --fft_sizes use for
+                                   #                  that stream, so Stage 2
+                                   #                  and Stage 3 match
+                                   # --fft_sizes is accepted as the Stage-3
+                                   # alias. Windows longer than the clip are
+                                   # DROPPED and now printed ([spectral] ...
+                                   # at build time). Only read when
+                                   # spectral_weight > 0.
 spectral_hop_ratio: 0.25
 
 # ---- training (local: the whole local clip budget at 64 px) ----

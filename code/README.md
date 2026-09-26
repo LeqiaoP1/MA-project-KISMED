@@ -160,9 +160,19 @@ L = Σ_s ( λ_s·MSE_s + w_s·STFT_s ) ,      w_physio = spectral weight ,      
   normalization every token is independently rescaled, so its spectrum carries
   token-boundary artefacts instead of the physiological band the loss is meant
   to enforce. It also aligns the Stage-2 target space with Stage 3.
-* **Knobs:** `--spectral_fft_sizes` (default `64,128,256` ⇒ 1.56 / 0.78 /
-  0.39 Hz resolution at fs = 100 Hz, covering BP 1.0–2.5 Hz and RESP
-  0.16–0.4 Hz), `--spectral_hop_ratio` (default 0.25 ⇒ 75 % overlap), and
+* **Knobs:** `--spectral_fft_sizes` is resolved **PER PHYSIO STREAM**
+  (`core/multimae.parse_fft_sizes` + `SPECTRAL_FFT_DEFAULTS`): `'64,128,256'` =
+  the same windows for every physio stream, `'resp=128/256/512,bp=64/128/256'`
+  (the comma separates streams, `/` the windows of one stream) or a YAML
+  mapping `{resp: [128, 256, 512]}` = per stream, and `''`/`auto` = the
+  per-modality defaults (bp/resp `64,128,256`, eda `256,512,1024`) which mirror
+  the Stage-3 `configs/finetune/*.yaml --fft_sizes` one for one — the Stage-3
+  spelling `--fft_sizes` is accepted as an alias. One window set cannot police
+  both BP (1.0–2.5 Hz) and RESP (0.16–0.4 Hz), because a window should span at
+  least one period of the band it polices: 64/128/256 ⇒ 1.56 / 0.78 / 0.39 Hz
+  bins at fs = 100 Hz. Windows longer than the clip are **dropped and
+  logged** (a `[spectral]` block is printed per stream at build time). Also
+  `--spectral_hop_ratio` (default 0.25 ⇒ 75 % overlap), and
   `--spectral_weights` — a FULL per-stream override (one comma value per
   `--streams` modality, same convention as `--loss_weights`; a positive value on
   a video stream is rejected). Start at ~0.1 and tune.
@@ -208,7 +218,17 @@ such run is `configs/pretrain/stage2_local_tir_roi_resp.yaml` (`streams: tir,res
 its procedure of record is `code/TirROI_Resp_plan.md`. A measured diagnosis of
 *why* the physio stream collapses under scattered masking, and the span-masking
 design that replaces it, is in `code/SpanMask_PhysioSignals.md` (with the STFT
-term's role re-derived under spans). It needs no model
+term's role re-derived under spans).
+
+**1-D masking pattern (`--physio_mask`).** The 1-D streams are masked either
+scattered (`random`, the default, unchanged) or as contiguous blocks (`span`,
+length per stream via `--mask_span_s`, count derived from the ratio). Span
+masking removes the "interpolate the gap from its visible neighbours" shortcut
+that makes a scattered mask on an oversampled band-limited stream solvable with
+zero video information (`code/SpanMask_PhysioSignals.md` §1-§2). The resolved
+geometry is printed at model build, and `python -m core.multimae` self-tests the
+invariants (uniform masked count across the batch -- a batch-max gather would
+otherwise leak masked tokens into the encoder). It needs no model
 change, and with `streams: tir,...` the Stage-1 loader now routes the
 checkpoint's tubelet into `adapters.tir` instead of leaving it random
 (`load_pretrained_encoder` resolves the destination visual adapter; an

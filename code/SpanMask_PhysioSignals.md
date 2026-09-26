@@ -2,12 +2,17 @@
 
 ### — and why the STFT (MR-STFT) loss becomes useful once you have it
 
-**Status:** design document. **Nothing in this document is implemented yet** —
-`core/multimae.py` still masks every non-visual stream with `_random_mask`
-(scattered dropout), and `spectral_weight` is `0.0` in the shipped Stage-2
-config. The measurements below were taken on the shipped TIR-ROI + RESP geometry
+**Status: IMPLEMENTED 2026-09-26** (`core/multimae.py`: `_span_mask`,
+`physio_mask`, `mask_span_s`, `parse_mask_span`, `MASK_SPAN_DEFAULTS`,
+`mask_self_test`; `runners/run_pretrain.py`: `--physio_mask`, `--mask_span_s`).
+The **default is unchanged** (`physio_mask: random` reproduces the historical
+scattered mask bit-for-bit — verified: the 2-epoch run matches the pre-change
+`mse_resp 1.0483` to 1e-6), and `spectral_weight` is still `0.0`. The
+measurements below were taken on the shipped TIR-ROI + RESP geometry
 (2026-09-26); the probe scripts and commands are listed in §8 so every number can
-be reproduced.
+be reproduced. The empirical question the ladder poses — *does the encoder start
+using the video once the interpolation shortcut is gone?* — is still OPEN; the
+implementation only makes it askable.
 
 **Relationship to the other docs.** The plan already prescribes this masking
 policy — `ImplementationPlan.md` §2.2 ("Physio: contiguous span masking, not
@@ -61,15 +66,14 @@ STFT term to the *current* scattered mask is in `TirROI_Resp_plan.md` §9.
 Geometry (shipped `configs/pretrain/stage2_local_tir_roi_resp.yaml`): 8 s clips,
 `fs 100`, `temporal_stride 2`, `sig_kernel 16` -> `L 800` samples, `N 50` resp
 tokens, 160 ms per token; `mask_ratio_resp 0.5` -> 25 masked tokens; `tir` is
-the other stream (`mask_ratio_tir 0.9`). `target_norm: clip`, `signal_weight
-0.5`, `spectral_weight 0.0`.
+the other stream (`mask_ratio_tir 0.9`). `target_norm: clip`, `signal_weight 0.5`, `spectral_weight 0.0`.
 
-| predictor (uses the **visible resp samples only** — no video, no encoder, no learning) | `mse_resp` (masked) | `spec_resp` (MR-STFT 64/128/256) |
-| -------------------------------------------------------------------------------------- | ------------------- | -------------------------------- |
-| constant 0 — the trivial floor                                                          | 0.9989              | 5.0932                           |
-| **linear interpolation between the nearest visible samples**                             | **0.1299**          | **0.9709**                       |
-| ground truth (upper bound)                                                              | 0.0                 | 0.0                              |
-| *for reference:* the trained model (epoch 1, same geometry)                              | 1.052               | ~5.0                             |
+| predictor (uses the**visible resp samples only** — no video, no encoder, no learning) | `mse_resp` (masked) | `spec_resp` (MR-STFT 64/128/256) |
+| -------------------------------------------------------------------------------------------- | --------------------- | ---------------------------------- |
+| constant 0 — the trivial floor                                                              | 0.9989                | 5.0932                             |
+| **linear interpolation between the nearest visible samples**                           | **0.1299**      | **0.9709**                   |
+| ground truth (upper bound)                                                                   | 0.0                   | 0.0                                |
+| *for reference:* the trained model (epoch 1, same geometry)                                | 1.052                 | ~5.0                               |
 
 24 real clips x 30 mask realisations, 388-clip corpus (`probe_mask_solvability.py`).
 
@@ -103,15 +107,15 @@ objective does not merely *allow* the shortcut; it actively rewards blurring.
 Same true clip, controlled perturbations (mean over 24 clips,
 `probe_loss_sensitivity.py`):
 
-| prediction error vs the true clip | MSE | MR-STFT (64/128/256) | MR-STFT (128/256/512) |
-| --------------------------------- | --- | -------------------- | --------------------- |
-| zero (constant) | 1.0000 | 10.1850 | 10.4701 |
-| amplitude x0.5 (shrink) | 0.2500 | 1.1911 | 1.1926 |
-| time shift 1.00 s (=100 samples) | **2.5569** | **2.0158** | 2.1547 |
-| time shift 0.25 s (=25 samples) | 0.3916 | 1.3880 | 1.4662 |
-| smoothed with a 1.0 s boxcar | **0.0895** | **2.3300** | 2.5718 |
-| linear chord across the clip | 1.5781 | 4.7414 | 5.0938 |
-| sign-flipped (-z) | **4.0000** | **0.0000** | 0.0000 |
+| prediction error vs the true clip | MSE              | MR-STFT (64/128/256) | MR-STFT (128/256/512) |
+| --------------------------------- | ---------------- | -------------------- | --------------------- |
+| zero (constant)                   | 1.0000           | 10.1850              | 10.4701               |
+| amplitude x0.5 (shrink)           | 0.2500           | 1.1911               | 1.1926                |
+| time shift 1.00 s (=100 samples)  | **2.5569** | **2.0158**     | 2.1547                |
+| time shift 0.25 s (=25 samples)   | 0.3916           | 1.3880               | 1.4662                |
+| smoothed with a 1.0 s boxcar      | **0.0895** | **2.3300**     | 2.5718                |
+| linear chord across the clip      | 1.5781           | 4.7414               | 5.0938                |
+| sign-flipped (-z)                 | **4.0000** | **0.0000**     | 0.0000                |
 
 Three conclusions that shape the design:
 
@@ -144,11 +148,11 @@ the *target's own correlation time* and the thesis' bands differ by ~1-2 orders
 of magnitude (`bp` 1-2.5 Hz, `resp` 0.16-0.4 Hz, `eda` aperiodic with a 2-10 s
 tonic scale). One global `mask_span_s` cannot be right for all three.
 
-| stream | band (plan §2) | period / correlation time | `mask_span_s` default | tokens @160 ms |
-| ------ | -------------- | ------------------------- | --------------------- | -------------- |
-| `bp` | 1-2.5 Hz | 0.4-1.0 s | **1.0** | 6 |
-| `resp` | 0.16-0.4 Hz | 2.5-6.25 s | **4.0** | 25 |
-| `eda` | aperiodic, tonic 2-10 s | 2-10 s | **8.0** | 50 |
+| stream   | band (plan §2)         | period / correlation time | `mask_span_s` default | tokens @160 ms |
+| -------- | ----------------------- | ------------------------- | ----------------------- | -------------- |
+| `bp`   | 1-2.5 Hz                | 0.4-1.0 s                 | **1.0**           | 6              |
+| `resp` | 0.16-0.4 Hz             | 2.5-6.25 s                | **4.0**           | 25             |
+| `eda`  | aperiodic, tonic 2-10 s | 2-10 s                    | **8.0**           | 50             |
 
 Proposed surface (additive, mirroring the existing per-stream conventions —
 `MultiModalMAE` already takes `spectral_weights` as a **dict keyed by stream
@@ -186,25 +190,25 @@ at roughly **0.5-1 target cycle** — which is where the defaults above come fro
 Two consequences visible in the §4.2 numbers:
 
 * **What matters is the length of each individual gap, not the total masked
-duration.** All three span rows mask 4.0 s of 8 s, yet 4x1 s stays fillable
-(0.84), 2x2 s breaks it (1.37) and 1x4 s breaks it hardest (1.46). So `n_spans`
-is not an independent difficulty dial: with the ratio fixed, *fewer spans =
-longer gaps = harder*.
+  duration.** All three span rows mask 4.0 s of 8 s, yet 4x1 s stays fillable
+  (0.84), 2x2 s breaks it (1.37) and 1x4 s breaks it hardest (1.46). So `n_spans`
+  is not an independent difficulty dial: with the ratio fixed, *fewer spans =
+  longer gaps = harder*.
 * The floors (§4.2) are **geometry- and modality-specific** — they depend on
-`N`, `sig_kernel`, `fs`, the clip length and the signal's own spectrum. Re-measure
-them per modality rather than importing the RESP numbers.
+  `N`, `sig_kernel`, `fs`, the clip length and the signal's own spectrum. Re-measure
+  them per modality rather than importing the RESP numbers.
 
 ### 4.2 Measured difficulty by mask pattern
 
 24 clips x 30 realisations, 25/50 tokens (4.0 s of 8 s) masked
 (`probe_span_baselines.py`):
 
-| mask pattern | `mse_const` | `mse_interp` | `spec_const` | `spec_interp` 64/128/256 | `spec_interp` 128/256/512 |
-| ------------ | ----------- | ------------ | ------------ | ------------------------ | ------------------------- |
-| scattered (shipped) | 1.0110 | **0.1288** | 5.1082 | **0.9822** | 0.9783 |
-| **1 span (4.0 s)** | 0.9758 | **1.4585** | 4.6700 | **2.3665** | 2.2027 |
-| 2 spans (~2 s each) | 0.9964 | 1.3697 | 4.3589 | 1.9945 | 1.8727 |
-| 4 spans (~1 s each) | 1.0080 | 0.8411 | 4.3457 | 1.6034 | 1.4971 |
+| mask pattern             | `mse_const` | `mse_interp`   | `spec_const` | `spec_interp` 64/128/256 | `spec_interp` 128/256/512 |
+| ------------------------ | ------------- | ---------------- | -------------- | -------------------------- | --------------------------- |
+| scattered (shipped)      | 1.0110        | **0.1288** | 5.1082         | **0.9822**           | 0.9783                      |
+| **1 span (4.0 s)** | 0.9758        | **1.4585** | 4.6700         | **2.3665**           | 2.2027                      |
+| 2 spans (~2 s each)      | 0.9964        | 1.3697           | 4.3589         | 1.9945                     | 1.8727                      |
+| 4 spans (~1 s each)      | 1.0080        | 0.8411           | 4.3457         | 1.6034                     | 1.4971                      |
 
 **This is the central result of the document.** Moving from scattered tokens to
 one contiguous span flips the interpolator from *8x better than the trained
@@ -283,6 +287,7 @@ config changes behaviour):
   mask_n_spans: 2
   mask_ratio_resp: 0.5      # 2 spans x 12 tokens = 24/50 ≈ 0.48
   ```
+
   (the ratio and the span geometry must be mutually consistent: `n_spans * span`
   should equal `round(mask_ratio * N)`, else the effective ratio silently differs
   from the configured one — log both).
@@ -359,11 +364,11 @@ n_spans * mask_span_s = mask_ratio * clip_seconds
 
 Three coherent parameterisations:
 
-| scheme | primary knobs | derived | keeps `mask_ratio`? | note |
-| ------ | ------------- | ------- | ------------------- | ---- |
-| **A (recommended)** | `mask_ratio_<stream>` + `mask_span_s` | `n_spans = round(ratio*clip/span_s)` | **yes, primary** | ratio stays the "how much", span_s the "how structured"; matches the existing CLI and the plan's ratio ramp |
-| B | `mask_span_s` + `n_spans` | `ratio = n_spans*span_s/clip` | becomes derived (log it) | the span is the physical quantity; the ratio must then be *reported* because it is what the loss/`k` sees |
-| C | `mask_span_s` only, `n_spans == 1` | `ratio = span_s/clip` | **yes – fully redundant** | the degenerate case: ratio and span_s are the same number in different units |
+| scheme                    | primary knobs                             | derived                                | keeps`mask_ratio`?             | note                                                                                                         |
+| ------------------------- | ----------------------------------------- | -------------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| **A (recommended)** | `mask_ratio_<stream>` + `mask_span_s` | `n_spans = round(ratio*clip/span_s)` | **yes, primary**           | ratio stays the "how much", span_s the "how structured"; matches the existing CLI and the plan's ratio ramp  |
+| B                         | `mask_span_s` + `n_spans`             | `ratio = n_spans*span_s/clip`        | becomes derived (log it)         | the span is the physical quantity; the ratio must then be*reported* because it is what the loss/`k` sees |
+| C                         | `mask_span_s` only, `n_spans == 1`    | `ratio = span_s/clip`                | **yes – fully redundant** | the degenerate case: ratio and span_s are the same number in different units                                 |
 
 In an 8 s clip with `n_spans 1`, scheme C is the temptation (a 4 s span *is*
 `ratio 0.5`), and then the ratio genuinely can be dropped. Two reasons not to:
@@ -386,6 +391,7 @@ contributes no encoder gradient (§4.3 item 2) — so the last 2 % of the ramp
 buys the Stage-3-aligned condition at the cost of the encoder path.
 
 ## 5. Why the STFT loss becomes helpful *under span masking*
+
 The argument is not "spectral losses are for periodic signals, so use one". It is
 that span masking changes the *failure mode* of the reconstruction from
 "interpolation error" to "plausible-but-wrong waveform", and the magnitude
@@ -393,10 +399,10 @@ spectrum is the part of the objective that measures the latter.
 
 ### 5.1 It stops being trivially satisfiable
 
-| | no-video interpolator `spec_resp` | no-video interpolator `mse_resp` |
-| --- | --- | --- |
-| scattered (shipped) | 0.98 | 0.13 |
-| 1 span (4 s) | 2.37 | 1.46 |
+|                     | no-video interpolator`spec_resp` | no-video interpolator`mse_resp` |
+| ------------------- | ---------------------------------- | --------------------------------- |
+| scattered (shipped) | 0.98                               | 0.13                              |
+| 1 span (4 s)        | 2.37                               | 1.46                              |
 
 Under scattered masking the spectral term has **nothing to add**: its optimum
 (0) is approached to within 0.98 by a solution that uses no video, so the term
@@ -441,10 +447,10 @@ The FFT windows must be **shorter than the gap** (otherwise a window contains no
 information the model must invent) and **long enough to contain one target
 period** (otherwise the magnitude loss measures local shape, not rate):
 
-| `fft_sizes` | durations at `fs 100` | one respiration period (2.5-6.25 s)? |
-| ----------- | --------------------- | ------------------------------------ |
-| 64, 128, 256 (shipped) | 0.64 / 1.28 / 2.56 s | no; only the 256 window approaches it |
-| **128, 256, 512** | 1.28 / 2.56 / 5.12 s | the 512 window does; `512 <= L 800` fits |
+| `fft_sizes`           | durations at`fs 100` | one respiration period (2.5-6.25 s)?      |
+| ----------------------- | ---------------------- | ----------------------------------------- |
+| 64, 128, 256 (shipped)  | 0.64 / 1.28 / 2.56 s   | no; only the 256 window approaches it     |
+| **128, 256, 512** | 1.28 / 2.56 / 5.12 s   | the 512 window does;`512 <= L 800` fits |
 
 Measured, the two sets are **not comparable in absolute terms**, and the honest
 reading is that switching is mostly a *scale shift*: for the same predictor the
@@ -459,6 +465,17 @@ contain a full 0.2 Hz breath, a 0.64 s window cannot contain any breath.
 > term averages over windows of different lengths and counts). Any baseline or
 > acceptance threshold in this document is quoted for the shipped
 > `64,128,256`; re-measure before comparing if you change it.
+>
+> **Implemented 2026-09-26:** the table above is no longer a global decision.
+> Stage 2 resolves the windows **per physio stream**
+> (`core.multimae.parse_fft_sizes` + `SPECTRAL_FFT_DEFAULTS`), matching the
+> per-branch Stage-3 configs, so the `128,256,512` alternative is one config
+> line: `--spectral_fft_sizes 'resp=128/256/512,bp=64/128/256'` (or a YAML
+> mapping `{resp: [128, 256, 512]}`). `''`/`auto` uses the per-modality
+> defaults, which keep `resp` at `64,128,256` -- the same set
+> `configs/finetune/resp*.yaml` uses -- so switching to `128/256/512` means
+> changing BOTH stages. The `[spectral]` line printed at build time now names
+> the resolved set and any window dropped for being longer than the clip.
 
 ### 5.5 What the spectral term still cannot do
 
@@ -500,16 +517,41 @@ contain a full 0.2 Hz breath, a 0.64 s window cannot contain any breath.
 
 ## 6. Experiment ladder
 
-| # | change | config | question it answers |
-| - | ------ | ------ | ------------------- |
-| E0 | *(baseline, already run)* scattered 0.5, no STFT | shipped config | the reference point: `mse_resp 1.05`, `spec ~5.0` — worse than a constant |
-| E1 | `physio_mask: span`, `mask_span_s {resp: 1.5}`, no STFT | + 3 keys | does a 1.5 s gap (0.6 breath) already break the shortcut? Target: `mse_resp < 0.84` (the 4x1 s floor) |
-| E2 | as E1 but `mask_span_s {resp: 2.0}` -> 2 s gaps | 1 key | target `mse_resp < 1.37` and **`< 0.98`** to beat the constant |
-| E3 | as E2 but `mask_span_s {resp: 4.0}` (needs `ratio 0.5` @ 8 s -> `n_spans` derives to 1) | 1 key | the hardest single-gap case: target `mse_resp < 1.46` **and** `< 0.98` |
-| E4 | E3 + `target_norm: token` | 1 key | the position-wise-mean shortcut, now unblocked |
-| E5 | E3 + `spectral_weight 0.05` (fft 128/256/512) | 2 keys | does the spectral term add anything **now**? |
-| E6 | E5 + mask-weighted STFT (§5.6.1) | code | the "proper" version of the term |
-| E7 | a multi-stream run (`rgb,tir,bp,resp`) with the per-modality table of §4.1 | 3 keys | does the per-modality span table work when several physio streams share the grid, and how big is the cross-physio leak of §4.6? |
+Implemented surface (all additive; every existing config keeps
+`physio_mask: random`):
+
+```bash
+# E1-E3: span length sensitivity on the respiration stream (1.5 -> 2 -> 4 s)
+cd code
+python -u runners/run_pretrain.py -c configs/pretrain/stage2_local_tir_roi_resp.yaml \
+    --physio_mask span --mask_span_s resp=1.5 --output_dir ../output/pretrain/span_resp15
+python -u runners/run_pretrain.py -c configs/pretrain/stage2_local_tir_roi_resp.yaml \
+    --physio_mask span --mask_span_s resp=4.0 --output_dir ../output/pretrain/span_resp40
+# the span geometry actually used is printed once at model build, e.g.
+#   [mask] resp: span 4 s = 25 tokens (4.00 s) x 1 span(s) -> effective masked fraction 0.500
+```
+
+In a config (YAML scalar or mapping; the count is always derived):
+
+```yaml
+physio_mask: span
+mask_span_s: {resp: 4.0}      # or 4.0 for every physio stream, or bp=1.0,resp=4.0
+mask_ratio_resp: 0.5          # must satisfy span_s <= ratio * clip_duration
+```
+
+Unit/self-test for the masking invariants (silent failures otherwise):
+`python -m core.multimae` from `code/` -> `mask_self_test: ALL PASS`.
+
+| #  | change                                                                                       | config         | question it answers                                                                                                              |
+| -- | -------------------------------------------------------------------------------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| E0 | *(baseline, already run)* scattered 0.5, no STFT                                           | shipped config | the reference point:`mse_resp 1.05`, `spec ~5.0` — worse than a constant                                                    |
+| E1 | `physio_mask: span`, `mask_span_s {resp: 1.5}`, no STFT                                  | + 3 keys       | does a 1.5 s gap (0.6 breath) already break the shortcut? Target:`mse_resp < 0.84` (the 4x1 s floor)                           |
+| E2 | as E1 but`mask_span_s {resp: 2.0}` -> 2 s gaps                                             | 1 key          | target`mse_resp < 1.37` and **`< 0.98`** to beat the constant                                                          |
+| E3 | as E2 but`mask_span_s {resp: 4.0}` (needs `ratio 0.5` @ 8 s -> `n_spans` derives to 1) | 1 key          | the hardest single-gap case: target`mse_resp < 1.46` **and** `< 0.98`                                                  |
+| E4 | E3 +`target_norm: token`                                                                   | 1 key          | the position-wise-mean shortcut, now unblocked                                                                                   |
+| E5 | E3 +`spectral_weight 0.05` (fft 128/256/512)                                               | 2 keys         | does the spectral term add anything**now**?                                                                                |
+| E6 | E5 + mask-weighted STFT (§5.6.1)                                                            | code           | the "proper" version of the term                                                                                                 |
+| E7 | a multi-stream run (`rgb,tir,bp,resp`) with the per-modality table of §4.1                | 3 keys         | does the per-modality span table work when several physio streams share the grid, and how big is the cross-physio leak of §4.6? |
 
 ## 7. Acceptance criteria and falsification
 
@@ -571,12 +613,12 @@ whenever the geometry changes).
 
 ## Appendix A — glossary of the numbers used above
 
-| symbol | value (this geometry) | meaning |
-| ------ | --------------------- | ------- |
-| `N` | 50 | resp tokens per clip |
-| `sig_kernel` | 16 | samples per token (160 ms at `fs 100`) |
-| `L` | 800 | resp samples per clip (8 s) |
-| `mse_resp` | — | per-modality MASKED MSE (masked positions only), reported raw by the model |
-| `spec_resp` | — | MR-STFT on the assembled clip (weighted by `spectral_weight` in the loss) |
-| const floor | `mse 1.0` | a per-clip z-scored target scored by a constant predictor |
-| interpolation floor | pattern-dependent | achievable with the visible resp samples only, zero video |
+| symbol              | value (this geometry) | meaning                                                                    |
+| ------------------- | --------------------- | -------------------------------------------------------------------------- |
+| `N`               | 50                    | resp tokens per clip                                                       |
+| `sig_kernel`      | 16                    | samples per token (160 ms at`fs 100`)                                    |
+| `L`               | 800                   | resp samples per clip (8 s)                                                |
+| `mse_resp`        | —                    | per-modality MASKED MSE (masked positions only), reported raw by the model |
+| `spec_resp`       | —                    | MR-STFT on the assembled clip (weighted by`spectral_weight` in the loss) |
+| const floor         | `mse 1.0`           | a per-clip z-scored target scored by a constant predictor                  |
+| interpolation floor | pattern-dependent     | achievable with the visible resp samples only, zero video                  |

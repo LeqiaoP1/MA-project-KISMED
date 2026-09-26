@@ -516,3 +516,41 @@ spans — so every masked token has visible neighbours 0.16-0.32 s away.
    those numbers there is nothing for a spectral prior to regularise; above
    them the encoder is demonstrably not using the video.
 
+### 9.5 Implementation (2026-09-26) — the FFT windows are now PER STREAM
+
+Prompted by "is `fft_sizes` determined by the targeted modality?". It was not:
+Stage 2 built **one** `MultiResolutionSTFTLoss` and applied it to *every* physio
+stream, while the Stage-3 finetune configs **already** carried one window set per
+branch (`bp`/`bp_local`/`resp`/`resp_local`: `fft_sizes: '64,128,256'`,
+`eda: '256,512,1024'`). Changed (additive; see `code/README.md` and
+`ImplementationPlan.md` §6 for the user-facing description):
+
+* `core/multimae.py` — `parse_fft_sizes` (``'64,128,256'`` | `'resp=128/256/512,bp=64/128/256'`
+  | YAML mapping | `''`/`'auto'`), `_window_set`, `_fft_sizes_spec` (the
+  `--fft_sizes` Stage-3 alias), `_window_summary`, `SPECTRAL_FFT_DEFAULTS` /
+  `SPECTRAL_FFT_FALLBACK`; `MultiModalMAE` resolves per stream into
+  `self.spectral_fft_sizes: {stream: [windows]}` and
+  `self.spectral_fns: {stream: fn}` (equal windows share ONE module, so the
+  uniform case is byte-identical to the old single `self.spectral_fn`).
+* `runners/run_pretrain.py` — `--spectral_fft_sizes` (default is now `''` =
+  per-modality table) accepts the per-stream form, and `--fft_sizes` is the
+  Stage-3 alias for the same knob.
+* a `[spectral]` block is printed at build time: per stream the weight, whether
+  the set came from the config or the default table, the windows in
+  samples/seconds/Hz bins, and any window **DROPPED** for exceeding the clip.
+* `core/multimae.spectral_self_test()` (run by `python -m core.multimae`, along
+  with `mask_self_test`).
+
+**Verified.** Every shipped `configs/pretrain/*.yaml` resolves to exactly the
+windows it used before — all of them set `spectral_fft_sizes: 64,128,256`
+explicitly, i.e. the *global* form, e.g. `stage2_local_pretrained.yaml` →
+`{'bp': [64, 128, 256], 'resp': [64, 128, 256]}` — so no existing run changes
+meaning; `python -m core.multimae` → *ALL PASS* (both self-tests); and a 1-epoch
+real-data smoke (`--spectral_weight 0.05 --spectral_fft_sizes 'resp=128/256/512'`)
+logs `spec_resp` with `loss = mse_tir + 0.5·mse_resp + 0.05·spec_resp` exactly
+(2.0890 + 0.5·3.2286 + 0.05·7.8117 = 4.0939 vs the printed `loss 4.0940`).
+
+The **term stays OFF** in every shipped Stage-2 config (`spectral_weight: 0.0`),
+so this changed the plumbing, not the objective — the E0 objective is untouched
+(the whole spectral block is skipped when no stream carries a weight).
+

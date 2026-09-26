@@ -91,6 +91,27 @@ def get_args():
     parser.add_argument('--mask_ratio_bp', default=0.90, type=float)
     parser.add_argument('--mask_ratio_resp', default=0.90, type=float)
     parser.add_argument('--mask_ratio_eda', default=0.90, type=float)
+    # 1-D masking PATTERN. 'random' (default) = the historical scattered
+    # dropout, byte-identical for every existing config. 'span' = contiguous
+    # blocks, which removes the "interpolate the gap from the visible
+    # neighbours" shortcut of a scattered mask (see
+    # code/SpanMask_PhysioSignals.md). Span geometry is per stream and derived
+    # from mask_span_s + the stream's ratio; only the span PLACEMENT is random.
+    parser.add_argument('--physio_mask', default='random', type=str,
+                        choices=['random', 'span'],
+                        help="1-D masking pattern: 'random' (default, "
+                             "scattered) or 'span' (contiguous blocks; then "
+                             "span length x count are derived from "
+                             "--mask_span_s and the per-stream mask ratio)")
+    parser.add_argument('--mask_span_s', default='', type=str,
+                        help="span masking only: span length in SECONDS, "
+                             "either one value for all physio streams, a "
+                             "stream=seconds CSV ('resp=4.0,bp=1.0'), or a "
+                             "YAML mapping. Empty = per-stream defaults "
+                             "(bp 1.0, resp 4.0, eda 8.0 = one target period)"
+                             ". The span COUNT is derived (n_spans = "
+                             "round(ratio * n_signal / span_tokens)) so that "
+                             "ratio x clip length is preserved.")
     parser.add_argument('--loss_weights', default='', type=str,
                         help='FULL per-stream override of the per-modality '
                              'masked-MSE weights: comma list, ONE value per '
@@ -133,14 +154,27 @@ def get_args():
                              '--loss_weights; empty = --spectral_weight for '
                              'every physio stream, 0.0 for the video streams). '
                              'A positive value on a video stream is rejected.')
-    parser.add_argument('--spectral_fft_sizes', default='64,128,256',
-                        type=str,
-                        help='MR-STFT FFT window sizes in samples (comma '
-                             'list). At fs=100 Hz: 64 -> 1.56 Hz, 128 -> '
-                             '0.78 Hz, 256 -> 0.39 Hz resolution, i.e. the BP '
-                             '(1.0-2.5 Hz) and RESP (0.16-0.4 Hz) bands are '
-                             'both covered. Windows longer than the clip are '
-                             'dropped, and the model raises if none remain.')
+    parser.add_argument('--spectral_fft_sizes', '--fft_sizes',
+                        dest='spectral_fft_sizes', default='', type=str,
+                        help='MR-STFT FFT window sizes in SAMPLES, resolved PER '
+                             'PHYSIO STREAM (a window must span >= 1 period of '
+                             "the band it polices, so BP 1-2.5 Hz and RESP "
+                             '0.16-0.4 Hz cannot share one set). Forms: '
+                             "'64,128,256' = the SAME windows for every physio "
+                             "stream; 'resp=128/256/512,bp=64/128/256' = per "
+                             'stream (the COMMA separates streams, "/" '
+                             'separates the windows of one stream); or a YAML '
+                             'mapping {resp: [128, 256, 512]}. Empty/"auto" = '
+                             'the per-modality defaults (SPECTRAL_FFT_DEFAULTS: '
+                             'bp/resp 64,128,256, eda 256,512,1024), which '
+                             'mirror configs/finetune/*.yaml one for one so a '
+                             'stream gets the same spectral objective in Stage '
+                             '2 and Stage 3. --fft_sizes is accepted as the '
+                             'Stage-3 alias. At fs=100 Hz: 64 -> 1.56 Hz, '
+                             '128 -> 0.78 Hz, 256 -> 0.39 Hz bins. Windows '
+                             'longer than the clip are DROPPED and logged (the '
+                             'model raises only if none remain, so eda needs a '
+                             'clip of >= 2.56 s).')
     parser.add_argument('--spectral_hop_ratio', default=0.25, type=float,
                         help='STFT hop as a fraction of the FFT window '
                              '(0.25 = 75 %% overlap).')
