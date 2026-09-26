@@ -205,7 +205,10 @@ dataset behind `build_pretraining_dataset`: the default `bp4d+` keeps
 ADD-ON thermal-ROI + respiration dataset from the RAW tree and is the only
 path whose visual stream is the landmark-derived mouth/nose crop. The first
 such run is `configs/pretrain/stage2_local_tir_roi_resp.yaml` (`streams: tir,resp`);
-its procedure of record is `code/TirROI_Resp_plan.md`. It needs no model
+its procedure of record is `code/TirROI_Resp_plan.md`. A measured diagnosis of
+*why* the physio stream collapses under scattered masking, and the span-masking
+design that replaces it, is in `code/SpanMask_PhysioSignals.md` (with the STFT
+term's role re-derived under spans). It needs no model
 change, and with `streams: tir,...` the Stage-1 loader now routes the
 checkpoint's tubelet into `adapters.tir` instead of leaving it random
 (`load_pretrained_encoder` resolves the destination visual adapter; an

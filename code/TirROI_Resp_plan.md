@@ -503,7 +503,8 @@ spans — so every masked token has visible neighbours 0.16-0.32 s away.
    change: `core/multimae.make_masks` uses `_random_mask` for every non-visual
    stream; a span/block variant is needed (a 90 % contiguous span was
    monkeypatched once to verify STFT/mask compatibility, never added to the
-   model).
+   model). **Full design, implementation contract, measured difficulty by
+   pattern and acceptance criteria: `code/SpanMask_PhysioSignals.md`.**
 2. **Mask the physio stream completely** (the clamp allows `N-1` of `N`, i.e.
    49/50 ≈ 98 %), which makes Stage 2 the *same task* as Stage 3's "full sensor
    failure" protocol instead of a same-modality interpolation exercise.
