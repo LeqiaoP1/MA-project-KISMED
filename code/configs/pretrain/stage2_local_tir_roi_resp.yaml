@@ -117,7 +117,7 @@ target_norm: clip                  # per-clip z-score inside the model. The
                                    # spectral term, and it removes the per-token
                                    # z-score shortcut that lets the decoder
                                    # reconstruct from position alone.
-spectral_weight: 0.0               # MR-STFT OFF -- MEASURED 2026-09-26: it was the
+spectral_weight: 0.1               # MR-STFT OFF -- MEASURED 2026-09-26: it was the
                                    # SPIKE TRIGGER. With 0.1 the run produced
                                    # spec_resp up to 3.7e8 and grad_norm ~5e8 in
                                    # single steps (reported pre-clip), which
@@ -135,7 +135,7 @@ spectral_weight: 0.0               # MR-STFT OFF -- MEASURED 2026-09-26: it was 
                                    # target_norm: token (the model refuses
                                    # spectral_weight > 0 with token norm), which
                                    # is the next lever against the resp collapse.
-spectral_fft_sizes: 64,128,256     # MR-STFT windows in SAMPLES, resolved PER
+spectral_fft_sizes: 128,256,512     # MR-STFT windows in SAMPLES, resolved PER
                                    # PHYSIO STREAM -- one window set cannot
                                    # police both BP (1.0-2.5 Hz) and RESP
                                    # (0.16-0.4 Hz): a window should span >=

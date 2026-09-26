@@ -345,6 +345,54 @@ Diagnosis, in order of discovery:
    (`spectral_weight 0.0`) eliminated the spikes completely: the epoch average
    tracks the last step (`0.877` vs `0.857` avg/step) and `grad_norm` is O(1-7)
    instead of 1e8.
+5. **The EXACT mechanism (measured, next run with `spectral_weight 0.1` and
+   windows `128,256,512`): a zero-variance TARGET makes the scale-invariant
+   denominator vanish.** `spec_resp` hit **4.3e10 in a single step** while every
+   *instantaneous* value in the log stayed at 4.7-8.8 (the constant-predictor
+   floor is ~5), so the model never exploded -- one batch carried the spike and
+   the epoch AVERAGE stayed polluted for the rest of the epoch (1.2e9 at step 10
+   -> 2.8e8 at step 96). Root cause, term by term:
+
+   * the spectral-convergence term is `||P - T|| / (||T|| + 1e-8)`, i.e.
+     SCALE-INVARIANT in the target;
+   * under `target_norm: clip` the target is `(x - mean)/sqrt(var + eps)`, so a
+     clip whose respiration is a **constant rail** becomes **exactly zero**;
+   * `||T|| = 0` -> `sc = ||P|| * 1e8`. Measured on a real clip: `sc 2.8e10 /
+     4.0e10 / 5.9e10` for the three windows, `||T|| = 0` exactly, vs
+     `sc 1.21 / 1.24 / 1.29` and `||T|| 343 / 455 / 613` on a normal clip;
+   * the **log-magnitude L1 term is NOT the culprit** (15.4 there vs 6.4 on a
+     normal clip) -- an earlier version of this note blamed it;
+   * `0.1 * 4.3e10 = 4.3e9` of loss and a pre-clip `grad_norm` of ~2.5e9, i.e.
+     exactly the orders of magnitude in the log. `clip_grad 5.0` is what keeps
+     this from destroying the run (the earlier divergence had
+     `clip_grad 0.0`).
+
+   The pathological clips are **3 of 388 (0.8 %)**, all a `-10.0000 V` rail:
+   `F004_T3` clip 0 (t 0 s) and `F004_T7` clips 0-1 (t 0/4 s) -- the leading
+   seconds of those two recordings are a dead/disconnected channel. Both files
+   vary overall, so this is a CLIP-level, not a session-level defect. The raw
+   8 s spread separates the classes cleanly: those 3 have spread EXACTLY `0 V`
+   and the next smallest clip is `0.093 V`. With `batch_size 4` over a random
+   sampler, `P(batch contains >= 1) = 3.07 %` -> **~3 polluted steps per 97-step
+   epoch**, which is precisely what the log shows (epoch 0: inside the first 10
+   steps; epoch 1: between steps 30-40; epoch 2: none in the first 44).
+
+   **So: the random sampler explains WHEN, the degenerate clip explains WHAT.**
+   Two independent fixes, both cheap; either removes the spike:
+
+   * **loss guard** (robust, general): compute `||T||` per sample and average the
+     spectral term over the samples with `||T|| > tol` only (skip the term when
+     none qualify). A scale-invariant ratio is meaningless when the reference
+     has no energy, so this is a correctness fix, not a clamp.
+   * **dataset rule** (specific, but also semantically right): drop clips whose
+     respiration window is (near-)constant -- a rail is a missing sensor, not a
+     breathing target, and the "predict 0" lesson it teaches is at best useless.
+     With a threshold anywhere in `(0, 0.09) V` this removes exactly those 3
+     clips and nothing else (388 -> 385).
+   * A NEAR-constant window is worse than an exactly-constant one: z-scoring
+     amplifies sensor noise to unit variance, so the target looks statistically
+     normal while being meaningless. Anything at the loss level (or a threshold
+     on the raw spread, not on the z-score) catches both.
 
 **Recipe that is stable (measured at the same 8 s / batch-4 geometry):**
 
