@@ -1,6 +1,7 @@
 """Dataset + masking API."""
-from .datasets import (build_dataset, build_pretraining_dataset,
-                       register_dataset, list_datasets)
+from .datasets import (TIR_ROI_DATA_SETS, build_dataset,
+                       build_pretraining_dataset, register_dataset,
+                       list_datasets)
 from .masking_generator import (RandomMaskingGenerator, TubeMaskingGenerator,
                                 MultiModalMaskingGenerator)
 from .paired_dataset import PairedSessionDataset, build_paired_dataset

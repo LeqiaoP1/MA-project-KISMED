@@ -638,3 +638,114 @@ the Stage-2 weight). `MultiResolutionSTFTLoss` therefore now EXCLUDES samples
 whose `||T||` is (near-)zero and warns once; for an all-valid batch the value is
 bit-identical to before, so no existing Stage-2/3 result changes.
 
+---
+
+## 10. Stage-3 handoff — the TIR-ROI -> RESP fine-tuning branch (2026-09-26)
+
+The Stage-2 run finished (40 epochs, `output/pretrain/stage2_local_tir_roi_resp/`,
+newest `checkpoints/checkpoint-0039.pth`). This section records what the Stage-3
+side needed, because a config alone was NOT enough: the Stage-3 data path
+returned RGB (or a full-frame rgb+tir channel stack) and never the ROI crop.
+
+### 10.1 What was missing (all measured, not assumed)
+
+| gap | evidence |
+| --- | --- |
+| Stage-3 `build_dataset` had no thermal-ROI branch | only `PAIRED_DATA_SETS` -> `PairedSessionDataset` |
+| that dataset cannot return TIR alone | `_load_visual` returns RGB, or `cat([rgb, tir])`; no `streams` arg |
+| the model rejects the 6-channel stack | `streams=tir` + `use_tir` -> `RuntimeError: expected 3 channels, got 6`; `streams=rgb,tir` -> `ValueError: expects a dict ... got a single tensor` |
+| `--use_tir` + `streams` guard made it unrunnable | `run_waveform` raised `SystemExit` for `streams: tir` with `use_tir` off |
+| TIR was FULL-FRAME | `read_all(target_size=input_size)` = the whole 726x480 frame squashed to 64x64, not the mouth+nose crop |
+| the corpus did not match | canonical tree = **11 sessions**; the Stage-2 run used **40** |
+| `entries.json` export assumed the paired layout | `for m, t in dataset_val.entries` vs the ROI dataset's clip DICTS |
+
+### 10.2 What was added (all additive)
+
+* `data/tir_resp_dataset.py::TirRoiRespFinetuneDataset` — the Stage-3 view of the
+  RAW tree. It SUBCLASSES `TirRoiRespPretrainDataset`, so the ROI crop, the
+  geometry expressions and the exclusion rules are literally the Stage-2 ones
+  (identical by construction, not by re-implementation), and adds: a
+  subject-disjoint `is_train`/`train_ratio`/`split_by` split, a `val_subject`
+  leave-one-subject-out override, the `(tir, waveform)` tensor contract, and the
+  per-clip `signal_norm` (the Stage-3 analogue of the Stage-2 `target_norm: clip`).
+* `data/tir_resp_dataset.py::build_tir_roi_finetune_dataset(is_train, test_mode, args)`
+  and the `data/datasets.build_dataset` dispatch on `TIR_ROI_DATA_SETS` — the
+  `data_set: tir_roi_resp` value now means "the Stage-3 view" in a FINETUNE
+  config and "the Stage-2 view" in a PRETRAIN config.
+* `runners/run_waveform.py`: the `use_tir`/`streams` guard is bypassed for the ROI
+  path (where `use_tir` is meaningless, and `streams` must be exactly `tir`); new
+  flags `--train_ratio`, `--val_subject`, `--clip_stride`, `--roi_padding`; the
+  `entries.json` export now handles BOTH entry layouts and records
+  `reference_source`.
+* `configs/finetune/resp_tir_roi_local.yaml` — the branch itself.
+
+### 10.3 The config, and why each geometry value is what it is
+
+Geometry MUST equal the Stage-2 run: the checkpoint's `positions.tir.pos_embed`
+is `[1, 800, 768]` (n_visual = 50 x 4 x 4) and `heads.resp.weight` is `(16, 768)`, so
+`clip_duration 8.0` + `temporal_stride 2` + `sig_kernel 16` + `seq_len 800` +
+`input_size 64` is the ONLY combination that transfers exactly. A 4 s / stride-1 /
+`sig_kernel-8` config (i.e. the RGB twin's values) loads 146 tensors with **no
+error** while leaving `adapters.rgb`/`positions.rgb`/`waveform_head` at RANDOM
+init -- `load_stage2_encoder` only checks that *something* loaded, not that every
+configured stream got its adapter. So the twin's geometry is deliberately NOT
+copied; only its loss/optimizer block is.
+
+Verified with the real checkpoint (matching geometry):
+
+```
+[stage3] loaded 150 Stage-2 encoder tensors, 4 skipped, 0 shape-mismatched;
+         head transferred: waveform_head.weight, waveform_head.bias (from heads.resp)
+  waveform_head.weight == ckpt heads.resp.weight : True
+  adapters.tir.patch_embed.weight / positions.tir.pos_embed : loaded, identical
+```
+
+### 10.4 The split (this is what question 1 was about)
+
+`split_by: subject` + `train_ratio: 0.8` over the 40-session RAW tree ->
+**train = F001,F002,F003 (588 clips) / val = F004 (168 clips)** at `clip_stride 2.0`,
+zero session and zero subject overlap. `--val_subject <S>` selects a
+leave-one-subject-out fold instead (4 subjects -> 4 folds; `--val_subject F002` =
+514 / 242 clips), which is the honest protocol here: a 0.8 ratio can only ever
+produce ONE fold, always F004. There is no separate TEST split (`test_mode` is a
+dead parameter in both datasets); the val split is the evaluation set.
+
+### 10.5 The exclusion rules (question 2's note)
+
+Inherited unchanged from `BP4DPlusTIRRespDataset`, so nothing had to be
+re-specified: a session without `IRFeatures` is skipped, and any clip whose frame
+span overlaps an all-`(0,0)` sentinel line is dropped. Measured on the train split:
+`sessions_skipped: 1` (F001_T8, `all_clips_dropped`), `clips_dropped_sentinel: 1`.
+`stats`/`skipped` are on the dataset object, and the clip count in
+`describe()`/the run log is the POST-drop count.
+
+### 10.6 Verified end to end
+
+* item contract: `tir (3, 100, 64, 64) float32 in [0,1]`, target `(800,)` with
+  mean ~1e-9 and **std 1.0006** (z-scored) -- the noise-free part of the item is
+  the [0,1] range of the ROI crop, i.e. bytes/255;
+* 1-epoch smoke: 29 steps at `--max_clips 2`, `loss 6.09` (dominated by the
+  `gamma = 1.0` MR-STFT term, whose constant-predictor floor is ~5 at
+  64/128/256 -- NOT a problem), eval `{mae 0.767, rmse 0.929, pearson 0.0013}`
+  and all artefacts written (`preds.npy`, `targets.npy`, `entries.json`,
+  `metrics_final.json`, `predictions_final.png`, `training_curves.png`);
+* the RGB paired path was re-smoked with the same runner edits (`resp_local.yaml`,
+  random init) -> identical split/artefacts, no regression.
+
+### 10.7 Open items
+
+1. **Session-level evaluation reference.** `run_evaluate_session.py` builds the
+   reference from `entries['signals_file']`; for this branch that is the RAW
+   1000 Hz `Resp_Volts.txt`, which `read_reference` cannot parse as a canonical
+   CSV, and the canonical tree covers only F004_T1/T2. The per-clip metrics are
+   unaffected, but the session-level Tier-1/2/3 numbers need a reference builder
+   for the RAW respiration (or a session-assembly path over `targets.npy`).
+2. **Cost.** With the shipped `clip_stride: 2.0` the train split is 588 clips =
+   147 steps/epoch at batch 4; at the smoke's ~1.3 s/it (dataloader-bound: 200
+   frames decoded per clip) that is ~3 min/epoch -> ~2 h for 40 epochs. Raise
+   `num_workers`, raise `clip_stride`, or shrink `epochs` for the first pass.
+3. **`clip_grad` deviates from the twin** (5.0 ON vs 0.0 OFF): this branch carries
+   the `gamma = 1.0` MR-STFT term on top of a checkpoint whose stream already
+   diverged once, so clipping is cheap insurance. Documented in the config.
+
+---

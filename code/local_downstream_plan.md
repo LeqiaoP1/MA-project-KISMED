@@ -128,8 +128,10 @@ comparable.
 
 > Caveat: `parse_args_with_config` feeds YAML through `parser.set_defaults(**cfg)`, so
 > a YAML key that has no matching argparse option is **silently absorbed and ignored**.
-> `clip_stride` and `split_by` are read from `args` via `getattr` by the dataset
-> builders, which is why they work from YAML but not from the command line.
+> `split_by` is read from `args` via `getattr` by the dataset builders, which is why it
+> works from YAML but not from the command line. (`clip_stride`, `train_ratio`,
+> `roi_padding` and `val_subject` DID get real flags in the 2026-09-26 TIR-ROI work,
+> so they work from both.)
 > `train_mask_ratios` / `eval_mask_ratio` would be silently ignored — do not add them
 > (Stage-3 masking is out of scope).
 
@@ -325,7 +327,36 @@ Smoke acceptance: a finite loss, a `[epoch e] <target>: {...}` Tier-1/2 line, an
 | file | role / what changes |
 |---|---|
 | `configs/finetune/bp_local.yaml`, `resp_local.yaml` | **new** — the two runs |
+| `configs/finetune/resp_tir_roi_local.yaml` | **new (2026-09-26)** — the TIR-ROI branch, see §8 |
 | `configs/finetune/bp.yaml`, `resp.yaml`, `eda.yaml` | template repairs only (§2.2) |
+| `data/tir_resp_dataset.py` | **new (2026-09-26)** — `TirRoiRespFinetuneDataset` (Stage-3 view), see §8 |
+
+---
+
+## 8. Third local branch — TIR-ROI -> RESP (added 2026-09-26)
+
+The two branches above take **RGB** as the visual input. The 2026-09-26 Stage-2
+run changed the input modality: `configs/pretrain/stage2_local_tir_roi_resp.yaml`
+pre-trained on the **thermal ROI crop** (raw tree, 40 sessions, 8 s clips,
+`temporal_stride 2`, `sig_kernel 16`). Its downstream branch is a THIRD local
+run, not a variant of the `resp_local` one:
+
+| | `resp_local.yaml` (RGB) | `resp_tir_roi_local.yaml` (new) |
+|---|---|---|
+| input | RGB jpg sequence, full frame | **thermal ROI crop** (`BP4DPlusTIRRespDataset`) |
+| `data_set` / `data_path` | `bp4d+` / `data/processed/bp4d_canonical` | `tir_roi_resp` / `data/raw/BP4D` |
+| checkpoint | `stage2_local_pretrained` (**missing on disk**) | `stage2_local_tir_roi_resp/checkpoint-0039.pth` |
+| geometry | 4 s / stride 1 / `sig_kernel` 8 / `seq_len` 400 | 8 s / stride 2 / `sig_kernel` 16 / `seq_len` 800 |
+| corpus | 11 sessions, 320/66 clips | 40 sessions, 588/168 clips (`clip_stride` 2.0) |
+| `clip_grad` | `0.0` (off) | **`5.0`** (on -- this branch carries the `gamma=1.0` MR-STFT term) |
+| loss / optimizer | identical (`alpha=beta=gamma=1.0`, `fft_sizes 64,128,256`) | identical |
+
+The geometry row is NOT interchangeable: only the 8 s / stride-2 / `sig_kernel`-16
+combination makes the weight transfer exact (150 tensors, and `heads.resp` ->
+`waveform_head` verbatim). Launch it with
+`python -u runners/run_waveform.py -c configs/finetune/resp_tir_roi_local.yaml`;
+for the leave-one-subject-out sweep add `--val_subject F001|F002|F003|F004` and a
+per-fold `--output_dir`. Full record: `TirROI_Resp_plan.md` §10.
 | `configs/pretrain/stage2_local_pretrained.yaml` | geometry source of truth (`stage2_local_scratch.yaml` = twin) |
 | `scripts/local/waveform_local.sh` | **new** launcher (`TARGET` switch) |
 | `core/waveform_model.py` | `MultiModalWaveformRegressor` (:75-155), `build_waveform_model` (:253-298), `load_stage2_encoder` (:301-390) → head transfer |
@@ -599,8 +630,7 @@ that untrained 2-epoch model: session MAE 101 (raw mmHg reference) vs 7.71 after
 per-session affine calibration, Pearson ~0.0003 — i.e. the artefact pipeline is sound and
 the numbers are honest about the (un)trained state.
 
-**Phase 3 — started 2026-09-23, BP branch ONLY** (user decision: no RESP run for now).
-`TARGET=bp scripts/local/waveform_local.sh` with the config defaults (40 epochs, batch 4,
+**Phase 3 — started 2026-09-23, BP branch ONLY** (user decision: no RESP run for now).`TARGET=bp scripts/local/waveform_local.sh` with the config defaults (40 epochs, batch 4,
 `num_workers` 4); the log is teed to `output/finetune/bp_local/train.log`. **Measured
 throughput**: ~0.78 s/iteration -> epoch 0 took **62 s** including the validation pass, so
 the whole 40-epoch run is ~45-60 min (the earlier ~8 h estimate came from a 0-worker smoke

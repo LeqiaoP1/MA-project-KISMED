@@ -1,0 +1,118 @@
+# Stage 3 -- LOCAL, TIR-ROI-only -> RESP waveform reconstruction.
+#
+# The Stage-3 counterpart of configs/pretrain/stage2_local_tir_roi_resp.yaml:
+# the SAME raw-tree thermal ROI crop the encoder was pre-trained on is now the
+# ONLY input (simulated total contact-sensor failure), and the whole respiration
+# window is regressed at once. NO MASKING anywhere in this stage -- see
+# core/waveform_model.MultiModalWaveformRegressor (adapters -> pos_embed ->
+# encoder -> spatial mean-pool -> linear head; no mask token, no visible-token
+# gather) and scripts/local/waveform_local.sh.
+#
+# Data path: data/raw/BP4D (the RAW tree), NOT data/processed/bp4d_canonical.
+# The ROI crop needs the native-resolution thermal video + the IRFeatures
+# landmark track, and the canonical tree has neither (and holds only 11
+# sessions). The dataset reuses BP4DPlusTIRRespDataset, so the Stage-2
+# exclusion rules apply unchanged: a session without IRFeatures is skipped, and
+# a clip whose frame span overlaps an all-(0,0) sentinel line is dropped.
+# See data/tir_resp_dataset.TirRoiRespFinetuneDataset.
+#
+# Run from code/:
+#   python -u runners/run_waveform.py -c configs/finetune/resp_tir_roi_local.yaml
+#
+# Leave-one-subject-out sweep (the honest protocol for 4 subjects -- a fixed
+# 0.8 ratio can only ever produce ONE fold, always F004):
+#   for S in F001 F002 F003 F004; do
+#     python -u runners/run_waveform.py -c configs/finetune/resp_tir_roi_local.yaml \
+#       --val_subject $S --output_dir ../output/finetune/resp_tir_roi_loso/$S
+#   done
+#
+# Twin of configs/finetune/resp_local.yaml (RGB -> RESP): identical model /
+# geometry / loss / optimizer. The ONLY intended differences are the input
+# modality (TIR ROI vs RGB), the data_set/data_path, the checkpoint, and
+# clip_grad (see below).
+
+target: resp
+
+# ---- data: RAW-tree thermal ROI (the Stage-2 input modality) ----
+data_set: tir_roi_resp             # -> build_tir_roi_finetune_dataset (Stage-3 view)
+data_path: ../data/raw/BP4D        # $RAW_DATA_PATH equivalent; NOT the canonical tree
+roi_padding: 0.2                   # per-side ROI margin -- MUST equal the Stage-2 run
+
+# ---- model: shared Stage-2 encoder + time-aligned waveform head ----
+model: project_multimae_base
+streams: tir                       # the ROI crop alone; 1-D input is the simulated failure.
+                                   #   `use_tir` is deliberately NOT set here: it only controls
+                                   #   the CANONICAL paired dataset's rgb+tir channel stack, and
+                                   #   nothing reads it on this path (measured 2026-09-26: forcing
+                                   #   --use_tir bit-identical -> same 588/168 clips, same clip
+                                   #   tensors, same forward output). For a `bp4d+` config,
+                                   #   `streams: tir` with use_tir off is a hard error -- that
+                                   #   guard is bypassed here, because this dataset IS the TIR.
+finetune: ../output/pretrain/stage2_local_tir_roi_resp/checkpoints/checkpoint-0039.pth
+head_hidden: 0                     # 0 = single Linear -> Stage-2 heads.resp transfers VERBATIM
+                                   #   (verified: waveform_head.* == ckpt heads.resp.* exactly)
+
+# ---- clip geometry -- MUST equal the Stage-2 geometry of `finetune` ----
+# The Stage-2 run was 8 s / temporal_stride 2 / sig_kernel 16 / input 64 -> the
+# checkpoint's positions.tir.pos_embed is [1, 800, 768] and heads.resp.weight is
+# (16, 768). A 4 s / stride-1 / sig_kernel-8 config would load 146 tensors with
+# NO error while silently leaving the head random and the clip half as long --
+# the geometry below is what makes the transfer exact.
+clip_duration: 8.0
+fps: 25.0
+tubelet: 2,16,16
+temporal_stride: 2
+input_size: 64
+seq_len: 0                         # 0 => 800 samples = 8 s at fs 100 Hz
+fs: 100
+sig_kernel: 16                     # 16/100 == 2*2/25 s -> one signal token == one video tubelet
+                                   #   (build_waveform_model ENFORCES samples_per_token == sig_kernel)
+signal_norm: zscore                # per clip; mirrors the Stage-2 target_norm: clip
+
+# ---- data split (SUBJECT-disjoint; see the LOSO sweep above) ----
+train_ratio: 0.8                   # 4 subjects -> 3 train (F001-F003) / val = F004
+split_by: subject
+val_subject: ''                    # e.g. F001 = LOSO fold (overrides train_ratio/split_by)
+clip_stride: 2.0                   # window hop in SECONDS (overlapping). 1.0 doubles the
+                                   #   clip count (~1.5x the epoch time), 0 = non-overlapping
+max_clips: 0                       # 0 = no per-session cap (dev knob)
+
+# ---- joint spatio-temporal-spectral loss (Stage-3-only term, gamma = 1.0) ----
+# This is where the MR-STFT / periodicity prior lives: Stage 2 does NOT use it
+# (every configs/pretrain/*.yaml is spectral_weight: 0.0 -- decision 2026-09-26).
+alpha: 1.0                         # L_time   (L1 amplitude)
+beta: 1.0                          # L_Pearson (phase-locking)
+gamma: 1.0                         # L_MR-STFT (multi-resolution)
+fft_sizes: '64,128,256'            # identical to the RGB resp branch, so the two branches
+                                   #   differ ONLY in the input modality. NOTE 0.39 Hz
+                                   #   resolution at fs=100 -> the 0.16-0.4 Hz RESP band spans
+                                   #   few bins; 128,256,512 (>= 1 breath/window) is the
+                                   #   physiologically stricter alternative -- switch it in
+                                   #   BOTH resp configs if you want it.
+eval_band: '0.16,0.4'              # RESP breathing band
+
+# ---- training ----
+epochs: 40
+batch_size: 4
+update_freq: 1
+save_ckpt_freq: 10
+eval_freq: 1
+
+# ---- optimizer ----
+opt: adamw
+lr: 1e-4
+min_lr: 1e-6
+warmup_epochs: 2
+weight_decay: 0.05
+clip_grad: 5.0                     # ON, unlike the RGB resp_local twin (0.0): this branch
+                                   #   carries the gamma=1.0 MR-STFT term AND inherits a
+                                   #   checkpoint trained on a stream that already showed
+                                   #   one divergence; clipping is the cheap insurance
+
+num_workers: 4
+save_preds: true                   # preds.npy/targets.npy/entries.json for the session evaluator
+
+# ---- logging ----
+output_dir: ../output/finetune/resp_tir_roi_local
+log_wandb: false
+wandb_project: thesis-project

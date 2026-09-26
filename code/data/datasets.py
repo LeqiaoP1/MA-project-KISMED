@@ -51,14 +51,22 @@ def build_dataset(is_train: bool, test_mode: bool, args):
     """Build a supervised (fine-tuning / eval) dataset from ``args.data_set``.
 
     ``data_set in ('bp4d+', 'paired')`` uses the recorded RGB(jpg-seq)+TIR(wmv)
-    layout via :func:`paired_dataset.build_paired_dataset`; any other value
-    must be registered with ``@register_dataset``.
+    layout via :func:`paired_dataset.build_paired_dataset`;
+    ``data_set in TIR_ROI_DATA_SETS`` (``tir_roi`` / ``tir_roi_resp``) uses the
+    ADD-ON RAW-tree thermal-ROI + respiration path via
+    :func:`tir_resp_dataset.build_tir_roi_finetune_dataset` -- the Stage-3
+    counterpart of the Stage-2 pretraining view, so a TIR-ROI checkpoint gets
+    the SAME ROI crop it was pre-trained on (train/val split by subject);
+    any other value must be registered with ``@register_dataset``.
     """
     from .paired_dataset import PAIRED_DATA_SETS, build_paired_dataset
 
     name = getattr(args, 'data_set', None)
     if name in PAIRED_DATA_SETS:
         return build_paired_dataset(is_train, test_mode, args)
+    if str(name or '').strip().lower() in TIR_ROI_DATA_SETS:
+        from .tir_resp_dataset import build_tir_roi_finetune_dataset
+        return build_tir_roi_finetune_dataset(is_train, test_mode, args)
     if name not in _DATASET_BUILDERS:
         raise NotImplementedError(
             f'Unknown data_set "{name}". Registered datasets: {list_datasets()}. '

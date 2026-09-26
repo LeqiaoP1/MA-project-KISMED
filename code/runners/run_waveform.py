@@ -117,6 +117,24 @@ def get_args():
                              "train / F004 val). 'session' = the historical "
                              'per-session split; use it for tiny smoke runs, '
                              'where a subject-disjoint val split would be empty.')
+    parser.add_argument('--train_ratio', default=0.8, type=float,
+                        help='fraction of the SESSIONS (split_by=session) or '
+                             'SUBJECTS (split_by=subject) used for training; '
+                             'the rest is val.')
+    parser.add_argument('--val_subject', default='', type=str,
+                        help='LEAVE-ONE-SUBJECT-OUT fold selector for the '
+                             'thermal-ROI path (data_set: tir_roi*): val = '
+                             'exactly this subject, train = every other. '
+                             'Overrides --train_ratio/--split_by, and is the '
+                             'way to sweep all 4 local subjects instead of '
+                             'being stuck on one ratio-derived fold.')
+    parser.add_argument('--clip_stride', default=0.0, type=float,
+                        help='window hop in SECONDS (0 = non-overlapping, i.e. '
+                             'hop == clip_duration); < clip_duration gives '
+                             'overlapping windows and more samples per session')
+    parser.add_argument('--roi_padding', default=0.2, type=float,
+                        help='per-side ROI margin for the thermal-ROI path '
+                             '(data_set: tir_roi*); must mirror the Stage-2 run')
 
     # training
     parser.add_argument('--batch_size', default=16, type=int)
@@ -160,15 +178,29 @@ def main(args):
                       if args.eval_band else None)
 
     # the dataset (use_tir) and the model (streams) must agree, else the
-    # regressor would receive a channel stack that does not match its adapters
+    # regressor would receive a channel stack that does not match its adapters.
+    # The RAW-tree thermal-ROI path (data_set: tir_roi*) is exempt: it delivers
+    # the ROI crop of the thermal video ALONE, so `use_tir` (which only controls
+    # the canonical paired dataset's rgb+tir concatenation) is irrelevant there.
     _streams = [s.strip() for s in str(args.streams).split(',') if s.strip()]
-    if args.use_tir and 'tir' not in _streams:
-        raise SystemExit(
-            f'--use_tir needs --streams to include tir (got "{args.streams}").')
-    if not args.use_tir and 'tir' in _streams:
-        raise SystemExit(
-            f'--streams includes tir ("{args.streams}") but --use_tir is off, '
-            f'so the dataset returns RGB only. Drop tir or pass --use_tir.')
+    from data import TIR_ROI_DATA_SETS
+    _is_roi = str(getattr(args, 'data_set', '') or '').strip().lower() \
+        in TIR_ROI_DATA_SETS
+    if _is_roi:
+        if _streams != ['tir']:
+            raise SystemExit(
+                f'data_set {args.data_set!r} feeds the thermal ROI crop alone, '
+                f'so --streams must be exactly "tir" (got "{args.streams}").')
+    else:
+        if args.use_tir and 'tir' not in _streams:
+            raise SystemExit(
+                f'--use_tir needs --streams to include tir (got '
+                f'"{args.streams}").')
+        if not args.use_tir and 'tir' in _streams:
+            raise SystemExit(
+                f'--streams includes tir ("{args.streams}") but --use_tir is '
+                f'off, so the dataset returns RGB only. Drop tir or pass '
+                f'--use_tir.')
 
     # ----- model: Stage-2 encoder + waveform regression head --------------- #
     use_multimae = str(args.model).startswith('project_multimae')
@@ -344,9 +376,27 @@ def main(args):
             if args.save_preds:
                 np.save(os.path.join(args.output_dir, 'preds.npy'), pred)
                 np.save(os.path.join(args.output_dir, 'targets.npy'), target)
-                entries = [{'session': m['session'], 't_start': float(t),
-                            'signals_file': m.get('signals_file', '')}
-                           for m, t in dataset_val.entries]
+
+                # ``entries`` has TWO layouts: PairedSessionDataset stores
+                # (session_meta_dict, t_start) 2-tuples, the RAW-tree thermal-ROI
+                # dataset stores the clip dicts directly. Normalise both to the
+                # {'session', 't_start', 'signals_file'} record that
+                # run_evaluate_session.py consumes.
+                entries = []
+                for e in dataset_val.entries:
+                    if isinstance(e, dict):                    # thermal-ROI path
+                        meta, t_start = e, e.get('t_start', 0.0)
+                        sig = (meta.get('resp_file')
+                               or meta.get('signals_file') or '')
+                        source = 'raw_resp_volts'
+                    else:                                      # paired path
+                        meta, t_start = e[0], e[1]
+                        sig = meta.get('signals_file', '')
+                        source = 'canonical_signals_csv'
+                    entries.append({'session': meta['session'],
+                                    't_start': float(t_start),
+                                    'signals_file': sig or '',
+                                    'reference_source': source})
                 if len(entries) != n_pred:
                     print(f'[stage3] WARNING: {len(entries)} dataset entries vs '
                           f'{n_pred} predictions -- the loader was sharded '

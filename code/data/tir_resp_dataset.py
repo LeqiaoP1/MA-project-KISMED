@@ -905,6 +905,242 @@ class TirRoiRespPretrainDataset(Dataset):
                 f'temporal_stride={self.temporal_stride}\n' + self.base.describe())
 
 
+class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
+    """Stage-3 view: RAW TIR-ROI clip (input) -> respiration window (target).
+
+    Stage 3 is the simulated COMPLETE sensor failure: ONLY the thermal ROI
+    enters the model (no 1-D input, and no masking anywhere -- see
+    ``core/waveform_model.MultiModalWaveformRegressor``), and the whole window
+    is regressed at once. This class is the Stage-3 counterpart of
+    :class:`TirRoiRespPretrainDataset`, so a Stage-2 TIR-ROI checkpoint sees
+    exactly the input it was pre-trained on:
+
+    * the ROI crop comes from the same :class:`BP4DPlusTIRRespDataset` (same
+      12-landmark set, same per-clip STATIC box, same ``roi_padding``, same
+      ``cv2.resize``), and the SAME exclusion rules apply -- a session without
+      ``IRFeatures`` is skipped, and any clip whose frame span overlaps an
+      all-``(0,0)`` sentinel line is dropped (``self.skipped`` and
+      ``self.stats['clips_dropped_sentinel']`` record it);
+    * the geometry uses the same expressions as the Stage-2 dataset and
+      ``core.waveform_model.build_waveform_model``
+      (``n = round(clip_duration*fps/temporal_stride)`` rounded down to
+      ``tubelet_t``, ``L = round(kept_seconds*fs)``), so ``T``/``L`` match the
+      Stage-2 run and ``_fit_time`` / ``samples_per_token == sig_kernel`` pass.
+
+    Stage-3-specific differences, all deliberate:
+
+    * a **train/val split** (``is_train`` / ``train_ratio`` / ``split_by``),
+      SUBJECT-disjoint by default -- the same policy and the same arithmetic as
+      ``data.paired_dataset.PairedSessionDataset`` (``'subject'``: whole
+      subjects per side, so the evaluated subject is never trained on;
+      ``'session'``: whole sessions per side, no frame-level leakage);
+    * an explicit ``val_subject`` OVERRIDE for a leave-one-subject-out sweep
+      (train = every other subject, val = exactly that one); the 4-subject local
+      corpus needs it, because a fixed 0.8 ratio can only ever produce one fold;
+    * the item is ``(tir, waveform)`` -- the tensor contract
+      ``runners/run_waveform.py`` and ``engines/waveform.py`` consume -- rather
+      than the Stage-2 stream dict;
+    * the target is normalised HERE (``signal_norm``), because Stage 3 scores the
+      FINAL waveform against the label: ``'zscore'`` (default) reproduces the
+      per-clip z-score Stage 2 applied internally under ``target_norm: clip``.
+      The base class returns RAW volts, so the two never stack.
+    """
+
+    def __init__(self, raw_root: Optional[str] = None,
+                 target: str = 'resp',
+                 is_train: bool = True,
+                 train_ratio: float = 0.8,
+                 split_by: str = 'subject',
+                 val_subject: Optional[str] = None,
+                 fs: float = 100.0,
+                 clip_duration: float = 8.0,
+                 clip_stride: Optional[float] = None,
+                 temporal_stride: int = 1,
+                 tubelet_t: int = 2,
+                 input_size: int = DEFAULT_INPUT_SIZE,
+                 roi_padding: float = DEFAULT_ROI_PADDING,
+                 resp_fs: float = DEFAULT_RESP_FS,
+                 fps: float = DEFAULT_FPS,
+                 target_landmarks: Sequence[int] = TARGET_LANDMARKS,
+                 signal_norm: str = 'zscore',
+                 subjects: Optional[Sequence[str]] = None,
+                 tasks: Optional[Sequence[str]] = None,
+                 max_clips_per_session: Optional[int] = None,
+                 max_entries: Optional[int] = None,
+                 verbose: bool = False):
+        if target != 'resp':
+            raise ValueError(
+                f'TirRoiRespFinetuneDataset serves the respiration waveform '
+                f'only (the ROI box is anchored on the mouth+nose landmarks); '
+                f'got target={target!r}.')
+        if signal_norm not in ('none', 'ac', 'zscore'):
+            raise ValueError(
+                f"signal_norm must be 'none', 'ac' or 'zscore'; got "
+                f'{signal_norm!r}')
+        if split_by not in ('session', 'subject'):
+            raise ValueError(
+                f"split_by must be 'session' or 'subject'; got {split_by!r}")
+        if not 0.0 < float(train_ratio) <= 1.0:
+            raise ValueError(
+                f'train_ratio must be in (0, 1]; got {train_ratio!r}')
+
+        self.target = target
+        self.signal_norm = signal_norm
+        self.split_by = split_by
+        self.is_train = bool(is_train)
+        self.train_ratio = float(train_ratio)
+        self.val_subject = (str(val_subject).strip() or None
+                            if val_subject is not None else None)
+
+        # ---- the split, computed on USABLE sessions, before any clip work ---
+        # "usable" = has BOTH the landmark file and the respiration file, so a
+        # subject whose sessions are all untracked cannot silently sit on one
+        # side of the split.
+        root = raw_root or default_raw_root()
+        usable = [s for s in discover_sessions(root,
+                                              subjects=_as_list(subjects),
+                                              tasks=_as_list(tasks))
+                  if s['ir_file'] and s['resp_file']]
+        if not usable:
+            raise RuntimeError(
+                f'TirRoiRespFinetuneDataset: no session under {root} has both '
+                f'{IR_TREE} and {RESP_FILE}; nothing to split.')
+        if self.val_subject:
+            subs = sorted({s['subject'] for s in usable})
+            if self.val_subject not in subs:
+                raise ValueError(
+                    f'val_subject={self.val_subject!r} is not among the usable '
+                    f'subjects {subs}.')
+            keep = ({self.val_subject} if not self.is_train
+                    else set(subs) - {self.val_subject})
+            if not keep:
+                raise ValueError(
+                    f'val_subject={self.val_subject!r} leaves the train split '
+                    f'empty (it is the only usable subject).')
+            self.split_keys = sorted(keep)
+            self.split_key_kind = 'subject'
+        else:
+            keys = sorted({s['subject'] if split_by == 'subject'
+                           else s['session'] for s in usable})
+            n_keep = max(1, int(round(len(keys) * self.train_ratio)))
+            keep = set(keys[:n_keep]) if self.is_train else set(keys[n_keep:])
+            if not keep:
+                raise ValueError(
+                    f"split_by={split_by!r} with train_ratio {self.train_ratio} "
+                    f'leaves the {"train" if self.is_train else "val"} split '
+                    f'empty: {len(keys)} {split_by}(s) -> {n_keep} train '
+                    f'side(s). Lower train_ratio, or pass val_subject.')
+            self.split_keys = sorted(keep)
+            self.split_key_kind = split_by
+
+        print(f'[data] tir_roi_resp split_by={self.split_key_kind}: '
+              f'{"train" if self.is_train else "val"} = {self.split_keys} '
+              f'({len(usable)} usable session(s), '
+              f'{len({s["subject"] for s in usable})} subject(s))')
+
+        keep_subjects = ([k.rsplit('_', 1)[0] for k in self.split_keys]
+                         if self.split_key_kind == 'session'
+                         else self.split_keys)
+
+        super().__init__(
+            raw_root=root, streams=('tir', 'resp'), fs=fs, fps=fps,
+            clip_duration=clip_duration, clip_stride=clip_stride,
+            temporal_stride=temporal_stride, tubelet_t=tubelet_t,
+            input_size=input_size, roi_padding=roi_padding,
+            target_landmarks=target_landmarks, resp_fs=resp_fs,
+            subjects=_as_list(keep_subjects), tasks=tasks,
+            max_clips_per_session=max_clips_per_session,
+            max_entries=max_entries, verbose=verbose)
+
+        # a SESSION-level split still needs the per-session filter: the subject
+        # filter above admits every session of the kept subjects
+        if self.split_key_kind == 'session':
+            n_before = len(self.entries)
+            keep_set = set(self.split_keys)
+            self.entries = [e for e in self.entries if e['session'] in keep_set]
+            if not self.entries:
+                raise RuntimeError(
+                    f'split_by=session: none of the {n_before} clip(s) of the '
+                    f'kept subjects belongs to the '
+                    f'{"train" if self.is_train else "val"} session list '
+                    f'{self.split_keys}.')
+        self.split_sessions = sorted({e['session'] for e in self.entries})
+
+    # ------------------------------------------------------------------ item
+    def __getitem__(self, index: int):
+        """``(tir [3, T, S, S] float32, waveform [L] float32)``."""
+        item = super().__getitem__(index)       # RAW volts, Stage-2 geometry
+        tir = item['tir']
+        if not torch.is_tensor(tir):
+            tir = torch.from_numpy(np.ascontiguousarray(tir))
+        w = item['resp']
+        if torch.is_tensor(w):
+            w = w.numpy()
+        return tir, torch.from_numpy(
+            self._normalize_target(np.asarray(w)[0]))
+
+    def _normalize_target(self, w: np.ndarray) -> np.ndarray:
+        """Per-clip waveform normalisation -- the Stage-3 analogue of the
+        Stage-2 model's internal ``target_norm: clip`` (same population std and
+        the same 1e-6 epsilon as ``data.paired_dataset``)."""
+        w = np.asarray(w, dtype=np.float64)
+        if self.signal_norm == 'none':
+            return w.astype(np.float32)
+        w = w - float(w.mean())
+        if self.signal_norm == 'zscore':
+            w = w / (float(w.std()) + 1e-6)
+        return w.astype(np.float32)
+
+    def describe(self) -> str:
+        return (super().describe()
+                + f'\n  Stage-3 view: target={self.target} '
+                  f'signal_norm={self.signal_norm} '
+                  f'split={self.split_key_kind} '
+                  f'({"train" if self.is_train else "val"}) = {self.split_keys}'
+                  f'\n  clips {len(self)} over {len(self.split_sessions)} '
+                  f'session(s): {self.split_sessions}')
+
+
+def build_tir_roi_finetune_dataset(is_train: bool, test_mode: bool,
+                                   args) -> TirRoiRespFinetuneDataset:
+    """Build the Stage-3 TIR-ROI -> respiration dataset from runner ``args``.
+
+    Selected by ``data_set: tir_roi`` / ``tir_roi_resp`` in a FINETUNE config
+    (the same value in a PRETRAIN config selects the Stage-2 view; see
+    ``data/datasets.build_pretraining_dataset``). Only ``getattr``-reads, so an
+    args namespace from any runner/YAML works. ``test_mode`` is accepted for
+    signature parity with the other Stage-3 builders and is unused (the val
+    split is the evaluation set; there is no third split).
+    """
+    tubelet = str(getattr(args, 'tubelet', '2,16,16')).split(',')
+    val_subject = getattr(args, 'val_subject', None)
+    if isinstance(val_subject, (list, tuple)):
+        val_subject = val_subject[0] if val_subject else None
+    return TirRoiRespFinetuneDataset(
+        raw_root=(getattr(args, 'raw_root', None)
+                  or getattr(args, 'data_path', None) or None),
+        target=str(getattr(args, 'target', 'resp')),
+        is_train=is_train,
+        train_ratio=float(getattr(args, 'train_ratio', 0.8)),
+        split_by=str(getattr(args, 'split_by', 'subject')),
+        val_subject=val_subject,
+        fs=float(getattr(args, 'fs', 100.0)),
+        clip_duration=float(getattr(args, 'clip_duration', 8.0)),
+        clip_stride=getattr(args, 'clip_stride', None),
+        temporal_stride=int(getattr(args, 'temporal_stride', 1) or 1),
+        tubelet_t=int(tubelet[0]),
+        input_size=int(getattr(args, 'input_size', DEFAULT_INPUT_SIZE)),
+        roi_padding=float(getattr(args, 'roi_padding', DEFAULT_ROI_PADDING)),
+        resp_fs=float(getattr(args, 'resp_fs', DEFAULT_RESP_FS)),
+        fps=float(getattr(args, 'fps', DEFAULT_FPS)),
+        signal_norm=str(getattr(args, 'signal_norm', 'zscore')),
+        subjects=getattr(args, 'subjects', None),
+        tasks=getattr(args, 'tasks', None),
+        max_clips_per_session=getattr(args, 'max_clips', None),
+        max_entries=getattr(args, 'max_entries', None),
+        verbose=bool(getattr(args, 'verbose', False)))
+
+
 def build_tir_roi_pretrain_dataset(args) -> TirRoiRespPretrainDataset:
     """Build the Stage-2 TIR-ROI + RESP dataset from a run_pretrain ``args``.
 

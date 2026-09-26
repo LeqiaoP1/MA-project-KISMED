@@ -65,6 +65,9 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local_pretrained.yaml
 python runners/run_waveform.py -c configs/finetune/bp.yaml
 python runners/run_waveform.py -c configs/finetune/resp.yaml
 python runners/run_waveform.py -c configs/finetune/eda.yaml
+# thermal-ROI-only input (the Stage-2 TIR-ROI encoder; leave-one-subject-out fold)
+python runners/run_waveform.py -c configs/finetune/resp_tir_roi_local.yaml \
+    --val_subject F004
 
 # (3) offline multi-tier evaluation of saved predictions
 python runners/run_evaluate.py --pred_path out.npy --target_path gt.npy \
