@@ -133,16 +133,76 @@ def plot_training_curves(history, out_png, title=''):
     return _finish(fig, out_png)
 
 
+def _spread_clip_indices(pred, target, sessions, max_clips):
+    """Pick up to ``max_clips`` clips SPREAD ACROSS different sessions.
+
+    One clip per chosen session, and within a session the clip whose per-clip
+    Pearson is the MEDIAN of that session -- i.e. a representative clip, not the
+    best one. Fully deterministic (evenly spaced sessions over the sorted unique
+    labels), so a re-run reproduces the same figure.
+
+    :returns: ``(indices, labels)`` where a label is ``'<session> clip <i>'``.
+    """
+    sess = [str(s) for s in sessions]
+    order = sorted(set(sess))
+    if len(order) <= max_clips:
+        chosen = order
+    else:
+        pos = np.linspace(0, len(order) - 1, int(max_clips)).round().astype(int)
+        chosen = [order[p] for p in dict.fromkeys(pos)]
+    idx, labels = [], []
+    for s in chosen:
+        cand = [i for i, ss in enumerate(sess) if ss == s]
+        scored = []
+        for i in cand:
+            r = (float(np.corrcoef(pred[i], target[i])[0, 1])
+                 if target[i].std() > 1e-9 and pred[i].std() > 1e-9 else np.nan)
+            scored.append((r, i))
+        finite = [t for t in scored if np.isfinite(t[0])]
+        scored = sorted(finite or scored, key=lambda t: np.nan_to_num(t[0]))
+        _, pick = scored[len(scored) // 2]           # median-quality clip
+        idx.append(pick)
+        labels.append(f'{s} clip {pick}')
+    return idx, labels
+
+
 def plot_waveform_panel(pred, target, fs, out_png, title='', band=None,
-                        metrics=None, max_clips=4):
+                        metrics=None, max_clips=4, sessions=None,
+                        clip_indices=None):
     """Per-clip predicted vs target: time overlay (left) + PSD (right).
 
     ``pred``/``target`` are ``[N, L]`` arrays in the same (z-scored) units.
+
+    :param sessions: optional per-row session label (same length as ``pred``).
+        When given, the panel shows ``max_clips`` clips SPREAD ACROSS DIFFERENT
+        SESSIONS (one median-quality clip each) instead of the FIRST
+        ``max_clips`` rows. Without it the panel silently plotted a single
+        session -- which made a run look solved when only that session worked
+        (measured 2026-09-26: val mean Pearson +0.139 overall but +0.961 for the
+        session that happens to own rows 0-3). Passing ``sessions`` is strongly
+        recommended for any reported figure.
+    :param clip_indices: explicit row indices to plot; overrides ``sessions``.
     """
     plt = _plt()
     pred = np.atleast_2d(np.asarray(pred, float))
     target = np.atleast_2d(np.asarray(target, float))
-    n = min(int(max_clips), pred.shape[0])
+    ntotal = pred.shape[0]
+    note = None
+    if clip_indices is not None:
+        idx = [int(i) for i in clip_indices][:max_clips]
+        labels = [f'clip {i}' for i in idx]
+    elif sessions is not None and ntotal and len(sessions) == ntotal:
+        idx, labels = _spread_clip_indices(pred, target, sessions, max_clips)
+        nsess = len(set(str(s) for s in sessions))
+        note = (f'{len(idx)} of {nsess} session(s) shown -- one median-quality '
+                f'clip per session')
+    else:
+        if sessions is not None and len(sessions) != ntotal:
+            note = (f'sessions length {len(sessions)} != {ntotal} predictions '
+                    f'-- showing the FIRST clips (may be ONE session)')
+        idx = list(range(min(int(max_clips), ntotal)))
+        labels = [f'clip {i}' for i in idx]
+    n = len(idx)
     if n == 0:
         return None
     L = pred.shape[1]
@@ -150,22 +210,22 @@ def plot_waveform_panel(pred, target, fs, out_png, title='', band=None,
 
     fig, axes = plt.subplots(n, 2, figsize=(12, 1.9 * n + 0.6),
                              constrained_layout=True, squeeze=False)
-    for i in range(n):
-        ax = axes[i][0]
+    for row, i in enumerate(idx):
+        ax = axes[row][0]
         ax.plot(t, target[i], color='0.55', lw=1.2, label='target')
         ax.plot(t, pred[i], color='tab:blue', lw=1.0, label='pred')
         if band is not None:
             ax.axvspan(1.0 / band[1] if band[1] else 0, 1.0 / band[0],
                        color='orange', alpha=.08)
         r = np.corrcoef(pred[i], target[i])[0, 1] if L > 1 else np.nan
-        ax.set_title(f'clip {i}   Pearson {r:+.3f}', fontsize=9)
+        ax.set_title(f'{labels[row]}   Pearson {r:+.3f}', fontsize=9)
         ax.grid(alpha=.3)
-        if i == 0:
+        if row == 0:
             ax.legend(fontsize=8, loc='upper right')
-        if i == n - 1:
+        if row == n - 1:
             ax.set_xlabel('time (s)')
 
-        ax = axes[i][1]
+        ax = axes[row][1]
         f0, p0 = _psd(pred[i], fs)
         f1, p1 = _psd(target[i], fs)
         ax.semilogy(f1, p1, color='0.55', lw=1.0, label='target')
@@ -175,7 +235,7 @@ def plot_waveform_panel(pred, target, fs, out_png, title='', band=None,
         if band is not None:
             ax.axvspan(band[0], band[1], color='orange', alpha=.10)
         ax.set_title('PSD', fontsize=9); ax.grid(alpha=.3, which='both')
-        if i == n - 1:
+        if row == n - 1:
             ax.set_xlabel('Hz')
 
     sub = title or 'predicted vs target'
@@ -184,6 +244,8 @@ def plot_waveform_panel(pred, target, fs, out_png, title='', band=None,
                          if isinstance(v, (int, float)) and np.isfinite(v))
         if bits:
             sub += f'\n{bits}'
+    if note:
+        sub += f'\n[{note}]'
     fig.suptitle(sub, fontsize=11)
     return _finish(fig, out_png)
 

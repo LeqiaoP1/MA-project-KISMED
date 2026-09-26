@@ -91,6 +91,8 @@ __all__ = ['NUM_LANDMARKS', 'TARGET_LANDMARKS', 'TARGET_LANDMARK_IDX',
            'DEFAULT_RESP_FS', 'parse_ir_features', 'missing_frame_mask',
            'roi_box_from_landmarks', 'discover_sessions', 'find_thermal_video',
            'find_ir_features', 'find_resp_file', 'default_raw_root',
+           'ROI_LANDMARK_PRESETS', 'resolve_roi_landmarks',
+           'DEFAULT_ROI_QUANTILE',
            'BP4DPlusTIRRespDataset', 'TirRoiRespPretrainDataset',
            'build_tir_roi_pretrain_dataset']
 
@@ -117,6 +119,59 @@ DEFAULT_FPS = 25.0
 DEFAULT_RESP_FS = 1000.0
 DEFAULT_INPUT_SIZE = 64
 DEFAULT_ROI_PADDING = 0.2
+
+#: 0.0 reproduces the historical box EXACTLY (min/max over all frames of the
+#: clip). A value in (0, 0.5) clips each side to the ``q`` / ``1-q`` PERCENTILE
+#: of the landmark cloud, so a few motion outliers can no longer inflate it.
+#: Motivation (measured 2026-09-26): the min/max union box grows with head
+#: motion; sessions with a SMALL box + low landmark jitter reconstruct at
+#: Pearson ~0.7 while large/jerky ones sit at ~0.0 (possible because the
+#: inflated crop is mostly STATIC BACKGROUND, so the mean-pooled tokens encode
+#: pose rather than nostril temperature).
+DEFAULT_ROI_QUANTILE = 0.0
+
+#: Named 1-indexed landmark sets for the ROI box (``--roi_landmarks``).
+#: ``nose_mouth`` is the historical default; ``nostrils`` is the thermally
+#: informative region for respiration and is a much smaller box, so head motion
+#: sweeps less background through it.
+ROI_LANDMARK_PRESETS = {
+    'nose_mouth': TARGET_LANDMARKS,      # historical 12-point default
+    'nostrils': (10, 21),                # nostril wings only (2 points)
+    'nostril_mouth': (10, 11, 21, 22),   # nostrils + mouth corners
+    'nose_tip': (9, 10, 20, 21),         # nose-bridge sides + nostrils
+}
+
+
+def resolve_roi_landmarks(spec) -> Tuple[int, ...]:
+    """``'nostrils'`` | ``'10,21'`` | ``(10, 21)`` -> a 1-INDEXED tuple.
+
+    ``None`` / ``''`` -> :data:`TARGET_LANDMARKS`, i.e. unchanged behaviour.
+    """
+    if spec is None:
+        return tuple(TARGET_LANDMARKS)
+    if isinstance(spec, str):
+        s = spec.strip()
+        if not s:
+            return tuple(TARGET_LANDMARKS)
+        if s.lower() in ROI_LANDMARK_PRESETS:
+            return tuple(ROI_LANDMARK_PRESETS[s.lower()])
+        try:
+            vals = tuple(int(x) for x in s.replace(' ', '').split(',') if x)
+        except ValueError:
+            raise ValueError(
+                f'roi_landmarks {spec!r}: expected a preset name from '
+                f'{sorted(ROI_LANDMARK_PRESETS)} or a comma-separated list of '
+                f'1-indexed landmark labels, e.g. "10,21".')
+        if not vals:
+            return tuple(TARGET_LANDMARKS)
+    else:
+        vals = tuple(int(x) for x in spec)
+    bad = [v for v in vals if not 1 <= v <= NUM_LANDMARKS]
+    if bad:
+        raise ValueError(f'roi_landmarks {spec!r}: labels out of range '
+                         f'1..{NUM_LANDMARKS}: {bad}')
+    return vals
+
 
 #: raw tree names
 RAW_TREE = 'Thermal'
@@ -310,22 +365,35 @@ def _clamp_box(a: int, b: int, limit: int, min_size: int = 2) -> Tuple[int, int]
 
 def roi_box_from_landmarks(pts: np.ndarray, width: int, height: int,
                            padding: float = DEFAULT_ROI_PADDING,
-                           min_size: int = 2) -> Tuple[int, int, int, int]:
+                           min_size: int = 2,
+                           quantile: float = DEFAULT_ROI_QUANTILE
+                           ) -> Tuple[int, int, int, int]:
     """Clip-level STATIC ROI box ``(x0, x1, y0, y1)`` (half-open slice bounds).
 
     :param pts: ``(..., 2)`` landmark coordinates in SOURCE pixels (the frames
-        of ONE clip; the caller passes the 12 target points of every frame).
+        of ONE clip; the caller passes the target points of every frame).
     :param width, height: source frame size the box is clamped to.
     :param padding: fraction of the box EXTENT added on EACH side, so
         ``0.2`` grows the box by 40 % overall (``0.1`` would give exactly the
         1.2x reading of "expand by 20 %").
+    :param quantile: ``0.0`` (default) = min/max over all frames, i.e. the
+        historical behaviour, bit-for-bit. A value in ``(0, 0.5)`` instead
+        clips each side to the ``quantile`` / ``1 - quantile`` PERCENTILE of
+        the landmark cloud, which makes the box robust to head-motion outliers
+        (see :data:`DEFAULT_ROI_QUANTILE` for the measured motivation).
     """
     p = np.asarray(pts, dtype=np.float64).reshape(-1, 2)
     p = p[np.isfinite(p).all(axis=1)]
     if p.size == 0:
         raise ValueError('no finite landmark coordinates in this clip')
-    x0, x1 = float(p[:, 0].min()), float(p[:, 0].max())
-    y0, y1 = float(p[:, 1].min()), float(p[:, 1].max())
+    q = float(min(max(quantile, 0.0), 0.49))
+    if q > 0.0:
+        lo, hi = 100.0 * q, 100.0 * (1.0 - q)
+        x0, x1 = [float(v) for v in np.percentile(p[:, 0], [lo, hi])]
+        y0, y1 = [float(v) for v in np.percentile(p[:, 1], [lo, hi])]
+    else:
+        x0, x1 = float(p[:, 0].min()), float(p[:, 0].max())
+        y0, y1 = float(p[:, 1].min()), float(p[:, 1].max())
     w, h = x1 - x0, y1 - y0
     x0 -= padding * w
     x1 += padding * w
@@ -419,6 +487,7 @@ class BP4DPlusTIRRespDataset(Dataset):
                  input_size: int = DEFAULT_INPUT_SIZE,
                  clip_stride: Optional[float] = None,
                  roi_padding: float = DEFAULT_ROI_PADDING,
+                 roi_quantile: float = DEFAULT_ROI_QUANTILE,
                  target_landmarks: Sequence[int] = TARGET_LANDMARKS,
                  norm: str = 'clip',
                  max_clips_per_session: Optional[int] = None,
@@ -440,6 +509,11 @@ class BP4DPlusTIRRespDataset(Dataset):
                               else max(1, int(round(float(clip_stride) * self.fps))))
         self.input_size = int(input_size)
         self.roi_padding = float(roi_padding)
+        self.roi_quantile = float(roi_quantile)
+        if not 0.0 <= self.roi_quantile < 0.5:
+            raise ValueError(f'roi_quantile must be in [0, 0.5), got '
+                             f'{roi_quantile!r} (0 = min/max, the historical '
+                             f'behaviour; 0.05 = 5th/95th percentile)')
         self.target_landmarks = tuple(int(l) for l in target_landmarks)
         self.target_idx = np.asarray([l - 1 for l in self.target_landmarks],
                                     dtype=np.int64)
@@ -574,6 +648,7 @@ class BP4DPlusTIRRespDataset(Dataset):
             'resp_len': self.resp_len,
             'input_size': self.input_size,
             'roi_padding': self.roi_padding,
+            'roi_quantile': self.roi_quantile,
             'target_landmarks': list(self.target_landmarks),
             'norm': self.norm,
             'warnings': list(self.warnings),
@@ -665,7 +740,8 @@ class BP4DPlusTIRRespDataset(Dataset):
         pts = ir[entry['frame_start']:entry['frame_end']][:, self.target_idx, :]
         frames = self._frames(entry)
         h, w = frames.shape[1], frames.shape[2]
-        return roi_box_from_landmarks(pts, w, h, self.roi_padding)
+        return roi_box_from_landmarks(pts, w, h, self.roi_padding,
+                                      quantile=self.roi_quantile)
 
     def clip_landmarks(self, index: int) -> np.ndarray:
         """All 28 landmarks of the clip's frames -> ``[T, 28, 2]`` (source px)."""
@@ -702,7 +778,8 @@ class BP4DPlusTIRRespDataset(Dataset):
 
         frames = self._frames(entry)
         h, w = frames.shape[1], frames.shape[2]
-        box = roi_box_from_landmarks(pts, w, h, self.roi_padding)
+        box = roi_box_from_landmarks(pts, w, h, self.roi_padding,
+                                     quantile=self.roi_quantile)
         patches = self._roi_patches(entry, frames, box)          # [T, s, s, 3]
 
         # [T, H, W, C] uint8 RGB -> [C, T, H, W] float in [0, 1]
@@ -817,6 +894,7 @@ class TirRoiRespPretrainDataset(Dataset):
                  tubelet_t: int = 2,
                  input_size: int = DEFAULT_INPUT_SIZE,
                  roi_padding: float = DEFAULT_ROI_PADDING,
+                 roi_quantile: float = DEFAULT_ROI_QUANTILE,
                  target_landmarks: Sequence[int] = TARGET_LANDMARKS,
                  resp_fs: float = DEFAULT_RESP_FS,
                  subjects=None, tasks=None,
@@ -845,6 +923,7 @@ class TirRoiRespPretrainDataset(Dataset):
         self.resp_fs = float(resp_fs)
         self.input_size = int(input_size)
         self.roi_padding = float(roi_padding)
+        self.roi_quantile = float(roi_quantile)
 
         # ---- geometry, identical to build_pretraining_model ----------------
         n = max(1, int(round(self.clip_duration * self.fps / self.temporal_stride)))
@@ -860,6 +939,7 @@ class TirRoiRespPretrainDataset(Dataset):
             tasks=_as_list(tasks), clip_seconds=self.clip_duration,
             fps=self.fps, resp_fs=self.resp_fs, input_size=self.input_size,
             clip_stride=clip_stride, roi_padding=self.roi_padding,
+            roi_quantile=self.roi_quantile,
             target_landmarks=target_landmarks, norm='none',
             max_clips_per_session=max_clips_per_session,
             max_entries=max_entries, verbose=verbose)
@@ -959,6 +1039,7 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
                  tubelet_t: int = 2,
                  input_size: int = DEFAULT_INPUT_SIZE,
                  roi_padding: float = DEFAULT_ROI_PADDING,
+                 roi_quantile: float = DEFAULT_ROI_QUANTILE,
                  resp_fs: float = DEFAULT_RESP_FS,
                  fps: float = DEFAULT_FPS,
                  target_landmarks: Sequence[int] = TARGET_LANDMARKS,
@@ -1047,6 +1128,7 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
             clip_duration=clip_duration, clip_stride=clip_stride,
             temporal_stride=temporal_stride, tubelet_t=tubelet_t,
             input_size=input_size, roi_padding=roi_padding,
+            roi_quantile=roi_quantile,
             target_landmarks=target_landmarks, resp_fs=resp_fs,
             subjects=_as_list(keep_subjects), tasks=tasks,
             max_clips_per_session=max_clips_per_session,
@@ -1131,6 +1213,9 @@ def build_tir_roi_finetune_dataset(is_train: bool, test_mode: bool,
         tubelet_t=int(tubelet[0]),
         input_size=int(getattr(args, 'input_size', DEFAULT_INPUT_SIZE)),
         roi_padding=float(getattr(args, 'roi_padding', DEFAULT_ROI_PADDING)),
+        roi_quantile=float(getattr(args, 'roi_quantile', DEFAULT_ROI_QUANTILE)),
+        target_landmarks=resolve_roi_landmarks(
+            getattr(args, 'roi_landmarks', None)),
         resp_fs=float(getattr(args, 'resp_fs', DEFAULT_RESP_FS)),
         fps=float(getattr(args, 'fps', DEFAULT_FPS)),
         signal_norm=str(getattr(args, 'signal_norm', 'zscore')),
@@ -1161,6 +1246,9 @@ def build_tir_roi_pretrain_dataset(args) -> TirRoiRespPretrainDataset:
         tubelet_t=int(tubelet[0]),
         input_size=getattr(args, 'input_size', DEFAULT_INPUT_SIZE),
         roi_padding=float(getattr(args, 'roi_padding', DEFAULT_ROI_PADDING)),
+        roi_quantile=float(getattr(args, 'roi_quantile', DEFAULT_ROI_QUANTILE)),
+        target_landmarks=resolve_roi_landmarks(
+            getattr(args, 'roi_landmarks', None)),
         subjects=getattr(args, 'subjects', None),
         tasks=getattr(args, 'tasks', None),
         max_clips_per_session=getattr(args, 'max_clips', None),

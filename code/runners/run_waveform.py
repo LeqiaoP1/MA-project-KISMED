@@ -135,6 +135,18 @@ def get_args():
     parser.add_argument('--roi_padding', default=0.2, type=float,
                         help='per-side ROI margin for the thermal-ROI path '
                              '(data_set: tir_roi*); must mirror the Stage-2 run')
+    parser.add_argument('--roi_landmarks', default='', type=str,
+                        help="ROI landmark set for the thermal-ROI path: a "
+                             "preset name (nose_mouth | nostrils | "
+                             "nostril_mouth | nose_tip) or a comma list of "
+                             "1-indexed landmark labels, e.g. '10,21'. Empty "
+                             "= the historical 12-point nose+mouth set.")
+    parser.add_argument('--roi_quantile', default=0.0, type=float,
+                        help='0.0 = ROI box from the min/max over the clip '
+                             '(the historical behaviour). >0 clips each side '
+                             'to that PERCENTILE of the landmark cloud, so '
+                             'head-motion outliers cannot inflate the box '
+                             '(try 0.05).')
 
     # training
     parser.add_argument('--batch_size', default=16, type=int)
@@ -365,12 +377,27 @@ def main(args):
                 'signal_norm': args.signal_norm, 'finetune': args.finetune,
                 'epochs': args.epochs, 'best_pearson': best_pearson,
                 'per_clip_metrics': final})
+            # Session labels let the panel SPREAD its clips over different
+            # sessions. Without them it plotted rows 0..max_clips-1, i.e. always
+            # the first session -- which made a run look solved when only that
+            # session worked (measured 2026-09-26: +0.961 for the session owning
+            # rows 0-3 vs +0.139 for the whole val split).
+            try:
+                _val_sessions = [
+                    (e['session'] if isinstance(e, dict) else e[0]['session'])
+                    for e in dataset_val.entries]
+            except Exception as _exc:
+                _val_sessions = None
+                print(f'[stage3] WARNING: no val session labels ({_exc}); the '
+                      f'prediction panel will show the FIRST clips, which may '
+                      f'all come from ONE session.')
             plot_waveform_panel(
                 pred, target, fs=args.fs,
                 out_png=os.path.join(args.output_dir, 'predictions_final.png'),
                 title=(f'{args.target}: predicted vs target, val split '
                        f'(z-scored)'),
-                band=args.eval_band, metrics=final)
+                band=args.eval_band, metrics=final,
+                sessions=_val_sessions)
             print(f'[stage3] wrote metrics_final.json + predictions_final.png to '
                   f'{args.output_dir}')
             if args.save_preds:
