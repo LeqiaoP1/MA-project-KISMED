@@ -1,0 +1,105 @@
+decoding with skin masking on 12 processes...
+  [1/40] F001_T8
+  [2/40] F001_T4
+  [3/40] F001_T10
+  [4/40] F001_T2
+  [5/40] F001_T5
+  [6/40] F002_T4
+  [7/40] F001_T7
+  [8/40] F001_T1
+  [9/40] F002_T2
+  [10/40] F002_T1
+  [11/40] F002_T5
+  [12/40] F002_T6
+  [13/40] F001_T6
+  [14/40] F002_T7
+  [15/40] F003_T1
+  [16/40] F003_T2
+  [17/40] F003_T4
+  [18/40] F001_T3
+  [19/40] F002_T3
+  [20/40] F003_T5
+  [21/40] F002_T8
+  [22/40] F003_T10
+  [23/40] F003_T6
+  [24/40] F002_T10
+  [25/40] F004_T4
+  [26/40] F003_T7
+  [27/40] F004_T2
+  [28/40] F001_T9
+  [29/40] F004_T1
+  [30/40] F003_T3
+  [31/40] F003_T8
+  [32/40] F004_T10
+  [33/40] F004_T5
+  [34/40] F004_T8
+  [35/40] F004_T7
+  [36/40] F004_T6
+  [37/40] F004_T3
+  [38/40] F002_T9
+  [39/40] F003_T9
+  [40/40] F004_T9
+cache saved
+mean skin-pixel fraction inside the face box: 0.344 (min 0.134 max 0.512)
+
+=== |r| GATE vs BP, p<0.05 (chance 2.0 of 40), band 0.9-3.0 Hz ===
+signal / method            rate median|r| vs face_skin GR
+face_plain / GR           27/40    0.493   27/40
+face_plain / CHROM        33/40    0.624   33/40
+face_plain / POS          32/40    0.613   32/40
+face_skin / GR            27/40      nan   27/40
+face_skin / CHROM         35/40      nan   35/40
+face_skin / POS           35/40      nan   35/40
+bg / GR                    3/40    0.174   3/40
+bg / CHROM                 3/40    0.170   3/40
+bg / POS                   3/40    0.171   3/40
+full / GR                 25/40    0.528   25/40
+full / CHROM              33/40    0.638   33/40
+full / POS                31/40    0.622   31/40
+  (chance is 2/40; the mismatched-subject control sat at 4% earlier)
+
+=== HR ESTIMATION: skill = 1 - MAE/baselineMAE (<=0 is worse than a constant) ===
+
+-- window 20 s --
+  SYNTH (ceiling)        corr +0.649  MAE   3.58  base   4.96  skill +0.278  n=26
+  BP (positive ctrl)     corr +0.628  MAE   3.44  base   4.96  skill +0.305  n=26
+  face_plain / GR        corr +0.416  MAE  10.21  base   4.96  skill -1.060  n=26
+  face_plain / CHROM     corr +0.339  MAE   8.89  base   4.96  skill -0.794  n=26
+  face_plain / POS       corr +0.351  MAE   8.29  base   4.96  skill -0.672  n=26
+  face_skin / GR         corr +0.285  MAE  10.76  base   4.96  skill -1.171  n=26
+  face_skin / CHROM      corr +0.431  MAE   5.54  base   4.96  skill -0.117  n=26
+  face_skin / POS        corr +0.429  MAE   4.94  base   4.96  skill +0.003  n=26
+  bg / GR                corr +0.084  MAE  32.42  base   4.96  skill -5.540  n=26
+  bg / CHROM             corr +0.099  MAE  32.99  base   4.96  skill -5.655  n=26
+  bg / POS               corr +0.121  MAE  33.46  base   4.96  skill -5.752  n=26
+
+-- window 30 s --
+  SYNTH (ceiling)        corr +0.567  MAE   4.05  base   5.39  skill +0.249  n=16
+  BP (positive ctrl)     corr +0.563  MAE   4.01  base   5.39  skill +0.255  n=16
+  face_plain / GR        corr +0.572  MAE   9.17  base   5.39  skill -0.703  n=16
+  face_plain / CHROM     corr +0.468  MAE   9.71  base   5.39  skill -0.803  n=16
+  face_plain / POS       corr +0.420  MAE   9.65  base   5.39  skill -0.791  n=16
+  face_skin / GR         corr +0.412  MAE  13.89  base   5.39  skill -1.579  n=16
+  face_skin / CHROM      corr +0.235  MAE   6.58  base   5.39  skill -0.221  n=16
+  face_skin / POS        corr +0.252  MAE   5.51  base   5.39  skill -0.023  n=16
+  bg / GR                corr +0.151  MAE  32.60  base   5.39  skill -5.050  n=16
+  bg / CHROM             corr +0.172  MAE  34.73  base   5.39  skill -5.447  n=16
+  bg / POS               corr +0.177  MAE  33.50  base   5.39  skill -5.218  n=16
+
+-- window 40 s --
+  SYNTH (ceiling)        corr +0.447  MAE   3.08  base   3.59  skill +0.143  n=12
+  BP (positive ctrl)     corr +0.523  MAE   3.50  base   3.59  skill +0.025  n=12
+  face_plain / GR        corr +0.370  MAE   8.54  base   3.59  skill -1.380  n=12
+  face_plain / CHROM     corr +0.431  MAE   7.86  base   3.59  skill -1.188  n=12
+  face_plain / POS       corr +0.427  MAE   4.96  base   3.59  skill -0.381  n=12
+  face_skin / GR         corr +0.025  MAE  10.60  base   3.59  skill -1.953  n=12
+  face_skin / CHROM      corr +0.232  MAE   6.92  base   3.59  skill -0.928  n=12
+  face_skin / POS        corr +0.219  MAE   4.03  base   3.59  skill -0.124  n=12
+  bg / GR                corr +0.247  MAE  29.42  base   3.59  skill -7.196  n=12
+  bg / CHROM             corr -0.064  MAE  32.01  base   3.59  skill -7.918  n=12
+  bg / POS               corr -0.100  MAE  34.21  base   3.59  skill -8.531  n=12
+
+READ: compare every row against SYNTH and BP at the same window. Skin masking
+and CHROM/POS only help if face_skin/CHROM or face_skin/POS move clearly toward
+those two rows. bg must stay far away, or the metric is not skin-specific.
+

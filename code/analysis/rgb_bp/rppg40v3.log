@@ -1,0 +1,65 @@
+decoding 45867 jpgs on 12 processes...
+  [1/40] F001_T8
+  [2/40] F001_T4
+  [3/40] F001_T10
+  [4/40] F001_T2
+  [5/40] F001_T5
+  [6/40] F002_T4
+  [7/40] F001_T7
+  [8/40] F002_T2
+  [9/40] F002_T1
+  [10/40] F002_T5
+  [11/40] F002_T6
+  [12/40] F001_T6
+  [13/40] F001_T1
+  [14/40] F002_T7
+  [15/40] F003_T1
+  [16/40] F001_T3
+  [17/40] F003_T2
+  [18/40] F002_T3
+  [19/40] F003_T4
+  [20/40] F003_T5
+  [21/40] F002_T8
+  [22/40] F003_T10
+  [23/40] F003_T6
+  [24/40] F002_T10
+  [25/40] F004_T4
+  [26/40] F003_T7
+  [27/40] F004_T2
+  [28/40] F001_T9
+  [29/40] F004_T1
+  [30/40] F003_T3
+  [31/40] F004_T10
+  [32/40] F003_T8
+  [33/40] F004_T5
+  [34/40] F004_T8
+  [35/40] F004_T6
+  [36/40] F004_T7
+  [37/40] F004_T3
+  [38/40] F002_T9
+  [39/40] F003_T9
+  [40/40] F004_T9
+cache saved
+
+=== GATE, n=40 sessions. |r| vs BP at p<0.05 (chance 2.0) ===
+ROI               bright          sig         rate    median|r| vs-face-wins
+face_all            75.3           28        28/40        0.464
+nose_mouth          90.4           27        27/40        0.404
+bg_left             23.6            6         6/40        0.182
+bg_right            21.6            4         4/40        0.185
+bg_topleft          26.6            4         4/40        0.158
+bg_topright         26.2            3         3/40        0.182
+full_frame          45.1           27        27/40        0.443
+
+=== MISMATCHED-SESSION CONTROL (face signal vs ANOTHER session's BP) ===
+  n_pairs=137   p<0.05: 6 (4%)  median |r| 0.191
+  -> a valid control must fire at ~5%%. Much more means the statistic is
+     anti-conservative and the matched face numbers are inflated.
+
+=== HEART-RATE ESTIMATION (face chrominance vs Pulse Rate_BPM) ===
+  n=26 sessions
+  mean corr(est, ref)      : +0.162 (median +0.290)
+  mean MAE face            : 11.19 BPM
+  mean MAE constant base   : 6.04 BPM
+  mean MAE BP (POS CTRL)   : 4.85 BPM
+  face better than base    : 9/26 sessions
