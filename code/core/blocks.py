@@ -11,6 +11,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+try:                      # torch >= 2.0; fused, memory-efficient attention
+    from torch.nn.functional import scaled_dot_product_attention as _sdpa
+except ImportError:                                # pragma: no cover
+    _sdpa = None
+
 __all__ = [
     'trunc_normal_', 'drop_path', 'DropPath', 'Mlp', 'Attention', 'Block',
 ]
@@ -114,11 +119,25 @@ class Attention(nn.Module):
         qkv = qkv.permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)   # each [B, num_heads, N, head_dim]
 
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
+        # Fused (memory-efficient) attention. Mathematically IDENTICAL to
+        # ``(q @ k.T * scale).softmax(-1) @ v`` (SDPA applies the same
+        # 1/sqrt(head_dim) scale), but it never materialises the
+        # [B, heads, N, N] score matrix. That matrix is what makes the dense
+        # 224 px geometry impossible: the MultiMAE decoder concatenates the
+        # encoded visible tokens with ``mask_token`` up to the FULL n_visual
+        # (9800 tokens at 224 px), i.e. 2 x 12 x 9800^2 x 4 B ~= 9 GB per
+        # block per sample on the naive path. Falls back to the naive form on a
+        # torch without SDPA.
+        if _sdpa is not None:
+            x = _sdpa(q, k, v,
+                      dropout_p=self.attn_drop.p if self.training else 0.0)
+        else:                                          # pragma: no cover
+            attn = (q @ k.transpose(-2, -1)) * self.scale
+            attn = attn.softmax(dim=-1)
+            attn = self.attn_drop(attn)
+            x = attn @ v
 
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        x = x.transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
         return x

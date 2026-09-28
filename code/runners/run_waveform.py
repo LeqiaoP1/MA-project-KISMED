@@ -136,17 +136,31 @@ def get_args():
                         help='per-side ROI margin for the thermal-ROI path '
                              '(data_set: tir_roi*); must mirror the Stage-2 run')
     parser.add_argument('--roi_landmarks', default='', type=str,
-                        help="ROI landmark set for the thermal-ROI path: a "
-                             "preset name (nose_mouth | nostrils | "
-                             "nostril_mouth | nose_tip) or a comma list of "
-                             "1-indexed landmark labels, e.g. '10,21'. Empty "
-                             "= the historical 12-point nose+mouth set.")
+                        help="ROI landmark set for the ROI paths. For the "
+                             "thermal-ROI path (data_set: tir_roi*): a preset "
+                             "name (nose_mouth | nostrils | nostril_mouth | "
+                             "nose_tip) or a comma list of 1-indexed labels, "
+                             "e.g. '10,21'; empty = the historical 12-point "
+                             "nose+mouth set. For the RGB-ROI path (data_set: "
+                             "rgb_roi*): empty or 'face' = ALL 49 landmarks "
+                             "(the whole face), or the same presets / CSV.")
     parser.add_argument('--roi_quantile', default=0.0, type=float,
                         help='0.0 = ROI box from the min/max over the clip '
                              '(the historical behaviour). >0 clips each side '
                              'to that PERCENTILE of the landmark cloud, so '
                              'head-motion outliers cannot inflate the box '
                              '(try 0.05).')
+    parser.add_argument('--decode_scale', default=1, type=int,
+                        choices=[1, 2, 4, 8],
+                        help='rgb_roi only: JPEG decode scale. 1 = native full '
+                             'decode. This is part of the VISUAL FRONT-END '
+                             'CONTRACT: it must equal the Stage-2 value, or '
+                             'the encoder sees pixels on a different scale.')
+    parser.add_argument('--phys_fs', default=1000.0, type=float,
+                        help='rgb_roi only: sample rate of the RAW 1-D files '
+                             'under Physiology/<S>/<T>/ (1000 Hz nominal); '
+                             'they are resampled onto the --fs grid. Must '
+                             'equal the Stage-2 value.')
 
     # training
     parser.add_argument('--batch_size', default=16, type=int)
@@ -194,15 +208,25 @@ def main(args):
     # The RAW-tree thermal-ROI path (data_set: tir_roi*) is exempt: it delivers
     # the ROI crop of the thermal video ALONE, so `use_tir` (which only controls
     # the canonical paired dataset's rgb+tir concatenation) is irrelevant there.
+    # The RGB-ROI path (data_set: rgb_roi*) is the RGB analogue: it delivers the
+    # landmark face crop of the visible-light frames alone, and its streams must
+    # be exactly ['rgb'] -- checked below.
     _streams = [s.strip() for s in str(args.streams).split(',') if s.strip()]
-    from data import TIR_ROI_DATA_SETS
-    _is_roi = str(getattr(args, 'data_set', '') or '').strip().lower() \
-        in TIR_ROI_DATA_SETS
+    from data import RGB_ROI_DATA_SETS, TIR_ROI_DATA_SETS
+    _name = str(getattr(args, 'data_set', '') or '').strip().lower()
+    _is_roi = _name in TIR_ROI_DATA_SETS
+    _is_rgb_roi = _name in RGB_ROI_DATA_SETS
     if _is_roi:
         if _streams != ['tir']:
             raise SystemExit(
                 f'data_set {args.data_set!r} feeds the thermal ROI crop alone, '
                 f'so --streams must be exactly "tir" (got "{args.streams}").')
+    elif _is_rgb_roi:
+        if _streams != ['rgb']:
+            raise SystemExit(
+                f'data_set {args.data_set!r} feeds the RGB face ROI crop '
+                f'alone, so --streams must be exactly "rgb" (got '
+                f'"{args.streams}").')
     else:
         if args.use_tir and 'tir' not in _streams:
             raise SystemExit(

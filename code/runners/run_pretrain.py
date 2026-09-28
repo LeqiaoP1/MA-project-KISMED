@@ -45,18 +45,56 @@ def get_args():
                         help="Stage-2 data source: 'bp4d+' (default) = the "
                              "canonical paired layout; 'tir_roi' = the ADD-ON "
                              "thermal-ROI + respiration dataset built from the "
-                             "RAW tree (see code/TirROI_Resp_plan.md).")
+                             "RAW tree (see code/TirROI_Resp_plan.md); "
+                             "'rgb_roi' = the ADD-ON RGB face-ROI dataset "
+                             "(landmark crop from 2DFeatures + RAW physiology; "
+                             "see code/data/rgb_roi_dataset.py). A (subject, "
+                             "task) pair whose 2DFeatures frame count differs "
+                             "from the jpeg count is EXCLUDED as 'unusable' "
+                             "and its 1-D physiology is dropped too.")
     parser.add_argument('--raw_root', default=env_or('RAW_DATA_PATH', ''),
                         type=str,
-                        help='raw BP4D root for data_set=tir_roi; default: '
-                             '$RAW_DATA_PATH, else <repo>/data/raw/BP4D')
-    parser.add_argument('--roi_padding', default=0.2, type=float,
-                        help='tir_roi only: fraction of the landmark-box '
-                             'extent added on EACH side before the crop')
+                        help='raw BP4D root for data_set=tir_roi/rgb_roi; '
+                             'default: $RAW_DATA_PATH, else '
+                             '<repo>/data/raw/BP4D')
     parser.add_argument('--subjects', default='', type=str,
-                        help='tir_roi only: comma list of subjects (empty=all)')
+                        help='tir_roi/rgb_roi only: comma list of subjects '
+                             '(empty=all)')
     parser.add_argument('--tasks', default='', type=str,
-                        help='tir_roi only: comma list of tasks (empty=all)')
+                        help='tir_roi/rgb_roi only: comma list of tasks '
+                             '(empty=all)')
+    # ---- ROI-crop options (shared by the tir_roi and rgb_roi paths) --------
+    parser.add_argument('--roi_padding', default=0.2, type=float,
+                        help='tir_roi/rgb_roi only: fraction of the landmark-box '
+                             'extent added on EACH side before the crop '
+                             '(0.2 = +40%% overall)')
+    parser.add_argument('--roi_quantile', default=0.0, type=float,
+                        help='tir_roi/rgb_roi only: 0.0 = min/max landmark box '
+                             '(historical). A value in (0, 0.5) clips each side '
+                             'to that percentile of the clip landmark cloud, '
+                             'which makes the box robust to head-motion '
+                             'outliers.')
+    parser.add_argument('--roi_landmarks', default='', type=str,
+                        help='rgb_roi only: the landmarks whose bounding box IS '
+                             'the ROI. ""/"face" = all 49 (the whole face); a '
+                             'preset from data/rgb_features.ROI_LANDMARKS_2D '
+                             '(nose_mouth, nostrils, nostril_mouth, nose_tip); '
+                             'or a comma list of 1-indexed labels. Ignored by '
+                             'the tir_roi path (it uses its own 12-point set).')
+    parser.add_argument('--decode_scale', default=1, type=int,
+                        choices=[1, 2, 4, 8],
+                        help='rgb_roi only: JPEG decode scale. 1 = native full '
+                             'decode (most faithful, and the default for the '
+                             'shared Stage-2/Stage-3 front-end); 2/4/8 = '
+                             'libjpeg DCT downscale (faster; the ROI box is '
+                             'rescaled into the decoded frame). Changing this '
+                             'changes the visual front-end, so it must match '
+                             'across Stage 2 and Stage 3.')
+    parser.add_argument('--phys_fs', default=1000.0, type=float,
+                        help='rgb_roi only: sample rate of the RAW 1-D files '
+                             'under Physiology/<S>/<T>/ (BP_mmHg.txt, '
+                             'Resp_Volts.txt, EDA_microsiemens.txt). 1000 Hz '
+                             'nominal; they are resampled onto the --fs grid.')
     parser.add_argument('--fs', default=100.0, type=float,
                         help='signal sample rate (Hz)')
     parser.add_argument('--fps', default=25.0, type=float,

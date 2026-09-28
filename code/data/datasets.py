@@ -21,11 +21,17 @@ YAML config via ``data_set``.
 from typing import Callable, Dict, Optional
 
 __all__ = ['build_dataset', 'build_pretraining_dataset', 'register_dataset',
-           'list_datasets', 'TIR_ROI_DATA_SETS']
+           'list_datasets', 'TIR_ROI_DATA_SETS', 'RGB_ROI_DATA_SETS']
 
 #: ``data_set`` values that select the ADD-ON thermal-ROI + respiration Stage-2
 #: dataset (RAW tree) instead of the canonical paired layout.
 TIR_ROI_DATA_SETS = ('tir_roi', 'tir_roi_resp', 'tir-roi')
+
+#: ``data_set`` values that select the ADD-ON RGB face-ROI path (RAW tree): the
+#: visual stream is the landmark-defined face crop, so Stage 2 and Stage 3 share
+#: one front-end. A ``(subject, task)`` whose 2DFeatures frame count differs from
+#: the jpeg count is EXCLUDED as ``unusable`` (its 1-D physiology is dropped too).
+RGB_ROI_DATA_SETS = ('rgb_roi', 'rgb_roi_resp', 'rgb-roi')
 
 #: name -> builder(is_train, test_mode, args) -> Dataset
 _DATASET_BUILDERS: Dict[str, Callable] = {}
@@ -67,6 +73,9 @@ def build_dataset(is_train: bool, test_mode: bool, args):
     if str(name or '').strip().lower() in TIR_ROI_DATA_SETS:
         from .tir_resp_dataset import build_tir_roi_finetune_dataset
         return build_tir_roi_finetune_dataset(is_train, test_mode, args)
+    if str(name or '').strip().lower() in RGB_ROI_DATA_SETS:
+        from .rgb_roi_dataset import build_rgb_roi_finetune_dataset
+        return build_rgb_roi_finetune_dataset(is_train, test_mode, args)
     if name not in _DATASET_BUILDERS:
         raise NotImplementedError(
             f'Unknown data_set "{name}". Registered datasets: {list_datasets()}. '
@@ -98,6 +107,9 @@ def build_pretraining_dataset(args):
     if name in TIR_ROI_DATA_SETS:
         from .tir_resp_dataset import build_tir_roi_pretrain_dataset
         return build_tir_roi_pretrain_dataset(args)
+    if name in RGB_ROI_DATA_SETS:
+        from .rgb_roi_dataset import build_rgb_roi_pretrain_dataset
+        return build_rgb_roi_pretrain_dataset(args)
 
     from .paired_dataset import PairedPretrainDataset
 

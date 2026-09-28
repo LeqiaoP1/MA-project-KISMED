@@ -1,0 +1,128 @@
+# Stage 3 -- LOCAL, RGB-ROI-only -> ARTERIAL BP waveform reconstruction.
+#
+# The Stage-3 counterpart of configs/pretrain/stage2_local_rgb_roi_bp.yaml: the
+# SAME RGB face-ROI crop the encoder was pre-trained on is now the ONLY input
+# (simulated total contact-sensor failure), and the whole BP window is regressed
+# at once. NO MASKING anywhere in this stage -- see
+# core/waveform_model.MultiModalWaveformRegressor (adapters -> pos_embed ->
+# encoder -> spatial mean-pool -> linear head; no mask token, no visible-token
+# gather).
+#
+# Data path: data/raw/BP4D (the RAW tree), NOT data/processed/bp4d_canonical.
+# The ROI crop needs the native-resolution JPEGs + the 2DFeatures landmark track
+# and the RAW 1000 Hz Physiology files; the canonical tree has none of those (and
+# holds only 11 sessions). The dataset reuses data/rgb_roi_dataset.py, so the
+# Stage-2 exclusion rules apply unchanged: a (subject, task) whose 2DFeatures
+# frame count differs from the jpeg count is UNUSABLE and excluded whole (its
+# 1-D physiology is never loaded), and a clip whose frame span holds a
+# non-finite ROI landmark is dropped. On the local corpus those are F003_T8 and
+# F001_T8 -> 38 sessions produce clips (~654 at 5 s / 2.5 s hop).
+#
+# Run from code/ (ALWAYS with -u: without it stdout is block-buffered through
+# `tee` and an interrupted run leaves a log with NO epoch lines):
+#   python -u runners/run_waveform.py -c configs/finetune/bp_rgb_roi_local.yaml \
+#       2>&1 | tee ../output/finetune/bp_rgb_roi_local/train.log
+#
+# Leave-one-subject-out sweep (the honest protocol for 4 subjects -- a fixed
+# 0.8 ratio can only ever produce ONE fold, always F004):
+#   for S in F001 F002 F003 F004; do
+#     python -u runners/run_waveform.py -c configs/finetune/bp_rgb_roi_local.yaml \
+#       --val_subject $S --output_dir ../output/finetune/bp_rgb_roi_loso/$S
+#   done
+#
+# NOTE Stage 3 DOES auto-resume (utils.checkpoint.auto_resume_model is called by
+# run_waveform): re-running with the same --output_dir CONTINUES from
+# latest_checkpoint.txt. Stage 2 does NOT (run_pretrain never reads --resume).
+# Delete latest_checkpoint.txt to force a restart.
+
+target: bp
+
+# ---- data: RAW-tree RGB face ROI (the Stage-2 input modality) ----
+data_set: rgb_roi                 # -> build_rgb_roi_finetune_dataset (Stage-3 view)
+data_path: ../data/raw/BP4D       # raw_root equivalent; NOT the canonical tree
+# ---- VISUAL FRONT-END CONTRACT -- every value here MUST equal the Stage-2 run,
+# ---- or the encoder sees a distribution it was never trained on ------------
+roi_landmarks: face               # all 49 landmarks = the whole face ("face" == '')
+roi_padding: 0.2                  # per-side ROI margin (+40% overall)
+roi_quantile: 0.0                 # min/max box (historical)
+decode_scale: 1                   # native JPEG decode
+phys_fs: 1000.0                   # RAW BP_mmHg.txt rate, resampled to --fs
+
+# ---- model: shared Stage-2 encoder + time-aligned waveform head ----
+model: project_multimae_base
+streams: rgb                      # the face ROI alone; the 1-D input IS the simulated failure.
+                                   #   `use_tir` is deliberately NOT set: it only controls the
+                                   #   CANONICAL paired dataset's rgb+tir stack and nothing reads
+                                   #   it on this path.
+finetune: ../output/pretrain/stage2_local_rgb_roi_bp/checkpoints/checkpoint-0029.pth
+head_hidden: 0                     # 0 = single Linear -> the Stage-2 heads.bp transfers VERBATIM.
+                                   #   Shape check for THIS geometry: Stage-2 heads.bp is
+                                   #   Linear(768, sig_kernel=16); waveform_head is
+                                   #   Linear(768, output_len/grid_t) = Linear(768, 496/31) =
+                                   #   Linear(768, 16) -> identical, so the head is inherited and
+                                   #   load_stage2_encoder prints "head transferred: ... (from heads.bp)".
+
+# ---- clip geometry -- MUST equal the Stage-2 geometry of `finetune` ----
+# The Stage-2 run was 5 s / temporal_stride 2 / sig_kernel 16 / input 64 ->
+# num_frames 62, seq_len 496, grid_t 31, and the checkpoint's
+# positions.rgb.pos_embed is [1, 496, 768] with heads.bp.weight (16, 768).
+# NOTE 5 s does not divide evenly: 5.0*25/2 = 62.5 -> 62 frames (banker's
+# rounding), kept 4.96 s -> seq_len 496. That identity (62/2 == 496/16) is what
+# satisfies the alignment contract; do not "round" it to 500.
+clip_duration: 5.0
+fps: 25.0
+tubelet: 2,16,16
+temporal_stride: 2
+input_size: 64
+seq_len: 0                         # 0 => 496 samples (4.96 s at fs 100 Hz)
+fs: 100
+sig_kernel: 16                     # 16/100 == 2*2/25 s -> one signal token == one video tubelet
+                                   #   (build_waveform_model ENFORCES samples_per_token == sig_kernel)
+signal_norm: zscore                # per clip; mirrors the Stage-2 target_norm: clip. REQUIRED for
+                                   #   BP: the raw BP_mmHg is mmHg with mean ~100, so "none" would
+                                   #   make the head fit a ~100 DC offset and dominate the MR-STFT
+                                   #   with the 0 Hz bin.
+
+# ---- data split (SUBJECT-disjoint; see the LOSO sweep above) ----
+train_ratio: 0.8                   # 4 subjects -> 3 train (F001-F003) / val = F004
+split_by: subject
+val_subject: ''                    # e.g. F001 = LOSO fold (overrides train_ratio/split_by)
+clip_stride: 4.0                   # window hop in SECONDS matching Stage 2
+max_clips: 0                       # 0 = no per-session cap (dev knob)
+
+# ---- joint spatio-temporal-spectral loss (Stage-3-only term, gamma = 1.0) ----
+# This is where the MR-STFT / periodicity prior lives: Stage 2 does NOT use it
+# (every configs/pretrain/*.yaml is spectral_weight: 0.0 -- decision 2026-09-26).
+alpha: 1.0                         # L_time   (L1 amplitude)
+beta: 1.0                          # L_Pearson (phase-locking)
+gamma: 1.0                         # L_MR-STFT (multi-resolution)
+fft_sizes: '64,128,256'            # the plan's bp default (SPECTRAL_FFT_DEFAULTS) and the same
+                                   #   set configs/finetune/bp.yaml uses, so the RGB-ROI branch
+                                   #   differs from it ONLY in the input modality. At fs=100:
+                                   #   64/128/256 samples = 1.56/0.78/0.39 Hz bins.
+eval_band: '1.0,2.5'               # BP band (plan: 1.0-2.5 Hz)
+
+# ---- training ----
+epochs: 30
+batch_size: 4
+update_freq: 1
+save_ckpt_freq: 10
+eval_freq: 1
+
+# ---- optimizer ----
+opt: adamw
+lr: 1e-4
+min_lr: 1e-6
+warmup_epochs: 2
+weight_decay: 0.05
+clip_grad: 5.0                     # ON: this branch carries the gamma=1.0 MR-STFT term, and an
+                                   #   unbounded run already diverged through it once
+
+num_workers: 12                    # JPEG decode is the bottleneck on this path too (the same
+                                   #   125 native decodes/clip as Stage 2)
+save_preds: true                   # preds.npy/targets.npy/entries.json for the session evaluator
+
+# ---- logging ----
+output_dir: ../output/finetune/bp_rgb_roi_local
+log_wandb: false
+wandb_project: thesis-project

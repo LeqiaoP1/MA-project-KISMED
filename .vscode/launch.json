@@ -37,6 +37,60 @@
             },
             "console": "integratedTerminal",
             "justMyCode": true
+        },
+        {
+            "name": "run_pretrain (stage2 local rgb_roi bp)",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "cwd": "${workspaceFolder}/code",
+            "program": "${workspaceFolder}/code/runners/run_pretrain.py",
+            "args": [
+                "-c", "configs/pretrain/stage2_local_rgb_roi_bp.yaml"
+            ],
+            "env": {
+                "RAW_DATA_PATH": "${workspaceFolder}/data/raw/BP4D",
+                "OUTPUT_DIR": "${workspaceFolder}/output"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "run_pretrain (stage2 local rgb_roi bp SMOKE)",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "cwd": "${workspaceFolder}/code",
+            "program": "${workspaceFolder}/code/runners/run_pretrain.py",
+            "args": [
+                "-c", "configs/pretrain/stage2_local_rgb_roi_bp.yaml",
+                "--epochs", "1", "--warmup_epochs", "0",
+                "--max_entries", "2", "--num_workers", "0",
+                "--output_dir", "/tmp/rgb_roi_bp_smoke"
+            ],
+            "env": {
+                "RAW_DATA_PATH": "${workspaceFolder}/data/raw/BP4D",
+                "OUTPUT_DIR": "${workspaceFolder}/output"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "inspect rgb_roi (list sessions)",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "cwd": "${workspaceFolder}/code",
+            "program": "${workspaceFolder}/code/data/rgb_roi_dataset.py",
+            "args": [
+                "--list"
+            ],
+            "env": {
+                "RAW_DATA_PATH": "${workspaceFolder}/data/raw/BP4D",
+                "OUTPUT_DIR": "${workspaceFolder}/output"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
         }
     ]
 }

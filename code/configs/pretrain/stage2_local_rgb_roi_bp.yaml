@@ -1,0 +1,257 @@
+# Stage 2 -- LOCAL run: RGB face ROI (visual) -> ARTERIAL BP (1-D target).
+#
+# ADD-ON experiment. The visual stream is the LANDMARK-DEFINED FACE CROP of the
+# visible-light frames instead of the full frame, so the encoder's visible
+# (attendable) tokens are skin rather than background. This is the front-end the
+# rPPG analysis (code/refined_RGB_BP_study.md) puts as the single highest-value
+# preprocessing lever: at the plan's 0.90 tube mask the encoder sees only ~20
+# patches/frame, and with a full-frame centre crop most of them can be
+# background -- on these portrait frames the face occupies only part of the crop.
+#
+# Selection: `data_set: rgb_roi` -> data/rgb_roi_dataset.py (RAW tree:
+# 2D+3D/<S>/<T>/*.jpg + 2DFeatures/<S>_<T>.mat + Physiology/<S>/<T>/BP_mmHg.txt).
+# Nothing here affects the existing rgb,bp* runs (they keep data_set: bp4d+ and
+# PairedPretrainDataset).
+#
+# USABILITY RULE (dataset-level, mandatory): a (subject, task) pair whose
+# 2DFeatures frame count differs from the number of jpeg files is marked
+# `unusable` and EXCLUDED whole -- its 1-D physiology is never loaded, so no
+# mis-aligned crop can reach the model. On the local corpus this is exactly one
+# session (F003_T8: 1518 jpg vs 1559 mat) -> 39 usable sessions.
+#
+# The ROI is ONE static box per clip (min/max of the landmark cloud over the
+# clip's frames + roi_padding), resized to input_size, so the patch cannot
+# jitter spatially. A clip whose frame span contains a non-finite ROI landmark
+# is dropped.
+#
+# !! THE FRONT-END IS A CONTRACT !!  Stage 3 must reuse the identical crop
+# (roi_landmarks / roi_padding / roi_quantile / input_size / decode_scale /
+# phys_fs), or the Stage-3 encoder sees a distribution it was never trained on.
+#
+# Run from code/ (ALWAYS with `-u`: without it stdout is block-buffered through
+# `tee`, so an interrupted run leaves a log with NO epoch lines):
+#     python -u runners/run_pretrain.py -c configs/pretrain/stage2_local_rgb_roi_bp.yaml \
+#         2>&1 | tee ../output/pretrain/stage2_local_rgb_roi_bp/train.log
+# or the wrapper (does the same, plus env + log dir):
+#     bash scripts/local/pretrain_rgb_roi_bp.sh              # full local run
+#     SMOKE=1 bash scripts/local/pretrain_rgb_roi_bp.sh      # 2-clip smoke
+# Smoke first (--warmup_epochs 0 is REQUIRED: epochs < warmup trips the
+# pre-existing cosine_scheduler assert in utils/lr_sched.py):
+#     python -u runners/run_pretrain.py -c configs/pretrain/stage2_local_rgb_roi_bp.yaml \
+#         --epochs 1 --warmup_epochs 0 --max_entries 2 --num_workers 0 \
+#         --output_dir /tmp/rgb_roi_bp_smoke
+
+# ---------------------------------------------------------------- data source
+data_set: rgb_roi
+# --raw_root defaults to $RAW_DATA_PATH (scripts/env_local.sh), else
+# <repo>/data/raw/BP4D. The local corpus is 40 RGB sequences (4 subjects x
+# T1..T10). 1 is UNUSABLE (F003_T8: jpeg/mat frame-count mismatch) and 1 more is
+# dropped at clip level (F001_T8: every window holds a non-finite ROI landmark)
+# -> 38 sessions actually train. At 5 s / 2.5 s hop that is ~654 clips.
+subjects: ''                       # '' = all; 'F001' to pin one subject
+tasks: ''                          # '' = all
+# raw_root: ''                     # uncomment to override $RAW_DATA_PATH
+
+# ------------------------------------------------------------------ the ROI
+roi_landmarks: face                # 'face' = all 49 landmarks (the whole face).
+                                   # Presets: nose_mouth / nostrils /
+                                   # nostril_mouth / nose_tip, or a 1-indexed
+                                   # CSV such as '32,33,34,35' (mouth only).
+roi_padding: 0.2                   # margin added on EACH side (+40% overall)
+roi_quantile: 0.0                  # 0.0 = min/max box. (0, 0.5) clips each side
+                                   # to that percentile -> robust to a single
+                                   # head-motion outlier stretching the box.
+decode_scale: 1                    # 1 = native JPEG decode (default; the
+                                   # faithful front-end). 2/4/8 = DCT downscale
+                                   # (much faster, ROI box rescaled). ANY change
+                                   # here is a DIFFERENT front-end -> Stage 3
+                                   # must match, and a checkpoint from another
+                                   # scale is not comparable.
+phys_fs: 1000.0                    # RAW physiology rate (BP_mmHg.txt), resampled
+                                   # onto the --fs grid below.
+
+# ------------------------------------------------------- model / initialisation
+model: project_multimae_base       # 768-d / 12-layer -- MUST match pretrained_encoder
+pretrained_encoder: videomae:base  # VideoMAE-B: its patch embed IS a tubelet
+                                   # Conv3d(3, 768, (2,16,16)), i.e. the EXACT
+                                   # shape this geometry needs, so the tokenizer
+                                   # transfers VERBATIM instead of being
+                                   # boxcar-inflated from a 2-D MAE filter.
+                                   # From-scratch A/B twin = a CLI override:
+                                   #   --pretrained_encoder ''
+                                   #   --output_dir ../output/pretrain/stage2_local_rgb_roi_bp_scratch
+inflate_rgb_patch: 1               # unused for a 3-D source (copied verbatim)
+
+# --------------------------------------------- streams & tokenizer geometry
+# Stage-2 contract: >=1 video (rgb/tir) AND >=1 1-D physio (bp/resp/eda).
+streams: rgb,bp                    # RGB face ROI -> BP waveform
+tubelet: 2,16,16                   # first value MUST match the geometry below
+fs: 100.0                          # BP is resampled 1000 -> 100 Hz
+fps: 25.0                          # SOURCE rate; temporal_stride does the decimation
+clip_duration: 5.0                 # 125 source frames @ 25 fps, decimated by
+                                   # temporal_stride 2 -> 62 frames -> 31
+                                   # temporal tubelets. 5 s = 5-6 cardiac cycles
+                                   # at 60-75 bpm: the BP cycle is short, and 5 s
+                                   # still resolves the pulse band (1-2.5 Hz)
+                                   # while halving the per-clip decode.
+clip_stride: 4.0                   # window hop (seconds) -> 1 s OVERLAP only
+                                   # (100 of the 125 frames advance; the windows
+                                   # share 25 frames). Fewer, less redundant
+                                   # samples than a 2.5 s hop, and less decode
+                                   # work per epoch.
+temporal_stride: 2                 # decimate INSIDE the window (1=every frame;
+                                   # 2 -> 12.5 fps effective). NOT the window
+                                   # hop (that is clip_stride). REQUIRES
+                                   # sig_kernel 16 (see below) and is a
+                                   # DIFFERENT geometry: the video pos-embed
+                                   # token count halves, so a stride-1
+                                   # checkpoint cannot be loaded. Nyquist:
+                                   # 12.5 fps = 6.25 Hz, ample for BP 1-2.5 Hz.
+seq_len: 0                         # 0 => round(kept_seconds*fs) = 496 samples
+                                   # (62 frames / 12.5 fps = 4.96 s x 100 Hz).
+                                   # 496/16 = 31 signal tokens.
+input_size: 64                     # ROI patch side after cv2.resize. 64 -> a
+                                   # 4x4 spatial grid (16 patches/frame = 800
+                                   # video tokens) = the CHEAP LOCAL geometry.
+                                   # !! The plan LOCKS 224 (14x14 grid, 9800
+                                   # tokens). The pos-embed shape differs, so a
+                                   # 64 px checkpoint is a SEPARATE LINEAGE: it
+                                   # cannot be continued into the 224 run and a
+                                   # 224 Stage 3 cannot load it. Use 64 for
+                                   # local iteration; switch to 224 for the
+                                   # real run (only pos-embed shape + cost
+                                   # change, everything else is identical).
+# ---- space-time alignment (checked hard by the model) ----
+# tubelet_t*temporal_stride/fps == sig_kernel/fs -> 2*2/25 == 16/100 == 160 ms,
+# and num_frames/2 == seq_len/16 == 31 tokens per stream (VERIFIED: the model
+# builds and reports n_visual=496, n_signal=31, grid_t=31).
+# NOTE 5 s does NOT divide evenly: 5.0*25/2 = 62.5 -> 62 frames (banker's
+# rounding), so the KEPT duration is 4.96 s and seq_len is 496, not 500. That
+# is exactly what keeps 62/2 == 496/16 and satisfies the alignment contract.
+# RULE: sig_kernel = tubelet_t * temporal_stride / fps * fs. Raising
+# temporal_stride WITHOUT rescaling sig_kernel is the one way to break this
+# config, and the model refuses to build with an explicit recommendation.
+sig_kernel: 16
+pos_init: sincos3d                 # 3-D (t,h,w) sincos for the video positions
+                                   # + the same 1-D temporal sincos for physio
+
+# ------------------------------------------------------------------ masking
+# 0.90 tube on the video: one random spatial subset per clip, replicated over
+# all 31 time steps, so a masked patch is unseen at EVERY step and the "copy
+# from the neighbouring frame" shortcut is impossible (VideoMAE's ablation).
+mask_ratio_rgb: 0.90               # the RGB ROI is the primary visual stream.
+                                   # WARNING at input_size 64 the grid is only
+                                   # 4x4, so 0.90 leaves just 2 VISIBLE patches
+                                   # per frame (62 encoder tokens across the 31
+                                   # steps). This is proven trainable locally
+                                   # (the tir_roi local run used 0.90), but if
+                                   # the video stream looks starved drop to 0.75
+                                   # (4 visible) -- the plan's 0.90 assumes the
+                                   # 224 px grid, where it means 20 patches.
+mask_ratio_bp: 0.70                # a physio stream reaches the encoder ONLY
+                                   # through its VISIBLE tokens. 0.70 of 31 bp
+                                   # tokens -> 22 masked / 9 visible (see the
+                                   # span derivation below). Lowered from 0.90,
+                                   # which left only 3 visible, so the encoder
+                                   # now sees more of the 1-D stream -- the
+                                   # trade-off is a slightly easier cross-modal
+                                   # task (less pressure to learn BP from video).
+                                   # 1.0 is NEVER valid: the model's clamp
+                                   # forbids a fully masked stream (k=0 removes
+                                   # that stream's encoder gradient entirely).
+# mask_ratio_tir / mask_ratio_resp / mask_ratio_eda are UNUSED while
+# streams: rgb,bp -- leave them at their defaults.
+# ---- 1-D masking PATTERN (see code/SpanMask_PhysioSignals.md) ----
+# ACTIVE: contiguous spans are the measured fix for the"interpolate the gap from
+# the visible neighbours" shortcut, which a scattered mask cannot prevent in a
+# 30-60x oversampled band-limited signal. Revert to the shipped scattered
+# baseline with `--physio_mask random`.
+physio_mask: span
+# SPAN RE-DERIVED FOR ratio 0.70 on the 5 s / 31-token stream (not scaled).
+# The span LENGTH is set by the TARGET's correlation time, not by the clip or
+# the ratio: one BP span must cover >= 1 cardiac cycle or the interpolator can
+# bridge it. At 1.75 s that is ~1.8-2.8 cycles over 60-95 bpm.
+# The span COUNT is DERIVED (n_spans = clamp(round(ratio*N/span_tokens), 1,
+# (N-1)//span_tokens)) and the knobs are over-determined, so span_s is chosen so
+# the derived count lands inside the model's OWN tolerance (it prints a [NOTE]
+# whenever |eff - ratio| >= 0.02):
+#   span 1.75 s -> round(1.75*100/16) = 11 tokens (1.76 s)  [1.68-1.84 s -> 11]
+#   n_spans = clamp(round(0.70*31/11), 1, 30//11) = clamp(2, 1, 2) = 2
+#   masked = 2*11 = 22 of 31 = 0.710   (|0.710 - 0.70| = 0.010 < 0.02 -> no NOTE)
+#   -> 9 visible bp tokens, in 2 contiguous 1.76 s gaps.
+# MEASURED at ratio 0.70 (full sweep of the real build): the value is NOT stable
+# -- span 1.1 s -> 3 spans = 21/31 = 0.677 (drift 0.023, NOTE); 1.60 s -> 20/31 =
+# 0.645 (0.055); 1.28/1.92 s -> 24/31 = 0.774 (0.074). 1.75 s is the only clean
+# landing, so RE-DERIVE it if the ratio or the clip length changes again.
+# Build-time line to confirm:
+#   [mask] bp: span 1.75 s = 11 tokens (1.76 s) x 2 span(s) -> masked 0.710
+mask_span_s: {bp: 1.75}            # ignored while physio_mask: random
+
+# ---------------------------------------------------------------------- loss
+signal_weight: 0.5                 # lambda for every physio stream (visual 1.0)
+target_norm: clip                  # per-clip z-score inside the model. The
+                                   # dataset therefore returns RAW mmHg -- do
+                                   # not normalise twice. Also removes the
+                                   # per-token z-score shortcut that would let
+                                   # the decoder reconstruct from position
+                                   # alone.
+spectral_weight: 0.0               # OFF (decision 2026-09-26: the spectral term
+                                   # belongs to Stage-3 fine-tuning)
+
+# ------------------------------------------------------------------ training
+# Local single-GPU recipe. NOTE: small-batch local runs MUST set --lr
+# explicitly -- the MAE blr rule (blr*batch/256) yields ~1e-6 at batch 2 and the
+# weights never move (this bug already cost one flat 40-epoch run).
+# ---- MEASURED local cost (RTX 5060 Ti 15.9 GiB, 16 cores, 64 px) ----------
+#   5 s clips, 4.0 s hop (1 s overlap) -> 415 clips (was 654 at a 2.5 s hop).
+#   The run is JPEG-DECODE-BOUND: the last measured step spent 2.55 of 2.64 s in
+#   the DATALOADER (97%). The worker count therefore sets the pace:
+#       batch 4, num_workers  6 : 4.51 s/step -> 103 steps -> 7.8 min/epoch
+#       batch 4, num_workers 12 : 3.10 s/step -> 103 steps -> 5.4 min/epoch
+#   Batch size only trades step COUNT against per-step cost -- it is neutral
+#   for wall clock (memory is not a constraint at 64 px / 527 tokens).
+#   30 epochs: ~3.9 h at 6 workers, ~2.7 h at 12.
+#   Previous config (2.5 s hop, batch 2, workers 12) was 9.6 min/epoch = 4.8 h,
+#   so the 1 s overlap is a real ~19% saving on its own.
+#   Levers, best first: more --num_workers (6 -> 12 is a measured -31%);
+#   --decode_scale 2 (halves the decode, but is a DIFFERENT front-end so Stage 3
+#   must match it); fewer --epochs.
+# NOTE: attention is FUSED (F.scaled_dot_product_attention, core/blocks.py).
+# Without it the DECODER materialises an [B, heads, N, N] score matrix at N =
+# n_visual + n_signal -- fatal at 224 px (9800 tokens, ~9 GB/block/sample), and
+# this config keeps that path working if you switch back to 224.
+batch_size: 4                      # memory is not a constraint at 64 px (527 decoder
+                                   # tokens); the run is decode-bound, so batch size
+                                   # mainly changes the STEP count, not the epoch time
+epochs: 30                         # LOCAL TEST budget (the plan's full run is
+                                   # 800 at 224 px). With warmup 5 this gives a
+                                   # short warmup + 25 cosine epochs.
+save_ckpt_freq: 10                 # 3 checkpoints over 30 epochs. The runner
+                                   # has NO resume logic: a restart starts fresh
+                                   # and OVERWRITES checkpoint-NNNN, so re-running
+                                   # with a different --epochs REPLACES, it does
+                                   # not continue.
+lr: 3e-4
+min_lr: 3e-5
+warmup_epochs: 5                   # MUST be < epochs (use 0 for a 1-epoch smoke)
+weight_decay: 0.05
+clip_grad: 5.0                     # the measured-stable local recipe (an
+                                   # unbounded run diverged via the MR-STFT term,
+                                   # which is OFF here, but the guard is cheap)
+num_workers: 12                    # JPEG decode IS the bottleneck (97% of the last
+                                   # measured step), so the worker count sets the pace.
+                                   # MEASURED at 5 s / 4 s hop, batch 4, 64 px:
+                                   #   workers  6 -> 4.51 s/step (7.8 min/epoch)
+                                   #   workers 12 -> 3.10 s/step (5.4 min/epoch)  -31%
+                                   # 12 leaves 4 of the 16 cores for the main process
+                                   # and was stable across the earlier 2-epoch run.
+
+output_dir: ../output/pretrain/stage2_local_rgb_roi_bp
+
+# --------------------------------------------------------------------- notes
+# * EXPECTED DATASET SUMMARY (39 usable sessions, clip 8 s / hop 4 s):
+#       python data/rgb_roi_dataset.py --list     # 40 sequences, 1 unusable
+#       python data/rgb_roi_dataset.py --n_check 3
+# * Inspection wrapper: bash scripts/local/inspect_rgb_roi.sh --list
+# * Full-BP4D+ scaling is a DATA step, not a config change: the local tree holds
+#   4 subjects (F001-F004) only.
