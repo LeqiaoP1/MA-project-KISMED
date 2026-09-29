@@ -52,7 +52,7 @@ split_by: subject                  # SUBJECT-disjoint: 4 local subjects -> 3 tra
 clip_stride: 1.0                   # overlapping windows -> ~4x more clips on this small corpus
 
 # ---- joint spatio-temporal-spectral loss ----
-alpha: 1.0                 # L_time (L1 amplitude)
+alpha: 1.0                 # L_time (StdLoss, not L1)
 beta: 1.0                  # L_Pearson (phase locking)
 gamma: 1.0                 # L_MR-STFT (multi-resolution)
 fft_sizes: '64,128,256'    # >= 2x the BP period (1-2.5 Hz at 100 Hz)

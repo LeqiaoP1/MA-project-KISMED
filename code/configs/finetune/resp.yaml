@@ -29,7 +29,7 @@ data_set: bp4d+
 data_path: ../data/processed/bp4d_canonical
 
 # Joint spatio-temporal-spectral loss weights
-alpha: 1.0               # L_time   (L1 amplitude)
+alpha: 1.0               # L_time   (StdLoss, not L1)
 beta: 1.0                # L_Pearson (phase-locking)
 gamma: 1.0               # L_MR-STFT (multi-resolution)
 fft_sizes: '64,128,256'

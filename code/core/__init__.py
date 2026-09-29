@@ -8,7 +8,7 @@ from .input_adapters import (PatchedInputAdapter, SemSegInputAdapter,
                             SignalInputAdapter)
 from .output_adapters import SpatialOutputAdapter
 from .criterion import MaskedMSELoss, MaskedL1Loss, MaskedCrossEntropyLoss
-from .waveform_losses import (PearsonLoss, MultiResolutionSTFTLoss,
+from .waveform_losses import (PearsonLoss, StdLoss, MultiResolutionSTFTLoss,
                               WaveformJointLoss)
 from .model import (ProjectViT,
                     project_vit_small_patch16_224,

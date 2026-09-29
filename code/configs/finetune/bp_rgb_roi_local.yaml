@@ -93,7 +93,18 @@ max_clips: 0                       # 0 = no per-session cap (dev knob)
 # ---- joint spatio-temporal-spectral loss (Stage-3-only term, gamma = 1.0) ----
 # This is where the MR-STFT / periodicity prior lives: Stage 2 does NOT use it
 # (every configs/pretrain/*.yaml is spectral_weight: 0.0 -- decision 2026-09-26).
-alpha: 1.0                         # L_time   (L1 amplitude)
+alpha: 1.0                         # L_time   (StdLoss = |std(pred) - std(target)|).
+                                   #   Replaced the point-wise L1 on 2026-09-28. Why: L1
+                                   #   charged 1.29 for a PERFECT waveform delayed 0.20 s by
+                                   #   the pulse transit time -- an error the model cannot
+                                   #   fix -- and StdLoss penalises amplitude error ~19 %
+                                   #   harder (10x collapse: 0.8991 vs 0.7545).
+                                   #   CAVEATS: it does NOT rebalance alpha vs gamma (both
+                                   #   gradients measure 1/sqrt(N), an identical 1.81 %
+                                   #   share) and it is BLIND to shape/polarity (white
+                                   #   noise with the right std costs 0.0007). See
+                                   #   core/waveform_losses.StdLoss.
+                                   #   With signal_norm: zscore this is |std(pred) - 1|.
 beta: 1.0                          # L_Pearson (phase-locking)
 gamma: 1.0                         # L_MR-STFT (multi-resolution)
 fft_sizes: '64,128,256'            # the plan's bp default (SPECTRAL_FFT_DEFAULTS) and the same

@@ -80,7 +80,8 @@ max_clips: 0                       # 0 = no per-session cap (dev knob)
 # ---- joint spatio-temporal-spectral loss (Stage-3-only term, gamma = 1.0) ----
 # This is where the MR-STFT / periodicity prior lives: Stage 2 does NOT use it
 # (every configs/pretrain/*.yaml is spectral_weight: 0.0 -- decision 2026-09-26).
-alpha: 1.0                         # L_time   (L1 amplitude)
+alpha: 1.0                         # L_time   (StdLoss, not L1 -- see
+                                   #   configs/finetune/bp_rgb_roi_local.yaml)
 beta: 1.0                          # L_Pearson (phase-locking)
 gamma: 1.0                         # L_MR-STFT (multi-resolution)
 fft_sizes: '64,128,256'            # identical to the RGB resp branch, so the two branches

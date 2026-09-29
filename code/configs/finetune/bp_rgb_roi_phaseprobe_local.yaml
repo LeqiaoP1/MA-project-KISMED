@@ -1,0 +1,205 @@
+# Stage 3 -- LOCAL, RGB-ROI-only -> ARTERIAL BP waveform reconstruction.
+#
+# *** PHASE PROBE *** -- a SINGLE-VARIABLE variant of
+# configs/finetune/bp_rgb_roi_local.yaml. Everything is identical EXCEPT the
+# three joint-loss weights, the epoch budget and the output_dir. Do NOT treat
+# this as a new protocol: it exists to answer ONE question -- does the RGB-ROI
+# branch carry any per-clip PHASE information at all?
+#
+# WHY (measured 2026-09-28, see /memories/repo/stage3-loss-audit.md):
+# The StdLoss run (output/finetune/bp_rgb_roi_g1_stdloss_local, alpha=beta=
+# gamma=1.0) fixed the amplitude -- std(pred)/std(target) went 0.213 (L1) and
+# 0.553 (L1, gamma=1) to **0.980** -- but its output is a FIXED TEMPLATE: 98.4 %
+# of the prediction's variance is one shared waveform emitted for every clip
+# (mean pairwise r between its own predictions = 0.9873, vs -0.0098 for the real
+# targets), at a fixed rate (dominant-frequency sd = 0.006 Hz), while val
+# Pearson PEAKED at +0.0030 @ epoch 2 and then DECLINED to -0.0129.
+# The mechanism is the weighting, measured as PARAMETER-space gradient shares
+# (d(term)/d(model params), 8 real val batches):
+#     checkpoint        StdLoss   Pearson   MR-STFT
+#     best.pth (ep 2)    21.42 %   1.34 %   77.24 %
+#     checkpoint-0010    12.19 %   3.64 %   84.18 %
+#     checkpoint-0029     8.30 %   2.38 %   89.32 %
+# => beta -- the ONLY phase-sensitive term -- held 1-4 %, and gamma's dominance
+# GREW with training. By late training the objective was effectively the
+# MAGNITUDE-ONLY MR-STFT loss (blind to phase and to polarity by construction),
+# so the model settled on the loss's phase-blind optimum.
+#
+# WHAT CHANGES HERE: **beta 1.0 -> 10.0 ONLY.** gamma is DELIBERATELY LEFT AT 1.0
+# (user decision 2026-09-28: "I wanted only beta raised"), so this is a BETA-ONLY
+# probe, NOT a beta/gamma rebalance. alpha is also unchanged.
+# AS EXECUTED the MEASURED parameter-gradient force shares were (epoch 14):
+#     StdLoss 12.08 % | Pearson 15.55 % | MR-STFT 72.37 %
+# vs the template run's 21.42 / 1.34 / 77.24 (all weights 1). So beta's force rose
+# 1.34 % -> 15.55 % (11.6x) but MR-STFT STILL LEADS at 72 %, i.e. the phase term
+# never became dominant. Note the divergence: Pearson held 81.8 % of the loss
+# VALUE yet only 15.6 % of the FORCE -- MR-STFT's gradient-to-value ratio is ~46x
+# higher. VALUE SHARE != GRADIENT SHARE.
+#
+# WHY StdLoss IS KEPT (not reverted to L1):
+#   * the inert term is beta, not the time term -- reverting changes only WHICH
+#     phase-blind term owns the amplitude, gamma still leads;
+#   * L1 re-opens the collapse confound (0.213/0.553 vs 0.980), so a null result
+#     would be unattributable ("no phase information" vs "L1 suppressed it");
+#   * L1 charges 1.2868 for a PERFECT waveform delayed 0.20 s by the pulse
+#     transit time -- an error the model cannot fix -- and beta charges 1.0785
+#     there too, so the lag would be double-charged;
+#   * with StdLoss the decomposition stays clean and interpretable:
+#     alpha = amplitude, beta = phase, gamma = spectrum.
+#
+# READ THE RESULT LIKE THIS:
+#   * Pearson rises above ~0.1  -> phase IS readable; then push further with
+#     alpha 0.5 / beta 20 / gamma 0.05 (Pearson becomes the LEADING term) and
+#     re-check.
+#   * Pearson stays ~0 with beta at 31 % -> strong evidence the branch carries no
+#     usable per-clip phase. Note the residual caveat: gamma still holds 18 %,
+#     so it can still reward a template.
+#
+# CAVEAT -- clip_grad IS DELIBERATELY LEFT AT 5.0 to keep this a one-variable
+# change, BUT it is a real confound: with gamma=1.0 the gradient norm was set by
+# gamma, so clipping constantly rescaled the update toward gamma's direction.
+# At gamma=0.1 the norm will be far smaller and clipping may never bind, so part
+# of the difference vs the earlier runs is clipping behaviour, not weighting
+# alone. Watch `grad_norm` in the log; if it sits well below 5.0, say so when
+# reporting.
+#
+# Run from code/ (ALWAYS with -u: without it stdout is block-buffered through
+# `tee` and an interrupted run leaves a log with NO epoch lines):
+#   python -u runners/run_waveform.py -c configs/finetune/bp_rgb_roi_phaseprobe_local.yaml \
+#       2>&1 | tee ../output/finetune/bp_rgb_roi_phaseprobe_local/train.log
+#
+# 15 epochs, NOT 30: in the StdLoss run val Pearson peaked at epoch 2 and then
+# declined, so 15 is enough to see whether phase-locking appears while leaving
+# room past the early plateau. If Pearson is still rising at epoch 15, extend the
+# budget and re-run -- Stage 3 AUTO-RESUMES from --output_dir, so raising `epochs`
+# continues the same run.
+#
+# The auto-resume note still applies: this config points at a FRESH output_dir,
+# so it cannot silently continue any existing run.
+#
+# (The full original header of the parent config follows, unchanged.)
+#
+# Data path: data/raw/BP4D (the RAW tree), NOT data/processed/bp4d_canonical.
+# The ROI crop needs the native-resolution JPEGs + the 2DFeatures landmark track
+# and the RAW 1000 Hz Physiology files; the canonical tree has none of those (and
+# holds only 11 sessions). The dataset reuses data/rgb_roi_dataset.py, so the
+# Stage-2 exclusion rules apply unchanged: a (subject, task) whose 2DFeatures
+# frame count differs from the jpeg count is UNUSABLE and excluded whole (its
+# 1-D physiology is never loaded), and a clip whose frame span holds a
+# non-finite ROI landmark is dropped. On the local corpus those are F003_T8 and
+# F001_T8 -> 38 sessions produce clips (~654 at 5 s / 2.5 s hop).
+
+target: bp
+
+# ---- data: RAW-tree RGB face ROI (the Stage-2 input modality) ----
+data_set: rgb_roi                 # -> build_rgb_roi_finetune_dataset (Stage-3 view)
+data_path: ../data/raw/BP4D       # raw_root equivalent; NOT the canonical tree
+# ---- VISUAL FRONT-END CONTRACT -- every value here MUST equal the Stage-2 run,
+# ---- or the encoder sees a distribution it was never trained on ------------
+roi_landmarks: face               # all 49 landmarks = the whole face ("face" == '')
+roi_padding: 0.2                  # per-side ROI margin (+40% overall)
+roi_quantile: 0.0                 # min/max box (historical)
+decode_scale: 1                   # native JPEG decode
+phys_fs: 1000.0                   # RAW BP_mmHg.txt rate, resampled to --fs
+
+# ---- model: shared Stage-2 encoder + time-aligned waveform head ----
+model: project_multimae_base
+streams: rgb                      # the face ROI alone; the 1-D input IS the simulated failure.
+                                   #   `use_tir` is deliberately NOT set: it only controls the
+                                   #   CANONICAL paired dataset's rgb+tir stack and nothing reads
+                                   #   it on this path.
+finetune: ../output/pretrain/stage2_local_rgb_roi_bp/checkpoints/checkpoint-0029.pth
+head_hidden: 0                     # 0 = single Linear -> the Stage-2 heads.bp transfers VERBATIM.
+                                   #   Shape check for THIS geometry: Stage-2 heads.bp is
+                                   #   Linear(768, sig_kernel=16); waveform_head is
+                                   #   Linear(768, output_len/grid_t) = Linear(768, 496/31) =
+                                   #   Linear(768, 16) -> identical, so the head is inherited and
+                                   #   load_stage2_encoder prints "head transferred: ... (from heads.bp)".
+
+# ---- clip geometry -- MUST equal the Stage-2 geometry of `finetune` ----
+# The Stage-2 run was 5 s / temporal_stride 2 / sig_kernel 16 / input 64 ->
+# num_frames 62, seq_len 496, grid_t 31, and the checkpoint's
+# positions.rgb.pos_embed is [1, 496, 768] with heads.bp.weight (16, 768).
+# NOTE 5 s does not divide evenly: 5.0*25/2 = 62.5 -> 62 frames (banker's
+# rounding), kept 4.96 s -> seq_len 496. That identity (62/2 == 496/16) is what
+# satisfies the alignment contract; do not "round" it to 500.
+clip_duration: 5.0
+fps: 25.0
+tubelet: 2,16,16
+temporal_stride: 2
+input_size: 64
+seq_len: 0                         # 0 => 496 samples (4.96 s at fs 100 Hz)
+fs: 100
+sig_kernel: 16                     # 16/100 == 2*2/25 s -> one signal token == one video tubelet
+                                   #   (build_waveform_model ENFORCES samples_per_token == sig_kernel)
+signal_norm: zscore                # per clip; mirrors the Stage-2 target_norm: clip. REQUIRED for
+                                   #   BP: the raw BP_mmHg is mmHg with mean ~100, so "none" would
+                                   #   make the head fit a ~100 DC offset and dominate the MR-STFT
+                                   #   with the 0 Hz bin.
+
+# ---- data split (SUBJECT-disjoint; see the LOSO sweep above) ----
+train_ratio: 0.8                   # 4 subjects -> 3 train (F001-F003) / val = F004
+split_by: subject
+val_subject: ''                    # e.g. F001 = LOSO fold (overrides train_ratio/split_by)
+clip_stride: 4.0                   # window hop in SECONDS matching Stage 2
+max_clips: 0                       # 0 = no per-session cap (dev knob)
+
+# ---- joint spatio-temporal-spectral loss -- THE ONLY SUBSTANTIVE CHANGE ----
+# alpha is UNCHANGED (StdLoss already fixed amplitude); beta and gamma are the
+# probe variables. See the header for the measured shares and the projections.
+alpha: 1.0                         # L_time   (StdLoss = |std(pred) - std(target)|).
+                                   #   UNCHANGED from the parent config. It is what pins the
+                                   #   amplitude; it held 12.08 % of the parameter-gradient force
+                                   #   in this run. Blind to shape/polarity -- see
+                                   #   core/waveform_losses.StdLoss.
+beta: 10.0                         # L_Pearson (phase-locking) -- RAISED 1.0 -> 10.0. THE ONLY
+                                   #   CHANGE. It is the sole phase-sensitive term and held just
+                                   #   1.34 % (ep2) / 2.38 % (ep29) of the force at 1.0.
+                                   #   MEASURED in this run: 15.55 % -- an 11.6x rise, but MR-STFT
+                                   #   still led at 72.37 %, so this did NOT test a
+                                   #   phase-dominant regime.
+                                   #   It is scale-invariant, so raising it cannot disturb the
+                                   #   amplitude -- unlike gamma, it does not see the template.
+gamma: 1.0                         # L_MR-STFT (multi-resolution) -- DELIBERATELY UNCHANGED.
+                                   #   A magnitude-only loss: blind to phase AND to polarity
+                                   #   (MRSTFT(-x, x) == 0.0000). The value is 1.0, NOT 0.1 --
+                                   #   an earlier comment here claimed "LOWERED 1.0 -> 0.1", which
+                                   #   was never executed and caused a mis-reported result.
+                                   #   To actually reach a phase-dominant regime, set this to 0.1,
+                                   #   which projects to force shares 39.9 / 44.0 / 16.1
+                                   #   (std / pearson / stft) at the ep-14 state.
+fft_sizes: '64,128,256'            # the plan's bp default (SPECTRAL_FFT_DEFAULTS) and the same
+                                   #   set configs/finetune/bp.yaml uses, so the RGB-ROI branch
+                                   #   differs from it ONLY in the input modality. At fs=100:
+                                   #   64/128/256 samples = 1.56/0.78/0.39 Hz bins.
+eval_band: '1.0,2.5'               # BP band (plan: 1.0-2.5 Hz)
+
+# ---- training ----
+epochs: 15                         # 30 -> 15: see the header (val Pearson peaked at ep 2).
+                                   #   Auto-resume means raising `--epochs` later CONTINUES
+                                   #   this run on the same output_dir; lowering it is a no-op.
+batch_size: 4
+update_freq: 1
+save_ckpt_freq: 10
+eval_freq: 1
+
+# ---- optimizer ----
+opt: adamw
+lr: 1e-4
+min_lr: 1e-6
+warmup_epochs: 2
+weight_decay: 0.05
+clip_grad: 5.0                     # DELIBERATELY UNCHANGED -- one variable at a time. With
+                                   #   gamma=1.0 this norm was set by gamma, so clipping used to
+                                   #   rescale the update toward gamma's direction; at gamma=0.1
+                                   #   it may never bind. Watch grad_norm in the log and report
+                                   #   it as a confound if it sits well below 5.0.
+
+num_workers: 12                    # JPEG decode is the bottleneck on this path too (the same
+                                   #   125 native decodes/clip as Stage 2)
+save_preds: true                   # preds.npy/targets.npy/entries.json for the session evaluator
+
+# ---- logging ----
+output_dir: ../output/finetune/bp_rgb_roi_phaseprobe_local   # FRESH -> cannot resume an old run
+log_wandb: false
+wandb_project: thesis-project

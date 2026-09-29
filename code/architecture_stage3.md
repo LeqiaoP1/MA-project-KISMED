@@ -67,7 +67,7 @@ LATENT --> HEAD
 HEAD --> PRED
 ALIGN --> TGT
 
-node "L_time = L1 amplitude" as L1
+node "L_time = StdLoss |std(pred) - std(target)| (amplitude)" as L1
 node "L_Pearson = 1 - Pearson r (phase locking)" as PEAR
 node "L_MR-STFT = multi-resolution STFT magnitude (windows 64, 128, 256 at fs = 100 Hz)" as STFT
 

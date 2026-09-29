@@ -118,7 +118,7 @@ DEFAULT_CLIP_SECONDS = 8.0
 DEFAULT_FPS = 25.0
 DEFAULT_RESP_FS = 1000.0
 DEFAULT_INPUT_SIZE = 64
-DEFAULT_ROI_PADDING = 0.2
+DEFAULT_ROI_PADDING = 0.1
 
 #: 0.0 reproduces the historical box EXACTLY (min/max over all frames of the
 #: clip). A value in (0, 0.5) clips each side to the ``q`` / ``1-q`` PERCENTILE
