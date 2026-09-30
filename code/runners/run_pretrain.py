@@ -63,6 +63,16 @@ def get_args():
     parser.add_argument('--tasks', default='', type=str,
                         help='tir_roi/rgb_roi only: comma list of tasks '
                              '(empty=all)')
+    parser.add_argument('--task_set', default='', type=str,
+                        help="tir_roi/rgb_roi only: named task group(s) from "
+                             "the config's task_groups: block, e.g. 'low' or "
+                             "'low,high' (empty=all). UNIONED with --tasks, "
+                             'see code/data/task_groups.py')
+    parser.add_argument('--task_groups', default='', type=str,
+                        help='tir_roi/rgb_roi only: group definitions, '
+                             "overriding the config, e.g. "
+                             "'low=T1|T2;high=T7|T8|T9' (the config's "
+                             'task_groups: mapping in string form)')
     # ---- ROI-crop options (shared by the tir_roi and rgb_roi paths) --------
     parser.add_argument('--roi_padding', default=0.2, type=float,
                         help='tir_roi/rgb_roi only: fraction of the landmark-box '
@@ -310,6 +320,16 @@ def main(args):
     # Implement code/data/datasets.py::build_pretraining_dataset first.
     from data import build_pretraining_dataset
     dataset_train = build_pretraining_dataset(args)
+    # the task/group selection lives in the dataset -> make it visible in the
+    # run log (a Stage-2 run has no entries.json of its own)
+    _describe = getattr(dataset_train, 'describe', None)
+    if callable(_describe):
+        print('-' * 72)
+        print(_describe())
+        print('-' * 72)
+    else:
+        print(f'Dataset {type(dataset_train).__name__}: '
+              f'{len(dataset_train)} sample(s)')
     data_loader_train = make_data_loader(args, dataset_train, shuffle=True)
 
     # step-level warmup + cosine LR schedule (mirrors MultiMAE/VideoMAE)

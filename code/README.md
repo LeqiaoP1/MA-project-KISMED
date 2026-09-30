@@ -237,6 +237,20 @@ its procedure of record is `code/TirROI_Resp_plan.md`. A measured diagnosis of
 design that replaces it, is in `code/SpanMask_PhysioSignals.md` (with the STFT
 term's role re-derived under spans).
 
+**Task groups / "distortion levels" (`--task_set`, `task_groups:`).** A run can
+be restricted to a named subset of the BP4D+ task labels (`T1`..`T10`). The
+DEFINITIONS live in the config (`task_groups:` mapping, editable per
+experiment), the SELECTION is `task_set:` / `--task_set low,high`, and the two
+are UNIONED with the pre-existing explicit `--tasks T1,T2` list (both empty =
+all tasks, the historical behaviour). An unknown group name fails fast and lists
+the defined ones. Resolution is in `data/task_groups.py`
+(`python data/task_groups.py` self-tests it); the resolved task list feeds the
+same `discover_sessions` filter as before. Every clip records its group(s) in
+`entry['task_level']`, and the dataset prints a `task selection` +
+`clips per level` line (also in `dataset_summary.json`, `entries.json` and
+`metrics_final.json`). Implemented 2026-09-30 for the TIR-ROI Stage-2/Stage-3
+path (`run_pretrain.py`, `run_waveform.py`, `run_inspect_tir_resp.py`).
+
 **1-D masking pattern (`--physio_mask`).** The 1-D streams are masked either
 scattered (`random`, the default, unchanged) or as contiguous blocks (`span`,
 length per stream via `--mask_span_s`, count derived from the ratio). Span
@@ -473,7 +487,9 @@ SUBJECT=F001 TASK=T1 CLIPS=0,7 bash scripts/local/inspect_tir_resp.sh
 
 Files: `data/tir_resp_dataset.py` (dataset + `parse_ir_features` +
 `roi_box_from_landmarks` + `TirRoiRespPretrainDataset` for Stage 2 + `main`
-self-test), `runners/run_inspect_tir_resp.py` (per-clip figure + JSON reports),
+self-test), `data/task_groups.py` (named `task_groups:` -> explicit task-label
+selection + self-test), `runners/run_inspect_tir_resp.py` (per-clip figure +
+JSON reports),
 `scripts/local/inspect_tir_resp.sh`. Verified on the **40-session** local corpus
 (4 subjects x T1..T10, 45 858 thermal frames = 30.6 min): 431 clips at 4 s
 non-overlapping / 843 at a 2 s hop / 1663 at 1 s, 9-34 windows dropped for

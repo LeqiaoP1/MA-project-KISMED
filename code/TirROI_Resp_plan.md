@@ -451,6 +451,8 @@ decoder reconstruct from position alone). That is the next experiment.
   `build_tir_roi_pretrain_dataset(args)`.
 * `configs/pretrain/stage2_local_tir_roi_resp.yaml` (local, VideoMAE-inherited
   init, `streams: tir,resp`).
+* `data/task_groups.py` — named `task_groups:` -> explicit task-label resolution
+  (added 2026-09-30, see §11).
 * this document.
 
 **Files changed (additive only)**
@@ -460,6 +462,9 @@ decoder reconstruct from position alone). That is the next experiment.
 * `core/multimae.py` — `load_pretrained_encoder` resolves the patch-embed
   destination (report included in the returned counts dict).
 * `runners/run_pretrain.py` — `--data_set`, `--raw_root`, `--roi_padding`.
+* `runners/run_pretrain.py` / `runners/run_waveform.py` /
+  `runners/run_inspect_tir_resp.py` + the two TIR-ROI configs — the
+  `task_groups:` / `--task_set` selection added 2026-09-30 (see §11).
 
 **Local corpus (re-inventoried 2026-09-26: the raw tree grew from 11 thermal
 videos to 40 -- `F001..F004` x `T1..T10`).** Stats: **45 858 thermal frames /
@@ -747,5 +752,74 @@ span overlaps an all-`(0,0)` sentinel line is dropped. Measured on the train spl
 3. **`clip_grad` deviates from the twin** (5.0 ON vs 0.0 OFF): this branch carries
    the `gamma = 1.0` MR-STFT term on top of a checkpoint whose stream already
    diverged once, so clipping is cheap insurance. Documented in the config.
+
+---
+
+## 11. Task groups ("distortion levels") — `task_groups:` + `--task_set` (2026-09-30)
+
+**Why.** The BP4D+ tasks (`T1`..`T10`) differ in how much they disturb the
+recordings (head motion, speech, pain), so a run wants to be restricted to a
+named subset of them. Before this change the only way to do that was
+`tasks: 'T1,T2'` — fine for a one-off, but it cannot name a *level*.
+
+**What was added (all additive).**
+
+* `data/task_groups.py` (new) — `parse_task_groups` / `parse_task_set` /
+  `resolve_task_selection`. The group DEFINITIONS are **not hardcoded**: they
+  come from the config (`task_groups:` mapping, or the
+  `'low=T1|T2;high=T7|T8|T9'` string form). The selection is
+  `union(explicit tasks, every task of every selected group)`; an empty result
+  means "all tasks". An unknown group raises `TaskGroupError` listing the
+  defined names. `python data/task_groups.py` runs the self-test.
+* `data/tir_resp_dataset.py` — `BP4DPlusTIRRespDataset`,
+  `TirRoiRespPretrainDataset` and `TirRoiRespFinetuneDataset` take
+  `task_groups=` / `task_set=`, resolved BEFORE `discover_sessions`, so the
+  existing filter path is untouched. Each entry gains `task_level` (the group
+  name(s) its task belongs to); `stats` gains `tasks` / `task_set` /
+  `task_groups` / `clips_per_level` / `sessions_per_level`; `describe()` prints
+  a `task selection` + `clips per level` line. A SELECTED task with zero clips
+  warns (a partial corpus is normal, so it does not fail). The `main()`
+  self-test now also asserts `task_level` per clip.
+* `runners/run_pretrain.py` — `--task_set`, `--task_groups`, and a
+  `dataset.describe()` print at build (a Stage-2 run has no `entries.json`, so
+  the run log is where the selection has to land).
+* `runners/run_waveform.py` — `--tasks` (which did not exist here before),
+  `--task_set`, `--task_groups`; `entries.json` records `task` + `task_level`,
+  and `metrics_final.json` records `task_set` + `task_groups`.
+* `runners/run_inspect_tir_resp.py` — `--task_set` / `--task_groups`; the
+  selection lands in `dataset_summary.json` with the rest of `stats`.
+* `configs/pretrain/stage2_local_tir_roi_resp.yaml` and
+  `configs/finetune/resp_tir_roi_local.yaml` — a commented-as-editable
+  `task_groups:` example (`low` / `moderate` / `high`) plus `task_set: ''`.
+
+**Config block.**
+
+```yaml
+task_groups:                       # EXAMPLE -- edit per experiment
+  low: [T1, T2]
+  moderate: [T3, T4, T5, T6, T10]
+  high: [T7, T8, T9]
+task_set: ''                       # '' = all; 'low' or 'low,high'
+```
+
+**Compatibility.** With `task_set: ''` the resolver returns `tasks=None`, i.e.
+exactly the historical "all tasks" filter — verified: the default 8 s / 4 s-hop
+corpus still resolves to **388 clips**, and the shipped Stage-2 smoke logs the
+same `mse_tir 2.0890 / mse_resp 3.2286` as before.
+
+**Verified (2026-09-30).** `python data/task_groups.py` -> all checks pass;
+`data/tir_resp_dataset.py --task_set low` -> 8 sessions / 73 clips and
+`clips per level: low=73/8`; `--task T3 --task_set low` -> `T1,T2,T3` (union);
+`--task_set low,high` -> 20 sessions found; `--task_set bogus` -> clean
+`TaskGroupError` listing the defined groups; Stage-2 smoke (`--task_set low`)
+prints the selection; Stage-3 smoke on the real `checkpoint-0039.pth`
+(`--task_set low`) splits on the filtered 8 sessions (train F001-F003 / val
+F004) and writes `entries.json` with `task_level: ['low']` and
+`metrics_final.json` with `task_set: ['low']`.
+
+**Out of scope (deliberate).** The RGB-ROI path (`data/rgb_roi_dataset.py`) has
+the same `tasks=` filter shape and can adopt the resolver in a ~3-line
+follow-up; `split_by: task` is NOT reintroduced (filtering != splitting); the
+other per-frame inspectors are untouched.
 
 ---

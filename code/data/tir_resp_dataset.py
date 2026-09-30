@@ -81,10 +81,12 @@ from torch.utils.data import Dataset
 
 try:                                          # `python -m data.tir_resp_dataset`
     from . import video_io as vio
+    from . import task_groups as tgrp
 except ImportError:                           # `python data/tir_resp_dataset.py`
     import sys as _sys
     _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from data import video_io as vio
+    from data import task_groups as tgrp
 
 __all__ = ['NUM_LANDMARKS', 'TARGET_LANDMARKS', 'TARGET_LANDMARK_IDX',
            'TARGET_LANDMARK_NAMES', 'DEFAULT_CLIP_SECONDS', 'DEFAULT_FPS',
@@ -94,7 +96,8 @@ __all__ = ['NUM_LANDMARKS', 'TARGET_LANDMARKS', 'TARGET_LANDMARK_IDX',
            'ROI_LANDMARK_PRESETS', 'resolve_roi_landmarks',
            'DEFAULT_ROI_QUANTILE',
            'BP4DPlusTIRRespDataset', 'TirRoiRespPretrainDataset',
-           'build_tir_roi_pretrain_dataset']
+           'TirRoiRespFinetuneDataset',
+           'build_tir_roi_pretrain_dataset', 'build_tir_roi_finetune_dataset']
 
 #: 28 landmarks per frame in the IRFeatures track (user-guide Figure 3).
 NUM_LANDMARKS = 28
@@ -458,6 +461,13 @@ class BP4DPlusTIRRespDataset(Dataset):
     :param raw_root: raw BP4D root (default :func:`default_raw_root`, i.e.
         ``$RAW_DATA_PATH`` or ``<repo>/data/raw/BP4D``).
     :param subjects, tasks: optional subset (e.g. ``['F001']``, ``['T1','T2']``).
+    :param task_groups: named task GROUPS ("distortion levels") as a mapping
+        ``{'low': ['T1', 'T2'], ...}`` or the ``'low=T1|T2;high=T7'`` string
+        form. No mapping is hardcoded -- the definitions come from the config
+        (see :mod:`data.task_groups`).
+    :param task_set: the group name(s) to SELECT (``'low'`` / ``'low,high'`` /
+        ``['low','high']``); ``None``/``''``/``'all'`` = no group filter. The
+        final task list is the UNION of the resolved groups and ``tasks``.
     :param clip_seconds: clip length in seconds (8 s -> 200 frames / 8000
         samples); ``clip_frames = round(clip_seconds * fps)``.
     :param fps: NOMINAL frame rate used for the frame<->time mapping (25 for
@@ -481,6 +491,7 @@ class BP4DPlusTIRRespDataset(Dataset):
     def __init__(self, raw_root: Optional[str] = None,
                  subjects: Optional[Sequence[str]] = None,
                  tasks: Optional[Sequence[str]] = None,
+                 task_groups=None, task_set=None,
                  clip_seconds: float = DEFAULT_CLIP_SECONDS,
                  fps: float = DEFAULT_FPS,
                  resp_fs: float = DEFAULT_RESP_FS,
@@ -521,6 +532,14 @@ class BP4DPlusTIRRespDataset(Dataset):
         self.preload = bool(preload)
         self.verbose = bool(verbose)
 
+        # Named task GROUPS ("distortion levels") -> explicit task labels. The
+        # DEFINITIONS come from the YAML config (nothing is hardcoded); the
+        # selection is UNIONED with the explicit ``tasks`` list and the result
+        # feeds the SAME ``discover_sessions`` filter used before, so nothing
+        # downstream has to know about groups.
+        self.task_selection = tgrp.resolve_task_selection(
+            tasks=tasks, task_set=task_set, task_groups=task_groups)
+
         self.entries: List[dict] = []
         self.sessions: Dict[str, dict] = {}
         self.skipped: List[dict] = []
@@ -533,7 +552,8 @@ class BP4DPlusTIRRespDataset(Dataset):
         self._norm_cache: Dict[str, Tuple[float, float]] = {}
         self._preloaded: List[dict] = []
 
-        discovered = discover_sessions(self.raw_root, subjects=subjects, tasks=tasks)
+        discovered = discover_sessions(self.raw_root, subjects=subjects,
+                                       tasks=self.task_selection.tasks)
         self._build_entries(discovered, max_clips_per_session, max_entries)
         if not self.entries and not allow_empty:
             reasons = '; '.join(f"{s['session']}: {s['reason']}" for s in self.skipped)
@@ -632,6 +652,25 @@ class BP4DPlusTIRRespDataset(Dataset):
             if max_entries and len(self.entries) >= max_entries:
                 break
 
+        # per-level roll-up + a warning when a SELECTED task produced no clips
+        # (a partial corpus is normal, so this warns instead of failing)
+        clips_per_level: Dict[str, int] = {}
+        sessions_per_level: Dict[str, int] = {}
+        for entry in self.entries:
+            for lv in entry.get('task_level', ()):
+                clips_per_level[lv] = clips_per_level.get(lv, 0) + 1
+        for spec in self.sessions.values():
+            for lv in self.task_selection.levels_of(spec['task']):
+                sessions_per_level[lv] = sessions_per_level.get(lv, 0) + 1
+        if self.task_selection.tasks and not max_entries:
+            present = {e['task'] for e in self.entries}
+            missing = [t for t in self.task_selection.tasks if t not in present]
+            if missing:
+                self.warnings.append(
+                    f'selected task(s) {missing} produced 0 clips under '
+                    f'{self.raw_root} (not downloaded, all windows dropped, or '
+                    f'too short) -- the run uses the remaining task(s) only')
+
         self.stats = {
             'raw_root': self.raw_root,
             'sessions_discovered': len(discovered),
@@ -651,6 +690,13 @@ class BP4DPlusTIRRespDataset(Dataset):
             'roi_quantile': self.roi_quantile,
             'target_landmarks': list(self.target_landmarks),
             'norm': self.norm,
+            'tasks': (list(self.task_selection.tasks)
+                      if self.task_selection.tasks else None),
+            'task_set': list(self.task_selection.requested),
+            'task_groups': {k: list(v) for k, v in
+                            self.task_selection.levels.items()},
+            'clips_per_level': clips_per_level,
+            'sessions_per_level': sessions_per_level,
             'warnings': list(self.warnings),
             'skipped': list(self.skipped),
         }
@@ -669,6 +715,9 @@ class BP4DPlusTIRRespDataset(Dataset):
             'video': spec['video'],
             'ir_file': spec['ir_file'],
             'resp_file': spec['resp_file'],
+            # the group name(s) ("distortion level") this task belongs to, e.g.
+            # ['low']; [] when no defined group mentions the task.
+            'task_level': list(self.task_selection.levels_of(spec['task'])),
         }
 
     def _skip(self, spec: dict, reason: str) -> None:
@@ -830,7 +879,13 @@ class BP4DPlusTIRRespDataset(Dataset):
             f'roi             : landmarks {list(self.target_landmarks)} '
             f'padding {s["roi_padding"]:g} -> {self.input_size}x{self.input_size}',
             f'norm            : {s["norm"]}',
+            f'task selection  : {self.task_selection.describe()}',
         ]
+        if s['clips_per_level']:
+            lines.append('clips per level : ' + ', '.join(
+                f'{k}={s["clips_per_level"][k]} clip(s)/'
+                f'{s["sessions_per_level"].get(k, 0)} session(s)'
+                for k in sorted(s['clips_per_level'])))
         if self.session_fps:
             fps_vals = ', '.join(f'{k}={v:.4f}' for k, v in
                                  sorted(self.session_fps.items())[:4])
@@ -898,6 +953,7 @@ class TirRoiRespPretrainDataset(Dataset):
                  target_landmarks: Sequence[int] = TARGET_LANDMARKS,
                  resp_fs: float = DEFAULT_RESP_FS,
                  subjects=None, tasks=None,
+                 task_groups=None, task_set=None,
                  max_clips_per_session: Optional[int] = None,
                  max_entries: Optional[int] = None,
                  verbose: bool = False):
@@ -936,7 +992,8 @@ class TirRoiRespPretrainDataset(Dataset):
         # ---- clips: the ROI + respiration base dataset (RAW values) -------
         self.base = BP4DPlusTIRRespDataset(
             raw_root=raw_root, subjects=_as_list(subjects),
-            tasks=_as_list(tasks), clip_seconds=self.clip_duration,
+            tasks=tasks, task_groups=task_groups, task_set=task_set,
+            clip_seconds=self.clip_duration,
             fps=self.fps, resp_fs=self.resp_fs, input_size=self.input_size,
             clip_stride=clip_stride, roi_padding=self.roi_padding,
             roi_quantile=self.roi_quantile,
@@ -945,6 +1002,7 @@ class TirRoiRespPretrainDataset(Dataset):
             max_entries=max_entries, verbose=verbose)
         self.entries = self.base.entries
         self.stats = self.base.stats
+        self.task_selection = self.base.task_selection
 
         # the respiration grid of one clip is fixed -> precompute the mapping
         self._resp_idx = (np.arange(self.seq_len) / self.fs) * self.resp_fs
@@ -1046,6 +1104,7 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
                  signal_norm: str = 'zscore',
                  subjects: Optional[Sequence[str]] = None,
                  tasks: Optional[Sequence[str]] = None,
+                 task_groups=None, task_set=None,
                  max_clips_per_session: Optional[int] = None,
                  max_entries: Optional[int] = None,
                  verbose: bool = False):
@@ -1073,6 +1132,11 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
         self.val_subject = (str(val_subject).strip() or None
                             if val_subject is not None else None)
 
+        # resolve the group selection BEFORE the split, so the split and the
+        # data are computed on exactly the same task set (see data.task_groups)
+        self.task_selection = tgrp.resolve_task_selection(
+            tasks=tasks, task_set=task_set, task_groups=task_groups)
+
         # ---- the split, computed on USABLE sessions, before any clip work ---
         # "usable" = has BOTH the landmark file and the respiration file, so a
         # subject whose sessions are all untracked cannot silently sit on one
@@ -1080,7 +1144,7 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
         root = raw_root or default_raw_root()
         usable = [s for s in discover_sessions(root,
                                               subjects=_as_list(subjects),
-                                              tasks=_as_list(tasks))
+                                              tasks=self.task_selection.tasks)
                   if s['ir_file'] and s['resp_file']]
         if not usable:
             raise RuntimeError(
@@ -1118,6 +1182,7 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
               f'{"train" if self.is_train else "val"} = {self.split_keys} '
               f'({len(usable)} usable session(s), '
               f'{len({s["subject"] for s in usable})} subject(s))')
+        print(f'[data] tir_roi_resp {self.task_selection.describe()}')
 
         keep_subjects = ([k.rsplit('_', 1)[0] for k in self.split_keys]
                          if self.split_key_kind == 'session'
@@ -1130,7 +1195,8 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
             input_size=input_size, roi_padding=roi_padding,
             roi_quantile=roi_quantile,
             target_landmarks=target_landmarks, resp_fs=resp_fs,
-            subjects=_as_list(keep_subjects), tasks=tasks,
+            subjects=_as_list(keep_subjects), tasks=self.task_selection.tasks,
+            task_groups=task_groups, task_set=task_set,
             max_clips_per_session=max_clips_per_session,
             max_entries=max_entries, verbose=verbose)
 
@@ -1221,6 +1287,8 @@ def build_tir_roi_finetune_dataset(is_train: bool, test_mode: bool,
         signal_norm=str(getattr(args, 'signal_norm', 'zscore')),
         subjects=getattr(args, 'subjects', None),
         tasks=getattr(args, 'tasks', None),
+        task_groups=getattr(args, 'task_groups', None),
+        task_set=getattr(args, 'task_set', None),
         max_clips_per_session=getattr(args, 'max_clips', None),
         max_entries=getattr(args, 'max_entries', None),
         verbose=bool(getattr(args, 'verbose', False)))
@@ -1251,6 +1319,8 @@ def build_tir_roi_pretrain_dataset(args) -> TirRoiRespPretrainDataset:
             getattr(args, 'roi_landmarks', None)),
         subjects=getattr(args, 'subjects', None),
         tasks=getattr(args, 'tasks', None),
+        task_groups=getattr(args, 'task_groups', None),
+        task_set=getattr(args, 'task_set', None),
         max_clips_per_session=getattr(args, 'max_clips', None),
         max_entries=getattr(args, 'max_entries', None))
 
@@ -1296,6 +1366,12 @@ def _check_clip(ds: BP4DPlusTIRRespDataset, index: int) -> List[str]:
         mu, sd = float(resp.mean()), float(resp.std(unbiased=False))
         if abs(mu) > 1e-5 or abs(sd - 1.0) > 1e-3:
             fails.append(f'per-clip z-score off: mean {mu:.3e}, std {sd:.6f}')
+
+    # --- task-group bookkeeping (the "distortion level" the clip belongs to)
+    want = list(ds.task_selection.levels_of(entry['task']))
+    if list(entry.get('task_level') or []) != want:
+        fails.append(f'task_level {entry.get("task_level")!r} != {want!r} '
+                     f'for task {entry["task"]!r}')
 
     # --- ROI strategy: box inside the frame AND covering every target point
     ir = ds._landmarks(sess)
@@ -1369,6 +1445,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                    help='raw BP4D root (default $RAW_DATA_PATH)')
     p.add_argument('--subject', default=None, help='comma list, e.g. F001')
     p.add_argument('--task', default=None, help='comma list, e.g. T1,T2')
+    p.add_argument('--task_set', default=None,
+                   help="named task group(s) to select, e.g. 'low' or "
+                        "'low,high' (UNIONED with --task); '' = all tasks")
+    p.add_argument('--task_groups', default=None,
+                   help="group definitions, e.g. 'low=T1|T2;high=T7|T8|T9' "
+                        '(the config\'s task_groups: mapping in string form)')
     p.add_argument('--clip_seconds', type=float, default=DEFAULT_CLIP_SECONDS)
     p.add_argument('--clip_stride', type=float, default=None)
     p.add_argument('--fps', type=float, default=DEFAULT_FPS)
@@ -1384,7 +1466,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     def build(**over):
         kw = dict(raw_root=args.raw_root, subjects=split(args.subject),
-                  tasks=split(args.task), clip_seconds=args.clip_seconds,
+                  tasks=split(args.task), task_groups=args.task_groups,
+                  task_set=args.task_set, clip_seconds=args.clip_seconds,
                   clip_stride=args.clip_stride, fps=args.fps,
                   resp_fs=args.resp_fs, input_size=args.input_size,
                   roi_padding=args.roi_padding, norm=args.norm,
@@ -1412,7 +1495,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     untracked = sorted({s['subject'] for s in ds.skipped
                         if s['reason'] == 'missing_ir_features'})
     if untracked:
-        probe = build(subjects=[untracked[0]], tasks=None)
+        probe = build(subjects=[untracked[0]], tasks=None,
+                      task_set=None, task_groups=None)
         if len(probe) == 0 and any(s['reason'] == 'missing_ir_features'
                                    for s in probe.skipped):
             print(f'[ok] {untracked[0]} (no IRFeatures) -> skipped gracefully, '
@@ -1464,10 +1548,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             break
     if sentinel_sess:
         subj, task = sentinel_sess.rsplit('_', 1)
-        probe = build(subjects=[subj], tasks=[task])
+        # the sentinel probes are about the DROP RULES, not the selection ->
+        # build them with the group filter switched off
+        probe = build(subjects=[subj], tasks=[task], task_set=None,
+                      task_groups=None)
         dropped = int(probe.stats['clips_dropped_sentinel'])
         overlap = [e for e in probe.entries
-                   if sentinel_mask[e['frame_start']:e['frame_end']].any()]
+                   if e['session'] == sentinel_sess
+                   and sentinel_mask[e['frame_start']:e['frame_end']].any()]
         if overlap:
             print(f'[FAIL] {sentinel_sess}: {len(overlap)} kept clip(s) overlap '
                   f'a (0,0) sentinel line')

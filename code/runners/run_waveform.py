@@ -128,6 +128,17 @@ def get_args():
                              'Overrides --train_ratio/--split_by, and is the '
                              'way to sweep all 4 local subjects instead of '
                              'being stuck on one ratio-derived fold.')
+    parser.add_argument('--tasks', default='', type=str,
+                        help='thermal-ROI path (data_set: tir_roi*): explicit '
+                             'comma list of task labels, e.g. T1,T2 '
+                             '(empty=all); UNIONED with --task_set')
+    parser.add_argument('--task_set', default='', type=str,
+                        help="thermal-ROI path: named task group(s) from the "
+                             "config's task_groups: block, e.g. 'low' or "
+                             "'low,high' (empty=all); see data/task_groups.py")
+    parser.add_argument('--task_groups', default='', type=str,
+                        help='thermal-ROI path: group DEFINITIONS overriding '
+                             "the config, e.g. 'low=T1|T2;high=T7|T8|T9'")
     parser.add_argument('--clip_stride', default=0.0, type=float,
                         help='window hop in SECONDS (0 = non-overlapping, i.e. '
                              'hop == clip_duration); < clip_duration gives '
@@ -393,8 +404,12 @@ def main(args):
             except ImportError:
                 final['psd_mae'] = float('nan')
             n_pred = int(pred.shape[0])
+            _tsel = getattr(dataset_val, 'task_selection', None)
             save_json(os.path.join(args.output_dir, 'metrics_final.json'), {
                 'target': args.target, 'model': args.model,
+                'task_set': list(getattr(_tsel, 'requested', ()) or ()),
+                'task_groups': {k: list(v) for k, v in
+                                getattr(_tsel, 'levels', {}).items()},
                 'split_by': args.split_by, 'n_clips': n_pred,
                 'fs': args.fs, 'clip_duration': args.clip_duration,
                 'input_size': args.input_size, 'sig_kernel': args.sig_kernel,
@@ -447,7 +462,10 @@ def main(args):
                     entries.append({'session': meta['session'],
                                     't_start': float(t_start),
                                     'signals_file': sig or '',
-                                    'reference_source': source})
+                                    'reference_source': source,
+                                    'task': meta.get('task'),
+                                    'task_level': list(meta.get('task_level')
+                                                       or ())})
                 if len(entries) != n_pred:
                     print(f'[stage3] WARNING: {len(entries)} dataset entries vs '
                           f'{n_pred} predictions -- the loader was sharded '

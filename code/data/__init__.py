@@ -9,3 +9,6 @@ from .video_io import (list_image_files, read_image, read_image_range,
                        open_video)
 from .alignment import (plan_clip, slice_1d, resample_1d, available_duration,
                         frame_indices_at_target_rate)
+from .task_groups import (TaskGroupError, TaskSelection, levels_by_task,
+                          normalise_group, normalise_task, parse_task_groups,
+                          parse_task_set, resolve_task_selection)

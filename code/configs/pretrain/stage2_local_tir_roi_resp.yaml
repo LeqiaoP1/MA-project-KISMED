@@ -40,7 +40,21 @@ data_set: tir_roi
 # <repo>/data/raw/BP4D. The local corpus is 40 thermal sessions (4 subjects x
 # T1..T10, 45 858 frames = 30.6 min); at 8 s / 4 s hop that is 388 clips.
 subjects: ''                       # '' = all; 'F001' to pin one subject
-tasks: ''                          # '' = all
+tasks: ''                          # explicit task labels, '' = all;
+                                   #   UNIONED with task_set below
+# ---- task GROUPS ("distortion levels") ---------------------------------
+# Named subsets of the BP4D+ task labels (T1..T10). The DEFINITIONS live here,
+# not in code -- edit them freely per experiment. The tasks differ in how much
+# they disturb the recordings (head motion / speech / pain), so a run can be
+# restricted to one level. Resolution (union with `tasks`, fail-fast on an
+# unknown name) is in code/data/task_groups.py; the selected level of every
+# clip is recorded in `entry['task_level']` and in the dataset stats.
+task_groups:                       # EXAMPLE mapping -- edit as needed
+  low: [T2, T3]                    # settled / low motion
+  moderate: [T4, T7, T8, T10]  # mid motion
+  high: [T1, T5, T6, T9]               # high motion / speech / pain
+task_set: ''                       # '' = all tasks; 'low' or 'low,high'
+                                   #   (union of groups). CLI: --task_set
 
 model: project_multimae_base       # 768-d/12-layer -- MUST match pretrained_encoder
 pretrained_encoder: videomae:base  # 'base' = same; mae:base = plain MAE (2-D -> boxcar)

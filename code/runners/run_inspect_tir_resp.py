@@ -285,6 +285,13 @@ def main(argv=None) -> int:
                    help='raw BP4D root (default $RAW_DATA_PATH)')
     p.add_argument('--subject', default='F001', help='comma list, or all')
     p.add_argument('--task', default='T1', help='comma list, or all')
+    p.add_argument('--task_set', default=None,
+                   help="named task group(s) to select, e.g. 'low' or "
+                        "'low,high' (UNIONED with --task); default: no group "
+                        'filter. See code/data/task_groups.py')
+    p.add_argument('--task_groups', default=None,
+                   help="group definitions, e.g. 'low=T1|T2;high=T7|T8|T9' "
+                        "(the config's task_groups: mapping in string form)")
     p.add_argument('--clip_seconds', type=float, default=trd.DEFAULT_CLIP_SECONDS)
     p.add_argument('--clip_stride', type=float, default=None,
                    help='clip hop in seconds (default: non-overlapping)')
@@ -307,7 +314,8 @@ def main(argv=None) -> int:
 
     ds = trd.BP4DPlusTIRRespDataset(
         raw_root=args.raw_root, subjects=_split(args.subject),
-        tasks=_split(args.task), clip_seconds=args.clip_seconds,
+        tasks=_split(args.task), task_groups=args.task_groups,
+        task_set=args.task_set, clip_seconds=args.clip_seconds,
         clip_stride=args.clip_stride, fps=args.fps, resp_fs=args.resp_fs,
         input_size=args.input_size, roi_padding=args.roi_padding,
         max_entries=args.max_entries or None)
