@@ -842,3 +842,167 @@ follow-up; `split_by: task` is NOT reintroduced (filtering != splitting); the
 other per-frame inspectors are untouched.
 
 ---
+
+## 12. RECORDED RESULT (2026-10-01) — the TIR-ROI → RESP *waveform* line is closed
+
+**Verdict.** With the pipeline as designed, the thermal face ROI does not carry
+the respiration *phase*, so no architecture, loss, ROI or hyperparameter change
+can produce the waveform. Four independent measurements say this, and the
+control that validates the same measurement pipeline fires at 8/8. The line
+should be reported as a **measured negative**, not as a failure to train.
+
+### 12.1 The four measurements
+
+**(i) Pixel-level positive-control gate — 0/8 sessions (2026-09-26).**
+Statistic: `max` over ROI pixels **and** over lags in ±3 s of
+`|r(ROI pixel, belt)|` (lag-agnostic, so no delay assumption can defeat it),
+null = 200 phase-scrambled belts with the same max-over-pixels-and-lags
+statistic (so pixel multiplicity and the belt's autocorrelation are accounted
+for).
+
+| session | best \|r\| | null95 | p |
+|---|---|---|---|
+| F001_T1 | 0.629 | 0.655 | 0.400 |
+| F001_T3 | 0.530 | 0.661 | 1.000 |
+| F002_T1 | 0.705 | 0.737 | 0.400 |
+| F003_T2 | 0.712 | 0.777 | 1.000 |
+| F004_T2 | 0.706 | 0.811 | 1.000 |
+| F004_T3 | 0.464 | 0.596 | 1.000 |
+| F004_T9 | 0.553 | 0.610 | 0.800 |
+| F004_T8 | 0.771 | 0.867 | 1.000 |
+
+In every session the observed best `|r|` is **below the median of the scrambled
+null** (0.60-0.87): those 0.46-0.77 correlations are pure chance. **The pipeline
+demonstrably detects real signal** — same pixels, same boxes, reference = head
+motion (12-landmark centroid): **8/8 at p < 0.005**, `|r|` 0.67-0.98 against a
+null of ~0.1. The ROI tracks motion, not breathing. The 8-bit palette is *not*
+the limit: the respiration-band modulation is 2.9-36.2 palette levels (≫ 1) with
+30-95 distinct levels per pixel over time.
+
+**(ii) Probe gate (ridge, features → waveform, in-sample vs HELD-OUT).**
+A linear probe, so this is a lower bound for the encoder:
+
+| split | encoder in-sample | encoder held-out | raw 16×16 px in-sample | px held-out |
+|---|---|---|---|---|
+| subject-disjoint F001-F003 → F004 (the shipped protocol) | +0.276 | **−0.019** | +0.335 | **−0.053** |
+| **clip-disjoint**, same subjects | +0.261 | **+0.217** | +0.343 | +0.299 |
+| subject-disjoint F001-F002 → F003 | +0.285 | **−0.019** | +0.399 | +0.025 |
+
+Within a subject the mapping generalises to unseen clips; across subjects it is
+**exactly chance**, and raw pixels fail identically — so this is not an encoder
+defect.
+
+**(iii) Three Stage-3 arms (γ ladder), same `checkpoint-0039`, same corpus,
+same subject-disjoint split, scored on the same 75 val clips.**
+
+| arm | mae | rmse | pearson | psd_mae | `hf_power_rel` | pred std | seam ratio |
+|---|---|---|---|---|---|---|---|
+| `…_g000` (γ = 0) | 0.9706 | 1.3172 | −0.0328 | 0.2378 | 0.1957 | 0.698 | **1.44** |
+| `…_g001` (γ = 0.01) | 1.1932 | 1.5759 | −0.0272 | 0.3103 | 0.2453 | 0.866 | 2.64 |
+| `…_g10` (γ = 10) | 0.8241 | 1.2782 | +0.0117 | 0.2513 | 0.00018 | 0.012 | 0.46 |
+| **constant-0 baseline** | **0.7545** | 1.0000 | 0 | — | — | 0 | — |
+| target's own reference | — | — | — | — | 0.00296 | 1.000 | 1.43 |
+
+**All three arms lose to a constant predictor**, and the best val Pearson of any
+arm is `+0.0117` — noise. `psd_mae` even ranks the *collapsed* arm (γ = 10) as
+best, which is why `hf_power_rel` was added (§12.3).
+
+**(iv) The output is a FIXED waveform broadcast to every clip.** On the
+artifact-free arm (γ = 0):
+
+| control | value |
+|---|---|
+| `|r|` model vs its own target | 0.217 |
+| `|r|` **one fixed waveform** broadcast to every clip vs target | **0.229** |
+| cross-clip correlation of the predictions (targets: −0.004) | **0.49** (γ=0) / 0.756 (γ=0.01) |
+| phase-locking contrast: `|r(0)|` vs anti-phase floor (1.2-2.5 s) | **−0.148** (0.217 vs **0.365**) |
+| best single sinusoid fitted to the **target** | **0.638** |
+
+The model's per-clip output is statistically indistinguishable from a waveform
+that ignores the input, and it sits **below its own anti-phase floor** — the
+signature of zero phase information. The belt, meanwhile, is 0.64-describable by
+one sinusoid, so the failure is **phase**, not model expressivity.
+
+### 12.2 Why the γ term produced the visible high-frequency jitter
+
+`sig_kernel = 16` ⇒ the head emits **16 samples per visual token**, i.e. the
+token rate is `fs/16 = 6.25 Hz`. The assembled waveform is continuous in *value*
+at the seams but the *slope* kicks at every one: seam-slope ratio **2.64**
+(γ = 0.01) against the target's own **1.43**; at γ = 0 it is **1.44**, i.e. the
+artifact disappears. Spectral excess for γ = 0.01: **×143** (4-8 Hz), **×553**
+(8-20 Hz), **×991** at the token rate. At epoch 0 the transferred Stage-2 head
+measures `hf_power_rel` **2.48** (×838 the target) and α+β fine-tuning alone
+pulls it down to ~0.20. The mechanism is therefore: the jitter is inherited from
+the per-token head, α+β slowly clean it, and a small γ *keeps it alive* by paying
+the model to match the belt's noisy magnitude spectrum with the wrong phase —
+which is why γ = 0.01 is worse than γ = 0 on every metric.
+
+### 12.3 Tools this line produced (reusable, not TIR-specific)
+
+* `hf_power_rel` / `target_hf_power_rel` / `hf_lo_hz` in
+  `evaluation.metrics.spectral_metrics` — out-of-band energy relative to the
+  target's total power, the only Tier-2 number that can see a broadband
+  high-frequency floor (`psd_mae` normalises *inside* the band).
+* the per-token **seam ratio**, and the **degenerate-target skip** for a
+  dead-sensor plateau that fills the Welch segment (4/75 val clips here).
+* the Stage-2 → Stage-3 **ROI contract check** (`runners/run_waveform.py`):
+  `roi_landmarks` / `roi_padding` / `roi_quantile` / `input_size` change the
+  pixels without changing any tensor shape, so they are compared against the
+  values recorded *in the checkpoint* and a mismatch aborts the run.
+  `data/tir_resp_dataset.py --check_views` proves the two views cropped
+  identically when the keys match.
+
+### 12.4 Reproduction
+
+```bash
+# Stage 2 (40 epochs, 21 min): 181 clips -> 178 with min_signal_spread 0.01
+python -u runners/run_pretrain.py -c configs/pretrain/stage2_local_tir_roi_resp.yaml \
+    --task_set low,moderate \
+    --output_dir ../output/pretrain/stage2_local_tir_roi_resp_low_mid
+
+# Stage 3, the three arms (~40 s/epoch; ~28 min each)
+CKPT=../output/pretrain/stage2_local_tir_roi_resp_low_mid/checkpoints/checkpoint-0039.pth
+python -u runners/run_waveform.py -c configs/finetune/resp_tir_roi_local.yaml \
+    --task_set low,moderate --gamma 0.0  --finetune $CKPT \
+    --output_dir ../output/finetune/resp_tir_roi_low_mid_g000
+python -u runners/run_waveform.py -c configs/finetune/resp_tir_roi_local.yaml \
+    --task_set low,moderate --gamma 0.01 --finetune $CKPT \
+    --output_dir ../output/finetune/resp_tir_roi_low_mid_g001
+python -u runners/run_waveform.py -c configs/finetune/resp_tir_roi_local.yaml \
+    --task_set low,moderate --gamma 10   --finetune $CKPT \
+    --output_dir ../output/finetune/resp_tir_roi_low_mid_g10
+
+# checks
+python -m evaluation.metrics                        # metric self-test
+python data/tir_resp_dataset.py --subject F001 --task T2 --clip_seconds 8 \
+    --clip_stride 4 --max_entries 6 --n_check 2 --check_views
+```
+
+### 12.5 What would reopen the line
+
+Nothing in the model. A **new input that first passes the gate in (i)** — one
+session where the ROI demonstrably carries the respiration phase, with a genuine
+collapse at anti-phase. Until then any training run reproduces §12.1(iv) by
+construction. Candidates, in order of expected value: raw/radiometric thermal if
+a release exists; a tight nostril ROI read non-linearly; or the geometry known to
+work for visual respiration (side/body view) — not the face.
+
+### 12.6 Caveats (do not overstate)
+
+* **4 subjects** (F001-F004), 0.1-0.5 Hz band, face-centric framing. A claim
+  about BP4D+ is not supported.
+* The gate in (i) is **linear and single-pixel**: a distributed non-linear
+  encoding is not formally excluded (though motion is caught at 0.98, so
+  sensitivity is not the issue).
+* The Stage-2 checkpoint was pre-trained on **all** subjects (no subject split at
+  Stage 2), so a subject-disjoint *fine-tune* is not end-to-end subject-disjoint.
+* The belt is assumed to be a faithful respiration reference.
+* **One flagged anomaly, unexplained:** F004_T2's r = +0.96 in one ~31 s window
+  is genuinely phase-locked (anti-phase collapse to +0.18) while its pixels show
+  no respiration signal (best `|r|` 0.706 vs null 0.811, p = 1.0). It is one
+  trial out of 8 — do not build a claim on it.
+* Rate-only grounding remains **unresolved, not negative**: the model's predicted
+  rate does not track the truth (0.375 Hz in 6/8 sessions), so even a rate claim
+  is unsupported by these runs.
+
+---

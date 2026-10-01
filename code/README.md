@@ -448,6 +448,18 @@ reports `psd_skipped 4` and its `psd_mae` moved 0.3157 → 0.3103.
 **`psd_skipped` / `psd_mae` can therefore also differ from pre-2026-10-01 runs
 for that second reason.**
 
+**The verdict of the TIR-ROI → RESP waveform line is recorded in
+`TirROI_Resp_plan.md` §12 (2026-10-01) — the line is CLOSED.** Four independent
+measurements: the pixel-level positive-control gate is 0/8 sessions while the
+same pipeline catches head motion 8/8 at p<0.005 (so the negative is the data,
+not the test); the ridge probe is exactly chance across subjects (−0.019) and
++0.217 for unseen clips within a subject; all three Stage-3 arms lose to the
+constant-0 baseline (0.7545); and the γ=0 arm's output is indistinguishable from
+one waveform broadcast to every clip (|r| 0.217 vs 0.229, cross-clip correlation
+0.49) and sits BELOW its own anti-phase floor (0.365), while the belt is
+0.638-describable by a single sinusoid. §12.5 records what would reopen it (a new
+input that first passes the gate).
+
 ### Recorded data layout (asymmetric RGB jpg-seq + TIR .wmv)
 
 ```
