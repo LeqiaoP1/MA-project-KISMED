@@ -952,6 +952,25 @@ which is why γ = 0.01 is worse than γ = 0 on every metric.
   `data/tir_resp_dataset.py --check_views` proves the two views cropped
   identically when the keys match.
 
+The two diagnostics behind §12.1(iv) and §12.2 are **in the repo** —
+`analysis/tir_resp/prior_control.py` (the fixed-prior + best-sinusoid control)
+and `analysis/tir_resp/waveform_diagnostics.py` (spectra, token seams,
+clip-independence, the HF-window calibration). Both read only a finished run's
+saved `preds.npy` / `targets.npy` / `entries.json`, so they need no model, no GPU
+and no repo imports:
+
+```bash
+python analysis/tir_resp/prior_control.py
+python analysis/tir_resp/waveform_diagnostics.py
+```
+
+Both select the SAME clips across arms and drop (near-)constant targets
+(`np.corrcoef` on a constant target is `NaN`). Note the several-fold spectral
+excess of §12.2 is **window-dependent**: ×143 (4-8 Hz) / ×553 (8-20 Hz) at
+`nperseg` 512 vs ×131 / ×549 at 600 — the order of magnitude is not. (The first
+copy of these scripts lived in `/tmp` and was lost in the 2026-10-01 working-tree
+restore; the repo copies reproduce the recorded numbers, which is verified above.)
+
 ### 12.4 Reproduction
 
 ```bash
