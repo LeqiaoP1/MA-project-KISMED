@@ -32,7 +32,7 @@ _DEFAULT_AU_ROOT = os.path.join(_REPO, 'data', 'raw', 'BP4D', 'AUCoding', 'AU_OC
 
 
 def get_args():
-    parser = argparse.ArgumentParser('AU occurrence probe', add_help=False)
+    parser = argparse.ArgumentParser('AU occurrence probe', add_help=True)
     add_common_args(parser)
 
     # --- data ------------------------------------------------------------ #

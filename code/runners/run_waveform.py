@@ -35,16 +35,109 @@ import torch
 from core import WaveformJointLoss
 from engines import (evaluate_waveforms, predict_waveforms,
                      train_one_epoch_waveform)
-from runners._common import (add_common_args, env_or, init_env,
-                             make_data_loader, parse_args_with_config)
+from runners._common import (add_common_args, check_loader_not_empty, env_or,
+                             init_env, make_data_loader,
+                             parse_args_with_config)
 
 
 def _parse_fft_sizes(s):
     return tuple(int(x) for x in str(s).split(',') if x.strip())
 
 
+#: Keys that define WHICH PIXELS the encoder sees on the RAW-tree ROI paths
+#: (``data_set: tir_roi*``). They do NOT change any tensor shape, so a mismatch
+#: cannot be detected downstream: the run trains happily on an input the encoder
+#: was never pre-trained on (the checkpoint's positional embeddings and adapter
+#: shapes fit either way). They are therefore compared against the args RECORDED
+#: IN THE CHECKPOINT -- ``utils.checkpoint.save_model`` stores the whole
+#: namespace -- and a mismatch ABORTS the run unless ``--allow_roi_mismatch``
+#: declares it deliberate.
+ROI_CONTRACT_KEYS = ('roi_landmarks', 'roi_padding', 'roi_quantile',
+                     'input_size')
+
+
+def check_stage2_roi_contract(args, stage2_args, allow_mismatch=False):
+    """Verify that Stage 3 crops the ROI exactly as the Stage-2 run did.
+
+    Compares :data:`ROI_CONTRACT_KEYS` between the args this run will feed to
+    the dataset and the args stored in the ``--finetune`` checkpoint.
+    ``roi_landmarks`` is compared RESOLVED (1-indexed landmark tuple), so ``''``
+    == ``'nose_mouth'`` == the explicit 12-label CSV. Returns the comparison
+    table ``{key: {'stage2': .., 'stage3': .., 'match': bool}}``.
+    """
+    from data import TIR_ROI_DATA_SETS
+    from data.tir_resp_dataset import resolve_roi_landmarks
+
+    name = str(getattr(args, 'data_set', '') or '').strip().lower()
+    if name not in TIR_ROI_DATA_SETS:
+        return {}                       # only this path crops via roi_* args
+    if stage2_args is None:
+        print('[stage3] ROI contract: the --finetune checkpoint records no '
+              '`args` (it is a Stage-1 MAE/ViT init) -> nothing to compare.')
+        return {}
+
+    def _read(ns, key):
+        raw = getattr(ns, key, None)
+        if raw is None:
+            return None
+        if key == 'roi_landmarks':
+            try:
+                return resolve_roi_landmarks(raw)
+            except Exception:
+                return f'<unresolved {raw!r}>'
+        return int(raw) if key == 'input_size' else float(raw)
+
+    rows, mismatch = [], []
+    for key in ROI_CONTRACT_KEYS:
+        stage2, stage3 = _read(stage2_args, key), _read(args, key)
+        if stage2 is None or stage3 is None:
+            continue
+        rows.append((key, stage2, stage3, stage2 == stage3))
+        if stage2 != stage3:
+            mismatch.append((key, stage2, stage3))
+
+    if not rows:
+        print('[stage3] ROI contract: the Stage-2 checkpoint recorded none of '
+              f'{list(ROI_CONTRACT_KEYS)} -> nothing to compare.')
+        return {}
+
+    print('[stage3] ROI contract (Stage-2 checkpoint vs this run):')
+    for key, stage2, stage3, same in rows:
+        print(f'    {key:<14} {stage2!r} {"==" if same else "!="} {stage3!r}'
+              + ('' if same else '   <== MISMATCH'))
+
+    if mismatch:
+        detail = '; '.join(f'{k}: {a!r} -> {b!r}' for k, a, b in mismatch)
+        msg = (f'the Stage-3 ROI does not match the one the --finetune '
+               f'checkpoint was pre-trained on ({detail}). These keys change '
+               f'which PIXELS reach the encoder while leaving every tensor '
+               f'shape unchanged, so the run would look perfectly normal '
+               f'while fine-tuning an encoder on an input it never saw. '
+               f'Mirror the Stage-2 value(s), re-pretrain with the new ROI, '
+               f'or pass --allow_roi_mismatch for a deliberate ablation.')
+        if not allow_mismatch:
+            raise SystemExit('[stage3] ' + msg)
+        print('[stage3] WARNING: --allow_roi_mismatch -- ' + msg)
+
+    # Corpus-level keys: the same hazard class (Stage 3 would be evaluated on a
+    # corpus the encoder was not pre-trained on), but a deliberate ablation here
+    # is legitimate often enough that it only WARNS.
+    for key in ('task_set', 'tasks', 'min_signal_spread'):
+        stage2 = getattr(stage2_args, key, None)
+        stage3 = getattr(args, key, None)
+        if stage2 is None or stage3 is None:
+            continue
+        if str(stage2).strip() != str(stage3).strip():
+            print(f'[stage3] note: {key} differs from the Stage-2 run '
+                  f'({stage2!r} -> {stage3!r}) -> this run is not evaluated '
+                  f'on exactly the pre-trained corpus (allowed).')
+
+    return {key: {'stage2': stage2, 'stage3': stage3, 'match': same}
+            for key, stage2, stage3, same in rows}
+
+
 def get_args():
-    parser = argparse.ArgumentParser('Stage-3 waveform fine-tuning', add_help=False)
+    parser = argparse.ArgumentParser('Stage-3 waveform fine-tuning', add_help=True)
     add_common_args(parser)
 
     # model / task
@@ -161,6 +254,23 @@ def get_args():
                              'to that PERCENTILE of the landmark cloud, so '
                              'head-motion outliers cannot inflate the box '
                              '(try 0.05).')
+    parser.add_argument('--allow_roi_mismatch', action='store_true',
+                        default=False,
+                        help='run even when the ROI keys (roi_landmarks / '
+                             'roi_padding / roi_quantile / input_size) differ '
+                             'from the ones recorded in the --finetune '
+                             'checkpoint. Default OFF: a mismatched ROI '
+                             'changes the pixels WITHOUT changing any tensor '
+                             'shape, so it trains happily on an input the '
+                             'encoder never saw -- refuse it unless the '
+                             'deviation is deliberate.')
+    parser.add_argument('--min_signal_spread', default=0.0, type=float,
+                        help='thermal-ROI path: DROP a clip whose respiration '
+                             'window is (near-)constant, i.e. max-min < this '
+                             'many VOLTS (0.0 = off). A railed window is a '
+                             'dead sensor, not a breathing target. MUST equal '
+                             'the Stage-2 value, else the evaluated corpus is '
+                             'not the pre-trained one.')
     parser.add_argument('--decode_scale', default=1, type=int,
                         choices=[1, 2, 4, 8],
                         help='rgb_roi only: JPEG decode scale. 1 = native full '
@@ -263,7 +373,12 @@ def main(args):
         if args.finetune:
             from models.pretrained import resolve_encoder_weights
             args.finetune = resolve_encoder_weights(args.finetune)
-            load_stage2_encoder(model, args.finetune, target=args.target)
+            _stage2 = load_stage2_encoder(model, args.finetune,
+                                          target=args.target)
+            # the ROI is the one input contract nothing else can check: same
+            # tensor shape either way, different pixels.
+            check_stage2_roi_contract(args, _stage2.get('stage2_args'),
+                                      allow_mismatch=args.allow_roi_mismatch)
         else:
             print('[stage3] WARNING: no --finetune checkpoint -> the encoder '
                   'starts from random weights (this is NOT Stage-3 fine-tuning).')
@@ -298,6 +413,11 @@ def main(args):
     data_loader_train = make_data_loader(args, dataset_train, shuffle=True)
     data_loader_val = make_data_loader(args, dataset_val, shuffle=False,
                                        drop_last=False)
+    # fail fast + name the cause instead of crashing later in the logger
+    check_loader_not_empty(data_loader_train, 'train', args)
+    check_loader_not_empty(data_loader_val, 'val', args,
+                           extra='an empty val split means the run has nothing '
+                                 'to score (see the split keys printed above)')
 
     model_without_ddp = model
     if args.distributed:

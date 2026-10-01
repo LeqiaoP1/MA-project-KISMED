@@ -24,7 +24,7 @@ from runners._common import (add_common_args, env_or, init_env,
 
 
 def get_args():
-    parser = argparse.ArgumentParser('Project fine-tuning', add_help=False)
+    parser = argparse.ArgumentParser('Project fine-tuning', add_help=True)
     add_common_args(parser)
 
     # model

@@ -17,7 +17,7 @@ from runners._common import add_common_args, parse_args_with_config
 
 
 def get_args():
-    parser = argparse.ArgumentParser('Attention visualisation', add_help=False)
+    parser = argparse.ArgumentParser('Attention visualisation', add_help=True)
     add_common_args(parser)
     parser.add_argument('--model', default='project_vit_base_patch16_224',
                         type=str)

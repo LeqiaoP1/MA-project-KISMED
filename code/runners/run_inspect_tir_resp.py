@@ -118,16 +118,24 @@ def _plot_clip(ds, index: int, path: str, box, lm, frame0, tir, raw, tgt):
     ax['roi'].imshow(frame0, interpolation='nearest')
     ax['roi'].add_patch(Rectangle((x0, y0), x1 - x0, y1 - y0, fill=False,
                                   ec='#ff2020', lw=2.0))
-    p = np.asarray(lm)[:, np.asarray(_NOSE + _MOUTH) - 1, :]
+    # draw the landmarks the ROI was ACTUALLY built from (--roi_landmarks)
+    # instead of a hardcoded set: with a preset (or a custom CSV) the box would
+    # otherwise be annotated with points that did NOT produce it.
+    want = [int(l) for l in ds.target_landmarks]
+    p = np.asarray(lm)[:, np.asarray(want) - 1, :]
     ax['roi'].scatter(p[..., 0].ravel(), p[..., 1].ravel(), s=3.0, c='#00e5ff',
                       alpha=0.45, lw=0)
-    ax['roi'].scatter(p[0, :4, 0], p[0, :4, 1], s=44, c='#ffe600',
-                      edgecolors='k', lw=0.6, label='nose')
-    ax['roi'].scatter(p[0, 4:, 0], p[0, 4:, 1], s=44, c='#ff3df2',
-                      edgecolors='k', lw=0.6, label='mouth')
+    for labels, colour, name in ((_NOSE, '#ffe600', 'nose'),
+                                 (_MOUTH, '#ff3df2', 'mouth')):
+        sel = [want.index(lab) for lab in labels if lab in want]
+        if not sel:
+            continue
+        ax['roi'].scatter(p[0, sel, 0], p[0, sel, 1], s=44, c=colour,
+                          edgecolors='k', lw=0.6, label=name)
     ax['roi'].legend(loc='upper right', fontsize=9, framealpha=0.7)
     ax['roi'].set_title(f'{entry["session"]} clip {index}: '
-                        f'frames {entry["frame_start"]}-{entry["frame_end"] - 1}',
+                        f'frames {entry["frame_start"]}-{entry["frame_end"] - 1}'
+                        f'  [ROI: {len(want)} landmark(s)]',
                         fontsize=12)
 
     # --- panel 2: the tensor slice the dataset returns (not a re-crop)
@@ -186,6 +194,7 @@ def _clip_report(ds, index: int, box, fails) -> dict:
             'width_px': int(x1 - x0),
             'height_px': int(y1 - y0),
             'padding': float(ds.roi_padding),
+            'quantile': float(ds.roi_quantile),
             'landmarks_1based': list(ds.target_landmarks),
             'landmarks_0based': [int(i) for i in ds.target_idx],
             'static_over_frames': int(ds.clip_frames),
@@ -299,6 +308,25 @@ def main(argv=None) -> int:
     p.add_argument('--resp_fs', type=float, default=trd.DEFAULT_RESP_FS)
     p.add_argument('--input_size', type=int, default=trd.DEFAULT_INPUT_SIZE)
     p.add_argument('--roi_padding', type=float, default=trd.DEFAULT_ROI_PADDING)
+    p.add_argument('--roi_quantile', type=float,
+                   default=trd.DEFAULT_ROI_QUANTILE,
+                   help='0.0 = min/max landmark box (historical). A value in '
+                        '(0, 0.5) clips each side to that percentile of the '
+                        'clip landmark cloud, so head-motion outliers cannot '
+                        'inflate the box (try 0.05)')
+    p.add_argument('--roi_landmarks', default='',
+                   help='the landmarks whose bounding box IS the ROI: a preset '
+                        'name (nose_mouth | nostrils | nostril_mouth | '
+                        'nose_tip) or a comma list of 1-indexed labels, e.g. '
+                        '"10,21"; empty = the 12-point nose+mouth default. '
+                        'Must match the run whose input you are inspecting '
+                        '(measured: "nostrils" gives an unstable thin slab, '
+                        'prefer "nose_tip")')
+    p.add_argument('--min_signal_spread', type=float, default=0.0,
+                   help='DROP a clip whose respiration window is '
+                        '(near-)constant, i.e. max-min < this many VOLTS '
+                        '(0.0 = off). A railed window is a dead sensor, not a '
+                        'breathing target. Must match the run being inspected.')
     p.add_argument('--clip_index', default='0',
                    help='comma list of clip indices in the selection')
     p.add_argument('--max_entries', type=int, default=0, help='0 = no cap')
@@ -318,6 +346,9 @@ def main(argv=None) -> int:
         task_set=args.task_set, clip_seconds=args.clip_seconds,
         clip_stride=args.clip_stride, fps=args.fps, resp_fs=args.resp_fs,
         input_size=args.input_size, roi_padding=args.roi_padding,
+        roi_quantile=args.roi_quantile,
+        target_landmarks=trd.resolve_roi_landmarks(args.roi_landmarks),
+        min_signal_spread=args.min_signal_spread,
         max_entries=args.max_entries or None)
 
     print('=' * 76)

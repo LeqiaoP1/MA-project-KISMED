@@ -137,4 +137,14 @@ class MetricLogger(object):
             end = time.time()
         total_time = time.time() - start_time
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+        if len(iterable) == 0:
+            # An empty iterable is a CONFIGURATION problem (a split smaller than
+            # batch_size with drop_last, an over-narrow task filter, ...) and the
+            # runners report it with an actionable message at loader creation.
+            # Do not turn it into a ZeroDivisionError here -- that hid the cause
+            # behind a traceback in this print statement.
+            print(f'{header} WARNING: the iterable is EMPTY (0 batches) -- '
+                  f'nothing was trained; check --batch_size / --max_entries / '
+                  f'the data selection.')
+            return
         print(f'{header} Total time: {total_time_str} ({total_time / len(iterable):.4f} s / it)')

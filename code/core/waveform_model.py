@@ -337,8 +337,16 @@ def load_stage2_encoder(model: MultiModalWaveformRegressor, path: str,
     ``run_waveform`` (which silently loaded NOTHING because Stage-2 keys are
     ``enc_blocks.*`` while ``ProjectViT`` uses ``blocks.*``), this RAISES when
     no encoder tensor matches.
+
+    The returned info also carries ``stage2_args``: the args NAMESPACE the
+    checkpoint was written with (``utils.checkpoint.save_model`` stores the
+    whole namespace). ``None`` for a Stage-1 MAE/ViT file. ``run_waveform``
+    uses it to verify that Stage 3 crops the ROI exactly as Stage 2 did -- the
+    ROI keys change the pixels WITHOUT changing any tensor shape, so nothing
+    else in the pipeline can notice a mismatch.
     """
     ckpt = torch.load(path, map_location='cpu', weights_only=False)
+    stage2_args = ckpt.get('args') if isinstance(ckpt, dict) else None
     state = _unwrap_state(ckpt)
 
     if any(k.startswith('waveform_head.') for k in state):
@@ -364,7 +372,7 @@ def load_stage2_encoder(model: MultiModalWaveformRegressor, path: str,
                 f'Stage-2 multimodal MAE checkpoint (enc_blocks.*) nor a '
                 f'MAE/timm ViT checkpoint (blocks.*). Loaded nothing, so the '
                 f'encoder would silently start from random weights.')
-        return info
+        return dict(info, stage2_args=None)   # a Stage-1 file records no args
 
     cur = model.state_dict()
     src_qkv = state.get('enc_blocks.0.attn.qkv.weight')
@@ -454,4 +462,5 @@ def load_stage2_encoder(model: MultiModalWaveformRegressor, path: str,
         print(f'[stage3] head: {head_note}')
     return {'loaded': len(loaded), 'skipped': len(skipped),
             'shape_mismatch': len(mism), 'head_loaded': head_loaded,
-            'head_source': head_source, 'head_note': head_note}
+            'head_source': head_source, 'head_note': head_note,
+            'stage2_args': stage2_args}

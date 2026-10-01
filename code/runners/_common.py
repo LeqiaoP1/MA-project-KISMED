@@ -67,7 +67,15 @@ def add_common_args(parser: argparse.ArgumentParser):
 
 
 def parse_args_with_config(parser: argparse.ArgumentParser, argv=None):
-    """Parse ``argv``; if ``-c/--config`` given, its YAML supplies defaults."""
+    """Parse ``argv``; if ``-c/--config`` given, its YAML supplies defaults.
+
+    NOTE: the ``-c`` parser below is built with ``add_help=False`` so that it
+    only ever steals ``-c/--config``; every flag it does not know -- including
+    ``--help`` -- falls through to the caller's ``parser``. The runner parsers
+    must therefore use ``add_help=True`` (argparse's default) or ``--help``
+    dies with "unrecognized arguments: --help". Every training/eval runner had
+    ``add_help=False`` and no ``-h`` action until 2026-10-01.
+    """
     config_parser = argparse.ArgumentParser('Training Config', add_help=False)
     config_parser.add_argument('-c', '--config', default='', type=str,
                                metavar='FILE',
@@ -111,3 +119,37 @@ def make_data_loader(args, dataset, shuffle=True, drop_last=True,
         num_workers=args.num_workers, pin_memory=args.pin_mem,
         drop_last=drop_last)
     return loader
+
+
+def check_loader_not_empty(loader, name, args, extra=''):
+    """Fail fast when a split yields ZERO batches, naming the actual cause.
+
+    A ``DataLoader`` silently yields nothing when ``drop_last`` eats the whole
+    split (fewer samples than ``batch_size``) or when the dataset is empty after
+    filtering. The next symptom used to be a bare
+    ``ZeroDivisionError: float division by zero`` inside the progress logger,
+    which says nothing about the cause -- and the LR schedule, which clamps
+    ``steps_per_epoch`` to >= 1, happily pretends the epoch exists.
+    """
+    if len(loader) > 0:
+        return
+    n = len(loader.dataset)
+    batch_size = int(loader.batch_size or 0)
+    lines = [f'the {name} split yields 0 batches: {n} sample(s), '
+             f'batch_size {batch_size}, drop_last={bool(loader.drop_last)}']
+    if n == 0:
+        lines.append('the dataset is EMPTY: check --tasks/--task_set/'
+                     '--task_groups, --min_signal_spread and the split keys. '
+                     '(A subject-disjoint val split only holds the held-out '
+                     'subject, so that subject must have surviving clips.)')
+    elif batch_size and n < batch_size:
+        lines.append(f'{n} sample(s) < batch_size {batch_size} with '
+                     f'drop_last=True gives 0 batches: use --batch_size {n} '
+                     f'or less, or collect more clips (--max_entries 0, '
+                     f'wider --tasks/--task_set)')
+    else:
+        lines.append('lower --batch_size or collect more clips '
+                     '(--max_entries 0, wider --tasks/--task_set)')
+    if extra:
+        lines.append(extra)
+    raise SystemExit('[data] ' + '\n       '.join(lines))

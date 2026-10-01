@@ -405,6 +405,25 @@ Diagnosis, in order of discovery:
      breathing target, and the "predict 0" lesson it teaches is at best useless.
      With a threshold anywhere in `(0, 0.09) V` this removes exactly those 3
      clips and nothing else (388 -> 385).
+     **IMPLEMENTED 2026-10-01** as `min_signal_spread` (volts, default `0.0` =
+     off, exposed as `--min_signal_spread` on `run_pretrain` / `run_waveform` /
+     `run_inspect_tir_resp`); the shipped TIR-ROI configs set `0.01`. The rule
+     is per WINDOW (`max - min` of the raw window, computed on the model's
+     respiration grid), so a window that merely CONTAINS a rail but has real
+     breathing elsewhere is kept. RE-MEASURED on the low+moderate corpus (tasks
+     `T2,T3,T4,T7,T8,T10`): at 8 s / 4 s hop only **3 of 193 windows** have
+     spread exactly `0 V` -- F004_T3 @0 and F004_T7 @0/@4 s, i.e. exactly the
+     three clips this note predicted -- and the **next smallest spread is
+     0.86 V**, a much wider gap than the 0.09 V measured on the all-task corpus,
+     so any threshold in `(0, 0.86)` is equivalent (0.01/0.05/0.09 all give
+     178 clips vs 181). At the Stage-3 hop (2 s) it removes 4 of 79 val clips
+     and **0 training clips** -- so on the subject-disjoint split this cleans
+     the EVALUATION set, not training. Why it matters beyond hygiene: an
+     all-zero target gives a trivial zero predictor a free PERFECT score, so
+     those clips deflate the very baseline the model is measured against --
+     measured on the `--gamma 10` run, dropping them moves the constant-0
+     baseline MAE from 0.7163 to 0.7545 while the model's own MAE barely moves
+     (0.8236 -> 0.8241), i.e. the comparison becomes fair rather than kinder.
    * A NEAR-constant window is worse than an exactly-constant one: z-scoring
      amplifies sensor noise to unit variance, so the target looks statistically
      normal while being meaningless. Anything at the loss level (or a threshold

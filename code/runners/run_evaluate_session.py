@@ -78,7 +78,7 @@ def _agg(dicts, keys):
 
 def get_args():
     p = argparse.ArgumentParser('Offline session-level waveform evaluation',
-                                add_help=False)
+                                add_help=True)
     p.add_argument('--pred_dir', default='', type=str,
                    help='run output dir holding preds.npy/targets.npy/entries.json')
     p.add_argument('--pred_path', default='', type=str)

@@ -36,7 +36,7 @@ def _load(path):
 
 
 def get_args():
-    parser = argparse.ArgumentParser('Offline waveform evaluation', add_help=False)
+    parser = argparse.ArgumentParser('Offline waveform evaluation', add_help=True)
     parser.add_argument('--pred_path', required=True, type=str)
     parser.add_argument('--target_path', required=True, type=str)
     parser.add_argument('--fs', default=100.0, type=float)

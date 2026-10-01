@@ -85,6 +85,29 @@ seq_len: 0                         # 0 => round(kept_seconds*fs) = 800 samples
 input_size: 64                     # ROI patch side after cv2.resize (16 px patches
                                    # -> 4x4 spatial grid per frame)
 roi_padding: 0.2                   # landmark-box margin added on EACH side
+roi_landmarks: ''                  # '' = the historical 12-point nose+mouth set;
+                                   #   a preset (nose_mouth | nostrils |
+                                   #   nostril_mouth | nose_tip) or a CSV of
+                                   #   1-indexed labels. CHANGES THE VISUAL
+                                   #   INPUT -> a checkpoint trained with another
+                                   #   value must be re-pretrained. MEASURED:
+                                   #   'nostrils' is an unstable thin slab
+                                   #   (100x81 px still vs 91x15 px moving);
+                                   #   'nose_tip' is 36-70% smaller area and
+                                   #   stable -> prefer it for a ROI experiment.
+roi_quantile: 0.0                  # 0.0 = min/max over the clip (historical);
+                                   #   0.05 = 5th/95th percentile of the clip
+                                   #   landmark cloud (motion-robust box)
+min_signal_spread: 0.01            # VOLTS: DROP a clip whose respiration window
+                                   #   is (near-)constant. A railed -10 V window
+                                   #   is a dead sensor: it z-scores to an
+                                   #   all-zero label no model can predict and
+                                   #   only inflates MAE/RMSE. MEASURED on this
+                                   #   corpus (low+moderate): 3 windows have
+                                   #   spread EXACTLY 0 V and the next smallest
+                                   #   is 0.86 V, so 0.01 removes exactly them
+                                   #   (181 -> 178 clips) and nothing else.
+                                   #   0.0 = off (the historical behaviour).
 # ---- space-time alignment (checked hard by the model) ----
 # tubelet_t*temporal_stride/fps == sig_kernel/fs -> 2*2/25 == 16/100 == 160 ms,
 # and 100/2 == 800/16 == 50 tokens per stream; the model raises otherwise.

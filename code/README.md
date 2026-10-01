@@ -251,6 +251,85 @@ same `discover_sessions` filter as before. Every clip records its group(s) in
 `metrics_final.json`). Implemented 2026-09-30 for the TIR-ROI Stage-2/Stage-3
 path (`run_pretrain.py`, `run_waveform.py`, `run_inspect_tir_resp.py`).
 
+**TIR-ROI corpus hygiene + ROI knobs (2026-10-01).** Three additions to the
+thermal-ROI path, all also exposed on `run_inspect_tir_resp.py`:
+
+* `--min_signal_spread` (volts, default `0.0` = off): DROPs a clip whose
+  respiration window is (near-)constant — `max - min < threshold`. A railed
+  window (the corpus' `-10.0000 V` dead-channel marker) is a missing sensor: it
+  z-scores to an all-zero label that no model can predict, and it *rewards* a
+  trivial zero predictor with a free perfect score, which deflates the baseline
+  the model is compared against. MEASURED on the low+moderate corpus: 3 windows
+  (8 s / 4 s hop) or 4 windows (2 s hop, all in the F004 val split) have spread
+  EXACTLY `0 V` and the **next smallest is 0.86 V**, so anything in `(0, 0.86)`
+  removes exactly those and nothing else. The shipped configs use `0.01`.
+  Effect there: Stage-2 181 -> 178 clips; Stage-3 val 79 -> 75 (train unchanged,
+  so it cleans the *evaluation* set, not training). A window that merely
+  CONTAINS a rail but has real breathing elsewhere is kept.
+* `--roi_landmarks` / `--roi_quantile`: see the measured preset table in
+  `data/tir_resp_dataset.ROI_LANDMARK_PRESETS` — `nostrils` (2 points) is an
+  unstable thin slab (100x81 px on a still session, 91x15 px on a moving one);
+  prefer `nose_tip`. Any change is a change of the Stage-2 VISUAL INPUT, so the
+  checkpoint must be re-pretrained.
+* `run_inspect_tir_resp.py` now accepts both, and its figure draws the
+  landmarks the ROI was ACTUALLY built from (`ds.target_idx`) instead of a
+  hardcoded 12-point set, so the box and its annotation can no longer disagree.
+
+**The Stage-3 ROI contract is now ENFORCED (2026-10-01).** The ROI keys
+(`roi_landmarks`, `roi_padding`, `roi_quantile`, `input_size`) decide *which
+pixels* reach the encoder while leaving **every tensor shape unchanged**: a
+Stage-3 run with a different landmark set builds a perfectly shaped input, the
+checkpoint loads with all 150 encoder tensors matching, and the run fine-tunes
+on pixels the encoder was never pre-trained on — silently. `run_waveform.py`
+therefore compares them against the args the Stage-2 run wrote INTO the
+checkpoint (`utils.checkpoint.save_model` stores the whole namespace, so the
+check has no extra config to keep in sync) and **aborts** on a mismatch:
+
+```
+[stage3] ROI contract (Stage-2 checkpoint vs this run):
+    roi_landmarks  (9, 10, 11, 12, 13, 20, 21, 22, 23, 24, 25, 26) != (9, 10, 20, 21)   <== MISMATCH
+    roi_padding    0.2 == 0.2
+    roi_quantile   0.0 == 0.0
+    input_size     64 == 64
+```
+
+`roi_landmarks` is compared RESOLVED (1-indexed landmark tuple), so `''`,
+`'nose_mouth'` and the explicit 12-label CSV are recognised as the same thing.
+`--allow_roi_mismatch` downgrades it to a loud warning for a deliberate
+ablation; the corpus-level keys (`task_set`, `min_signal_spread`) only print a
+`note:` line, because deviating there is legitimate more often. Stage-1
+MAE/ViT inits record no args, so the check reports "nothing to compare".
+
+The crop itself is shared by construction (both views call
+`BP4DPlusTIRRespDataset._load`), and
+`python data/tir_resp_dataset.py --check_views` PROVES it: it builds the
+Stage-2 and the Stage-3 view on the same clip grid and asserts, per window,
+that the `[3, T, S, S]` clip tensor is **bit-identical**, the ROI box is equal,
+and the Stage-3 target equals the per-clip z-score of the Stage-2 raw volts
+(the label Stage 2 saw internally under `target_norm: clip`).
+
+**Empty splits now fail fast (2026-10-01).** A `DataLoader` yields ZERO batches
+when `drop_last` eats the whole split (fewer clips than `batch_size`, the usual
+case for a `--max_entries` smoke run) or when filtering leaves the dataset
+empty. The first symptom used to be a bare `ZeroDivisionError: float division by
+zero` inside the progress logger — and the pretrain LR schedule clamps
+`steps_per_epoch` to `>= 1`, so it did not notice either.
+`runners._common.check_loader_not_empty` is now called at loader creation in
+`run_pretrain.py` (train) and `run_waveform.py` (train + val) and names both the
+numbers and the fix:
+
+```
+[data] the train split yields 0 batches: 2 sample(s), batch_size 4, drop_last=True
+       2 sample(s) < batch_size 4 with drop_last=True gives 0 batches: use --batch_size 2
+       or less, or collect more clips (--max_entries 0, wider --tasks/--task_set)
+```
+
+With `0` samples it instead points at the filters (`--tasks`/`--task_set`/
+`--task_groups`, `--min_signal_spread`, the split keys). `logger.log_every` also
+prints a warning rather than dividing by zero if it is ever handed an empty
+iterable. No behaviour change on a healthy split (the pretrain smoke's epoch
+stats are bit-identical).
+
 **1-D masking pattern (`--physio_mask`).** The 1-D streams are masked either
 scattered (`random`, the default, unchanged) or as contiguous blocks (`span`,
 length per stream via `--mask_span_s`, count derived from the ratio). Span
@@ -306,6 +385,21 @@ is assembled **after** training by sliding the window over the session
 predictions, then evaluated offline with Tier 1 (time), Tier 2 (spectral) and
 Tier 3 (clinical/NeuroKit2, BP/HRV only). This stitching step is **not yet
 implemented** (no training involved).
+
+**Tier-2 resolution + degenerate-target fix (2026-10-01).** `spectral_metrics`
+used a hardcoded `nperseg=min(256, n)`, i.e. 0.39 Hz bins at `fs=100`; an
+`--eval_band` narrower than that (RESP `0.16,0.4` is 0.24 Hz wide) contained
+**one** bin, so `dominant_freq_error_hz` was identically `0.0` and `psd_mae`
+degenerated into "the fraction of clips whose banded PSD is zero". The window is
+now enlarged (up to the clip length) only when the requested band needs it —
+bands that already resolved are bit-identical, so BP numbers are unchanged — and
+clips with a (near-)constant target are SKIPPED and counted instead of scored.
+Two keys are now reported: `psd_band_bins` (bins inside the band) and
+`psd_skipped`. An 8 s clip cannot resolve RESP better than 0.125 Hz, so a note
+is printed when the band still holds < 3 bins — widen it (`--eval_band 0.1,0.6`)
+or evaluate session-level signals for Tier 2. `python -m evaluation.metrics`
+self-tests all of this. **`psd_mae` / `dominant_freq_error_hz` recorded before
+2026-10-01 are not comparable with values recorded after it.**
 
 ### Recorded data layout (asymmetric RGB jpg-seq + TIR .wmv)
 

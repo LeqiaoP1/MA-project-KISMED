@@ -97,7 +97,8 @@ __all__ = ['NUM_LANDMARKS', 'TARGET_LANDMARKS', 'TARGET_LANDMARK_IDX',
            'DEFAULT_ROI_QUANTILE',
            'BP4DPlusTIRRespDataset', 'TirRoiRespPretrainDataset',
            'TirRoiRespFinetuneDataset',
-           'build_tir_roi_pretrain_dataset', 'build_tir_roi_finetune_dataset']
+           'build_tir_roi_pretrain_dataset', 'build_tir_roi_finetune_dataset',
+           'check_view_parity']
 
 #: 28 landmarks per frame in the IRFeatures track (user-guide Figure 3).
 NUM_LANDMARKS = 28
@@ -480,6 +481,17 @@ class BP4DPlusTIRRespDataset(Dataset):
         i.e. ``clip_stride = clip_seconds``).
     :param roi_padding: per-side ROI margin, see :func:`roi_box_from_landmarks`.
     :param target_landmarks: 1-indexed landmark labels forming the ROI.
+    :param min_signal_spread: DROP a clip whose respiration window is
+        (near-)constant, i.e. ``max(window) - min(window) < min_signal_spread``
+        in raw VOLTS (``0.0`` = disabled, the historical behaviour). A railed
+        window (the corpus' ``-10.0000 V`` dead-channel marker) is a missing
+        sensor, not a breathing target: under ``norm='clip'`` / the Stage-3
+        ``signal_norm: zscore`` it z-scores to an all-zero label that no model
+        can predict and that only inflates MAE/RMSE. MEASURED on the local
+        corpus: the railed windows have spread EXACTLY ``0 V`` and the next
+        smallest clip is ``0.093 V``, so anything in ``(0, 0.09)`` selects
+        exactly them and nothing else. NOTE this rule is per WINDOW (a window
+        that merely CONTAINS a rail but has real breathing elsewhere is kept).
     :param norm: ``'clip'`` (per-clip z-score, default), ``'session'`` (z-score
         with the whole session's statistics) or ``'none'`` (raw volts).
     :param max_clips_per_session, max_entries: dev caps (smoke runs).
@@ -500,6 +512,7 @@ class BP4DPlusTIRRespDataset(Dataset):
                  roi_padding: float = DEFAULT_ROI_PADDING,
                  roi_quantile: float = DEFAULT_ROI_QUANTILE,
                  target_landmarks: Sequence[int] = TARGET_LANDMARKS,
+                 min_signal_spread: float = 0.0,
                  norm: str = 'clip',
                  max_clips_per_session: Optional[int] = None,
                  max_entries: Optional[int] = None,
@@ -529,6 +542,12 @@ class BP4DPlusTIRRespDataset(Dataset):
         self.target_idx = np.asarray([l - 1 for l in self.target_landmarks],
                                     dtype=np.int64)
         self.norm = norm
+        self.min_signal_spread = float(min_signal_spread)
+        if self.min_signal_spread < 0.0:
+            raise ValueError(f'min_signal_spread must be >= 0 (volts); got '
+                             f'{min_signal_spread!r}')
+        # sample offsets of one clip on the respiration grid (flat-window test)
+        self._resp_offsets = np.arange(self.resp_len)
         self.preload = bool(preload)
         self.verbose = bool(verbose)
 
@@ -569,6 +588,7 @@ class BP4DPlusTIRRespDataset(Dataset):
                        max_clips_per_session: Optional[int],
                        max_entries: Optional[int]) -> None:
         n_dropped_zero = 0
+        n_dropped_flat = 0
         for spec in discovered:
             sess, subj, task = spec['session'], spec['subject'], spec['task']
 
@@ -623,28 +643,46 @@ class BP4DPlusTIRRespDataset(Dataset):
                 continue
 
             bad = missing_frame_mask(ir, self.target_idx)
+            # only read the raw series when the flat-window rule is active
+            y_raw = (_load_1d(spec['resp_file'])
+                     if self.min_signal_spread > 0.0 else None)
 
             # --- 4. slice clips (requirement 2: any sentinel line drops the clip)
-            kept, dropped, starts = 0, 0, []
+            kept, dropped, dropped_flat, starts = 0, 0, 0, []
             for start in range(0, n_avail - self.clip_frames + 1,
                                self.stride_frames):
                 if bad[start:start + self.clip_frames].any():
                     dropped += 1
                     continue
+                if y_raw is not None:
+                    # raw window on the respiration grid, exactly as
+                    # _resp_clip() would build it (interp over the file)
+                    s0 = (start / self.fps) * self.resp_fs
+                    w = np.interp(s0 + self._resp_offsets,
+                                  np.arange(y_raw.shape[0], dtype=np.float64),
+                                  y_raw.astype(np.float64))
+                    if float(w.max() - w.min()) < self.min_signal_spread:
+                        dropped_flat += 1
+                        continue
                 starts.append(start)
                 kept += 1
                 if max_clips_per_session and kept >= max_clips_per_session:
                     break
             n_dropped_zero += dropped
+            n_dropped_flat += dropped_flat
             if not starts:
-                self._skip(spec, f'all_clips_dropped: {dropped} window(s) '
-                                 f'contain a (0,0) sentinel line')
+                why = [f'{dropped} window(s) contain a (0,0) sentinel line']
+                if dropped_flat:
+                    why.append(f'{dropped_flat} have a (near-)constant '
+                               f'respiration window (< {self.min_signal_spread:g} V)')
+                self._skip(spec, 'all_clips_dropped: ' + '; '.join(why))
                 continue
 
             self.sessions[sess] = dict(spec, n_frames=n_common, n_ir=n_ir,
                                        n_vid=n_vid, n_resp=n_sig,
                                        resp_start_limit=start_limit,
-                                       clips_dropped_sentinel=dropped)
+                                       clips_dropped_sentinel=dropped,
+                                       clips_dropped_flat=dropped_flat)
             for start in starts:
                 self.entries.append(self._make_entry(spec, start))
                 if max_entries and len(self.entries) >= max_entries:
@@ -678,6 +716,8 @@ class BP4DPlusTIRRespDataset(Dataset):
             'sessions_skipped': len(self.skipped),
             'clips': len(self.entries),
             'clips_dropped_sentinel': n_dropped_zero,
+            'clips_dropped_flat': n_dropped_flat,
+            'min_signal_spread': self.min_signal_spread,
             'clip_seconds': self.clip_seconds,
             'clip_frames': self.clip_frames,
             'clip_stride_seconds': self.stride_frames / self.fps,
@@ -872,7 +912,8 @@ class BP4DPlusTIRRespDataset(Dataset):
             f'{s["sessions_discovered"]} found / {s["sessions_skipped"]} skipped',
             f'clips           : {s["clips"]} '
             f'({s["clips_dropped_sentinel"]} window(s) dropped for a (0,0) '
-            f'sentinel line)',
+            f'sentinel line, {s["clips_dropped_flat"]} for a (near-)constant '
+            f'respiration window at min_signal_spread={s["min_signal_spread"]:g} V)',
             f'clip            : {s["clip_seconds"]:g} s = {s["clip_frames"]} '
             f'frames @ {s["fps"]:g} fps, stride {s["clip_stride_frames"]} '
             f'frames; resp {s["resp_len"]} samples @ {s["resp_fs"]:g} Hz',
@@ -951,6 +992,7 @@ class TirRoiRespPretrainDataset(Dataset):
                  roi_padding: float = DEFAULT_ROI_PADDING,
                  roi_quantile: float = DEFAULT_ROI_QUANTILE,
                  target_landmarks: Sequence[int] = TARGET_LANDMARKS,
+                 min_signal_spread: float = 0.0,
                  resp_fs: float = DEFAULT_RESP_FS,
                  subjects=None, tasks=None,
                  task_groups=None, task_set=None,
@@ -998,6 +1040,7 @@ class TirRoiRespPretrainDataset(Dataset):
             clip_stride=clip_stride, roi_padding=self.roi_padding,
             roi_quantile=self.roi_quantile,
             target_landmarks=target_landmarks, norm='none',
+            min_signal_spread=min_signal_spread,
             max_clips_per_session=max_clips_per_session,
             max_entries=max_entries, verbose=verbose)
         self.entries = self.base.entries
@@ -1101,6 +1144,7 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
                  resp_fs: float = DEFAULT_RESP_FS,
                  fps: float = DEFAULT_FPS,
                  target_landmarks: Sequence[int] = TARGET_LANDMARKS,
+                 min_signal_spread: float = 0.0,
                  signal_norm: str = 'zscore',
                  subjects: Optional[Sequence[str]] = None,
                  tasks: Optional[Sequence[str]] = None,
@@ -1195,6 +1239,7 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
             input_size=input_size, roi_padding=roi_padding,
             roi_quantile=roi_quantile,
             target_landmarks=target_landmarks, resp_fs=resp_fs,
+            min_signal_spread=min_signal_spread,
             subjects=_as_list(keep_subjects), tasks=self.task_selection.tasks,
             task_groups=task_groups, task_set=task_set,
             max_clips_per_session=max_clips_per_session,
@@ -1285,6 +1330,7 @@ def build_tir_roi_finetune_dataset(is_train: bool, test_mode: bool,
         resp_fs=float(getattr(args, 'resp_fs', DEFAULT_RESP_FS)),
         fps=float(getattr(args, 'fps', DEFAULT_FPS)),
         signal_norm=str(getattr(args, 'signal_norm', 'zscore')),
+        min_signal_spread=float(getattr(args, 'min_signal_spread', 0.0) or 0.0),
         subjects=getattr(args, 'subjects', None),
         tasks=getattr(args, 'tasks', None),
         task_groups=getattr(args, 'task_groups', None),
@@ -1317,6 +1363,7 @@ def build_tir_roi_pretrain_dataset(args) -> TirRoiRespPretrainDataset:
         roi_quantile=float(getattr(args, 'roi_quantile', DEFAULT_ROI_QUANTILE)),
         target_landmarks=resolve_roi_landmarks(
             getattr(args, 'roi_landmarks', None)),
+        min_signal_spread=float(getattr(args, 'min_signal_spread', 0.0) or 0.0),
         subjects=getattr(args, 'subjects', None),
         tasks=getattr(args, 'tasks', None),
         task_groups=getattr(args, 'task_groups', None),
@@ -1378,12 +1425,27 @@ def _check_clip(ds: BP4DPlusTIRRespDataset, index: int) -> List[str]:
     pts = ir[entry['frame_start']:entry['frame_end']][:, ds.target_idx, :]
     frames = ds._frames(entry)
     h, w = frames.shape[1], frames.shape[2]
-    box = roi_box_from_landmarks(pts, w, h, ds.roi_padding)
+    box = roi_box_from_landmarks(pts, w, h, ds.roi_padding,
+                                 quantile=ds.roi_quantile)
     x0, x1, y0, y1 = box
     if not (0 <= x0 < x1 <= w and 0 <= y0 < y1 <= h):
         fails.append(f'ROI box {box} outside the {w}x{h} frame')
     fx, fy = pts[..., 0].ravel(), pts[..., 1].ravel()
-    if not (x0 <= fx.min() and fx.max() < x1 and y0 <= fy.min() and fy.max() < y1):
+    # The box is built from the min/max of the landmark cloud OR from a
+    # PERCENTILE band of it (ds.roi_quantile), so the containment test and the
+    # independent recomputation below must use the SAME bounds -- checking the
+    # raw min/max against a percentile box fails spuriously.
+    q = min(max(float(ds.roi_quantile), 0.0), 0.49)
+    if q > 0.0:
+        lo, hi = 100.0 * q, 100.0 * (1.0 - q)
+        xlo, xhi = [float(v) for v in np.percentile(fx, [lo, hi])]
+        ylo, yhi = [float(v) for v in np.percentile(fy, [lo, hi])]
+    else:
+        xlo, xhi = float(fx.min()), float(fx.max())
+        ylo, yhi = float(fy.min()), float(fy.max())
+    band = (fx >= xlo) & (fx <= xhi) & (fy >= ylo) & (fy <= yhi)
+    if band.any() and not (x0 <= fx[band].min() and fx[band].max() < x1
+                           and y0 <= fy[band].min() and fy[band].max() < y1):
         fails.append('ROI box does not contain every target landmark')
     # A mouth+nose box that swallowed most of the frame means the landmarks are
     # not what we think they are (the clip would carry no ROI localisation).
@@ -1391,11 +1453,11 @@ def _check_clip(ds: BP4DPlusTIRRespDataset, index: int) -> List[str]:
         fails.append(f'ROI box {box} covers >50% of the {w}x{h} frame')
 
     # --- independent recomputation of the padded box (guards _clamp_box)
-    sw, sh = fx.max() - fx.min(), fy.max() - fy.min()
-    nx0 = math.floor(fx.min() - ds.roi_padding * sw)
-    nx1 = math.ceil(fx.max() + ds.roi_padding * sw) + 1
-    ny0 = math.floor(fy.min() - ds.roi_padding * sh)
-    ny1 = math.ceil(fy.max() + ds.roi_padding * sh) + 1
+    sw, sh = xhi - xlo, yhi - ylo
+    nx0 = math.floor(xlo - ds.roi_padding * sw)
+    nx1 = math.ceil(xhi + ds.roi_padding * sw) + 1
+    ny0 = math.floor(ylo - ds.roi_padding * sh)
+    ny1 = math.ceil(yhi + ds.roi_padding * sh) + 1
     if 0 < nx0 and nx1 < w and 0 < ny0 and ny1 < h:
         if (x0, x1, y0, y1) != (nx0, nx1, ny0, ny1):
             fails.append(f'ROI box {box} != the padded landmark box '
@@ -1434,6 +1496,93 @@ def _check_clip(ds: BP4DPlusTIRRespDataset, index: int) -> List[str]:
     return fails
 
 
+def check_view_parity(raw_root=None, subjects=None, tasks=None,
+                      task_groups=None, task_set=None,
+                      clip_seconds=DEFAULT_CLIP_SECONDS, clip_stride=None,
+                      fps=DEFAULT_FPS, resp_fs=DEFAULT_RESP_FS, fs=100.0,
+                      temporal_stride=2, tubelet_t=2,
+                      input_size=DEFAULT_INPUT_SIZE,
+                      roi_padding=DEFAULT_ROI_PADDING,
+                      roi_quantile=DEFAULT_ROI_QUANTILE,
+                      target_landmarks=TARGET_LANDMARKS,
+                      min_signal_spread=0.0, max_entries=None,
+                      n_check=3) -> List[str]:
+    """Prove that the Stage-2 and Stage-3 views crop the ROI IDENTICALLY.
+
+    Builds BOTH views on the SAME clip grid -- the Stage-3 view with
+    ``split_by='session', train_ratio=1.0`` so it keeps every session, because
+    the split is the one Stage-3 difference that changes WHICH clips exist and
+    not what a clip looks like -- then compares, for the same
+    ``(session, frame_start)`` window:
+
+    * the ROI box -- must be equal (same landmark set, padding and quantile);
+    * the ``[3, T, S, S]`` clip tensor -- must be BIT-identical: both views go
+      through ``BP4DPlusTIRRespDataset._load``, i.e. ONE static box from the
+      landmarks of THIS window and ONE ``cv2.resize`` per frame;
+    * the target -- the Stage-3 waveform must equal the per-clip z-score of the
+      Stage-2 RAW volts, which is exactly the label the Stage-2 model saw
+      internally under ``target_norm: clip``.
+
+    Returns a list of failure strings (empty == PASS).
+    """
+    common = dict(raw_root=raw_root, subjects=subjects, tasks=tasks,
+                  task_groups=task_groups, task_set=task_set,
+                  fs=fs, fps=fps, resp_fs=resp_fs,
+                  clip_duration=clip_seconds, clip_stride=clip_stride,
+                  temporal_stride=temporal_stride, tubelet_t=tubelet_t,
+                  input_size=input_size, roi_padding=roi_padding,
+                  roi_quantile=roi_quantile,
+                  target_landmarks=target_landmarks,
+                  min_signal_spread=min_signal_spread,
+                  max_entries=max_entries)
+    s2 = TirRoiRespPretrainDataset(streams=('tir', 'resp'), **common)
+    s3 = TirRoiRespFinetuneDataset(target='resp', is_train=True,
+                                   split_by='session', train_ratio=1.0,
+                                   **common)
+    fails: List[str] = []
+    idx3 = {(e['session'], e['frame_start']): i
+            for i, e in enumerate(s3.entries)}
+    n = 0
+    for i, e in enumerate(s2.entries):
+        key = (e['session'], e['frame_start'])
+        if key not in idx3:
+            continue
+        j = idx3[key]
+        item = s2[i]
+        tir3, wave3 = s3[j]
+        label = f'{key[0]} frames {key[1]}..{e["frame_end"]}'
+
+        if not torch.equal(item['tir'], tir3):
+            d = float((item['tir'] - tir3).abs().max())
+            fails.append(f'{label}: Stage-2 and Stage-3 clip tensors differ '
+                         f'(max |d| {d:g})')
+
+        box2 = s2.base.clip_roi_box(i)
+        box3 = s3.base.clip_roi_box(j)
+        if tuple(box2) != tuple(box3):
+            fails.append(f'{label}: ROI box {tuple(box2)} != {tuple(box3)}')
+
+        raw = item['resp'].numpy().astype(np.float64).reshape(-1)
+        want = (raw - raw.mean()) / (raw.std() + 1e-6)
+        got = wave3.numpy().astype(np.float64)
+        if want.shape != got.shape:
+            fails.append(f'{label}: Stage-3 target shape {got.shape} != the '
+                         f'Stage-2 window {want.shape}')
+        elif not np.allclose(want, got, atol=1e-6):
+            d = float(np.abs(want - got).max())
+            fails.append(f'{label}: Stage-3 target != zscore(Stage-2 raw '
+                         f'volts) (max |d| {d:g})')
+
+        n += 1
+        if n >= n_check:
+            break
+
+    if n == 0:
+        fails.append('the Stage-2 and Stage-3 views share NO window '
+                     '(check clip_stride / split)')
+    return fails
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """``python data/tir_resp_dataset.py`` -> data verification + shape tests."""
     import argparse
@@ -1457,6 +1606,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument('--resp_fs', type=float, default=DEFAULT_RESP_FS)
     p.add_argument('--input_size', type=int, default=DEFAULT_INPUT_SIZE)
     p.add_argument('--roi_padding', type=float, default=DEFAULT_ROI_PADDING)
+    p.add_argument('--roi_landmarks', default=None,
+                   help="ROI landmark set: a preset (nose_mouth | nostrils | "
+                        "nostril_mouth | nose_tip) or a CSV of 1-indexed "
+                        "labels, e.g. '10,21'; '' = the 12-point default")
+    p.add_argument('--roi_quantile', type=float, default=DEFAULT_ROI_QUANTILE,
+                   help='0.0 = min/max box (historical); >0 = percentile box')
+    p.add_argument('--min_signal_spread', type=float, default=0.0,
+                   help='VOLTS: drop a clip whose respiration window is '
+                        '(near-)constant (0.0 = off)')
+    p.add_argument('--temporal_stride', type=int, default=2,
+                   help='--check_views only: intra-window decimation')
+    p.add_argument('--tubelet', type=int, default=2,
+                   help='--check_views only: tubelet_t')
+    p.add_argument('--check_views', action='store_true',
+                   help='build the Stage-2 AND Stage-3 views on the same clip '
+                        'grid and assert the ROI crop, the ROI box and the '
+                        'target agree (the Stage-3 ROI contract)')
     p.add_argument('--norm', default='clip', choices=('clip', 'session', 'none'))
     p.add_argument('--max_entries', type=int, default=0, help='0 = no cap')
     p.add_argument('--n_check', type=int, default=3, help='clips to verify')
@@ -1470,7 +1636,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                   task_set=args.task_set, clip_seconds=args.clip_seconds,
                   clip_stride=args.clip_stride, fps=args.fps,
                   resp_fs=args.resp_fs, input_size=args.input_size,
-                  roi_padding=args.roi_padding, norm=args.norm,
+                  roi_padding=args.roi_padding,
+                  roi_quantile=args.roi_quantile,
+                  target_landmarks=resolve_roi_landmarks(args.roi_landmarks),
+                  min_signal_spread=args.min_signal_spread, norm=args.norm,
                   max_entries=args.max_entries or None, allow_empty=True)
         kw.update(over)
         return BP4DPlusTIRRespDataset(**kw)
@@ -1589,10 +1758,45 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                   f'{ds.input_size},{ds.input_size}], resp [{ds.resp_len}] '
                   f'({time.time() - t0:.1f} s)')
 
+    # Requirement 3: the Stage-3 view must crop the ROI EXACTLY as Stage 2 did.
+    # Same landmark set / padding / quantile / input_size + the same window ->
+    # bit-identical pixels and the matching target (otherwise a Stage-3 run
+    # fine-tunes an encoder on an input it was never pre-trained on, while every
+    # tensor shape still matches, so nothing else can catch it).
+    parity_fail = 0
+    if args.check_views:
+        print('-' * 72)
+        t0 = time.time()
+        pfails = check_view_parity(
+            raw_root=args.raw_root, subjects=split(args.subject),
+            tasks=split(args.task), task_groups=args.task_groups,
+            task_set=args.task_set, clip_seconds=args.clip_seconds,
+            clip_stride=args.clip_stride, fps=args.fps,
+            resp_fs=args.resp_fs, temporal_stride=args.temporal_stride,
+            tubelet_t=args.tubelet, input_size=args.input_size,
+            roi_padding=args.roi_padding, roi_quantile=args.roi_quantile,
+            target_landmarks=resolve_roi_landmarks(args.roi_landmarks),
+            min_signal_spread=args.min_signal_spread,
+            max_entries=args.max_entries or None, n_check=args.n_check)
+        elapsed = time.time() - t0
+        if pfails:
+            parity_fail = len(pfails)
+            print(f'[FAIL] Stage-2 vs Stage-3 ROI parity: {parity_fail} '
+                  f'issue(s) ({elapsed:.1f} s)')
+            for f in pfails:
+                print(f'       - {f}')
+        else:
+            print(f'[ok] Stage-2 and Stage-3 views return the SAME ROI crop, '
+                  f'the SAME box and the matching target ({elapsed:.1f} s)')
+    else:
+        print('[--] ROI parity not checked (pass --check_views)')
+
     print('-' * 72)
-    print(f'{"FAIL" if n_fail else "PASS"}: {len(idxs) - n_fail}/{len(idxs)} '
-          f'clip check(s) passed, {len(ds)} clip(s) in the dataset')
-    return 1 if n_fail else 0
+    print(f'{"FAIL" if (n_fail or parity_fail) else "PASS"}: '
+          f'{len(idxs) - n_fail}/{len(idxs)} clip check(s) passed'
+          + (f', {parity_fail} ROI-parity issue(s)' if parity_fail else '')
+          + f', {len(ds)} clip(s) in the dataset')
+    return 1 if (n_fail or parity_fail) else 0
 
 
 if __name__ == '__main__':

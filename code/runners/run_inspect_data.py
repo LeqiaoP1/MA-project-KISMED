@@ -143,7 +143,7 @@ def _wipe_inspect_outputs(output_dir: str):
 
 
 def get_args():
-    p = argparse.ArgumentParser('BP4D data-pipeline smoke test', add_help=False)
+    p = argparse.ArgumentParser('BP4D data-pipeline smoke test', add_help=True)
     p.add_argument('--data_path', default=_default_data_path(),
                    help='canonical sessions root (see data/prepare_bp4d.py); '
                         'default: $DATA_PATH, else the in-repo '

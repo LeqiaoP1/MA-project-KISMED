@@ -59,12 +59,66 @@ def time_domain_metrics(pred, target):
     }
 
 
-def spectral_metrics(pred, target, fs=100.0, band=None):
+#: Welch window used when NO band is requested. Kept at the historical value so
+#: unbanded ``psd_mae`` stays comparable with previously recorded runs.
+DEFAULT_NPERSEG = 256
+#: How many Welch bins a requested ``band`` should contain for the dominant-
+#: frequency metric to be informative (``argmax`` over 1 bin is constant 0).
+DEFAULT_MIN_BAND_BINS = 3
+#: Relative floor on a clip's de-meaned TARGET: below it the band/window carries
+#: no target energy and the comparison is SKIPPED (a constant window -- e.g. a
+#: railed -10 V respiration rail -- has no spectrum to match).
+_PSD_REL_TOL = 1e-6
+
+
+def _resolve_nperseg(n, fs, band, min_band_bins=DEFAULT_MIN_BAND_BINS):
+    """Welch window length that puts >= ``min_band_bins`` bins inside ``band``.
+
+    The window is only ENLARGED when the historical default
+    (:data:`DEFAULT_NPERSEG`) is too coarse for the requested band, so a band
+    that already resolves fine is bit-identical to the old behaviour::
+
+        nperseg = min(n, max(DEFAULT_NPERSEG, ceil(min_bins * fs / band_width)))
+
+    WHY THIS EXISTS (measured 2026-10-01): at ``fs=100`` and
+    ``nperseg=min(256, n)`` the bin spacing is ``100/256 = 0.3906 Hz``, so the
+    whole RESP band ``(0.16, 0.4)`` -- 0.24 Hz wide -- contained EXACTLY ONE
+    bin. ``dominant_freq_error_hz`` was therefore identically ``0.0`` (argmax
+    over one bin) and ``psd_mae`` degenerated into "the fraction of clips whose
+    banded PSD is zero". A band that is narrower than the achievable resolution
+    cannot be scored this way; the largest window a clip of ``n`` samples allows
+    is the best we can do (``1/n`` Hz bins), which is reported as
+    ``psd_band_bins`` so a still-under-resolved band is visible, not silent.
+    """
+    n = int(n)
+    if band is None or n <= 0:
+        return int(min(DEFAULT_NPERSEG, n)) if n > 0 else int(DEFAULT_NPERSEG)
+    width = float(band[1]) - float(band[0])
+    if width <= 0:
+        return int(min(DEFAULT_NPERSEG, n))
+    want = int(np.ceil(int(min_band_bins) * float(fs) / width))
+    return int(max(16, min(n, max(DEFAULT_NPERSEG, want))))
+
+
+def spectral_metrics(pred, target, fs=100.0, band=None,
+                     min_band_bins=DEFAULT_MIN_BAND_BINS, warn=True):
     """Tier 2: Welch PSD consistency + dominant-frequency error.
 
     :param fs: sampling rate (Hz) of the waveforms
     :param band: optional (f_low, f_high) band-pass region to compare, e.g.
         (1.0, 2.5) for BP or (0.16, 0.4) for RESP.
+    :param min_band_bins: minimum number of Welch bins the band should hold;
+        the window is enlarged up to the clip length to try to reach it (see
+        :func:`_resolve_nperseg`).
+    :param warn: print a one-shot note when the band cannot be resolved well
+        enough, or when clips were skipped for having no in-band target energy.
+
+    Clips whose de-meaned TARGET is (near-)zero are SKIPPED rather than scored
+    ``1.0``: with a unit-sum normalisation a constant target produces a
+    zero spectrum and the difference against any prediction saturates, so
+    averaging it in makes ``psd_mae`` a count of degenerate clips. The skipped
+    count is returned as ``psd_skipped`` and the in-band bin count as
+    ``psd_band_bins`` (``None`` when no band was given).
     """
     if _sp_signal is None:
         raise ImportError('spectral_metrics requires scipy (`pip install scipy`)')
@@ -74,10 +128,24 @@ def spectral_metrics(pred, target, fs=100.0, band=None):
     if p.shape != t.shape:
         raise ValueError(f'Shape mismatch pred {p.shape} vs target {t.shape}')
 
+    n = int(t.shape[1])
+    nperseg = _resolve_nperseg(n, fs, band, min_band_bins)
+    f_probe = np.fft.rfftfreq(nperseg, d=1.0 / float(fs))
+    band_bins = (int(((f_probe >= band[0]) & (f_probe <= band[1])).sum())
+                 if band is not None else None)
+
+    # a clip whose de-meaned target is (near-)constant has nothing to compare
+    t_energy = np.abs(t - t.mean(axis=1, keepdims=True)).max(axis=1)
+    tol = _PSD_REL_TOL * float(t_energy.max()) if t_energy.size else 0.0
+
     psd_mae, dom_freq_err = [], []
-    for pi, ti in zip(p, t):
-        f_p, pxx_p = _sp_signal.welch(pi, fs=fs, nperseg=min(256, len(pi)))
-        f_t, pxx_t = _sp_signal.welch(ti, fs=fs, nperseg=min(256, len(ti)))
+    n_skipped = 0
+    for pi, ti, e_t in zip(p, t, t_energy):
+        if e_t <= tol:
+            n_skipped += 1
+            continue
+        f_p, pxx_p = _sp_signal.welch(pi, fs=fs, nperseg=min(nperseg, len(pi)))
+        f_t, pxx_t = _sp_signal.welch(ti, fs=fs, nperseg=min(nperseg, len(ti)))
 
         if band is not None:
             keep = (f_p >= band[0]) & (f_p <= band[1])
@@ -94,7 +162,100 @@ def spectral_metrics(pred, target, fs=100.0, band=None):
 
         dom_freq_err.append(abs(_dominant(f_p, pxx_p) - _dominant(f_t, pxx_t)))
 
+    if warn:
+        if band is not None and band_bins is not None and band_bins < min_band_bins:
+            print(f'[metrics] NOTE: the eval band {tuple(band)} holds only '
+                  f'{band_bins} Welch bin(s) at fs={fs:g} with nperseg={nperseg} '
+                  f'(>= {min_band_bins} wanted; a clip of {n} samples cannot '
+                  f'resolve better than {fs / max(n, 1):.3f} Hz). Widen --eval_band '
+                  f'(resp: >= 0.5 Hz, e.g. 0.1,0.6) or evaluate longer '
+                  f'(session-level) signals for a meaningful Tier-2.')
+        if n_skipped:
+            print(f'[metrics] NOTE: {n_skipped}/{len(t)} clip(s) skipped in the '
+                  f'spectral metrics -- a (near-)constant target has no spectrum '
+                  f'to compare (a railed/dead sensor window).')
+    if not psd_mae:
+        return {'psd_mae': float('nan'), 'dominant_freq_error_hz': float('nan'),
+                'psd_band_bins': band_bins, 'psd_skipped': n_skipped}
+
     return {
         'psd_mae': float(np.mean(psd_mae)),
         'dominant_freq_error_hz': float(np.mean(dom_freq_err)),
+        'psd_band_bins': band_bins,
+        'psd_skipped': n_skipped,
     }
+
+
+# --------------------------------------------------------------------------- #
+# self-test: ``python -m evaluation.metrics``
+# --------------------------------------------------------------------------- #
+def _self_test() -> int:
+    """Regression test for the Tier-2 resolution + degenerate-target fixes."""
+    fails = []
+
+    def check(label, got, want):
+        if got != want:
+            fails.append(f'{label}: got {got!r}, want {want!r}')
+
+    # 1. nperseg is only ENLARGED, never shrunk -> well-resolved bands unchanged
+    check('nperseg band=None', _resolve_nperseg(800, 100.0, None), 256)
+    check('nperseg bp 1.0-2.5 (unchanged)', _resolve_nperseg(496, 100.0, (1.0, 2.5)), 256)
+    check('nperseg resp 0.16-0.4 -> clip length',
+          _resolve_nperseg(800, 100.0, (0.16, 0.4)), 800)
+    check('nperseg short clip clamps to n', _resolve_nperseg(120, 100.0, (0.16, 0.4)), 120)
+
+    rng = np.random.default_rng(0)
+    fs, n = 100.0, 800
+    time = np.arange(n) / fs
+    n_clips = 4
+    t = np.stack([np.sin(2 * np.pi * 0.3 * time + 0.3 * i) for i in range(n_clips)])
+    t[-1] = 5.0                                    # a (railed) constant window
+
+    # 2. pred == target -> zero PSD error, and the degenerate clip is SKIPPED
+    r = spectral_metrics(t.copy(), t, fs=fs, band=(0.16, 0.4), warn=False)
+    check('identical -> psd_mae 0', r['psd_mae'], 0.0)
+    check('identical -> dom err 0', r['dominant_freq_error_hz'], 0.0)
+    check('degenerate clip skipped', r['psd_skipped'], 1)
+
+    # 3. the band now holds >= 2 bins (it held EXACTLY 1 at nperseg 256)
+    check('band bins at the fix', r['psd_band_bins'], 2)
+    old_bins = int(((np.fft.rfftfreq(min(256, n), 1.0 / fs) >= 0.16)
+                    & (np.fft.rfftfreq(min(256, n), 1.0 / fs) <= 0.4)).sum())
+    check('band bins before the fix (the bug)', old_bins, 1)
+
+    # 4. the metric still DISCRIMINATES (a flat prediction is scored worse)
+    flat = np.zeros_like(t)
+    r_flat = spectral_metrics(flat, t, fs=fs, band=(0.16, 0.4), warn=False)
+    if not r_flat['psd_mae'] > r['psd_mae']:
+        fails.append(f"flat pred not scored worse: {r_flat['psd_mae']} vs "
+                     f"{r['psd_mae']}")
+
+    # 5. a fully degenerate target set returns NaN + the skip count (no 1.0s)
+    r_deg = spectral_metrics(t.copy(), np.full_like(t, 3.0), fs=fs,
+                             band=(0.16, 0.4), warn=False)
+    if not (np.isnan(r_deg['psd_mae']) and r_deg['psd_skipped'] == n_clips):
+        fails.append(f'fully degenerate set: {r_deg}')
+
+    # 6. band=None is untouched by the fix (historical nperseg, no skip field
+    #    surprise) and matches the hand-rolled Welch comparison
+    r_nb = spectral_metrics(t.copy(), t, fs=fs, band=None, warn=False)
+    check('unbanded band_bins is None', r_nb['psd_band_bins'], None)
+    check('unbanded identical -> 0', r_nb['psd_mae'], 0.0)
+
+    print('=' * 72)
+    print('evaluation.metrics self-test (Tier-2 resolution + degenerate guard)')
+    print('=' * 72)
+    print('band (0.16,0.4) @ fs 100, 800-sample clip -> nperseg',
+          _resolve_nperseg(n, fs, (0.16, 0.4)), f'({r["psd_band_bins"]} bins; was',
+          f'{old_bins} at nperseg 256)')
+    if fails:
+        for f in fails:
+            print(f'[FAIL] {f}')
+        print(f'FAIL: {len(fails)} check(s) failed')
+        return 1
+    print('PASS: all checks passed')
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(_self_test())

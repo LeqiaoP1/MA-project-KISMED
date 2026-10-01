@@ -37,6 +37,15 @@ target: resp
 data_set: tir_roi_resp             # -> build_tir_roi_finetune_dataset (Stage-3 view)
 data_path: ../data/raw/BP4D        # $RAW_DATA_PATH equivalent; NOT the canonical tree
 roi_padding: 0.2                   # per-side ROI margin -- MUST equal the Stage-2 run
+roi_landmarks: ''                  # '' = the historical 12-point nose+mouth set;
+                                   #   a preset (nose_tip preferred) or a CSV.
+                                   #   MUST equal the Stage-2 run.
+roi_quantile: 0.0                  # MUST equal the Stage-2 run (0.0 = min/max)
+min_signal_spread: 0.01            # VOLTS: drop clips whose respiration window
+                                   #   is (near-)constant (a railed -10 V dead
+                                   #   sensor -> an all-zero label). MUST equal
+                                   #   the Stage-2 value, else Stage 3 is not
+                                   #   evaluated on the pre-trained corpus.
 
 # ---- task GROUPS ("distortion levels") -- MUST equal the Stage-2 corpus ----
 # Named subsets of the BP4D+ task labels (T1..T10); the DEFINITIONS live here,
@@ -106,7 +115,15 @@ fft_sizes: '64,128,256'            # identical to the RGB resp branch, so the tw
                                    #   few bins; 128,256,512 (>= 1 breath/window) is the
                                    #   physiologically stricter alternative -- switch it in
                                    #   BOTH resp configs if you want it.
-eval_band: '0.16,0.4'              # RESP breathing band
+eval_band: '0.1,0.6'               # RESP band, WIDENED 2026-10-01 for METRIC
+                                   #   RESOLUTION: at fs 100 the largest Welch
+                                   #   window an 8 s clip allows is 0.125 Hz, so
+                                   #   0.16-0.4 (0.24 Hz wide) can hold at most 2
+                                   #   bins and used to report a degenerate
+                                   #   dominant_freq_error_hz == 0. 0.1-0.6
+                                   #   (0.5 Hz) -> 3 bins. Wider than the
+                                   #   physiological band => includes some
+                                   #   non-resp energy; a resolution choice.
 
 # ---- training ----
 epochs: 40

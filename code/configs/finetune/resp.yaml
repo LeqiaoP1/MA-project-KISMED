@@ -35,7 +35,9 @@ gamma: 1.0               # L_MR-STFT (multi-resolution)
 fft_sizes: '64,128,256'
 
 # Spectral evaluation band (RESP breathing: ~0.16-0.4 Hz)
-eval_band: '0.16,0.4'
+eval_band: '0.1,0.6'
+# widened 2026-10-01 for Welch resolution: 0.16-0.4 (0.24 Hz) holds <= 2 bins at
+# fs 100, which made dominant_freq_error_hz degenerate; 0.1-0.6 gives 3 bins.
 
 # Training
 epochs: 100

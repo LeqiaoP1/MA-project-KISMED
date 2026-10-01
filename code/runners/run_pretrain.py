@@ -20,12 +20,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
 
 from engines import train_one_epoch_pretrain
-from runners._common import (add_common_args, env_or, init_env,
-                             make_data_loader, parse_args_with_config)
+from runners._common import (add_common_args, check_loader_not_empty, env_or,
+                             init_env, make_data_loader,
+                             parse_args_with_config)
 
 
 def get_args():
-    parser = argparse.ArgumentParser('Project MAE pre-training', add_help=False)
+    parser = argparse.ArgumentParser('Project MAE pre-training', add_help=True)
     add_common_args(parser)
 
     # model
@@ -84,13 +85,32 @@ def get_args():
                              'to that percentile of the clip landmark cloud, '
                              'which makes the box robust to head-motion '
                              'outliers.')
+    parser.add_argument('--min_signal_spread', default=0.0, type=float,
+                        help='tir_roi only: DROP a clip whose respiration '
+                             'window is (near-)constant, i.e. max-min < this '
+                             'many VOLTS (0.0 = off, the historical behaviour). '
+                             'A railed window (the corpus\' -10 V '
+                             'dead-channel marker) z-scores to an all-zero '
+                             'label no model can predict and only inflates '
+                             'MAE/RMSE. Measured: railed windows have spread '
+                             'exactly 0 V and the next smallest clip is '
+                             '0.093 V, so 0.01 selects exactly them.')
     parser.add_argument('--roi_landmarks', default='', type=str,
-                        help='rgb_roi only: the landmarks whose bounding box IS '
-                             'the ROI. ""/"face" = all 49 (the whole face); a '
-                             'preset from data/rgb_features.ROI_LANDMARKS_2D '
-                             '(nose_mouth, nostrils, nostril_mouth, nose_tip); '
-                             'or a comma list of 1-indexed labels. Ignored by '
-                             'the tir_roi path (it uses its own 12-point set).')
+                        help='ROI paths (tir_roi AND rgb_roi): the landmarks '
+                             'whose bounding box IS the crop. Empty = the path '
+                             'default (tir_roi: the historical 12-point nose+mouth '
+                             'set; rgb_roi: "face" = all 49). Otherwise a preset '
+                             'name (nose_mouth | nostrils | nostril_mouth | '
+                             'nose_tip) or a comma list of 1-indexed labels, e.g. '
+                             '"10,21". Presets live in '
+                             'data/tir_resp_dataset.ROI_LANDMARK_PRESETS (tir_roi) '
+                             'and data/rgb_features.ROI_LANDMARKS_2D (rgb_roi). '
+                             'NOTE: the 2-point "nostrils" box is a thin slab '
+                             'whose extent tracks landmark jitter (measured '
+                             '100x81 px on a still session but 91x15 px on a '
+                             'moving one); prefer "nose_tip". This changes the '
+                             'VISUAL INPUT, so a Stage-2 checkpoint trained with a '
+                             'different value must be re-pretrained.')
     parser.add_argument('--decode_scale', default=1, type=int,
                         choices=[1, 2, 4, 8],
                         help='rgb_roi only: JPEG decode scale. 1 = native full '
@@ -331,6 +351,9 @@ def main(args):
         print(f'Dataset {type(dataset_train).__name__}: '
               f'{len(dataset_train)} sample(s)')
     data_loader_train = make_data_loader(args, dataset_train, shuffle=True)
+    # fail fast + name the cause instead of crashing later in the logger (the
+    # LR schedule below clamps steps_per_epoch to >= 1, so it would not notice)
+    check_loader_not_empty(data_loader_train, 'train', args)
 
     # step-level warmup + cosine LR schedule (mirrors MultiMAE/VideoMAE)
     from utils import cosine_scheduler
