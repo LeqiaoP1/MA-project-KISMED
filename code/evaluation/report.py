@@ -98,7 +98,7 @@ def plot_training_curves(history, out_png, title=''):
         vals = [h.get(key, np.nan) for h in history]
         return np.array([np.nan if v is None else v for v in vals], dtype=float)
 
-    fig, axes = plt.subplots(2, 2, figsize=(11, 6.5), constrained_layout=True)
+    fig, axes = plt.subplots(2, 3, figsize=(15.5, 6.5), constrained_layout=True)
     ax = axes[0][0]
     loss = col('train_loss')
     if np.isfinite(loss).any():
@@ -115,11 +115,34 @@ def plot_training_curves(history, out_png, title=''):
     if ax.lines:
         ax.legend(fontsize=8)
 
-    ax = axes[1][0]
+    ax = axes[0][2]
     v = col('psd_mae')
     if np.isfinite(v).any():
         ax.plot(ep, v, marker='o', ms=3, color='tab:purple')
     ax.set_title('val Tier-2 (psd_mae)'); ax.set_xlabel('epoch'); ax.grid(alpha=.3)
+
+    # Out-of-band energy: the ONLY view of a high-frequency floor in the
+    # prediction. psd_mae is normalised INSIDE the eval band and the Tier-1
+    # numbers are dominated by low-frequency amplitude, so a jittery output
+    # (measured 2026-10-01: x143 at 4-8 Hz, x553 at 8-20 Hz) was invisible here.
+    # Log scale; the dashed line is the TARGET's own out-of-band share, i.e. the
+    # floor a perfect prediction would score.
+    ax = axes[1][0]
+    v = col('hf_power_rel')
+    if np.isfinite(v).any():
+        ax.plot(ep, v, marker='o', ms=3, color='tab:red',
+                label='prediction')
+        ax.set_yscale('log')
+    ref = col('target_hf_power_rel')
+    if np.isfinite(ref).any():
+        ax.axhline(float(np.nanmedian(ref)), ls='--', lw=1, color='tab:gray',
+                   label='target (reference)')
+        if not np.isfinite(v).any():
+            ax.set_yscale('log')
+    ax.set_title('val out-of-band energy (> hf_lo)')
+    ax.set_xlabel('epoch'); ax.grid(alpha=.3, which='both')
+    if ax.lines:
+        ax.legend(fontsize=8)
 
     ax = axes[1][1]
     v = col('lr')
@@ -127,6 +150,8 @@ def plot_training_curves(history, out_png, title=''):
         ax.plot(ep, v, marker='o', ms=3, color='tab:gray')
         ax.set_yscale('log')
     ax.set_title('learning rate'); ax.set_xlabel('epoch'); ax.grid(alpha=.3)
+
+    axes[1][2].axis('off')
 
     if title:
         fig.suptitle(title, fontsize=11)

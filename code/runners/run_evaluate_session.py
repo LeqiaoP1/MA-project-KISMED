@@ -134,7 +134,8 @@ def main(args):
                     per_clip.update(_metrics.spectral_metrics(
                         preds, tgts, fs=args.fs, band=band))
                 except ImportError:
-                    per_clip['psd_mae'] = float('nan')
+                    per_clip.update({'psd_mae': float('nan'),
+                                     'hf_power_rel': float('nan')})
 
     groups = group_entries(entries, args.fs)
     names = sorted(groups)[:args.max_sessions or None]
@@ -172,7 +173,8 @@ def main(args):
                 rec['session_tier2'] = dict(_metrics.spectral_metrics(
                     np.atleast_2d(yh), np.atleast_2d(ref), fs=args.fs, band=band))
             except ImportError:
-                rec['session_tier2'] = {'psd_mae': float('nan')}
+                rec['session_tier2'] = {'psd_mae': float('nan'),
+                                        'hf_power_rel': float('nan')}
         if 3 in tiers and args.waveform == 'bp':
             win = int(round(args.window_s * args.fs))
             wins = [yh[i:i + win] for i in range(0, max(1, yh.size - win + 1), win)]

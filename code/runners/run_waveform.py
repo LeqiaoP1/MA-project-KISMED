@@ -522,7 +522,8 @@ def main(args):
                 final.update(_metrics.spectral_metrics(
                     pred, target, fs=args.fs, band=args.eval_band))
             except ImportError:
-                final['psd_mae'] = float('nan')
+                final.update({'psd_mae': float('nan'),
+                              'hf_power_rel': float('nan')})
             n_pred = int(pred.shape[0])
             _tsel = getattr(dataset_val, 'task_selection', None)
             save_json(os.path.join(args.output_dir, 'metrics_final.json'), {

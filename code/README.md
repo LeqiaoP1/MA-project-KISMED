@@ -401,6 +401,53 @@ or evaluate session-level signals for Tier 2. `python -m evaluation.metrics`
 self-tests all of this. **`psd_mae` / `dominant_freq_error_hz` recorded before
 2026-10-01 are not comparable with values recorded after it.**
 
+**Out-of-band energy: the metric that can SEE the high-frequency jitter
+(2026-10-01).** `spectral_metrics` now also returns
+
+| key | meaning |
+|---|---|
+| `hf_power_rel` | the PREDICTION's power above `hf_lo`, in units of the target's total power (≈ z², since the target is z-scored). A perfect prediction scores the target's own value, ~0.003 |
+| `target_hf_power_rel` | the target's own out-of-band share — the reference to compare against |
+| `hf_lo_hz` | the window actually used: `max(2 Hz, eval_band[1])` |
+
+WHY IT WAS NEEDED. `psd_mae` normalises the PSD **inside** the eval band, and the
+Tier-1 numbers are dominated by low-frequency amplitude, so nothing could see a
+broadband high-frequency floor: the finished `gamma=0.01` TIR-ROI run
+(`resp_tir_roi_low_mid_g001`) had **×143** the target's power at 4–8 Hz and
+**×553** at 8–20 Hz — the per-token waveform head emitting 16 phase-independent
+samples per visual token (a slope kick at every 0.16 s token boundary, ×991 at
+the 6.25 Hz token rate) — while `psd_mae`, Pearson **and**
+`dominant_freq_error_hz` all read ~0. The three gamma arms, scored on the same 75
+clips:
+
+| run | mae | pearson | psd_mae | `hf_power_rel` | seam ratio |
+|---|---|---|---|---|---|
+| `…_g000` (gamma 0) | 0.9706 | −0.0328 | 0.2378 | **0.1957** | 1.44 |
+| `…_g001` (gamma 0.01) | 1.1932 | −0.0272 | 0.3103 | **0.2453** | 2.64 |
+| `…_g10` (gamma 10, collapsed) | 0.8241 | +0.0117 | 0.2513 | **0.00018** | 0.46 |
+| target's own reference | — | — | — | 0.00296 | 1.43 |
+| constant-0 baseline | **0.7545** | 0 | — | — | — |
+
+`psd_mae` ranks the *collapsed* run as best; `hf_power_rel` separates the arms by
+three orders of magnitude, and the seam ratio (`mean |Δ²| at token boundaries /
+mean |Δ²| inside tokens`) shows the jitter **is** the per-token stitching artifact:
+gamma 0 reaches the target's own 1.43, gamma 0.01 does not. All three arms still
+lose to a constant predictor. It is plotted (`val out-of-band energy` panel in
+`training_curves.png`, log scale, dashed line = the target's own level).
+
+A DEGENERATE-TARGET BUG was found while adding it, and fixed. `welch` de-means
+**per segment** and only segments the first ~`nperseg` samples, so a target that
+is a dead-sensor **plateau** across the whole segment (with a brief excursion
+elsewhere in the clip) produces a PSD of *exactly* `0.0` while its max deviation
+stays large — the old max-deviation guard misses it, it scored a misleadingly
+*good* `psd_mae`, and the new ratio divided by ~`1e-16` (×1e14). MEASURED: 4 of
+the 75 TIR-ROI val clips (all F004_T3/F004_T7, `std 1.0`, PSD sum exactly `0.0`)
+are exactly that. They are now skipped on the spectrum
+(`_DEGENERATE_PSD_REL = 0.01` of the target's variance), which is why `…_g001`
+reports `psd_skipped 4` and its `psd_mae` moved 0.3157 → 0.3103.
+**`psd_skipped` / `psd_mae` can therefore also differ from pre-2026-10-01 runs
+for that second reason.**
+
 ### Recorded data layout (asymmetric RGB jpg-seq + TIR .wmv)
 
 ```

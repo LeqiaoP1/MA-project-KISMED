@@ -62,5 +62,13 @@ def evaluate_waveforms(data_loader, model, device, fs=100.0, band=None,
         try:
             results.update(spectral_metrics(pred, target, fs=fs, band=band))
         except ImportError:
-            results['psd_mae'] = float('nan')
+            results.update(_spectral_unavailable())
     return results
+
+
+def _spectral_unavailable():
+    """The Tier-2 keys at NaN when scipy is missing (same key set as a run)."""
+    return {'psd_mae': float('nan'), 'dominant_freq_error_hz': float('nan'),
+            'psd_band_bins': None, 'psd_skipped': 0,
+            'hf_power_rel': float('nan'),
+            'target_hf_power_rel': float('nan'), 'hf_lo_hz': float('nan')}

@@ -70,6 +70,23 @@ DEFAULT_MIN_BAND_BINS = 3
 #: railed -10 V respiration rail -- has no spectrum to match).
 _PSD_REL_TOL = 1e-6
 
+#: Lowest frequency counted as OUT OF BAND when ``hf_lo`` is not given: it is
+#: raised to the eval band's upper edge when that is higher (so for a 1.0-2.5 Hz
+#: BP band the window starts at 2.5 Hz). 2 Hz is above any plausible respiration
+#: harmonic (resp is 0.1-1 Hz) and above the BP band, i.e. everything in it is
+#: measurement/modelling garbage rather than physiology.
+DEFAULT_HF_LO = 2.0
+
+#: A target is ALSO degenerate for a spectral comparison when its Welch PSD
+#: carries less than this fraction of its own variance. ``welch`` de-means PER
+#: SEGMENT and only segments the first ``nperseg`` samples, so a target that is a
+#: dead-sensor PLATEAU across the whole segment (with a brief excursion elsewhere
+#: in the clip) has a PSD of ~0 while its max deviation is huge -- the older
+#: max-deviation guard misses it, and it then scores a misleadingly GOOD
+#: ``psd_mae`` (measured 2026-10-01: 4/75 clips of the TIR-ROI val split, all
+#: F004_T3/F004_T7, PSD sum exactly 0.0 with std 1.0).
+_DEGENERATE_PSD_REL = 0.01
+
 
 def _resolve_nperseg(n, fs, band, min_band_bins=DEFAULT_MIN_BAND_BINS):
     """Welch window length that puts >= ``min_band_bins`` bins inside ``band``.
@@ -101,8 +118,9 @@ def _resolve_nperseg(n, fs, band, min_band_bins=DEFAULT_MIN_BAND_BINS):
 
 
 def spectral_metrics(pred, target, fs=100.0, band=None,
-                     min_band_bins=DEFAULT_MIN_BAND_BINS, warn=True):
-    """Tier 2: Welch PSD consistency + dominant-frequency error.
+                     min_band_bins=DEFAULT_MIN_BAND_BINS, warn=True,
+                     hf_lo=None):
+    """Tier 2: Welch PSD consistency, dominant-frequency error, out-of-band energy.
 
     :param fs: sampling rate (Hz) of the waveforms
     :param band: optional (f_low, f_high) band-pass region to compare, e.g.
@@ -112,16 +130,37 @@ def spectral_metrics(pred, target, fs=100.0, band=None,
         :func:`_resolve_nperseg`).
     :param warn: print a one-shot note when the band cannot be resolved well
         enough, or when clips were skipped for having no in-band target energy.
+    :param hf_lo: lowest frequency counted as OUT OF BAND (default
+        :data:`DEFAULT_HF_LO`, raised to ``band[1]`` when that is higher).
 
     Clips whose de-meaned TARGET is (near-)zero are SKIPPED rather than scored
     ``1.0``: with a unit-sum normalisation a constant target produces a
     zero spectrum and the difference against any prediction saturates, so
-    averaging it in makes ``psd_mae`` a count of degenerate clips. The skipped
-    count is returned as ``psd_skipped`` and the in-band bin count as
+    averaging it in makes ``psd_mae`` a count of degenerate clips. The same goes
+    for a target whose Welch PSD carries no energy relative to its own variance
+    -- a dead-sensor plateau filling the whole Welch segment (see
+    :data:`_DEGENERATE_PSD_REL`), which the max-deviation test cannot see. The
+    skipped count is returned as ``psd_skipped`` and the in-band bin count as
     ``psd_band_bins`` (``None`` when no band was given).
+
+    ``hf_power_rel`` / ``target_hf_power_rel`` are the OUT-OF-BAND energy of the
+    prediction / of the target, in units of the target's TOTAL variance (the
+    target is z-scored, so a perfect prediction measures ~0.003). WHY THEY ARE
+    NEEDED (measured 2026-10-01): ``psd_mae`` normalises the PSD INSIDE the band
+    and the Tier-1 metrics are dominated by the low-frequency amplitude, so a
+    prediction that adds a broadband high-frequency floor -- the per-token
+    waveform head emitting 16 phase-independent samples per visual token -- was
+    invisible: the gamma=0.01 TIR-ROI run had x143 (4-8 Hz) / x553 (8-20 Hz) the
+    target's out-of-band power while ``psd_mae``, Pearson AND the
+    dominant-frequency error all read ~0. ``hf_lo_hz`` records the window used.
     """
     if _sp_signal is None:
         raise ImportError('spectral_metrics requires scipy (`pip install scipy`)')
+
+    if hf_lo is None:
+        hf_lo = (DEFAULT_HF_LO if band is None
+                 else max(DEFAULT_HF_LO, float(band[1])))
+    hf_lo = float(hf_lo)
 
     p = _flatten(pred)
     t = _flatten(target)
@@ -139,6 +178,7 @@ def spectral_metrics(pred, target, fs=100.0, band=None,
     tol = _PSD_REL_TOL * float(t_energy.max()) if t_energy.size else 0.0
 
     psd_mae, dom_freq_err = [], []
+    hf_rel, hf_ref = [], []          # out-of-band energy, target-relative
     n_skipped = 0
     for pi, ti, e_t in zip(p, t, t_energy):
         if e_t <= tol:
@@ -146,6 +186,24 @@ def spectral_metrics(pred, target, fs=100.0, band=None,
             continue
         f_p, pxx_p = _sp_signal.welch(pi, fs=fs, nperseg=min(nperseg, len(pi)))
         f_t, pxx_t = _sp_signal.welch(ti, fs=fs, nperseg=min(nperseg, len(ti)))
+
+        # --- out-of-band energy ----------------------------------------- #
+        # Computed on the FULL spectrum, BEFORE the in-band slice + unit-sum
+        # normalisation below, which is exactly what makes the jitter invisible
+        # to psd_mae. `pxx * df` is power, so the ratio is a power ratio.
+        df = float(f_p[1] - f_p[0]) if f_p.size > 1 else 1.0
+        tot = float(pxx_t.sum() * df)
+        # A staircase target can pass the max-deviation guard above and still
+        # have NO spectrum (a plateau that fills the whole Welch segment). Every
+        # spectral comparison against it is meaningless AND the ratio below
+        # would explode, so it is skipped on the spectrum instead.
+        t_var = float(np.var(ti))
+        if tot <= 0.0 or tot < _DEGENERATE_PSD_REL * t_var:
+            n_skipped += 1
+            continue
+        hi = f_p >= hf_lo
+        hf_rel.append(float(pxx_p[hi].sum() * df) / (tot + 1e-30))
+        hf_ref.append(float(pxx_t[hi].sum() * df) / (tot + 1e-30))
 
         if band is not None:
             keep = (f_p >= band[0]) & (f_p <= band[1])
@@ -172,17 +230,22 @@ def spectral_metrics(pred, target, fs=100.0, band=None,
                   f'(session-level) signals for a meaningful Tier-2.')
         if n_skipped:
             print(f'[metrics] NOTE: {n_skipped}/{len(t)} clip(s) skipped in the '
-                  f'spectral metrics -- a (near-)constant target has no spectrum '
-                  f'to compare (a railed/dead sensor window).')
+                  f'spectral metrics -- a target with no spectrum has nothing to '
+                  f'compare (a constant or dead-sensor-plateau window).')
     if not psd_mae:
         return {'psd_mae': float('nan'), 'dominant_freq_error_hz': float('nan'),
-                'psd_band_bins': band_bins, 'psd_skipped': n_skipped}
+                'psd_band_bins': band_bins, 'psd_skipped': n_skipped,
+                'hf_power_rel': float('nan'),
+                'target_hf_power_rel': float('nan'), 'hf_lo_hz': hf_lo}
 
     return {
         'psd_mae': float(np.mean(psd_mae)),
         'dominant_freq_error_hz': float(np.mean(dom_freq_err)),
         'psd_band_bins': band_bins,
         'psd_skipped': n_skipped,
+        'hf_power_rel': float(np.mean(hf_rel)),
+        'target_hf_power_rel': float(np.mean(hf_ref)),
+        'hf_lo_hz': hf_lo,
     }
 
 
@@ -242,12 +305,59 @@ def _self_test() -> int:
     check('unbanded band_bins is None', r_nb['psd_band_bins'], None)
     check('unbanded identical -> 0', r_nb['psd_mae'], 0.0)
 
+    # 7. OUT-OF-BAND energy: invisible to every other Tier-2 number by design.
+    #    A prediction with a high-frequency floor must be caught; a perfect
+    #    prediction and a low-amplitude (collapsed) one must measure ~0.
+    rng2 = np.random.default_rng(1)
+    jitter = t.copy() + rng2.normal(0.0, 0.12, size=t.shape)
+    r_j = spectral_metrics(jitter, t, fs=fs, band=(0.16, 0.4), warn=False)
+    if not r_j['hf_power_rel'] > 10 * max(r['hf_power_rel'], 1e-6):
+        fails.append(f"jitter not caught: hf_power_rel {r_j['hf_power_rel']} vs "
+                     f"clean {r['hf_power_rel']}")
+    if not r_j['target_hf_power_rel'] < 0.01:
+        fails.append(f"target's own hf_power_rel not small: "
+                     f"{r_j['target_hf_power_rel']}")
+    if r['hf_power_rel'] > 1e-3:
+        fails.append(f'identical pred -> hf_power_rel should be ~0, got '
+                     f"{r['hf_power_rel']}")
+    r_low = spectral_metrics(t.copy() * 0.01, t, fs=fs, band=(0.16, 0.4),
+                             warn=False)
+    if r_low['hf_power_rel'] > 1e-4:
+        fails.append(f'collapsed (tiny) pred must not be blamed for HF energy: '
+                     f"{r_low['hf_power_rel']}")
+    check('hf_lo defaults to the band edge', r['hf_lo_hz'], 2.0)
+    check('hf_lo raised for a higher band',
+          spectral_metrics(t.copy(), t, fs=fs, band=(1.0, 2.5),
+                           warn=False)['hf_lo_hz'], 2.5)
+    r_hf = spectral_metrics(t.copy(), t, fs=fs, band=(0.16, 0.4), warn=False,
+                            hf_lo=4.0)
+    check('explicit hf_lo is honoured', r_hf['hf_lo_hz'], 4.0)
+
+    # 8. a DEAD-SENSOR PLATEAU target passes the max-deviation guard but has no
+    #    spectrum; it must be SKIPPED (and must not blow the ratio up). The
+    #    geometry matters: `welch` de-means PER SEGMENT and only segments the
+    #    first ~nperseg samples, so the plateau has to fill the segments it
+    #    actually uses -- here nperseg 256 for the (1.0, 2.5) band, i.e. the
+    #    first 768 samples, which is exactly the TIR-ROI failure mode.
+    plateau = np.concatenate([np.full(768, 1.5), np.full(32, 9.0)])
+    tp = np.concatenate([t[:3], plateau[None, :]])
+    r_p = spectral_metrics(tp.copy(), tp, fs=fs, band=(1.0, 2.5), warn=False)
+    check('plateau target skipped', r_p['psd_skipped'], 1)
+    r_pj = spectral_metrics(tp.copy() + rng2.normal(0, 0.1, tp.shape), tp,
+                            fs=fs, band=(1.0, 2.5), warn=False)
+    if np.isfinite(r_pj['hf_power_rel']) and r_pj['hf_power_rel'] > 1e3:
+        fails.append(f'plateau target ratio exploded: {r_pj["hf_power_rel"]}')
+
     print('=' * 72)
     print('evaluation.metrics self-test (Tier-2 resolution + degenerate guard)')
     print('=' * 72)
     print('band (0.16,0.4) @ fs 100, 800-sample clip -> nperseg',
           _resolve_nperseg(n, fs, (0.16, 0.4)), f'({r["psd_band_bins"]} bins; was',
           f'{old_bins} at nperseg 256)')
+    print(f'out-of-band energy (> {r["hf_lo_hz"]:g} Hz, in units of the target '
+          f'variance): perfect {r["hf_power_rel"]:.2e}, jittered '
+          f'{r_j["hf_power_rel"]:.2e}, collapsed {r_low["hf_power_rel"]:.2e}, '
+          f'target reference {r["target_hf_power_rel"]:.2e}')
     if fails:
         for f in fails:
             print(f'[FAIL] {f}')
