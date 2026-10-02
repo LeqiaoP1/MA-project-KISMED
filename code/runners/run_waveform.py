@@ -44,6 +44,66 @@ def _parse_fft_sizes(s):
     return tuple(int(x) for x in str(s).split(',') if x.strip())
 
 
+def _resolve_fft_sizes(fft_sizes, output_len, fs=100.0):
+    """Drop MR-STFT windows longer than the Stage-3 target waveform.
+
+    ``torch.stft`` ZERO-PADS when ``n_fft`` exceeds the signal, so an over-long
+    window does NOT raise -- it silently turns part of the magnitude comparison
+    into a comparison of padding. The Stage-2 build path already guards this by
+    dropping too-long windows (``core.multimae``, logged as ``[DROPPED ...]``);
+    this is the Stage-3 equivalent with the same semantics.
+
+    :returns: ``(kept, dropped)``. Raises ``SystemExit`` when nothing survives.
+    """
+    output_len = int(output_len)
+    sizes = [int(n) for n in fft_sizes]
+    if not sizes:
+        raise SystemExit('--fft_sizes is empty: the MR-STFT term needs at least '
+                         'one window (per-modality defaults: bp 64,128,256 / '
+                         'resp 128,256,512 / eda 256,512,1024).')
+    kept = [n for n in sizes if n <= output_len]
+    dropped = [n for n in sizes if n > output_len]
+    if not kept:
+        raise SystemExit(
+            f'--fft_sizes {tuple(sizes)}: NO window fits the Stage-3 target '
+            f'waveform ({output_len} samples = {output_len / fs:.2f} s at fs '
+            f'{fs:g} Hz), and torch.stft would zero-pad instead of raising. Use '
+            f'a longer clip (--clip_duration) or smaller windows. Per-modality '
+            f'defaults: bp 64,128,256 / resp 128,256,512 / eda 256,512,1024 '
+            f'(see core.multimae.SPECTRAL_FFT_DEFAULTS).')
+    return tuple(kept), tuple(dropped)
+
+
+def _fft_window_advisory(kept, band_lo, output_len, fs=100.0):
+    """Report the lowest rate the kept windows can actually resolve.
+
+    A window must span >= ONE period of the band it polices, else the magnitude
+    term measures local waveform SHAPE rather than RATE -- precisely how the
+    historical respiration set 64,128,256 failed: at fs = 100 Hz the whole
+    0.1-0.6 Hz band collapsed into STFT bin 0, so the term could never see
+    respiratory rate (see core.multimae.SPECTRAL_FFT_DEFAULTS).
+
+    Returns an INFORMATIONAL string (never an error) when the largest kept window
+    cannot reach the slow edge of the band. That is usually a CLIP-LENGTH limit
+    rather than a config mistake, because no window may exceed ``output_len`` --
+    at 8 s and 0.1 Hz the needed 10 s window cannot exist, so the note says so
+    instead of implying the window set should be changed.
+    """
+    if not kept or not band_lo or float(band_lo) <= 0:
+        return None
+    need = fs / float(band_lo)                 # samples in one period, slow edge
+    if max(kept) >= need:
+        return None
+    resolvable = fs / max(kept)                # lowest rate the longest window spans
+    return (f'largest window {max(kept)} samples = {max(kept) / fs:.2f} s cannot '
+            f'span one period at the slow edge of --eval_band '
+            f'({float(band_lo):g} Hz -> {need:.0f} samples = {need / fs:.2f} s), '
+            f'so RATE is policed only down to ~{resolvable:.3f} Hz '
+            f'({resolvable * 60:.0f} bpm). A slower rate needs a LONGER CLIP, not '
+            f'a different --fft_sizes: no window may exceed the {output_len}-'
+            f'sample target.')
+
+
 #: Keys that define WHICH PIXELS the encoder sees on the RAW-tree ROI paths
 #: (``data_set: tir_roi*``). They do NOT change any tensor shape, so a mismatch
 #: cannot be detected downstream: the run trains happily on an input the encoder
@@ -195,6 +255,30 @@ def get_args():
     parser.add_argument('--head_hidden', default=0, type=int,
                         help='hidden width of a 2-layer waveform head '
                              '(0 = single linear layer per time step)')
+    parser.add_argument('--head_style', default='linear', type=str,
+                        choices=['linear', 'transposed_conv'],
+                        help="Stage-3 waveform head. 'linear' (default) = one "
+                             'Linear(D -> samples_per_token) per tubelet step. '
+                             "'transposed_conv' = the spec 4.1 learned 1-D "
+                             'upsampling head (Conv1d + ConvTranspose1d, stride '
+                             'samples_per_token); it cannot inherit the Stage-2 '
+                             'head, so combine it with --head_init none.')
+    parser.add_argument('--head_init', default='transfer', type=str,
+                        choices=['transfer', 'none'],
+                        help="how the Stage-3 head starts. 'transfer' "
+                             '(default) = copy the Stage-2 heads.<target> '
+                             'weights in (single-Linear head only). '
+                             "'none' = always RANDOM -- what the spec 4.1 "
+                             'discard-the-decoders recipe needs, and what a '
+                             'controlled Solution A vs C comparison must use '
+                             'for BOTH arms so the only difference is Stage 2.')
+    parser.add_argument('--layer_decay', default=1.0, type=float,
+                        help='layer-wise LR decay exponent for fine-tuning '
+                             '(spec 4.2, typical 0.65-0.75). 1.0 (default) = '
+                             'OFF = a single parameter group. < 1.0 groups the '
+                             'parameters by encoder depth (tokenizer most '
+                             'decayed, head at 1.0) and multiplies the step LR '
+                             'schedule by each group lr_scale.')
     parser.add_argument('--finetune', default=env_or('MODEL_PATH'), type=str,
                         help='Stage-2 pretrained encoder checkpoint to load: a '
                              'local path OR a variant spec (base, mae:large) '
@@ -406,6 +490,25 @@ def main(args):
                 '--finetune for an intentionally from-scratch baseline).')
     model.to(device)
 
+    # MR-STFT windows must fit the target waveform, and the resolved set must be
+    # VISIBLE: WaveformJointLoss.extra_repr prints only alpha/beta/gamma, so a
+    # wrong --fft_sizes used to leave no trace in the log at all. Validated HERE
+    # (before the dataset scan) so a bad config fails in seconds, not after
+    # walking the raw BP4D tree.
+    _target_len = int(getattr(model, 'output_len', 0) or args.seq_len)
+    args.fft_sizes, _fft_dropped = _resolve_fft_sizes(
+        args.fft_sizes, _target_len, fs=args.fs)
+    print(f'[stft] fft_sizes {tuple(args.fft_sizes)} for a {_target_len}-sample '
+          f'target ({_target_len / args.fs:.2f} s at fs {args.fs:g} Hz)')
+    if _fft_dropped:
+        print(f'[stft] DROPPED {tuple(_fft_dropped)}: longer than the target, so '
+              f'torch.stft would ZERO-PAD (the Stage-2 path drops these too)')
+    _fft_advice = _fft_window_advisory(
+        args.fft_sizes, min(args.eval_band) if args.eval_band else None,
+        _target_len, fs=args.fs)
+    if _fft_advice:
+        print(f'[stft] NOTE: {_fft_advice}')
+
     # ----- data (implement bp4d+ first) ----------------------------------- #
     from data import build_dataset
     dataset_train = build_dataset(is_train=True, test_mode=False, args=args)
@@ -426,10 +529,22 @@ def main(args):
         model_without_ddp = model.module
 
     # ----- loss / optimizer / scaler -------------------------------------- #
-    from utils import NativeScalerWithGradNormCount, create_optimizer
+    from utils import (NativeScalerWithGradNormCount, build_layer_decay_assigner,
+                       create_optimizer)
     criterion = WaveformJointLoss(alpha=args.alpha, beta=args.beta,
                                   gamma=args.gamma, fft_sizes=args.fft_sizes)
-    optimizer = create_optimizer(args, model_without_ddp)
+    # layer-wise LR decay (spec 4.2): only when --layer_decay < 1.0. The assigner
+    # puts a per-group lr_scale on the param groups and engines/finetune.py
+    # multiplies the step schedule by it, so the decay survives the cosine curve.
+    layer_assigner = build_layer_decay_assigner(
+        model_without_ddp, getattr(args, 'layer_decay', 1.0))
+    if layer_assigner is not None:
+        optimizer = create_optimizer(
+            args, model_without_ddp,
+            get_num_layer=layer_assigner.get_layer_id,
+            get_layer_scale=layer_assigner.get_scale)
+    else:
+        optimizer = create_optimizer(args, model_without_ddp)
     loss_scaler = NativeScalerWithGradNormCount()
     print(f'Criterion: {criterion}')
 

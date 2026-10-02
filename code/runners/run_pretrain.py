@@ -263,6 +263,40 @@ def get_args():
                              'with the same 1-D temporal sincos (a space-time '
                              'prior at init, since the Stage-1 MAE pos_embed '
                              'cannot be reused); \'random\' = trunc_normal.')
+    # ---- Solution A knobs (asymmetric cross-MAE) ------------------------- #
+    # Defaults reproduce the historical shared-encoder behaviour EXACTLY.
+    parser.add_argument('--resp_in_encoder', default='true', type=str,
+                        help="whether the 'resp' stream is fed to the encoder. "
+                             "'true' (default) = the historical shared-encoder "
+                             "MAE. 'false' = Solution A: the encoder sees ONLY "
+                             'the video tokens and resp becomes a pure '
+                             'reconstruction TARGET (pair it with '
+                             '--signal_decoder resp=cross_attn). This removes '
+                             'the within-modality interpolation shortcut that '
+                             'lets the encoder ignore the video.')
+    parser.add_argument('--signal_decoder', default='', type=str,
+                        help="per-physio-stream decoder style. '' (default) / "
+                             "'self_attn' = the historical SHARED decoder (the "
+                             "stream's own visible tokens + mask tokens, "
+                             "self-attention). 'cross_attn' = the Solution A "
+                             'target-driven decoder: learned per-time-slot '
+                             'queries cross-attend to the WHOLE encoder output. '
+                             "Forms: 'cross_attn' = every physio stream; "
+                             "'resp=cross_attn,bp=self_attn' = per stream; or a "
+                             'YAML mapping. A cross_attn stream MUST be outside '
+                             'the encoder (resp_in_encoder: false) or the build '
+                             'fails loudly.')
+    parser.add_argument('--cross_attn_depth', default=2, type=int,
+                        help='depth of the cross-attention decoder stack '
+                             '(DecoderBlock = self-attn + cross-attn + MLP) '
+                             'used by every cross_attn physio stream.')
+    parser.add_argument('--query_init', default='sincos3d', type=str,
+                        choices=['sincos3d', 'random'],
+                        help="initialisation of the cross-attn query slots: "
+                             "'sincos3d' (default) uses the SAME 1-D temporal "
+                             'sincos basis as the physio positional embeddings, '
+                             'so query i starts at the instant a physical token '
+                             "i would; 'random' = trunc_normal(0.02).")
     parser.add_argument('--pretrained_encoder', default='', type=str,
                         help='Stage-1 ViT checkpoint to initialise the shared '
                              'encoder from: a local path OR a variant spec, '

@@ -26,6 +26,15 @@
 #       --val_subject $S --output_dir ../output/finetune/resp_tir_roi_loso/$S
 #   done
 #
+# MATCHED-PAIR ARM 2 of 2 (Solution A encoder). This file and
+# resp_tir_roi_local_matched.yaml are IDENTICAL except `finetune:` and
+# `output_dir:` -- the ONLY difference between the two runs is which
+# pre-training produced the encoder:
+#   arm 1 (Solution C): resp_tir_roi_local_matched.yaml <- shared-encoder MAE
+#   arm 2 (Solution A): resp_tir_roi_crossmae.yaml      <- asymmetric cross-MAE
+# Both arms share the spec 4.1/4.2 Stage-3 recipe: head_style transposed_conv,
+# head_init none, layer_decay 0.75.
+#
 # Sibling of configs/finetune/resp_local.yaml (RGB -> RESP): the SAME model,
 # loss weights (alpha/beta/gamma), optimizer and 64 px ROI crop size. NOTE
 # (corrected 2026-10-02): the geometry is deliberately NOT identical, contrary
@@ -84,9 +93,16 @@ streams: tir                       # the ROI crop alone; 1-D input is the simula
                                    #   tensors, same forward output). For a `bp4d+` config,
                                    #   `streams: tir` with use_tir off is a hard error -- that
                                    #   guard is bypassed here, because this dataset IS the TIR.
-finetune: ../output/pretrain/stage2_local_tir_roi_resp/checkpoints/checkpoint-0039.pth
-head_hidden: 0                     # 0 = single Linear -> Stage-2 heads.resp transfers VERBATIM
-                                   #   (verified: waveform_head.* == ckpt heads.resp.* exactly)
+finetune: ../output/pretrain/stage2_local_tir_roi_crossmae/checkpoints/checkpoint-0039.pth
+head_hidden: 0                     # only used by head_style: linear
+head_style: transposed_conv         # spec 4.1: learned 1-D upsampling head
+                                   #   (Conv1d + ConvTranspose1d, stride
+                                   #   samples_per_token = 16). Replaces the
+                                   #   linear per-time-step projection.
+head_init: none                    # spec 4.1: DISCARD the pre-training decoder
+                                   #   head and start RANDOM. IDENTICAL on both
+                                   #   arms so the A vs C comparison is not
+                                   #   confounded by a one-sided head transfer.
 
 # ---- clip geometry -- MUST equal the Stage-2 geometry of `finetune` ----
 # The Stage-2 run was 8 s / temporal_stride 2 / sig_kernel 16 / input 64 -> the
@@ -157,6 +173,10 @@ opt: adamw
 lr: 1e-4
 min_lr: 1e-6
 warmup_epochs: 2
+layer_decay: 0.75                  # spec 4.2: layer-wise LR decay (0.65-0.75).
+                                   #   Tokenizer most decayed, head at 1.0;
+                                   #   applied as a per-group lr_scale that the
+                                   #   step schedule multiplies (engines/finetune.py).
 weight_decay: 0.05
 clip_grad: 5.0                     # ON, unlike the RGB resp_local twin (0.0): this branch
                                    #   carries the gamma=1.0 MR-STFT term AND inherits a
@@ -167,6 +187,6 @@ num_workers: 4
 save_preds: true                   # preds.npy/targets.npy/entries.json for the session evaluator
 
 # ---- logging ----
-output_dir: ../output/finetune/resp_tir_roi_local
+output_dir: ../output/finetune/resp_tir_roi_crossmae
 log_wandb: false
 wandb_project: thesis-project

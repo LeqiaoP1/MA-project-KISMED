@@ -1,5 +1,37 @@
 # Stage 2 -- LOCAL run: thermal ROI (visual) -> RESPIRATION (1-D target).
 #
+# ============================================================================
+# SOLUTION A variant ("Asymmetric Cross-MAE"): the asymmetric twin of
+# configs/pretrain/stage2_local_tir_roi_resp.yaml.
+#
+# Architecture spec:  code/prompt/SolutionA_asymmetric_cross_mae_spec.md
+# Diagrams:           code/prompt/SolutionA_diagram.md
+#
+# It differs from the shared-encoder config (Solution C) in EXACTLY ONE STAGE --
+# the pre-training -- and in nothing else:
+#   * DATA IS IDENTICAL: same data_set / ROI / task selection / geometry /
+#     input_size. Every key is byte-copied from the Solution C config; only the
+#     four keys in the "Solution A" block below are added.
+#   * ENCODER INTERFACE IS IDENTICAL: the same adapters.tir / positions.tir /
+#     enc_blocks / enc_norm keys and shapes, so either pre-trained encoder loads
+#     into the SAME Stage-3 model (MultiModalWaveformRegressor, streams=tir).
+#   * ONLY THE PRE-TRAINING DIFFERS: resp_in_encoder false -> the encoder never
+#     sees a resp token, so it cannot satisfy the masked respiration target by
+#     interpolating its own visible samples; resp is instead decoded by a
+#     target-driven cross-attention head whose learned per-time-slot queries
+#     attend to the whole visual encoder output.
+#
+# Run from code/ (ALWAYS with `-u`: without it stdout is block-buffered through
+# `tee`, so an interrupted run leaves a log with NO epoch lines):
+#     python -u runners/run_pretrain.py -c configs/pretrain/stage2_local_tir_roi_crossmae.yaml \
+#         2>&1 | tee ../output/pretrain/stage2_local_tir_roi_crossmae/train.log
+# Smoke first (--warmup_epochs 0 is REQUIRED: epochs < warmup trips the
+# pre-existing cosine_scheduler assert in utils/lr_sched.py):
+#     python -u runners/run_pretrain.py -c configs/pretrain/stage2_local_tir_roi_crossmae.yaml \
+#         --epochs 1 --warmup_epochs 0 --max_entries 2 --num_workers 0 \
+#         --output_dir /tmp/tir_roi_crossmae_probe
+# ============================================================================
+#
 # ADD-ON experiment, procedure of record: code/TirROI_Resp_plan.md.
 # The counterpart of configs/pretrain/stage2_local_pretrained.yaml for the
 # thermal-only setting: the ONLY visual information is the mouth+nose ROI of the
@@ -117,6 +149,19 @@ min_signal_spread: 0.01            # VOLTS: DROP a clip whose respiration window
 sig_kernel: 16
 pos_init: sincos3d                 # 3-D (t,h,w) sincos for video positions +
                                    # the same 1-D temporal sincos for physio
+
+# ---- Solution A: asymmetric cross-MAE (the ONLY difference from Solution C) --
+# The encoder sees ONLY the video tokens; resp becomes a pure reconstruction
+# TARGET decoded by a cross-attention head. mask_ratio_resp below is therefore
+# UNUSED on this path (the loss covers EVERY time slot -- the Stage-3
+# "sensor fully absent" condition, trained directly).
+resp_in_encoder: false             # Solution A: exclude resp from the encoder
+signal_decoder: resp=cross_attn    # resp -> cross-attn query decoder (tir keeps
+                                   #   the self_attn decoder). A cross_attn
+                                   #   stream MUST be outside the encoder, else
+                                   #   the model refuses to build.
+cross_attn_depth: 2                # DecoderBlock stack depth (self + cross + MLP)
+query_init: sincos3d               # time-anchored query init (1-D temporal sincos)
 
 # ---- masking (asymmetric) ----
 mask_ratio_tir: 0.90               # the thermal ROI is now the PRIMARY visual
@@ -243,5 +288,5 @@ max_sessions: 0                    # 0 = no cap
 max_entries: 0                     # 0 = no cap
 
 # ---- logging ----
-output_dir: ../output/pretrain/stage2_local_tir_roi_resp
+output_dir: ../output/pretrain/stage2_local_tir_roi_crossmae
 log_wandb: false

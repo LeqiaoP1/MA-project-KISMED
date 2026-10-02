@@ -81,7 +81,7 @@ import math
 import torch
 import torch.nn as nn
 
-from .blocks import Block, trunc_normal_
+from .blocks import Block, CrossAttention, DecoderBlock, trunc_normal_
 from .criterion import MaskedMSELoss
 from .registry import register_model
 from .waveform_losses import MultiResolutionSTFTLoss
@@ -212,7 +212,11 @@ class MultiModalMAE(nn.Module):
                  spectral_fft_sizes=None,
                  spectral_hop_ratio: float = 0.25,
                  physio_mask: str = 'random',
-                 mask_span_s=None):
+                 mask_span_s=None,
+                 resp_in_encoder: bool = True,
+                 signal_decoder=None,
+                 cross_attn_depth: int = 2,
+                 query_init: str = 'sincos3d'):
         super().__init__()
         self.streams = list(streams)
         # per-stream input channels (tir = 3 by default; see STREAM_CHANNELS)
@@ -241,6 +245,56 @@ class MultiModalMAE(nn.Module):
                 f'({", ".join(_VISUAL_STREAMS)}) AND >=1 physiological 1-D '
                 f'stream ({", ".join(_SIGNAL_STREAMS)}); got '
                 f'visual={self.visual}, signal={self.signal}.')
+
+        # ---- encoder membership + physio decoder style ("Solution A") ------ #
+        # Solution A (see code/prompt/SolutionA_asymmetric_cross_mae_spec.md)
+        # keeps the physio stream OUT of the encoder, so the encoder can no
+        # longer satisfy the masked 1-D target by interpolating the stream's
+        # OWN visible samples. The excluded stream stays a RECONSTRUCTION
+        # TARGET, decoded by a target-driven cross-attention head whose learned
+        # per-time-slot queries attend to the whole visual encoder output.
+        # The defaults (resp_in_encoder=True, signal_decoder='self_attn')
+        # reproduce the historical shared-encoder behaviour EXACTLY: no new
+        # submodule is constructed, so state_dict keys and the RNG draw order
+        # are unchanged.
+        self.resp_in_encoder = _as_bool(resp_in_encoder, default=True)
+        if not self.resp_in_encoder and 'resp' not in self.streams:
+            raise ValueError(
+                'MultiModalMAE: resp_in_encoder=False excludes the \'resp\' '
+                f'stream from the encoder, but it is not in streams '
+                f'{self.streams}.')
+        self.signal_decoder = parse_signal_decoder(
+            signal_decoder, self.streams, self.signal)
+        self.cross_attn_depth = int(cross_attn_depth or 2)
+        self.query_init = str(query_init or 'sincos3d')
+        if self.query_init not in ('sincos3d', 'random'):
+            raise ValueError(
+                "MultiModalMAE: query_init must be 'sincos3d' or 'random'; "
+                f'got {self.query_init!r}')
+        # the streams the encoder actually sees
+        self.encoder_streams = [
+            s for s in self.streams
+            if not (s == 'resp' and not self.resp_in_encoder)]
+        # a cross_attn decoder consumes the encoder output as CONTEXT, so its
+        # own stream must be OUTSIDE the encoder (otherwise the queries could
+        # read the target's own visible tokens -- the exact shortcut this
+        # design removes); a self_attn decoder needs its OWN visible tokens.
+        for s in self.streams:
+            style = self.signal_decoder.get(s, 'self_attn')
+            in_enc = s in self.encoder_streams
+            if style == 'cross_attn' and in_enc:
+                raise ValueError(
+                    f'MultiModalMAE: stream {s!r} uses a cross_attn decoder '
+                    'but is still fed to the encoder. Exclude it (e.g. '
+                    'resp_in_encoder: false) so the queries cannot read the '
+                    "target's own visible tokens.")
+            if style == 'self_attn' and not in_enc:
+                raise ValueError(
+                    f'MultiModalMAE: stream {s!r} is excluded from the encoder '
+                    'but keeps a self_attn decoder, which needs its own '
+                    'visible tokens. Set signal_decoder: cross_attn for it.')
+        self._cross_streams = [s for s in self.signal
+                               if self.signal_decoder.get(s) == 'cross_attn']
 
         t, ph, pw = tubelet
         assert input_size % ph == 0 and input_size % pw == 0, \
@@ -499,9 +553,33 @@ class MultiModalMAE(nn.Module):
             self._flat[s] = f
             self.heads[s] = nn.Linear(embed_dim, f)
 
+        # --- optional target-driven cross-attention decoders (Solution A) -- #
+        # Built LAST and ONLY for streams whose signal_decoder is 'cross_attn',
+        # so the default path registers NO extra module (identical state_dict
+        # keys) and consumes no extra RNG draws (from-scratch twins stay
+        # comparable). The 1-D projection REUSES heads[s]: for a physio stream
+        # it is exactly Linear(embed_dim, sig_kernel) -- the same shape
+        # Stage-3's waveform_head expects, so the checkpoint stays swappable.
+        self.signal_queries = nn.ParameterDict()
+        self.xdec_blocks = nn.ModuleDict()
+        for s in self._cross_streams:
+            self.signal_queries[s] = nn.Parameter(
+                torch.zeros(1, self.n_signal, embed_dim))
+            self.xdec_blocks[s] = nn.ModuleList([
+                DecoderBlock(dim=embed_dim, num_heads=enc_num_heads,
+                             mlp_ratio=mlp_ratio, qkv_bias=True,
+                             drop=drop_rate, attn_drop=attn_drop_rate,
+                             drop_path=0.0, norm_layer=nn.LayerNorm)
+                for _ in range(self.cross_attn_depth)])
+
         self.apply(self._init_weights)
         if self.pos_init == 'sincos3d':
             self._init_pos_embeds()
+        # queries are initialised AFTER apply/_init_pos_embeds: _init_weights
+        # only touches Linear/LayerNorm, so a bare Parameter would stay at the
+        # zeros above -- this gives it the SAME 1-D temporal sincos prior as
+        # the signal stream's positional embedding (time-anchored queries).
+        self._init_signal_queries()
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -606,6 +684,33 @@ class MultiModalMAE(nn.Module):
             pe = vis if s in self.visual else sig
             with torch.no_grad():
                 self.positions[s].pos_embed.copy_(pe.unsqueeze(0))
+
+    def _init_signal_queries(self):
+        """Initialise the cross-attn query slots (one per output time slot).
+
+        Each query is a learnable parameter standing for one signal token. With
+        ``query_init='sincos3d'`` it starts from the SAME 1-D temporal sincos
+        basis the physio positional embeddings use, so query ``i`` begins at
+        the same instant a physical token ``i`` would (time-anchored ordering)
+        instead of an arbitrary one. No-op unless a cross-attn stream exists.
+        """
+        if not self._cross_streams:
+            return
+        if self.query_init == 'sincos3d':
+            from utils.pos_embed import get_1d_sincos_pos_embed_from_grid
+            import numpy as np
+            d_t = 2 * (self.embed_dim // 6)
+            time = torch.from_numpy(get_1d_sincos_pos_embed_from_grid(
+                d_t, np.arange(self.n_signal, dtype=np.float32))).float()
+            q = time.new_zeros(self.n_signal, self.embed_dim)
+            q[:, :d_t] = time
+            q = q.unsqueeze(0)
+        else:
+            q = torch.zeros(1, self.n_signal, self.embed_dim)
+            trunc_normal_(q, std=0.02)
+        for s in self._cross_streams:
+            with torch.no_grad():
+                self.signal_queries[s].copy_(q)
 
     # ------------------------------------------------------------------ #
     # input geometry check (loud failure instead of a silent time warp)
@@ -766,19 +871,26 @@ class MultiModalMAE(nn.Module):
         # --- per-stream asymmetric masks ---------------------------------- #
         masks = self.make_masks(B, device)
 
-        # --- gather visible tokens of every stream ------------------------ #
+        # --- gather the VISIBLE tokens of every ENCODER stream only ------- #
+        # Solution A excludes the physio stream(s) here, so no physio token
+        # ever reaches the encoder. For an excluded stream k stays 0 and no
+        # slice is reserved in the concatenated encoder sequence ``z``.
         enc_parts = []
         info = {}
         for s in self.streams:
             mask_s = masks[s]                           # [B, N] 1 = masked
             ids_shuffle = torch.argsort(mask_s, dim=1, stable=True)
-            k = int((mask_s == 0).sum(dim=1).max())     # visible per sample
-            ids_keep = ids_shuffle[:, :k]
-            tok = tokens[s]
-            part = torch.gather(
-                tok, 1, ids_keep.unsqueeze(-1).expand(B, k, tok.shape[2]))
-            enc_parts.append(part)
-            info[s] = (mask_s, ids_shuffle, k, tokens[s].shape[1])
+            n = tokens[s].shape[1]
+            if s in self.encoder_streams:
+                k = int((mask_s == 0).sum(dim=1).max())  # visible per sample
+                ids_keep = ids_shuffle[:, :k]
+                tok = tokens[s]
+                part = torch.gather(
+                    tok, 1, ids_keep.unsqueeze(-1).expand(B, k, tok.shape[2]))
+                enc_parts.append(part)
+            else:
+                k = 0
+            info[s] = (mask_s, ids_shuffle, k, n)
         z = torch.cat(enc_parts, dim=1)                 # [B, sum_k, D]
 
         # --- shared encoder -------------------------------------------------
@@ -794,21 +906,36 @@ class MultiModalMAE(nn.Module):
         start = 0
         for s in self.streams:
             mask_s, ids_shuffle, k, n = info[s]
-            enc_s = z[:, start:start + k]
-            start += k
-            ids_restore = torch.argsort(ids_shuffle, dim=1)     # [B, N]
-            dec = torch.cat([enc_s, self.positions[s].mask_token
-                             .expand(B, n - k, self.embed_dim)], dim=1)
-            dec = torch.gather(dec, 1,
-                               ids_restore.unsqueeze(-1).expand(B, n, dec.shape[2]))
-            dec = dec + self.positions[s].pos_embed
-            for blk in self.dec_blocks:
-                dec = blk(dec)
-            pred = self.heads[s](dec)                    # [B, N, flat]
-            tgt = self._targets(xin[s], s)               # [B, N, flat]
-            # masked MSE on this modality's MASKED positions only, then scaled
-            # by its per-modality weight (losses[s] = weighted contribution)
-            losses_mse[s] = self.loss_fn(pred, tgt, mask_s)
+            if s in self.encoder_streams:
+                # --- self-attention decoder (historical shared path) ------ #
+                enc_s = z[:, start:start + k]
+                start += k
+                ids_restore = torch.argsort(ids_shuffle, dim=1)     # [B, N]
+                dec = torch.cat([enc_s, self.positions[s].mask_token
+                                 .expand(B, n - k, self.embed_dim)], dim=1)
+                dec = torch.gather(
+                    dec, 1,
+                    ids_restore.unsqueeze(-1).expand(B, n, dec.shape[2]))
+                dec = dec + self.positions[s].pos_embed
+                for blk in self.dec_blocks:
+                    dec = blk(dec)
+                pred = self.heads[s](dec)                    # [B, N, flat]
+                loss_mask = mask_s
+            else:
+                # --- target-driven cross-attention decoder (Solution A) --- #
+                # Learned per-time-slot queries attend to the WHOLE encoder
+                # output (all visual tokens). The entire waveform is the target,
+                # so the loss is over EVERY slot (all-ones mask): this is the
+                # Stage-3 "sensor fully absent" condition, trained directly.
+                q = self.signal_queries[s].expand(B, n, self.embed_dim)
+                for blk in self.xdec_blocks[s]:
+                    q = blk(q, z)
+                pred = self.heads[s](q)                      # [B, n_signal, flat]
+                loss_mask = torch.ones_like(mask_s)
+            tgt = self._targets(xin[s], s)                   # [B, N, flat]
+            # masked MSE on this modality's reconstructed positions, then
+            # scaled by its per-modality weight
+            losses_mse[s] = self.loss_fn(pred, tgt, loss_mask)
             contrib = self.loss_weights[s] * losses_mse[s]
             if s in self._spectral_streams:
                 # Periodicity term on the ASSEMBLED clip waveform. SignalEmbed
@@ -892,15 +1019,31 @@ def parse_mask_span(spec) -> Dict[str, float]:
 #: period of the band it is meant to police, otherwise the magnitude term
 #: measures local waveform shape rather than rate. At fs = 100 Hz:
 #:   bp   1.0-2.5 Hz  -> period 0.4-1.0 s   -> 64/128/256 (1.56/0.78/0.39 Hz bins)
-#:   resp 0.16-0.4 Hz -> period 2.5-6.25 s  -> 64/128/256 (the shipped Stage-3
-#:        choice: it polices multi-scale SHAPE; 128/256/512 = 1.28/2.56/5.12 s
-#:        is the ">= one breath per window" alternative -- if you switch, change
-#:        it HERE *and* in configs/finetune/resp*.yaml so both stages stay
-#:        aligned, and note that ``spec_resp`` is NOT comparable across sets)
+#:        CORRECT as-is: 64/128/256 spans >= one period of 1.56/0.78/0.39 Hz and
+#:        above, which covers the whole BP band. Do not "fix" this to the resp
+#:        set -- 512 would span 2 periods of the SLOWEST BP component and the
+#:        short windows are what give the cardiac term its rate resolution.
+#:   resp 0.1-0.6 Hz  -> period 1.7-10 s    -> 128/256/512 (0.78/0.39/0.20 Hz bins)
+#:        CORRECTED 2026-10-02. The old 64/128/256 was inherited from the BP
+#:        branch: its windows are 0.64/1.28/2.56 s, i.e. SHORTER than one breath
+#:        period at EVERY frequency in the 0.1-0.6 Hz band, and at 64 and 128 the
+#:        whole band collapses into STFT bin 0 (the DC bin) -- so the term
+#:        policed local waveform SHAPE and could never see respiratory RATE.
+#:        MEASURED on the 164 Stage-3 validation targets: 64/128 -> the band
+#:        occupies 1 bin; 256 -> 2 bins; 512 -> 4 bins. 128/256/512 is also the
+#:        ">= one breath per window" set that the TIR-ROI Stage-2 configs already
+#:        ship (``spectral_fft_sizes: 128,256,512``), so both stages now police
+#:        the same stream identically. NOTE ``spec_resp`` is NOT comparable
+#:        across window sets, so results from before this change are not
+#:        directly comparable on that metric.
+#:        CAVEAT: 512 needs a clip of >= 512 samples (5.12 s at fs 100). On the
+#:        4 s RGB resp configs (configs/finetune/{resp,resp_local}.yaml, L = 400)
+#:        512 does NOT fit -- they are deliberately left at 64/128/256, which is
+#:        the longest power-of-two set a 4 s clip allows.
 #:   eda  aperiodic, tonic 2-10 s          -> 256/512/1024 (2.56/5.12/10.24 s)
 #: ``eda`` needs a clip of >= 10.24 s: shorter clips DROP 1024 (logged) and a
 #: clip shorter than 2.56 s leaves nothing and raises.
-SPECTRAL_FFT_DEFAULTS = {'bp': (64, 128, 256), 'resp': (64, 128, 256),
+SPECTRAL_FFT_DEFAULTS = {'bp': (64, 128, 256), 'resp': (128, 256, 512),
                          'eda': (256, 512, 1024)}
 #: windows for a physio stream the table above does not name
 SPECTRAL_FFT_FALLBACK = (64, 128, 256)
@@ -1028,6 +1171,82 @@ def _parse_int_csv(v, dtype=int):
     return tuple(dtype(x) for x in str(v).split(','))
 
 
+def _as_bool(v, default=True) -> bool:
+    """Coerce a CLI/YAML value to bool without the ``bool('false') is True``
+    trap (a YAML ``false`` arrives as Python bool, but ``--flag false`` arrives
+    as the string 'false')."""
+    if v is None:
+        return default
+    if isinstance(v, bool):
+        return v
+    return str(v).strip().lower() in ('1', 'true', 'yes', 'y', 'on')
+
+
+#: physio-stream decoder styles. ``self_attn`` = the historical shared decoder
+#: (the stream's own visible tokens + mask tokens, self-attention);
+#: ``cross_attn`` = the Solution A target-driven decoder (learned per-time-slot
+#: queries cross-attending to the whole encoder output).
+SIGNAL_DECODER_STYLES = ('self_attn', 'cross_attn')
+
+
+def parse_signal_decoder(spec, streams, signal_streams) -> Dict[str, str]:
+    """Resolve the per-physio-stream decoder style (mirrors ``parse_mask_span``).
+
+    Accepted forms:
+      ``None`` / ``''``            -> every stream ``'self_attn'``
+      ``'cross_attn'``             -> that style for EVERY physio stream
+      ``'resp=cross_attn'``        -> per stream (CSV of ``name=style``)
+      ``{'resp': 'cross_attn'}``   -> per stream (YAML mapping)
+    Only physio (1-D) streams may be given a style; a video stream in ``spec``
+    is an error, as is an unknown style name.
+    """
+    styles = {s: 'self_attn' for s in streams}
+    if spec is None or (isinstance(spec, str) and not spec.strip()):
+        return styles
+
+    def _set(name, style):
+        name = str(name).strip()
+        style = str(style).strip().lower()
+        if style not in SIGNAL_DECODER_STYLES:
+            raise ValueError(
+                f'signal_decoder: unknown style {style!r} for {name!r}; '
+                f'allowed: {SIGNAL_DECODER_STYLES}')
+        if name not in styles:
+            raise ValueError(
+                f'signal_decoder: {name!r} is not one of the model streams '
+                f'{list(streams)}')
+        if name not in signal_streams:
+            raise ValueError(
+                f'signal_decoder: {name!r} is a video stream; the decoder '
+                'style only applies to the physio streams '
+                f'{list(signal_streams)}')
+        styles[name] = style
+
+    if isinstance(spec, str):
+        text = spec.strip()
+        if '=' in text:
+            for part in text.split(','):
+                part = part.strip()
+                if not part:
+                    continue
+                if '=' not in part:
+                    raise ValueError(
+                        "signal_decoder: expected 'name=style' items, got "
+                        f'{part!r} in {spec!r}')
+                name, style = part.split('=', 1)
+                _set(name, style)
+        else:
+            for s in signal_streams:
+                _set(s, text)
+    elif isinstance(spec, dict):
+        for name, style in spec.items():
+            _set(name, style)
+    else:
+        raise ValueError(
+            f'signal_decoder: expected a string or mapping, got {type(spec)}')
+    return styles
+
+
 def build_pretraining_model(args):
     """Construct the multimodal MAE from a run_pretrain ``args`` namespace."""
     streams = tuple(x.strip() for x in
@@ -1133,7 +1352,7 @@ def build_pretraining_model(args):
     def _geo(arg_name: str, geom_key: str, default: int) -> int:
         return int(getattr(args, arg_name, 0) or 0) or geom.get(geom_key, default)
 
-    return MultiModalMAE(
+    model = MultiModalMAE(
         streams=streams,
         stream_channels={'tir': int(getattr(args, 'tir_channels', 3))},
         embed_dim=_geo('enc_embed_dim', 'embed_dim', 768),
@@ -1157,7 +1376,24 @@ def build_pretraining_model(args):
         spectral_fft_sizes=_fft_sizes_spec(args),
         physio_mask=str(getattr(args, 'physio_mask', 'random') or 'random'),
         mask_span_s=getattr(args, 'mask_span_s', None),
-        spectral_hop_ratio=float(getattr(args, 'spectral_hop_ratio', 0.25)))
+        spectral_hop_ratio=float(getattr(args, 'spectral_hop_ratio', 0.25)),
+        resp_in_encoder=_as_bool(getattr(args, 'resp_in_encoder', True),
+                                 default=True),
+        signal_decoder=getattr(args, 'signal_decoder', None),
+        cross_attn_depth=int(getattr(args, 'cross_attn_depth', 2) or 2),
+        query_init=str(getattr(args, 'query_init', 'sincos3d') or 'sincos3d'))
+    _styles = {s: model.signal_decoder.get(s, 'self_attn')
+               for s in model.signal}
+    print(f'[encoder] streams fed to the encoder: {model.encoder_streams} '
+          f'(resp_in_encoder={model.resp_in_encoder}); target streams: '
+          f'{model.signal}; decoder styles: {_styles}')
+    if model._cross_streams:
+        print('[encoder] cross-attention decoders: '
+              f'{model._cross_streams} depth {model.cross_attn_depth}, '
+              f'query_init {model.query_init} '
+              '(the mask ratio of a cross-attn stream is unused: the whole '
+              'waveform is the reconstruction target)')
+    return model
 
 
 # --------------------------------------------------------------------------- #
@@ -1835,5 +2071,176 @@ def spectral_self_test(verbose: bool = True) -> int:
     return len(fails)
 
 
+# --------------------------------------------------------------------------- #
+# Solution A self-test -- the two invariants that fail SILENTLY are (1) a resp
+# token leaking into the encoder and (2) the resp loss reaching the encoder only
+# through the decoder. Both are asserted here.
+# --------------------------------------------------------------------------- #
+def _cross_model(**over):
+    """Tiny Solution A model. ``input_size=32`` gives a 2x2 spatial grid so the
+    0.5-masked tir stream still has visible tokens (at ``input_size=16`` the one
+    spatial patch is fully masked and the encoder input would be empty)."""
+    kw = dict(streams=('tir', 'resp'), embed_dim=64, enc_depth=1,
+              enc_num_heads=4, dec_depth=1, num_frames=20, input_size=32,
+              sig_kernel=8, seq_len=80, fps=25.0, fs=100.0,
+              temporal_stride=1, mask_ratios={'tir': 0.5, 'resp': 0.5},
+              resp_in_encoder=False, signal_decoder='cross_attn')
+    kw.update(over)
+    return MultiModalMAE(**kw)
+
+
+def _encoder_input_len(model, x):
+    """Length of the token sequence actually handed to the encoder.
+
+    Measured with a hook on ``enc_norm`` rather than by reading
+    ``encoder_streams`` -- this catches a leak even if the bookkeeping is wrong.
+    """
+    seen = {}
+
+    def hook(_mod, _inp, out):
+        seen['n'] = int(out.shape[1])
+
+    h = model.enc_norm.register_forward_hook(hook)
+    try:
+        model(x)
+    finally:
+        h.remove()
+    return seen['n']
+
+
+def cross_mae_self_test(verbose: bool = True) -> int:
+    """Verify the Solution A (asymmetric cross-MAE) invariants.
+
+    Returns the number of failures. The two properties that would fail SILENTLY
+    -- and turn Solution A into a no-op -- are asserted directly:
+
+    * NO resp token reaches the encoder (measured as the encoder input length);
+    * the RESP-ONLY loss produces a NON-ZERO gradient in the encoder, i.e. the
+      cross-attention decoder really does create the missing cross-modal credit
+      path (with a decoder built from the stream's own visible tokens, a fully
+      masked stream sends exactly ZERO gradient to the encoder).
+    """
+    fails = []
+
+    def check(name, cond, extra=''):
+        if verbose:
+            print(f'  [{"ok" if cond else "FAIL"}] {name}'
+                  f'{(" -- " + str(extra)) if extra != "" else ""}')
+        if not cond:
+            fails.append(name)
+
+    def raises(fn):
+        try:
+            fn()
+        except (ValueError, AssertionError):
+            return True
+        except Exception:
+            return False
+        return False
+
+    # ---- signal_decoder parsing ----------------------------------------- #
+    streams, sig = ('tir', 'resp'), ['resp']
+    check('signal_decoder None -> all self_attn',
+          parse_signal_decoder(None, streams, sig)
+          == {'tir': 'self_attn', 'resp': 'self_attn'})
+    check("signal_decoder 'cross_attn' -> every physio stream",
+          parse_signal_decoder('cross_attn', streams, sig)
+          == {'tir': 'self_attn', 'resp': 'cross_attn'})
+    check("signal_decoder 'resp=cross_attn' -> per stream",
+          parse_signal_decoder('resp=cross_attn', streams, sig)
+          == {'tir': 'self_attn', 'resp': 'cross_attn'})
+    check('signal_decoder mapping -> per stream',
+          parse_signal_decoder({'resp': 'cross_attn'}, streams, sig)
+          == {'tir': 'self_attn', 'resp': 'cross_attn'})
+    check('signal_decoder rejects an unknown style',
+          raises(lambda: parse_signal_decoder('resp=diffuse', streams, sig)))
+    check('signal_decoder rejects a video stream',
+          raises(lambda: parse_signal_decoder('tir=cross_attn', streams, sig)))
+    check('signal_decoder rejects an unknown stream name',
+          raises(lambda: parse_signal_decoder('eda=cross_attn', streams, sig)))
+
+    # ---- build + wiring -------------------------------------------------- #
+    torch.manual_seed(0)
+    a = _cross_model()
+    check("resp_in_encoder=False -> encoder sees only 'tir'",
+          a.encoder_streams == ['tir'], a.encoder_streams)
+    check('decoder styles resolved',
+          a.signal_decoder == {'tir': 'self_attn', 'resp': 'cross_attn'},
+          a.signal_decoder)
+    check('cross-attn modules built for resp only',
+          list(a.signal_queries.keys()) == ['resp']
+          and list(a.xdec_blocks.keys()) == ['resp'])
+    check('cross_attn_depth honoured',
+          len(a.xdec_blocks['resp']) == a.cross_attn_depth == 2)
+    check('queries are [1, n_signal, D]',
+          tuple(a.signal_queries['resp'].shape) == (1, a.n_signal, 64),
+          tuple(a.signal_queries['resp'].shape))
+    check('cross-attn stack is DecoderBlock(self+cross+MLP)',
+          all(isinstance(b, DecoderBlock) for b in a.xdec_blocks['resp'])
+          and isinstance(a.xdec_blocks['resp'][0].cross_attn, CrossAttention))
+
+    # ---- forward shapes + NO resp token in the encoder ------------------- #
+    B = 2
+    x = {'tir': torch.randn(B, 3, 20, 32, 32), 'resp': torch.randn(B, 1, 80)}
+    enc_a = _encoder_input_len(a, x)
+    check('Solution A: encoder input holds ONLY the tir tokens',
+          enc_a == 20, enc_a)
+
+    out = a(x)
+    check('resp prediction is [B, n_signal, sig_kernel]',
+          tuple(out['preds']['resp'].shape) == (B, a.n_signal, a.sig_kernel),
+          tuple(out['preds']['resp'].shape))
+    check('tir prediction is [B, n_visual, flat]',
+          tuple(out['preds']['tir'].shape) == (B, a.n_visual, a._flat['tir']),
+          tuple(out['preds']['tir'].shape))
+    check('loss finite', bool(torch.isfinite(out['loss'])), float(out['loss']))
+    check('both streams report a masked MSE',
+          set(out['losses_mse']) == {'tir', 'resp'})
+
+    # ---- the property that matters: resp loss reaches the encoder -------- #
+    a.zero_grad()
+    out['losses_mse']['resp'].backward()
+    g = a.enc_blocks[0].attn.qkv.weight.grad
+    check('RESP-ONLY loss gives a NON-ZERO encoder gradient',
+          g is not None and float(g.abs().sum()) > 0,
+          None if g is None else float(g.abs().sum()))
+    check('cross-attn queries receive gradient',
+          float(a.signal_queries['resp'].grad.abs().sum()) > 0)
+
+    # ---- Solution C (the default) is untouched --------------------------- #
+    torch.manual_seed(0)
+    c = _cross_model(resp_in_encoder=True, signal_decoder='')
+    check('Solution C keeps resp in the encoder',
+          c.encoder_streams == ['tir', 'resp'], c.encoder_streams)
+    check('Solution C builds NO cross-attn modules',
+          len(c.signal_queries) == 0 and len(c.xdec_blocks) == 0)
+    check('Solution C state_dict has no Solution A keys',
+          not any(k.startswith(('signal_queries.', 'xdec_blocks.'))
+                  for k in c.state_dict()))
+    enc_c = _encoder_input_len(c, x)
+    check('Solution C: encoder input is longer (resp tokens present)',
+          enc_c == enc_a + 5, f'{enc_c} vs A {enc_a}')
+
+    # ---- validation errors ----------------------------------------------- #
+    check('rejects cross_attn while the stream is still in the encoder',
+          raises(lambda: _cross_model(resp_in_encoder=True,
+                                      signal_decoder='resp=cross_attn')))
+    check('rejects a self_attn stream excluded from the encoder',
+          raises(lambda: _cross_model(resp_in_encoder=False,
+                                      signal_decoder='')))
+    check('rejects resp_in_encoder=False when resp is not a stream',
+          raises(lambda: _cross_model(streams=('tir', 'bp'),
+                                      resp_in_encoder=False,
+                                      signal_decoder='bp=cross_attn')))
+    check('rejects an unknown query_init',
+          raises(lambda: _cross_model(query_init='banana')))
+
+    if verbose:
+        print('cross_mae_self_test: ' + ('ALL PASS' if not fails
+                                         else f'{len(fails)} FAILURE(S): {fails}'))
+    return len(fails)
+
+
 if __name__ == '__main__':
-    raise SystemExit(1 if (mask_self_test() + spectral_self_test()) else 0)
+    raise SystemExit(1 if (mask_self_test() + spectral_self_test()
+                           + cross_mae_self_test()) else 0)

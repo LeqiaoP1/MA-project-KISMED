@@ -653,6 +653,56 @@ window, and a SYNTHETIC tree with a thermal video but no `IRFeatures` is skipped
 with 0 clips, so the rule is verified even though no shipped sequence is
 untracked any more.
 
+### Solution A — Asymmetric Cross-MAE (ADD-ON pre-training variant)
+
+A second **pre-training objective** for the same TIR-ROI → respiration task, selectable
+per config; full write-up in `code/AsymmetricCrossMAE.md`.
+
+The shipped Stage-2 SSL (**Solution C**) feeds the visible tokens of every stream into
+ONE shared ViT encoder, and reconstructs each stream from its own visible tokens + mask
+tokens. Respiration is oversampled ~30-60x (`sig_kernel 16` = 16 samples/token), so a
+SCATTERED physio mask is solvable by within-modality interpolation: measured, a five-line
+interpolator of the visible resp scores `mse_resp` 0.129 / `spec_resp` 0.98 with ZERO
+video, beating the trained 102 M-parameter model. The encoder therefore never needs the
+video, and Stage 3 inherits that.
+
+**Solution A** removes the shortcut structurally: the physio stream is **never fed to the
+encoder** and survives only as a reconstruction target, decoded by a **cross-attention**
+head whose learned per-time-slot queries attend to the whole visual encoder output.
+
+The two designs differ in **exactly one stage** (the pre-training):
+
+| knob | Solution C | Solution A |
+|---|---|---|
+| `resp_in_encoder` | `true` | `false` |
+| `signal_decoder` | `''` (self-attn) | `resp=cross_attn` |
+| `cross_attn_depth`, `query_init` | — | `2`, `sincos3d` |
+
+Everything else is shared and checked: the **data pipeline** (same ROI / task selection /
+`min_signal_spread` / geometry / `input_size`, because the change is `core/`-only and both
+dataset builders read the same keys), the **encoder interface**
+(`adapters.tir` / `positions.tir` / `enc_blocks` / `enc_norm` have identical keys and
+shapes, so either checkpoint loads into the same Stage-3 model), and the **Stage-3
+recipe** (the matched config pair `configs/finetune/resp_tir_roi_{local_matched,crossmae}.yaml`
+is identical apart from `finetune:` and `output_dir:`).
+
+Configs: `configs/pretrain/stage2_local_tir_roi_crossmae.yaml` (Solution A) vs
+`configs/pretrain/stage2_local_tir_roi_resp.yaml` (Solution C, unchanged). Both ship the
+spec §4 Stage-3 recipe (`head_style: transposed_conv`, `head_init: none`,
+`layer_decay: 0.75`), implemented as `core/waveform_model.WaveformUpsampleHead` +
+`utils/optim_factory.build_layer_decay_assigner`.
+
+```bash
+cd code
+python -u runners/run_pretrain.py -c configs/pretrain/stage2_local_tir_roi_crossmae.yaml
+python -u runners/run_waveform.py -c configs/finetune/resp_tir_roi_crossmae.yaml
+python -m core.multimae     # mask + spectral + cross_mae self-tests
+```
+
+The regression guarantee: `resp_in_encoder: true` + `signal_decoder: ''` (the defaults)
+constructs no extra module, so the existing configs and checkpoints are untouched --
+verified by reproducing the recorded Solution C smoke (`mse_tir 2.0890 / mse_resp 3.2286`).
+
 ### AU-occurrence probe — Semantic Representation Quality (ADD-ON)
 
 A **diagnostic control, not a Stage-1/2/3 step**. Its claim: Stage-2

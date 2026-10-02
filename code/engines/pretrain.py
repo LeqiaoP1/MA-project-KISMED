@@ -44,7 +44,11 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable,
         if lr_schedule_values is not None or wd_schedule_values is not None:
             for i, param_group in enumerate(optimizer.param_groups):
                 if lr_schedule_values is not None:
-                    param_group['lr'] = lr_schedule_values[sched_idx]
+                    # multiply by the group's layer-wise LR scale (1.0 when
+                    # layer decay is off): the schedule is ONE curve, so without
+                    # this a per-group lr_scale would be overwritten every step.
+                    param_group['lr'] = (lr_schedule_values[sched_idx]
+                                         * param_group.get('lr_scale', 1.0))
                 if (wd_schedule_values is not None
                         and param_group['weight_decay'] > 0):
                     param_group['weight_decay'] = wd_schedule_values[sched_idx]

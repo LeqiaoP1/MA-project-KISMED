@@ -7,7 +7,8 @@ parameters if you pass an assigner, otherwise uses a single parameter group.
 import json
 import torch
 
-__all__ = ['create_optimizer']
+__all__ = ['create_optimizer', 'get_num_layer_for_multimae',
+           'LayerDecayValueAssigner', 'build_layer_decay_assigner']
 
 
 def create_optimizer(args, model, skip_list=None, get_num_layer=None,
@@ -91,3 +92,73 @@ def get_parameter_groups(model, weight_decay, skip_list=(), get_num_layer=None,
 
     print('Parameter groups:\n%s' % json.dumps(parameter_group_names, indent=2))
     return list(parameter_groups.values())
+
+
+# --------------------------------------------------------------------------- #
+# layer-wise LR decay (VideoMAE recipe, mapped to THIS repo's module names)
+# --------------------------------------------------------------------------- #
+def get_num_layer_for_multimae(var_name: str, num_max_layer: int) -> int:
+    """Layer index of a parameter, for layer-wise LR decay.
+
+    Mirrors VideoMAE's ``get_num_layer_for_vit`` (tmp/videomae/optim_factory.py)
+    with this repo's names:
+
+    * ``adapters.*`` (the tubelet tokenizer) and ``positions.*`` (positional
+      embeddings / mask tokens) -> layer 0, the MOST decayed;
+    * ``enc_blocks.<n>.*`` -> ``n + 1`` (a deeper block gets a larger LR);
+    * everything else (``enc_norm``, ``waveform_head``) -> the top layer
+      (scale 1.0).
+
+    Rationale (spec §4.2): the lower layers carry the generic space-time
+    features inherited from Stage 1/2 and must move slowly, while the last
+    blocks and the head adapt to the new task.
+    """
+    if var_name.startswith(('adapters.', 'positions.')):
+        return 0
+    if var_name.startswith('enc_blocks.'):
+        parts = var_name.split('.')
+        if len(parts) > 1:
+            try:
+                return int(parts[1]) + 1
+            except ValueError:
+                pass
+    return max(0, num_max_layer - 1)
+
+
+class LayerDecayValueAssigner(object):
+    """``layer_id -> lr multiplier`` lookup (VideoMAE ``LayerDecayValueAssigner``)."""
+
+    def __init__(self, values):
+        self.values = list(values)
+
+    def get_scale(self, layer_id):
+        return self.values[layer_id]
+
+    def get_layer_id(self, var_name):
+        return get_num_layer_for_multimae(var_name, len(self.values))
+
+
+def build_layer_decay_assigner(model, layer_decay):
+    """Build a :class:`LayerDecayValueAssigner` for an encoder+head model.
+
+    ``layer_decay`` >= 1.0 (or ``None``) means OFF -> returns ``None``, so
+    ``create_optimizer`` keeps its single-group behaviour. Values follow the
+    VideoMAE recipe ``layer_decay ** (num_layers + 1 - i)`` over
+    ``num_layers + 2`` groups: the top group is exactly 1.0 and the tokenizer is
+    the most decayed. ``num_layers`` is read from ``model.enc_blocks`` (the
+    pre-trained encoder depth); a model without one -> ``None``.
+    """
+    if layer_decay is None or float(layer_decay) >= 1.0:
+        return None
+    try:
+        num_layers = len(model.enc_blocks)
+    except AttributeError:
+        return None
+    if num_layers <= 0:
+        return None
+    decay = float(layer_decay)
+    values = [decay ** (num_layers + 1 - i) for i in range(num_layers + 2)]
+    print(f'[layer_decay] decay {decay:g} over {num_layers} encoder blocks '
+          f'-> {len(values)} groups; lr scale {values[0]:.4g} (tokenizer) '
+          f'.. {values[-1]:.4g} (top)')
+    return LayerDecayValueAssigner(values)

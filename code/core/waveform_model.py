@@ -30,8 +30,8 @@ import torch.nn as nn
 from .blocks import Block
 from .multimae import STREAM_CHANNELS, TubeletEmbed, _PosMask, multimae_variant
 
-__all__ = ['MultiModalWaveformRegressor', 'build_waveform_model',
-           'load_stage2_encoder']
+__all__ = ['MultiModalWaveformRegressor', 'WaveformUpsampleHead',
+           'build_waveform_model', 'load_stage2_encoder']
 
 _VISUAL_STREAMS = ('rgb', 'tir')
 
@@ -50,6 +50,40 @@ def _unwrap_state(ckpt):
     if isinstance(state, dict) and isinstance(state.get('module'), dict):
         state = state['module']
     return state
+
+
+class WaveformUpsampleHead(nn.Module):
+    """Learned 1-D temporal upsampling head (spec §4.1).
+
+    The default Stage-3 head is one ``Linear(D -> samples_per_token)`` applied
+    per tubelet step. This alternative realises the spec's "1D Transposed
+    Convolutions" head: a temporal ``Conv1d`` mixes neighbouring tubelet steps,
+    then a stride-``samples_per_token`` ``ConvTranspose1d`` upsamples them to
+    the full waveform. ``kernel_size == stride == samples_per_token`` makes the
+    output segments tile the waveform exactly, so segment ``k`` still covers
+    tubelet window ``k`` (the space-time alignment contract is preserved).
+
+    Returns ``[B, grid_t, samples_per_token]`` -- the SAME shape the linear head
+    produces -- so ``MultiModalWaveformRegressor.forward``'s flatten to
+    ``[B, output_len]`` is unchanged.
+    """
+
+    def __init__(self, embed_dim: int, samples_per_token: int,
+                 hidden: Optional[int] = None):
+        super().__init__()
+        self.samples_per_token = int(samples_per_token)
+        self.hidden = int(hidden or max(32, embed_dim // 2))
+        self.net = nn.Sequential(
+            nn.Conv1d(embed_dim, self.hidden, kernel_size=3, padding=1),
+            nn.GELU(),
+            nn.ConvTranspose1d(self.hidden, 1,
+                               kernel_size=self.samples_per_token,
+                               stride=self.samples_per_token))
+
+    def forward(self, h):
+        # h: [B, grid_t, D] -> [B, D, grid_t] -> [B, 1, grid_t * s]
+        z = self.net(h.transpose(1, 2))
+        return z.transpose(1, 2)                 # [B, grid_t, s]
 
 
 class MultiModalWaveformRegressor(nn.Module):
@@ -73,6 +107,7 @@ class MultiModalWaveformRegressor(nn.Module):
                  output_len: int = 400, sig_kernel: int = 8,
                  fps: float = 25.0, fs: float = 100.0,
                  temporal_stride: int = 1, head_hidden: int = 0,
+                 head_style: str = 'linear', head_init: str = 'transfer',
                  drop_rate: float = 0.0, attn_drop_rate: float = 0.0,
                  drop_path_rate: float = 0.0, pos_init: str = 'sincos3d'):
         super().__init__()
@@ -112,6 +147,31 @@ class MultiModalWaveformRegressor(nn.Module):
         self.temporal_stride = max(1, int(temporal_stride or 1))
         self.pos_init = pos_init
 
+        # --- Stage-3 head style + how it is initialised -------------------- #
+        # head_style 'linear' (default) = one Linear(D, samples_per_token) per
+        #   tubelet step; 'transposed_conv' = the spec §4.1 learned 1-D
+        #   upsampling head (Conv1d + ConvTranspose1d, stride samples_per_token).
+        # head_init 'transfer' (default) = copy the Stage-2 heads.<target>
+        #   weights into the head (single-Linear head only); 'none' = always
+        #   start RANDOM. Both pretraining solutions DISCARD their decoder heads
+        #   (spec §4.1), so a controlled A-vs-C comparison ships
+        #   head_init: none for BOTH arms.
+        if head_style not in ('linear', 'transposed_conv'):
+            raise ValueError(
+                "MultiModalWaveformRegressor: head_style must be 'linear' or "
+                f"'transposed_conv'; got {head_style!r}")
+        if head_init not in ('transfer', 'none'):
+            raise ValueError(
+                "MultiModalWaveformRegressor: head_init must be 'transfer' or "
+                f"'none'; got {head_init!r}")
+        if head_style == 'transposed_conv' and head_hidden:
+            raise ValueError(
+                'MultiModalWaveformRegressor: head_hidden applies to '
+                "head_style 'linear' only; the transposed_conv head carries "
+                'its own internal width.')
+        self.head_style = head_style
+        self.head_init = head_init
+
         self.grid_t = num_frames // t
         self.grid_h = self.grid_w = input_size // ph
         self.n_visual = self.grid_t * self.grid_h * self.grid_w
@@ -146,7 +206,13 @@ class MultiModalWaveformRegressor(nn.Module):
         self.enc_norm = nn.LayerNorm(embed_dim)
 
         # --- temporal waveform head ---------------------------------------- #
-        if head_hidden and int(head_hidden) > 0:
+        if head_style == 'transposed_conv':
+            # spec §4.1: a LEARNED 1-D upsampling head instead of the linear
+            # per-time-step projection. Output stays [B, grid_t, s] so forward's
+            # flatten is unchanged and segment k <-> tubelet window k survives.
+            self.waveform_head = WaveformUpsampleHead(
+                embed_dim, self.samples_per_token)
+        elif head_hidden and int(head_hidden) > 0:
             self.waveform_head = nn.Sequential(
                 nn.Linear(embed_dim, int(head_hidden)), nn.GELU(),
                 nn.Linear(int(head_hidden), self.samples_per_token))
@@ -292,6 +358,8 @@ def build_waveform_model(args):
         fps=fps, fs=float(getattr(args, 'fs', 100.0)),
         temporal_stride=temporal_stride,
         head_hidden=int(getattr(args, 'head_hidden', 0) or 0),
+        head_style=str(getattr(args, 'head_style', 'linear') or 'linear'),
+        head_init=str(getattr(args, 'head_init', 'transfer') or 'transfer'),
         drop_rate=float(getattr(args, 'drop_rate', 0.0)),
         attn_drop_rate=float(getattr(args, 'attn_drop_rate', 0.0)),
         drop_path_rate=float(getattr(args, 'drop_path_rate', 0.0)),
@@ -395,7 +463,17 @@ def load_stage2_encoder(model: MultiModalWaveformRegressor, path: str,
     # below). Only the single-Linear head is transferable: with
     # ``head_hidden > 0`` the 2-layer MLP has no Stage-2 counterpart.
     head_loaded, head_note, head_source = [], '', ''
-    if target:
+    _head_style = getattr(model, 'head_style', 'linear')
+    _head_init = getattr(model, 'head_init', 'transfer')
+    if target and _head_init == 'none':
+        head_note = ("head_init='none': the Stage-2 decoder head is NOT "
+                     'transferred (spec §4.1 discards the pre-training '
+                     'decoders) -> the Stage-3 head starts RANDOM')
+    elif target and _head_style != 'linear':
+        head_note = (f"head_style='{_head_style}': the Stage-2 "
+                     'heads.<target> is a Linear and has no counterpart in '
+                     'this head -> it is NOT transferred and starts RANDOM')
+    elif target:
         dst_w, dst_b = 'waveform_head.weight', 'waveform_head.bias'
         # A Stage-2 checkpoint written BEFORE the 2026-09-23 stream rename still
         # carries the old key for the very same wave ('heads.bvp' == 'heads.bp';

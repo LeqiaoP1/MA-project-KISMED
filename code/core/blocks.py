@@ -18,6 +18,7 @@ except ImportError:                                # pragma: no cover
 
 __all__ = [
     'trunc_normal_', 'drop_path', 'DropPath', 'Mlp', 'Attention', 'Block',
+    'CrossAttention', 'DecoderBlock',
 ]
 
 
@@ -167,5 +168,92 @@ class Block(nn.Module):
 
     def forward(self, x):
         x = x + self.drop_path(self.attn(self.norm1(x)))
+        x = x + self.drop_path(self.mlp(self.norm2(x)))
+        return x
+
+
+class CrossAttention(nn.Module):
+    """Multi-head cross-attention: queries from ``x``, keys/values from ``context``.
+
+    Ported from ``tmp/MultiMAE/multimae/multimae_utils.py`` (``CrossAttention``).
+    This is the piece the scaffold's :class:`Block` docstring told us to port
+    "if your decoder needs them": it lets a target-driven query sequence attend
+    to a DIFFERENT sequence (here, learned response-time queries attending to the
+    whole visual encoder output), which plain self-attention cannot express.
+
+    Uses fused SDPA when available, exactly like :class:`Attention`, so the
+    ``[B, heads, N, M]`` score matrix is never materialised on the fast path.
+    """
+
+    def __init__(self, dim, num_heads=8, qkv_bias=False, attn_drop=0.,
+                 proj_drop=0.):
+        super().__init__()
+        self.num_heads = num_heads
+        head_dim = dim // num_heads
+        self.scale = head_dim ** -0.5
+
+        self.q = nn.Linear(dim, dim, bias=qkv_bias)
+        self.kv = nn.Linear(dim, dim * 2, bias=qkv_bias)
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+
+    def forward(self, x, context):
+        B, N, C = x.shape
+        M = context.shape[1]
+        q = self.q(x).reshape(B, N, self.num_heads,
+                              C // self.num_heads).permute(0, 2, 1, 3)
+        kv = self.kv(context).reshape(B, M, 2, self.num_heads,
+                                      C // self.num_heads).permute(2, 0, 3, 1, 4)
+        k, v = kv[0], kv[1]   # each [B, num_heads, M, head_dim]
+
+        if _sdpa is not None:
+            x = _sdpa(q, k, v,
+                      dropout_p=self.attn_drop.p if self.training else 0.0)
+        else:                                          # pragma: no cover
+            attn = (q @ k.transpose(-2, -1)) * self.scale
+            attn = attn.softmax(dim=-1)
+            attn = self.attn_drop(attn)
+            x = attn @ v
+
+        x = x.transpose(1, 2).reshape(B, N, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x
+
+
+class DecoderBlock(nn.Module):
+    """Self-attention + cross-attention + MLP (MultiMAE ``DecoderBlock``).
+
+    ``x`` is the query sequence (the decoder's own tokens); ``context`` is the
+    encoder output it cross-attends to. Ported from
+    ``tmp/MultiMAE/multimae/multimae_utils.py`` (``DecoderBlock``) so the
+    Asymmetric Cross-MAE RESP decoder can query the FULL visual encoder output
+    instead of only its own stream's visible tokens.
+    """
+
+    def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False,
+                 drop=0., attn_drop=0., drop_path=0., act_layer=nn.GELU,
+                 norm_layer=nn.LayerNorm):
+        super().__init__()
+        self.norm1 = norm_layer(dim)
+        self.self_attn = Attention(
+            dim, num_heads=num_heads, qkv_bias=qkv_bias,
+            attn_drop=attn_drop, proj_drop=drop)
+        self.cross_attn = CrossAttention(
+            dim, num_heads=num_heads, qkv_bias=qkv_bias,
+            attn_drop=attn_drop, proj_drop=drop)
+        self.query_norm = norm_layer(dim)
+        self.context_norm = norm_layer(dim)
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.norm2 = norm_layer(dim)
+        mlp_hidden_dim = int(dim * mlp_ratio)
+        self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim,
+                       act_layer=act_layer, drop=drop)
+
+    def forward(self, x, context):
+        x = x + self.drop_path(self.self_attn(self.norm1(x)))
+        x = x + self.drop_path(
+            self.cross_attn(self.query_norm(x), self.context_norm(context)))
         x = x + self.drop_path(self.mlp(self.norm2(x)))
         return x
