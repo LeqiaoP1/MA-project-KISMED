@@ -1,10 +1,10 @@
-# Tier 1 Global Repository Guidelines: PyTorch AI Model Development
+# Global Repository Guidelines: PyTorch AI Model Development
 
 ## 1. Project Overview & Scope
 
 - **Domain**: PyTorch-based Deep Learning and AI model research and development.
 - **Goal**: High-performance, modular, and reproducible neural network architectures and training pipelines.
-- **AI Agent Context**: Code generation is driven by DeepSeek v4.1, auditing/reviews by Claude Sonnet, and documentation by Gemini Pro. Maintain clear, typed, and well-structured code to assist multi-agent parsing.
+- **AI Agent Context**: Code generation is driven by DeepSeek v4.1, auditing/reviews by GPT-4.6 luna. Maintain clear, typed, and well-structured code to assist multi-agent parsing.
 
 ## 2. Tech Stack & Dependencies
 
