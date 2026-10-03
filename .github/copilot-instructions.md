@@ -1,4 +1,3 @@
-
 # Tier 1 Global Repository Guidelines: PyTorch AI Model Development
 
 ## 1. Project Overview & Scope
@@ -10,21 +9,21 @@
 ## 2. Tech Stack & Dependencies
 
 - **Core Framework**: PyTorch with CUDA support.
-- **Ecosystem Libraries**: installed via the "code/requirements.txt" (relateive to the workspace path)
-- **Tooling & Environment**: created and managed by python in-built venv module. Path ".venv"
+- **Ecosystem Libraries**: dependent package installed via the "code/requirements.txt"
+- **Tooling & Environment**: environment managed by python in-built venv module.  Path ".venv"
 
 ## 3. Directory & Architecture Standards
 
-Ensure data in the path "./data" (relateive to the workspace path).
+Ensure data in the path "./data" (relateive to the workspace root).
 
-Ensure code in the path "./code" (relateive to the workspace path) follows a clean separation of concerns across the project layout:
+Ensure code in the path "./code" follows a clean separation of concerns across the project layout:
 
-- `models/`: Subclassed `nn.Module` definitions. Pure architecture logic without hardcoded dataset paths or training loops.
-- `data/`: `Dataset` and `DataLoader` abstractions, transformations, and preprocessing pipelines.
-- `engine/`: Training, evaluation, and inference loops (`trainer.py`, `evaluator.py`).
-- `configs/`: Hyperparameters and experiment configurations managed via dataclasses or YAML.
-- `utils/`: Reusable helpers (logging, seed management, metrics calculation).
-- `tests/`: `pytest` suite testing forward passes, gradient flows, and shape transformations.
+- `code/data/`: `Dataset` and `DataLoader` abstractions, transformations, and preprocessing pipelines.
+- `code/engines/`: Training, evaluation, and inference loops (`trainer.py`, `evaluator.py`).
+- `code/configs/`: Hyperparameters and experiment configurations managed via dataclasses or YAML.
+- `code/utils/`: Reusable helpers (logging, seed management, metrics calculation).
+- `code/tests/`: `pytest` suite testing forward passes, gradient flows, and shape transformations.
+- 
 
 ## 4. PyTorch Engineering & Code Conventions
 
