@@ -3,11 +3,6 @@ name: PyTorch Code Reviewer
 description: Reviews PyTorch model architectures, tensor shape compatibility, and training loops for memory leaks or bugs.
 model: [ 'DeepSeek V4 Pro (deepseek)', 'auto' ]
 tools: ['read', 'search']
-handoffs:
-  - label: Write Documentation
-    agent: docs-writer
-    prompt: Generate comprehensive docstrings and documentation for the code reviewed above.
-    send: false
 ---
 
 # Role & Instructions
