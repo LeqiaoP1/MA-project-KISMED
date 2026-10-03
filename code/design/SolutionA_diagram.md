@@ -3,7 +3,7 @@
 PlantUML source for **Solution A (Modality-Isolated / Asymmetric Cross-MAE)**, the
 asymmetric variant of the current shared-encoder design (**Solution C**).
 
-Design of record: `code/prompt/SolutionA_asymmetric_cross_mae_spec.md`.
+Design of record: `code/design/SolutionA_asymmetric_cross_mae_spec.md`.
 Both solutions share one dataset and one encoder interface; they differ **only** in the
 pre-training stage (see diagram 3).
 

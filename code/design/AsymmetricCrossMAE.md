@@ -4,7 +4,7 @@ Design note for the **asymmetric cross-MAE** variant ("Solution A") of the TIR-R
 respiration pre-training, and how it coexists with the shipped shared-encoder design
 ("Solution C") in a single codebase.
 
-* Architecture spec: `code/prompt/SolutionA_asymmetric_cross_mae_spec.md`
+* Architecture spec: `code/design/SolutionA_asymmetric_cross_mae_spec.md`
 * Diagrams: `code/prompt/SolutionA_diagram.md`
 * Task / data plan of record: `code/TirROI_Resp_plan.md`
 * Span-masking rationale: `code/SpanMask_PhysioSignals.md`
