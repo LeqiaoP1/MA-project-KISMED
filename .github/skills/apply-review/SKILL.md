@@ -1,5 +1,7 @@
 ---
+name: apply-review
 description: Refactors code based on prior reviewer feedback.
+disable-model-invocation: true
 ---
 # Instructions
 
