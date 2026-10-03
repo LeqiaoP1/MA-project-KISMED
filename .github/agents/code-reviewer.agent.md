@@ -1,7 +1,7 @@
 ---
 name: PyTorch Code Reviewer
 description: Reviews PyTorch model architectures, tensor shape compatibility, and training loops for memory leaks or bugs.
-model: ['DeepSeek V4.1 Flash (deepseek)']
+model: ['DeepSeek V4.1 Flash (deepseek)', 'Auto (copilot)']
 tools: ['read', 'search']
 ---
 

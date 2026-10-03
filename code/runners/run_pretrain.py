@@ -46,7 +46,7 @@ def get_args():
                         help="Stage-2 data source: 'bp4d+' (default) = the "
                              "canonical paired layout; 'tir_roi' = the ADD-ON "
                              "thermal-ROI + respiration dataset built from the "
-                             "RAW tree (see code/TirROI_Resp_plan.md); "
+                             "RAW tree (see code/plan/TirROI_Resp_plan.md); "
                              "'rgb_roi' = the ADD-ON RGB face-ROI dataset "
                              "(landmark crop from 2DFeatures + RAW physiology; "
                              "see code/data/rgb_roi_dataset.py). A (subject, "
@@ -169,7 +169,7 @@ def get_args():
     # dropout, byte-identical for every existing config. 'span' = contiguous
     # blocks, which removes the "interpolate the gap from the visible
     # neighbours" shortcut of a scattered mask (see
-    # code/SpanMask_PhysioSignals.md). Span geometry is per stream and derived
+    # code/design/SpanMask_PhysioSignals.md). Span geometry is per stream and derived
     # from mask_span_s + the stream's ratio; only the span PLACEMENT is random.
     parser.add_argument('--physio_mask', default='random', type=str,
                         choices=['random', 'span'],

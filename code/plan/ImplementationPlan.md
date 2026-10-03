@@ -284,7 +284,7 @@ rescaled to `tubelet_t*N/fps*fs` (stride 2 -> 16) or the model refuses to build.
   and under `target_norm: clip` the target is ALWAYS bounded (`|z| <= 1`), so a
   huge masked MSE can only mean the prediction exploded. Turning the STFT off
   also UNBLOCKS `target_norm: token` (the next lever against the collapse).
-  Full record: `code/TirROI_Resp_plan.md` §7.
+  Full record: `code/plan/TirROI_Resp_plan.md` §7.
 * **Files.** `data/tir_resp_dataset.py` (`parse_ir_features`,
   `missing_frame_mask`, `roi_box_from_landmarks`, `discover_sessions`,
   `BP4DPlusTIRRespDataset`, `main`), `data/video_io.py` gained

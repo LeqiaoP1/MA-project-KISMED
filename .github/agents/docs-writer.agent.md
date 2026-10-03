@@ -1,7 +1,7 @@
 ---
 name: Documentation Specialist
 description: Writes Google/NumPy style docstrings, layer architecture specifications, and usage examples.
-model: [ 'Gemini 3.7 Flash', 'auto' ]
+model: [ 'GPT-4.1 (copilot)', 'auto' ]
 tools: ['read', 'edit', 'search']
 ---
 # Role & Instructions

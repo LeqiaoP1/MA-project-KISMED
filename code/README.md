@@ -77,7 +77,7 @@ python runners/run_evaluate.py --pred_path out.npy --target_path gt.npy \
 python runners/run_au_probe.py -c configs/finetune/au_local.yaml
 
 # (5) OPTIONAL ADD-ON Stage 2: thermal ROI (visual) -> RESPIRATION (1-D)
-#     procedure of record: code/TirROI_Resp_plan.md
+#     procedure of record: code/plan/TirROI_Resp_plan.md
 python runners/run_pretrain.py -c configs/pretrain/stage2_local_tir_roi_resp.yaml
 
 # multi-GPU (HPC)
@@ -232,9 +232,9 @@ dataset behind `build_pretraining_dataset`: the default `bp4d+` keeps
 ADD-ON thermal-ROI + respiration dataset from the RAW tree and is the only
 path whose visual stream is the landmark-derived mouth/nose crop. The first
 such run is `configs/pretrain/stage2_local_tir_roi_resp.yaml` (`streams: tir,resp`);
-its procedure of record is `code/TirROI_Resp_plan.md`. A measured diagnosis of
+its procedure of record is `code/plan/TirROI_Resp_plan.md`. A measured diagnosis of
 *why* the physio stream collapses under scattered masking, and the span-masking
-design that replaces it, is in `code/SpanMask_PhysioSignals.md` (with the STFT
+design that replaces it, is in `code/design/SpanMask_PhysioSignals.md` (with the STFT
 term's role re-derived under spans).
 
 **Task groups / "distortion levels" (`--task_set`, `task_groups:`).** A run can
@@ -335,7 +335,7 @@ scattered (`random`, the default, unchanged) or as contiguous blocks (`span`,
 length per stream via `--mask_span_s`, count derived from the ratio). Span
 masking removes the "interpolate the gap from its visible neighbours" shortcut
 that makes a scattered mask on an oversampled band-limited stream solvable with
-zero video information (`code/SpanMask_PhysioSignals.md` §1-§2). The resolved
+zero video information (`code/design/SpanMask_PhysioSignals.md` §1-§2). The resolved
 geometry is printed at model build, and `python -m core.multimae` self-tests the
 invariants (uniform masked count across the batch -- a batch-max gather would
 otherwise leak masked tokens into the encoder). It needs no model
@@ -357,7 +357,7 @@ subsection above.)
 > **ADD-ON (not a pipeline stage):** the *AU-occurrence probe* (semantic
 > representation quality, `runners/run_au_probe.py`) is a separate diagnostic
 > on the Stage-2 encoder — it is not part of the three-stage pipeline above.
-> See the dedicated AU-probe subsection below and `code/ImplementationPlan.md` §5.
+> See the dedicated AU-probe subsection below and `code/plan/ImplementationPlan.md` §5.
 
 | Plan stage                                                                            | Supported here                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Still to port (thesis work)                                                                                                                                                                                                                                                                                                                           |
 | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -753,7 +753,7 @@ independent, self-contained module that re-uses the Stage-2 shared encoder
   `engines/au_probe.py` (BCE train + per-AU F1 eval),
   `runners/run_au_probe.py`, configs `configs/finetune/au_local{,_pretrained}.yaml`,
   launcher `scripts/local/au_smoke.sh`. Details & status:
-  `code/ImplementationPlan.md` §5.
+  `code/plan/ImplementationPlan.md` §5.
 
 ```bash
 # AU probe (linear, Stage-2 ckpt); local smoke via scripts/local/au_smoke.sh

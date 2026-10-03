@@ -445,7 +445,7 @@ class MultiModalMAE(nn.Module):
         # behaviour for every existing config. 'span' = contiguous blocks, which
         # removes the "interpolate the gap from its visible neighbours" shortcut
         # that makes a scattered mask locally solvable -- see
-        # code/SpanMask_PhysioSignals.md.
+        # code/design/SpanMask_PhysioSignals.md.
         #
         # The span geometry is resolved ONCE here, per stream, from
         # ``mask_span_s`` (seconds, per stream) and the stream's mask ratio:
@@ -768,7 +768,7 @@ class MultiModalMAE(nn.Module):
         physio stream's only gradient path to the encoder); only the PLACEMENT
         is random per sample. That uniformity is what makes the batch-max
         visible gather in ``forward`` exact -- see
-        ``code/SpanMask_PhysioSignals.md`` §4.3.
+        ``code/design/SpanMask_PhysioSignals.md`` §4.3.
         """
         span = max(1, int(span))
         n_spans = max(1, int(n_spans))
@@ -968,7 +968,7 @@ class MultiModalMAE(nn.Module):
 #: default span length (SECONDS) per 1-D stream, used when ``mask_span_s`` does
 #: not name the stream. Anchored on the target's own period/correlation time so
 #: that the gap is no longer fillable from its visible edges (see
-#: ``code/SpanMask_PhysioSignals.md``): bp 1-2.5 Hz -> 1.0 s, resp 0.16-0.4 Hz
+#: ``code/design/SpanMask_PhysioSignals.md``): bp 1-2.5 Hz -> 1.0 s, resp 0.16-0.4 Hz
 #: -> 4.0 s, eda aperiodic (2-10 s tonic scale) -> 8.0 s.
 MASK_SPAN_DEFAULTS = {'bp': 1.0, 'resp': 4.0, 'eda': 8.0}
 
@@ -1014,8 +1014,8 @@ def parse_mask_span(spec) -> Dict[str, float]:
 #: Stage 2 and Stage 3 instead of the single global window set Stage 2 used to
 #: force on every stream.
 #:
-#: Rationale (see ``code/TirROI_Resp_plan.md`` §9 and
-#: ``code/SpanMask_PhysioSignals.md`` §4.1): a window must span at least ONE
+#: Rationale (see ``code/plan/TirROI_Resp_plan.md`` §9 and
+#: ``code/design/SpanMask_PhysioSignals.md`` §4.1): a window must span at least ONE
 #: period of the band it is meant to police, otherwise the magnitude term
 #: measures local waveform shape rather than rate. At fs = 100 Hz:
 #:   bp   1.0-2.5 Hz  -> period 0.4-1.0 s   -> 64/128/256 (1.56/0.78/0.39 Hz bins)
@@ -1341,8 +1341,8 @@ def build_pretraining_model(args):
             'interpolation (a linear interpolator of the visible resp beats '
             'the trained model on its own spectral metric) AND it is the spike '
             'trigger (spec_resp up to 4.3e10, from zero-variance railed '
-            'targets). See code/TirROI_Resp_plan.md §7.5 + §9 and '
-            'code/SpanMask_PhysioSignals.md §5. Every shipped '
+            'targets). See code/plan/TirROI_Resp_plan.md §7.5 + §9 and '
+            'code/design/SpanMask_PhysioSignals.md §5. Every shipped '
             'configs/pretrain/*.yaml sets spectral_weight: 0.0.')
 
     # ViT geometry: the --model variant name sets it, and an explicit (>0)
@@ -1716,7 +1716,7 @@ def _longest_run(row) -> int:
 def mask_self_test(verbose: bool = True) -> int:
     """Verify the 1-D masking invariants. Returns the number of failures.
 
-    Covers (see ``code/SpanMask_PhysioSignals.md`` §4.3-§4.5):
+    Covers (see ``code/design/SpanMask_PhysioSignals.md`` §4.3-§4.5):
 
     * ``_span_mask`` produces exactly ``min(n_spans * span, N - 1)`` masked
       tokens, **the same count for every sample of the batch** -- the batch-max

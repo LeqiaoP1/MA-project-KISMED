@@ -88,7 +88,7 @@ class StdLoss(nn.Module):
 
     * It stops charging for a point-wise TIME SHIFT, which is the one error the
       model cannot remove: the visual pulse lags the pressure trace by the pulse
-      transit time (``refined_RGB_BP_study.md`` §8). A PERFECT waveform delayed
+      transit time (``code/refined_RGB_BP_study.md`` §8). A PERFECT waveform delayed
       by 0.20 s (~1/4 cardiac cycle at 1.2 Hz) cost the old L1 ``1.2868`` and now
       costs ``0.0000`` -- L1 was pushing the optimiser toward a compromise shape
       for an error it could never fix.

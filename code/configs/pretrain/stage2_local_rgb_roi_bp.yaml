@@ -161,7 +161,7 @@ mask_ratio_bp: 0.70                # a physio stream reaches the encoder ONLY
                                    # that stream's encoder gradient entirely).
 # mask_ratio_tir / mask_ratio_resp / mask_ratio_eda are UNUSED while
 # streams: rgb,bp -- leave them at their defaults.
-# ---- 1-D masking PATTERN (see code/SpanMask_PhysioSignals.md) ----
+# ---- 1-D masking PATTERN (see code/design/SpanMask_PhysioSignals.md) ----
 # ACTIVE: contiguous spans are the measured fix for the"interpolate the gap from
 # the visible neighbours" shortcut, which a scattered mask cannot prevent in a
 # 30-60x oversampled band-limited signal. Revert to the shipped scattered

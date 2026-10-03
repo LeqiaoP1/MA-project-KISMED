@@ -5,7 +5,7 @@
 # configs/pretrain/stage2_local_tir_roi_resp.yaml.
 #
 # Architecture spec:  code/design/SolutionA_asymmetric_cross_mae_spec.md
-# Diagrams:           code/prompt/SolutionA_diagram.md
+# Diagrams:           code/design/SolutionA_diagram.md
 #
 # It differs from the shared-encoder config (Solution C) in EXACTLY ONE STAGE --
 # the pre-training -- and in nothing else:
@@ -32,7 +32,7 @@
 #         --output_dir /tmp/tir_roi_crossmae_probe
 # ============================================================================
 #
-# ADD-ON experiment, procedure of record: code/TirROI_Resp_plan.md.
+# ADD-ON experiment, procedure of record: code/plan/TirROI_Resp_plan.md.
 # The counterpart of configs/pretrain/stage2_local_pretrained.yaml for the
 # thermal-only setting: the ONLY visual information is the mouth+nose ROI of the
 # thermal rendering, and the ONLY waveform is respiration.
@@ -176,7 +176,7 @@ mask_ratio_resp: 0.50              # NOT 0.90: a physio stream's only gradient
 mask_ratio_rgb: 0.90               # unused while streams=tir,resp
 mask_ratio_bp: 0.50                # unused
 mask_ratio_eda: 0.50               # unused
-# ---- 1-D masking PATTERN (see code/SpanMask_PhysioSignals.md) ----
+# ---- 1-D masking PATTERN (see code/design/SpanMask_PhysioSignals.md) ----
 # 'random' = the shipped scattered dropout (E0 baseline, byte-identical).
 # 'span'   = contiguous blocks: the measured fix for the resp collapse, because
 #            a scattered mask in a 16x-oversampled band-limited signal is
