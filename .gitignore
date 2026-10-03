@@ -7,6 +7,7 @@ data/raw/*
 .venv/
 .env/
 
+
 *.tar.gz
 
 # Ignore downloaded model weight files
