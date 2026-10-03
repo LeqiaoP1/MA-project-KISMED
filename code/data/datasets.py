@@ -103,6 +103,12 @@ def build_pretraining_dataset(args):
     is used. Per-stream masks are produced inside the multimodal MAE forward
     pass.
     """
+    split = str(getattr(args, 'pretrain_split', 'all') or '').strip().lower()
+    if split != 'all':
+        raise ValueError(
+            'Stage-2 pre-training requires pretrain_split="all"; '
+            'train/validation splitting is only used for Stage 3.')
+
     name = str(getattr(args, 'data_set', '') or '').strip().lower()
     if name in TIR_ROI_DATA_SETS:
         from .tir_resp_dataset import build_tir_roi_pretrain_dataset

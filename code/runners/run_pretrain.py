@@ -61,6 +61,12 @@ def get_args():
     parser.add_argument('--subjects', default='', type=str,
                         help='tir_roi/rgb_roi only: comma list of subjects '
                              '(empty=all)')
+    parser.add_argument('--pretrain_split', default='all', type=str,
+                        choices=['all'],
+                        help='Stage-2 pre-training data scope. Must be "all": '
+                             'self-supervised pre-training has no train/val '
+                             'split; subject-disjoint splitting belongs to '
+                             'Stage 3 fine-tuning.')
     parser.add_argument('--tasks', default='', type=str,
                         help='tir_roi/rgb_roi only: comma list of tasks '
                              '(empty=all)')

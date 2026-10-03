@@ -72,6 +72,7 @@ data_set: tir_roi
 # <repo>/data/raw/BP4D. The local corpus is 40 thermal sessions (4 subjects x
 # T1..T10, 45 858 frames = 30.6 min); at 8 s / 4 s hop that is 388 clips.
 subjects: ''                       # '' = all; 'F001' to pin one subject
+pretrain_split: all                # Stage 2 always uses every selected subject/session
 tasks: ''                          # explicit task labels, '' = all;
                                    #   UNIONED with task_set below
 # ---- task GROUPS ("distortion levels") ---------------------------------
