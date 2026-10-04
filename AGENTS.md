@@ -4,7 +4,7 @@
 
 - **Domain**: PyTorch-based Deep Learning research and development (Focus: MultiMAE / VideoMAE Multi-modal Vision).
 - **Goal**: High-performance, modular, and reproducible neural network architectures and training pipelines.
-- **AI Agent Context**: Code generation is driven by DeepSeek v4.1 Flash/Pro; code architecture, auditing, and reviews are handled by Claude 3.7 Sonnet. Maintain strict typing and modular OOP structure to ensure multi-agent context clarity.
+- **AI Agent Context**: Code generation is driven by DeepSeek v4.1 Flash/Pro; code architecture, auditing, and reviews are handled by Claude 4.6 Sonnet. Maintain strict typing and modular OOP structure to ensure multi-agent context clarity.
 
 ## 2. Execution Environments & Workflows
 
@@ -45,7 +45,15 @@ environment profiles in `code/scripts/`:
 - `code/analysis/`, `code/design/`, `code/plan/`: Analysis scripts, design notes, and planning markdown — not runtime code.
 - `code/tests/`: Reserved for the `pytest` suite (forward passes, tensor-shape flows, loss computation). **Currently empty** — no test files exist yet, so do not assume a working test runner.
 
-## 5. PyTorch Engineering & Guardrails
+## 5. Specification & Architecture Referencing
+
+- The repository specifications are modularized under `code/spec/`:
+  - Architecture & Tensor Dimensions: Refer to `#file:code/spec/02_model_architecture.md`
+  - Data Pipeline & Masking: Refer to `#file:code/spec/01_data_pipeline.md`
+  - Training Engine & Loss: Refer to `#file:code/spec/03_engine_and_loss.md`
+- Always check the relevant spec file under `code/spec/` before modifying existing PyTorch modules or adding new feature branches.
+
+## 6. PyTorch Engineering & Guardrails
 
 - **Explicit Tensor Shapes**:
   - Every `forward()` pass and layer transformation MUST document expected tensor dimensions in docstrings or inline comments (e.g., Video: `[B, C, T, H, W]`, Tokens: `[B, N, D]`).
@@ -59,7 +67,7 @@ environment profiles in `code/scripts/`:
   - Build models through `create_model(model_name: str, **kwargs)` in `code/models/build.py`; entry points are registered via `@register_model` in `code/core/registry.py` (`model_entrypoint`) and re-exported from `code/models/__init__.py`. (There is no `build_model(cfg)`.)
   - Prefer functional operations (`F.relu`, `F.scaled_dot_product_attention`) over unnecessary module instantiations.
 
-## 6. Quality, Reproducibility & Testing Standards
+## 7. Quality, Reproducibility & Testing Standards
 
 - **Type Annotations**: Mandatory type hints for function arguments, return values, and tensor variables (`from torch import Tensor`, `from typing import Dict, Tuple, Optional`).
 - **Reproducibility**: Seeding is centralised in `code/runners/_common.py:init_env`, which calls `torch.manual_seed`, `np.random.seed`, `random.seed` with `args.seed + get_rank()`. There is no standalone `set_seed()` helper — call `init_env(args)` from runners, and place any new seeding helper in `code/utils/`.
