@@ -8,37 +8,42 @@
 
 ## 2. Execution Environments & Workflows
 
-The project operates strictly under two distinct target environments:
+The project operates under two distinct target environments, selected through the
+environment profiles in `code/scripts/`:
 
-- **Local Environment (Single GPU)**:
-  - **Purpose**: Rapid prototyping, dry-run testing, debugging, and small-scale parameter checks.
-  - **Constraints**: Limited VRAM, uses small data subsets (`./data/dev/`), reduced batch sizes, and single-GPU execution.
-  - **Agent Rule**: Do NOT require DDP launchers or full-dataset mounts for basic test scripts under `code/tests/`.
-- **HPC Cluster (Multi-GPU)**:
+- **Local Environment (WSL / single GPU)**:
+  - **Purpose**: Rapid prototyping, dry-run smoke tests, debugging, and small-scale parameter checks.
+  - **Setup**: Activate the repo venv at `.venv/` (deps: `code/requirements.txt`), then from `code/`: `source scripts/env_local.sh`.
+  - **Data**: The canonical dataset is mounted as `DATA_PATH=$REPO/data/processed/bp4d_canonical` (raw at `RAW_DATA_PATH=$REPO/data/raw/BP4D`). There is **no** `data/dev/` split — keep runs small with the existing CLI caps `--max_sessions`, `--max_clips`, `--max_entries` (defined in `code/runners/_common.py`).
+  - **Agent Rule**: Local smoke wrappers under `code/scripts/local/` run single-process. Do NOT require DDP launchers or a full-dataset mount for them.
+- **HPC Cluster (Slurm, multi-GPU)**:
   - **Purpose**: Hyperparameter tuning, full-dataset training, ablation studies, and benchmark evaluation.
-  - **Constraints**: Multi-GPU nodes running via Slurm schedulers with high-throughput full dataset mounts.
-  - **Agent Rule**: Engine scripts under `code/engine/` MUST support DistributedDataParallel (`torchrun` / DDP) using dynamic rank discovery (`RANK`, `WORLD_SIZE`, `LOCAL_RANK`). Store `.sh`/`.slurm` batch scripts under `tools/slurm/`.
+  - **Setup**: Edit `code/scripts/env_hpc.sh` (`VENV`/`CONDA_ENV`, `RAW_DATA_PATH`, `DATA_PATH`, `PROJ_DIR`, `OUTPUT_DIR`), then submit from `code/`: `sbatch scripts/hpc/<job>.sbatch`.
+  - **Agent Rule**: Engines under `code/engines/` MUST stay DDP-compatible. Distributed bootstrap is centralised in `code/utils/dist.py` (`init_distributed_mode`, `get_rank`, `get_world_size`) and uses dynamic rank discovery (`RANK`, `WORLD_SIZE`, `LOCAL_RANK`); it works under `torchrun` and `torch.distributed.launch`. Slurm batch templates live in `code/scripts/hpc/` as `.sbatch` files (there is no top-level `tools/slurm/`).
 
 ## 3. Directory & Scope Responsibilities
 
-- **`code/`**: Core PyTorch codebase (Models, Engine, Data, Utils). ALL code refactoring and updates MUST happen inside this directory.
-- **`data/`**: Datasets, raw inputs, and video/image patches (relative to workspace root). Read-only for AI agents.
+- **`code/`**: Core PyTorch codebase (Data, Core, Models, Engines, Runners, Utils). ALL code refactoring and updates MUST happen inside this directory.
+- **`data/`**: Datasets and derived artifacts. Layout: `data/raw/`, `data/interim/`, `data/processed/`. Read-only for AI agents.
 - **`report/`**: Academic LaTeX source files for papers. DO NOT modify unless explicitly instructed.
 - **`presentation/`**: Slides and talk materials. DO NOT touch during code edits.
-- **`models/` & `output/`**: Checkpoints and evaluation logs. Do not generate large output files directly into git tracking.
-- **Environment**: Managed via Python built-in `venv` module at `.venv`. Dependencies listed in `code/requirements.txt`.
+- **`models/` & `output/`**: Checkpoints, cached pretrained weights (`models/initial/`), and evaluation logs. Do not generate large output files directly into git tracking.
+- **`docs/`**: Reference material. **`notebooks/`**: Exploratory notebooks (incl. `TirROI_Resp_Pipeline.ipynb`). **`tmp/`**: Scratch only — never a deliverable.
+- **Environment**: Local runs use the Python `venv` at `.venv/` (workspace root). HPC runs use `VENV`/`CONDA_ENV` from `code/scripts/env_hpc.sh`. Dependencies are listed in `code/requirements.txt`.
 
 ## 4. Directory & Architecture Standards (under `code/`)
 
-- `code/data/`: `Dataset`, `DataLoader`, patchifying transforms, and preprocessing pipelines.
-- `code/core/`: Core model architectures, encoders, decoders, adapters, blocks, losses, and masking logic.
-- `code/models/`: Model factories, model registration/building utilities, and pretrained-model loading helpers.
-- `code/engines/`: Training, evaluation, and inference execution loops (`trainer.py`, `evaluator.py`).
-- `code/scripts/`: Shell wrappers for local, HPC, and project workflows; they source environment settings, select configs, and invoke the appropriate runner.
-- `code/runners/`: Python CLI entry points for pre-training, fine-tuning, evaluation, inspection, visualization, and waveform workflows, including shared config and distributed-runtime setup.
-- `code/configs/`: Hyperparameters and experiment configurations managed via YAML or dataclasses (Zero hardcoded constants in Python scripts).
-- `code/utils/`: Reusable helpers (logging, seed management, metric calculators).
-- `code/tests/`: `pytest` suite for testing forward passes, tensor shape flows, and loss computation.
+- `code/data/`: Datasets and preprocessing — `paired_dataset.py`, `rgb_roi_dataset.py`, `tir_resp_dataset.py`, `au_dataset.py`, `datasets.py`, `masking_generator.py`, `alignment.py`, `rgb_features.py`, `task_groups.py`, `video_io.py`, `prepare_bp4d.py`.
+- `code/core/`: Architectures and primitives — `multimae.py`, `model.py`, `waveform_model.py`, `blocks.py`, `input_adapters.py`, `output_adapters.py`, `criterion.py`, `waveform_losses.py`, `au_probe.py`, `registry.py`.
+- `code/models/`: Model factory and pretrained-weight loading — `build.py` (`create_model`, `is_model`, `list_models`) and `pretrained.py`; public re-exports in `code/models/__init__.py`.
+- `code/engines/`: Training / evaluation / inference loops — `pretrain.py`, `finetune.py`, `waveform.py`, `au_probe.py`, `visualize.py`. (Note: singular `code/engine/` does not exist, and there is no `trainer.py` / `evaluator.py`.)
+- `code/scripts/`: Shell wrappers — environment profiles `env_local.sh` / `env_hpc.sh` plus `local/`, `hpc/`, `project/` job scripts. They source the profile, select a config, and invoke the matching runner.
+- `code/runners/`: Python CLI entry points — `run_pretrain.py`, `run_finetune.py`, `run_evaluate*.py`, `run_waveform.py`, `run_au_probe.py`, `run_inspect_*.py`, `run_download_weights.py`; shared argparse/YAML/DDP plumbing in `_common.py`.
+- `code/configs/`: YAML experiment configs under `pretrain/` and `finetune/`. Configs are loaded as argparse *defaults* (`-c/--config`), so explicit CLI flags always override.
+- `code/utils/`: Reusable helpers — `dist.py` (DDP + seed init), `logger.py` (`MetricLogger` / `SmoothedValue`, MultiMAE-style), `optim_factory.py`, `lr_sched.py`, `native_scaler.py` (AMP loss scaler + grad-norm), `model_ema.py`, `checkpoint.py`, `metrics.py`, `pos_embed.py`.
+- `code/evaluation/`: Metric computation and reporting — `metrics.py`, `clinical.py`, `assemble.py`, `report.py`.
+- `code/analysis/`, `code/design/`, `code/plan/`: Analysis scripts, design notes, and planning markdown — not runtime code.
+- `code/tests/`: Reserved for the `pytest` suite (forward passes, tensor-shape flows, loss computation). **Currently empty** — no test files exist yet, so do not assume a working test runner.
 
 ## 5. PyTorch Engineering & Guardrails
 
@@ -48,16 +53,20 @@ The project operates strictly under two distinct target environments:
 - **Memory & GPU Safety**:
   - Use `@torch.inference_mode()` or `with torch.no_grad():` during evaluation/testing.
   - ALWAYS call `.item()` when logging loss or metrics to prevent keeping the computational graph in GPU memory (prevents GPU OOM).
-  - Retain native mixed precision (`torch.amp.autocast('cuda')`) support across model forward passes.
-  - Dynamic device allocation: `device = torch.device("cuda" if torch.cuda.is_available() else "cpu")`.
+  - Mixed precision is handled by the custom AMP scaler in `code/utils/native_scaler.py` (loss scaling that also returns the gradient norm). There is currently **no** `torch.amp.autocast` usage in the codebase — if you introduce one, keep it opt-in and additive.
+  - Device allocation goes through `code/runners/_common.py:init_env` (`torch.device("cuda" if torch.cuda.is_available() else "cpu")`).
 - **Model Design**:
-  - Implement and maintain model construction through the `build_model(cfg)` factory in `code/models/build.py` and its public exports in `code/models/__init__.py`.
+  - Build models through `create_model(model_name: str, **kwargs)` in `code/models/build.py`; entry points are registered via `@register_model` in `code/core/registry.py` (`model_entrypoint`) and re-exported from `code/models/__init__.py`. (There is no `build_model(cfg)`.)
   - Prefer functional operations (`F.relu`, `F.scaled_dot_product_attention`) over unnecessary module instantiations.
 
 ## 6. Quality, Reproducibility & Testing Standards
 
 - **Type Annotations**: Mandatory type hints for function arguments, return values, and tensor variables (`from torch import Tensor`, `from typing import Dict, Tuple, Optional`).
-- **Reproducibility**: Use a central `set_seed(seed: int)` helper setting seeds for `torch`, `numpy`, `random`, and `torch.cuda`.
-- **File Handling**: Always use `pathlib.Path` instead of string operations with `os.path`.
-- **Logging**: Use Python's `logging` module rather than `print()` statements for tracking training progress and metrics.
-- **Dry-Run Check**: Before completing code refactoring tasks, verify syntax or run unit tests under `code/tests/`.
+- **Reproducibility**: Seeding is centralised in `code/runners/_common.py:init_env`, which calls `torch.manual_seed`, `np.random.seed`, `random.seed` with `args.seed + get_rank()`. There is no standalone `set_seed()` helper — call `init_env(args)` from runners, and place any new seeding helper in `code/utils/`.
+- **File Handling**: Prefer `pathlib.Path` in new code. Some existing modules still use `os.path` (e.g. `code/runners/_common.py`), so match the surrounding file rather than mass-rewriting.
+- **Logging**: Training metrics are tracked through `code/utils/logger.py` (`MetricLogger`, MultiMAE-style). The stdlib `logging` module is NOT currently used in `code/`; prefer `MetricLogger` for trainer output and avoid adding ad-hoc `print()` in new engine code.
+- **Dry-Run Check**: Before completing code refactoring, verify syntax (`python -m compileall code`, or import the touched module) and run the relevant `code/scripts/local/*.sh` smoke script. Run `pytest` once `code/tests/` is populated.
+
+---
+
+_Reconciled against the repository on 2026-10-04._
