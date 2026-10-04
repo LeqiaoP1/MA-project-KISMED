@@ -237,7 +237,8 @@ end note
 ## Notes
 
 - `\n` inside quoted labels is a literal backslash-n (PlantUML line break), matching the
-  convention used in `code/architecture_stage2.md` and `code/architecture_stage3.md`.
+  convention used in `code/design/SolutionA_asymmetric_stage2.md` and
+  `code/design/SolutionA_asymmetric_stage3.md`.
 - Validate with:
   `curl -sSL -o /tmp/plantuml.jar https://github.com/plantuml/plantuml/releases/download/v1.2024.7/plantuml-1.2024.7.jar`
   then `java -jar /tmp/plantuml.jar -checkonly <block>.puml` and `-tpng` to render.
