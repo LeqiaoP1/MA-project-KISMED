@@ -3,7 +3,7 @@
 # ADD-ON experiment. The visual stream is the LANDMARK-DEFINED FACE CROP of the
 # visible-light frames instead of the full frame, so the encoder's visible
 # (attendable) tokens are skin rather than background. This is the front-end the
-# rPPG analysis (code/refined_RGB_BP_study.md) puts as the single highest-value
+# rPPG analysis (code/plan/refined_RGB_BP_study.md) puts as the single highest-value
 # preprocessing lever: at the plan's 0.90 tube mask the encoder sees only ~20
 # patches/frame, and with a full-frame centre crop most of them can be
 # background -- on these portrait frames the face occupies only part of the crop.

@@ -4,8 +4,8 @@
 # SOLUTION A variant ("Asymmetric Cross-MAE"): the asymmetric twin of
 # configs/pretrain/stage2_local_tir_roi_resp.yaml.
 #
-# Architecture spec:  code/design/SolutionA_asymmetric_cross_mae_spec.md
-# Diagrams:           code/design/SolutionA_diagram.md
+# Architecture spec:  code/design/SolutionA_asymCrossMAE.md
+# Diagrams:           code/design/SolutionA_asymCrossMAE_diagram.md
 #
 # It differs from the shared-encoder config (Solution C) in EXACTLY ONE STAGE --
 # the pre-training -- and in nothing else:

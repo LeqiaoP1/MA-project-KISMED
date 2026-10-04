@@ -6,8 +6,9 @@
 > waveform window. Two independent runs share that encoder, one per target waveform
 > (`bp`, `resp`). No masking is applied anywhere in this stage.
 >
-> Companion documents: `architecture.md` holds the Stage-2 pre-training diagrams
-> (input + encoder, decoder + loss); `local_downstream_plan.md` is the setup record for
+> Companion documents: `code/design/SolutionC_EarlyTokenMixing_stage2.md` holds the
+> Stage-2 pre-training diagrams (input + encoder, decoder + loss);
+> `code/plan/local_downstream_plan.md` is the setup record for
 > the two local 64 px runs. Numbers below are the **local 64 px** geometry with the
 > 224 px variant called out in a note.
 
@@ -158,6 +159,7 @@ end note
 * **Pending items shown as notes.** The Stage-2 head transfer, the warmup + cosine LR
   schedule, the prediction dump, the session-level evaluation runner, and the Tier-3
   guard (2 s today, needs 30 s) are not implemented yet.
-* **Rendering.** Labels avoid the creole traps known in `architecture.md`: no `--`
+* **Rendering.** Labels avoid the creole traps known in
+  `code/design/SolutionC_EarlyTokenMixing_stage2.md`: no `--`
   pairs, no `>>`, no angle brackets. Validate with
   `java -jar /tmp/plantuml.jar -checkonly <file>.puml` (silent means OK).

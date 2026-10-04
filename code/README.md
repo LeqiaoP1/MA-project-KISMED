@@ -656,7 +656,7 @@ untracked any more.
 ### Solution A — Asymmetric Cross-MAE (ADD-ON pre-training variant)
 
 A second **pre-training objective** for the same TIR-ROI → respiration task, selectable
-per config; full write-up in `code/AsymmetricCrossMAE.md`.
+per config; full write-up in `code/design/SolutionA_vs_SolutionC.md`.
 
 The shipped Stage-2 SSL (**Solution C**) feeds the visible tokens of every stream into
 ONE shared ViT encoder, and reconstructs each stream from its own visible tokens + mask

@@ -247,7 +247,7 @@ class MultiModalMAE(nn.Module):
                 f'visual={self.visual}, signal={self.signal}.')
 
         # ---- encoder membership + physio decoder style ("Solution A") ------ #
-        # Solution A (see code/prompt/SolutionA_asymmetric_cross_mae_spec.md)
+        # Solution A (see code/design/SolutionA_asymCrossMAE.md)
         # keeps the physio stream OUT of the encoder, so the encoder can no
         # longer satisfy the masked 1-D target by interpolating the stream's
         # OWN visible samples. The excluded stream stays a RECONSTRUCTION
