@@ -1,0 +1,127 @@
+# Stage 3 -- HPC / FULL-CORPUS: TIR-ROI thermal (visual) -> RESP waveform.
+#
+# HPC twin of configs/finetune/resp_tir_roi_local.yaml, matched to
+# configs/pretrain/stage2_hpc_tir_roi_resp.yaml. The ONLY geometry difference
+# from the local file is input_size 64 -> 112 (the Stage-2 HPC run is 112), which
+# is exactly what the Stage-2/Stage-3 ROI contract enforces. 112x112 is ~1:1 with
+# the ~100x100 px native ROI crop (also the size in
+# notebooks/TirROI_Resp_Guide.md 2.3).
+#
+# The SAME raw-tree thermal ROI crop the encoder was pre-trained on is the ONLY
+# input (simulated total contact-sensor failure); the whole respiration window is
+# regressed at once. NO masking anywhere in this stage.
+#
+# Run from code/ via the HPC wrapper:
+#   sbatch scripts/hpc/submit_waveform_tir_roi.sbatch
+#   FINETUNE=/path/to/checkpoint-0799.pth sbatch scripts/hpc/submit_waveform_tir_roi.sbatch
+#
+# !! data_path is deliberately NOT set here. The tir_roi path needs the RAW tree
+#    ($RAW_DATA_PATH), NOT data/processed/bp4d_canonical, and YAML cannot expand
+#    environment variables. submit_waveform_tir_roi.sbatch always passes
+#    --data_path "$RAW_DATA_PATH". (This is why the canonical Stage-3 job
+#    scripts/hpc/submit_waveform.sbatch cannot run this config: it hardcodes
+#    $DATA_PATH = the canonical tree.)
+#
+# ROI CONTRACT (checked hard by runners/run_waveform.py against the --finetune
+# checkpoint's stored args; run_waveform.py ABORTS on a mismatch):
+#   roi_landmarks / roi_padding / roi_quantile / input_size
+# Keep them identical to stage2_hpc_tir_roi_resp.yaml.
+
+target: resp
+
+# ---- data: RAW-tree thermal ROI (the Stage-2 input modality) ----
+data_set: tir_roi_resp             # -> build_tir_roi_finetune_dataset (Stage-3 view)
+# data_path: NOT SET HERE -- submit_waveform_tir_roi.sbatch passes
+#            --data_path "$RAW_DATA_PATH" (the RAW tree). See the header note.
+roi_padding: 0.2                   # MUST equal the Stage-2 run
+roi_landmarks: ''                  # '' = the historical 12-point nose+mouth set
+roi_quantile: 0.0                  # MUST equal the Stage-2 run
+min_signal_spread: 0.01            # VOLTS: drop railed / (near-)constant windows.
+                                   #   MUST equal the Stage-2 value, else Stage 3
+                                   #   is evaluated on a different corpus.
+# ---- task GROUPS ("distortion levels") -- MUST mirror the Stage-2 config ----
+task_groups:
+  low: [T2, T3]
+  moderate: [T4, T7, T8, T10]
+  high: [T1, T5, T6, T9]
+task_set: ''                       # '' = all tasks -- SAME as the Stage-2 run.
+                                   #   ('low,moderate' must match Stage 2 too.)
+
+# ---- model: shared Stage-2 encoder + time-aligned waveform head ----
+model: project_multimae_base
+streams: tir                       # the ROI crop alone; the 1-D input is the
+                                   #   simulated sensor failure
+finetune: /work/scratch/ne95ocyg/pretrain/stage2_hpc_tir_roi_resp/checkpoints/checkpoint-0799.pth
+                                   # Stage-2 HPC checkpoint. This is the output
+                                   #   of scripts/hpc/submit_pretrain.sbatch at
+                                   #   its default OUT_ROOT ($WORK_SCRATCH) and
+                                   #   800 epochs (final save = epoch 799).
+                                   #   submit_waveform_tir_roi.sbatch OVERRIDES it:
+                                   #   FINETUNE=<path>, or, if unset, it picks the
+                                   #   newest checkpoint-*.pth from that run dir
+                                   #   and logs which one it chose.
+head_hidden: 0                     # 0 = single Linear -> the Stage-2 heads.resp
+                                   #   transfers VERBATIM
+
+# ---- clip geometry -- MUST equal the Stage-2 geometry of `finetune` ----
+clip_duration: 8.0
+fps: 25.0
+tubelet: 2,16,16
+temporal_stride: 2
+input_size: 112                    # <== the HPC value (local tir_roi ships 64).
+                                   #   112/16 -> 7x7 = 49 patches/frame -> 2450
+                                   #   video tokens at 50 temporal steps.
+seq_len: 0                         # 0 => 800 samples = 8 s at fs 100 Hz
+fs: 100
+sig_kernel: 16                     # 16/100 == 2*2/25 s -> one signal token ==
+                                   #   one video tubelet
+signal_norm: zscore                # per clip; mirrors Stage-2 target_norm: clip
+
+# ---- data split (SUBJECT-disjoint) ----
+train_ratio: 0.8                   # full corpus (~140 subjects) -> ~113 / ~27,
+                                   #   so the ratio split is well populated here
+                                   #   (unlike the 4-subject local corpus, where a
+                                   #   LOSO sweep via --val_subject was required)
+split_by: subject
+val_subject: ''                    # e.g. F001 = a LOSO fold (overrides the above)
+clip_stride: 2.0                   # window hop in SECONDS (overlapping)
+max_clips: 0                       # 0 = no per-session cap
+
+# ---- joint spatio-temporal-spectral loss (the MR-STFT term lives in Stage 3) ----
+alpha: 1.0                         # L_time   (StdLoss, not L1)
+beta: 1.0                          # L_Pearson (phase-locking)
+gamma: 1.0                         # L_MR-STFT (multi-resolution)
+fft_sizes: '128,256,512'           # >= 1 BREATH PER WINDOW for the 0.1-0.6 Hz
+                                   #   band; 512 <= the 800-sample (8 s) waveform,
+                                   #   so no window is dropped. MUST equal the
+                                   #   Stage-2 spectral_fft_sizes (128,256,512).
+eval_band: '0.1,0.6'               # RESP band widened for metric resolution at
+                                   #   fs 100 (an 8 s clip allows 0.125 Hz bins)
+
+# ---- training ----
+epochs: 50                         # the full corpus gives many more steps/epoch
+                                   #   than the 4-subject local run, so fewer
+                                   #   epochs are needed; tune via EPOCHS=...
+batch_size: 16
+update_freq: 1
+save_ckpt_freq: 10
+eval_freq: 1
+
+# ---- optimizer (NOTE: run_waveform.py takes an ABSOLUTE lr -- there is no blr) ----
+opt: adamw
+lr: 1e-4
+min_lr: 1e-6
+warmup_epochs: 5
+weight_decay: 0.05
+clip_grad: 5.0                     # ON: this branch carries the gamma=1.0 MR-STFT
+                                   #   term and inherits a checkpoint from a
+                                   #   stream that already diverged once
+
+num_workers: 8                     # per rank (== cpus-per-task in the sbatch)
+save_preds: true                   # preds.npy/targets.npy/entries.json for the
+                                   #   session evaluator
+
+# ---- logging ----
+output_dir: output/finetune/resp_tir_roi_hpc   # the sbatch overrides this
+log_wandb: false
+wandb_project: thesis-project

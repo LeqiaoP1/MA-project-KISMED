@@ -9,7 +9,7 @@ export VENV="${VENV:-$HOME/MA-project-KISMED/.env}"            # EDIT: e.g. $HOM
 export CONDA_ENV="${CONDA_ENV:-}"                    # EDIT (leave empty if using VENV)
 
 # --- paths on the cluster -------------------------------------------------- #
-export RAW_DATA_PATH="${WORK_PROJ}/BP4D+"          # EDIT
+export RAW_DATA_PATH="${WORK_PROJ}/test"          # EDIT
 export DATA_PATH="${HOME}/MA-project-KISMED/data/processed/bp4d_canonical"  # EDIT
 export PROJ_DIR="${HOME}/MA-project-KISMED"
 export OUTPUT_DIR="${PROJ_DIR}/output"                       # EDIT

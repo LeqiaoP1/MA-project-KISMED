@@ -1,0 +1,140 @@
+# Stage 2 -- HPC / FULL-CORPUS run: thermal ROI (visual) -> RESPIRATION (1-D).
+#
+# Full-corpus twin of configs/pretrain/stage2_local_tir_roi_resp.yaml: same
+# corpus semantics and stream setup, scaled to the whole raw corpus with the
+# large-batch MAE schedule.
+#
+# !! input_size is 112 HERE. The landmark-derived ROI is only ~100x100 px at
+#    native resolution, so 112 is roughly 1:1 -- 224 would purely UPSAMPLE a crop
+#    that carries no extra detail (224 in the canonical stage2_multimodal.yaml is
+#    a FULL-FRAME geometry, not a ROI one). 112x112 is also the ROI crop size
+#    specified in notebooks/TirROI_Resp_Guide.md 2.3.
+#    This is still a SEPARATE lineage from the local 64 px configs: the shipped
+#    configs/finetune/resp_tir_roi_local.yaml (input_size 64) will ABORT against
+#    a checkpoint from this run. Fine-tune it with the matching twin
+#    configs/finetune/resp_tir_roi_hpc.yaml (job: submit_waveform_tir_roi.sbatch).
+#
+# Procedure of record: code/plan/TirROI_Resp_plan.md
+# Data source: the RAW tree (Thermal/, IRFeatures/, Physiology/Resp_Volts.txt),
+#   i.e. $RAW_DATA_PATH. On Lichtenberg that is $WORK_PROJ/test
+#   (/work/projects/l0003511/test). NOT data/processed/bp4d_canonical.
+#
+# Run from code/ via the HPC wrapper:
+#   sbatch scripts/hpc/submit_pretrain.sbatch
+#   CONFIG=configs/pretrain/stage2_hpc_tir_roi_resp.yaml \
+#       sbatch scripts/hpc/submit_pretrain.sbatch
+#
+# GEOMETRY IS A CONTRACT. input_size / clip_duration / temporal_stride /
+# sig_kernel / tubelet / roi_* decide WHICH pixels and WHICH seconds reach the
+# encoder. runners/run_waveform.py ABORTS on a mismatch with what is stored in
+# the Stage-2 checkpoint. Keep this block identical to the Stage-3 config you
+# fine-tune with -- for this 112 px lineage that is
+# configs/finetune/resp_tir_roi_hpc.yaml, NOT resp_tir_roi_local.yaml.
+
+# ---------------------------------------------------------------- data source
+data_set: tir_roi                  # raw-tree thermal ROI + Resp_Volts.txt
+subjects: ''                       # '' = every discoverable subject
+pretrain_split: all                # Stage 2 never splits (self-supervised)
+tasks: ''                          # '' = all tasks; UNIONED with task_set below
+# ---- task GROUPS ("distortion levels") ---------------------------------
+# Named subsets of the BP4D+ task labels (T1..T10); the DEFINITIONS live here,
+# not in code. Keep them IDENTICAL to configs/finetune/resp_tir_roi_local.yaml,
+# else Stage 3 is fine-tuned/evaluated on a different task mix than it was
+# pre-trained on. Resolution: code/data/task_groups.py.
+task_groups:
+  low: [T2, T3]                    # settled / low motion
+  moderate: [T4, T7, T8, T10]      # mid motion
+  high: [T1, T5, T6, T9]           # high motion / speech / pain
+task_set: ''                       # '' = all tasks (FULL corpus, the default
+                                   #   here). 'low,moderate' restricts to the
+                                   #   settled/stress subset used by the plan.
+
+# ------------------------------------------------------- model / initialisation
+model: project_multimae_base       # 768-d / 12-layer -- MUST match pretrained_encoder
+pretrained_encoder: videomae:base  # Stage-1 init. Compute nodes have NO
+                                   #   internet: pre-fetch ONCE on a login node
+                                   #   with scripts/hpc/download_weights.sh, then
+                                   #   the cache under models/initial is reused.
+inflate_rgb_patch: 1               # unused for a 3-D source (copied verbatim)
+
+# ---- streams & tokenizer geometry (MUST match the Stage-3 sibling) ----
+streams: tir,resp
+tir_channels: 3                    # thermal is a false-colour render, not gray
+tubelet: 2,16,16
+fs: 100.0                          # respiration resampled 1000 -> 100 Hz
+fps: 25.0
+clip_duration: 8.0                 # 200 source frames -> 100 after decimation
+clip_stride: 4.0                   # window hop (s) -- 4 s overlap
+temporal_stride: 2                 # clipless decimation INSIDE the window
+seq_len: 0                         # 0 => round(kept_seconds * fs) = 800 samples
+input_size: 112                    # ROI patch side. 112/16 -> a 7x7 grid =
+                                   #   49 patches/frame -> 2450 video tokens at
+                                   #   50 temporal steps. The landmark-derived ROI
+                                   #   is only ~100x100 px at native resolution,
+                                   #   so 112 is roughly 1:1 -- 224 (the canonical
+                                   #   stage2_multimodal.yaml value, which is a
+                                   #   FULL-FRAME config) would just upscale a crop
+                                   #   that holds no extra detail. 112x112 is also
+                                   #   the ROI crop size in
+                                   #   notebooks/TirROI_Resp_Guide.md 2.3;
+                                   #   mask_ratio_tir 0.90 leaves ~5 visible
+                                   #   patches/frame here (vs ~1.6 at 64 px).
+                                   # !! NEW GEOMETRY LINEAGE: positions.tir
+                                   #   .pos_embed changes shape, so the shipped
+                                   #   configs/finetune/resp_tir_roi_local.yaml
+                                   #   (input_size 64) ABORTS at Stage 3 -- a
+                                   #   Stage-3 twin with input_size 112 is
+                                   #   required (same roi_* keys).
+roi_padding: 0.2                   # landmark-box margin on EACH side
+roi_landmarks: ''                  # '' = the historical 12-point nose+mouth set
+roi_quantile: 0.0                  # 0.0 = min/max over the clip
+min_signal_spread: 0.01            # VOLTS: drop (near-)constant/railed windows
+
+# ---- asymmetric masking ----
+mask_ratio_tir: 0.90               # the ROI is the PRIMARY visual stream
+mask_ratio_resp: 0.50              # a physio stream's only gradient path is its
+                                   #   VISIBLE tokens -> 0.90 would starve it
+mask_ratio_rgb: 0.90               # unused while streams=tir,resp
+mask_ratio_bp: 0.50                # unused
+mask_ratio_eda: 0.50               # unused
+# ---- 1-D masking PATTERN (see code/design/SpanMask_PhysioSignals.md) ----
+physio_mask: random                # 'span' = contiguous blocks (E1-E3 ablation)
+mask_span_s: {resp: 4.0}           # ignored while physio_mask: random
+
+# ---- loss: per-modality masked MSE (masked positions only) ----
+signal_weight: 0.5
+target_norm: clip                  # per-clip z-score inside the model; the
+                                   #   dataset returns RAW VOLTS -- do not
+                                   #   normalize twice.
+spectral_weight: 0.0               # the MR-STFT term belongs to Stage 3
+                                   #   (decision 2026-09-26); 0.0 = OFF.
+spectral_fft_sizes: 128,256,512
+spectral_hop_ratio: 0.25
+
+# ---- space-time alignment (checked hard by the model) ----
+sig_kernel: 16                     # 16/100 == 2*2/25 s -> one signal token ==
+                                   #   one video tubelet
+pos_init: sincos3d
+
+# ---- training (full corpus: derive the LR from blr, do NOT set an absolute lr) ----
+epochs: 800                        # override with EPOCHS=... . The full-corpus
+                                   #   run is decode-bound and long: pick a
+                                   #   partition whose TIMELIMIT covers it.
+                                   #   NOTE --resume is NOT implemented in
+                                   #   run_pretrain.py (only in run_finetune.py
+                                   #   / run_waveform.py), so a killed job
+                                   #   restarts from epoch 0.
+batch_size: 16                     # per GPU; lr = blr * batch * world / 256
+save_ckpt_freq: 20
+opt: adamw
+blr: 1.5e-4
+min_lr: 0.0
+warmup_epochs: 40
+weight_decay: 0.05
+clip_grad: 5.0                     # ON: this branch produces resp gradient spikes
+num_workers: 8                     # per rank (== cpus-per-task in the sbatch)
+
+# ---- logging ----
+output_dir: output/pretrain/stage2_hpc_tir_roi_resp   # the sbatch overrides this
+log_wandb: false
+wandb_project: thesis-project
