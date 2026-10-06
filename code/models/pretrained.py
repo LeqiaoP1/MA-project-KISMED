@@ -1,21 +1,24 @@
 """Downloadable "initial" (Stage-1) encoder weights for the project ViTs.
 
 The entrypoints registered in :mod:`core.model` (e.g.
-``project_vit_small_patch16_224``) build a **randomly initialised** network --
+``project_vit_base_patch16_224``) build a **randomly initialised** network --
 see :func:`models.build.create_model`. The *spatial priors* of plan Stage 1 come
 from an external checkpoint that has to be fetched from the public internet.
-This module knows which checkpoint belongs to which ViT **variant** and caches
-the download under::
+This module knows which checkpoint belongs to which **VideoMAE pre-training
+corpus** and caches the download under::
 
     <project_root>/models/initial/
-    <project_root>/models/initial/videomae_base_patch16_224.pth
-    <project_root>/models/initial/mae_pretrain_vit_base.pth
+    <project_root>/models/initial/videomae_base_patch16_224.pth       # K400
+    <project_root>/models/initial/videomae_base_ssv2_patch16_224.pth  # SSV2
 
-Only the ``base`` and ``large`` variants are served (see
-``PRETRAINED_SOURCES``); the DeiT-Small and MAE ViT-Huge sources were removed
-with the ``small``/``huge`` variants, because the project plan no longer uses
-those geometries. Any other backbone is still reachable as
-``timm:<model_id>`` or as a local path.
+Stage 1 is **ViT-Base only** and is **always** initialised from a VideoMAE
+checkpoint: the project compares VideoMAE pre-trained on Kinetics-400 (K400)
+against VideoMAE pre-trained on Something-Something-v2 (SSV2) as the initial
+weights. Both are ``MCG-NJU`` Hub checkpoints with the same ViT-B geometry
+(768/12/12) and the same ``Conv3d(3, D, (2,16,16))`` tubelet patch embed this
+repo's adapters use, so the tokenizer transfers verbatim. There is therefore
+**no blank / random Stage-1 init** and **no ImageNet-MAE / timm / ViT-Large**
+source in the built-in table.
 
 (``<project_root>`` is the repository root, i.e. the parent of ``code/``. Use
 the ``INITIAL_MODELS_DIR`` environment variable or ``--weights_dir`` to place
@@ -23,45 +26,41 @@ them elsewhere, e.g. a scratch volume on the HPC.)
 
 Spec grammar
 ------------
-The runners accept a *variant spec* everywhere a checkpoint path is expected
-(``--finetune``, ``--pretrained_encoder``)::
+Stage-1 init (``--pretrained_encoder`` on ``run_pretrain.py``) and the AU probe
+(``--finetune base``) accept a *corpus spec*::
 
-    ''            random init, no download                  (control C0)
-    base          -> videomae:base    (Stage-1 default)
-    large         -> videomae:large
-    mae:base      explicit source: ``videomae`` | ``mae`` | ``timm``
-    timm:vit_base_patch16_224.mae
-                  any timm/HF checkpoint name when the built-in table has no
-                  entry for what you want
-    path/to.pth   a path that exists is returned untouched (never downloaded)
+    videomae:k400   VideoMAE ViT-B SSL on Kinetics-400    (Stage-1 default)
+    videomae:ssv2   VideoMAE ViT-B SSL on Something-Something-v2
+    videomae        source only -> the corpus named by ``--videomae_dataset``
+    base            alias of ``videomae:k400``
+    path/to.pth     a path that exists is returned untouched (never downloaded)
+
+A blank / ``none`` / ``random`` / ``scratch`` / ``c0`` spec is still recognised
+by :func:`_split_spec` (it resolves to "nothing to load") because the Stage-3
+runners treat an empty ``--finetune`` as "no checkpoint". Stage-1 callers pass
+``require=True`` so that a blank spec is a **hard error** instead.
 
 Examples (all from ``code/``)::
 
     python runners/run_download_weights.py --list
-    python runners/run_download_weights.py base          # VideoMAE ViT-Base
-    python runners/run_download_weights.py mae:base      # plain MAE ViT-Base
-    python runners/run_download_weights.py --all         # base + large
-    python runners/run_finetune.py --finetune large ...  # downloads, then trains
+    python runners/run_download_weights.py videomae:k400    # Kinetics-400
+    python runners/run_download_weights.py videomae:ssv2    # SSV2
+    python runners/run_download_weights.py --all            # both corpora
+    python runners/run_pretrain.py -c <cfg> --videomae_dataset ssv2
 
 Sources
 -------
 ``videomae``
           MCG-NJU **VideoMAE** (HuggingFace Hub ``MCG-NJU/videomae-*``, mirrored
-          via ``HF_ENDPOINT``): ViT-B / ViT-L. **The Stage-1 source of
-          choice**: ``patch_embed.proj`` is a ``Conv3d(3, D, (2,16,16))``
-          tubelet filter -- the exact shape this repo's adapters use -- so the
-          tokenizer transfers verbatim (no boxcar inflation and no
-          motion-blind init), and the objective (tube-masked video MAE) is the
+          via ``HF_ENDPOINT``). Two ViT-Base checkpoints are served, one per
+          pre-training corpus: ``MCG-NJU/videomae-base`` (Kinetics-400) and
+          ``MCG-NJU/videomae-base-ssv2`` (Something-Something-v2). In both,
+          ``patch_embed.proj`` is a ``Conv3d(3, D, (2,16,16))`` tubelet filter --
+          the exact shape this repo's adapters use -- so the tokenizer
+          transfers verbatim, and the objective (tube-masked video MAE) is the
           same family as Stage 2. Hosted in the HF `transformers` layout, which
           the loader maps back to MAE keys. Licence: CC-BY-NC 4.0 (fine for
           academic work; state it if you redistribute).
-``mae``   Facebook AI MAE (``dl.fbaipublicfiles.com``): ViT-B / ViT-L. The 2-D
-          control for the VideoMAE source (same 148 tensors transfer, but the
-          patch filter is boxcar-inflated instead of a real 3-D tubelet).
-          ``timm`` also ships ``*.mae`` recipes, e.g.
-          ``vit_base_patch16_224.mae``.
-``timm``  HuggingFace-hosted ``timm`` weights. Honours the ``HF_ENDPOINT``
-          environment variable (mirrors for restricted networks).
 
 Download mechanics
 ------------------
@@ -69,16 +68,18 @@ Streamed with stdlib ``urllib`` (no extra dependency), written to a ``.part``
 file with HTTP-Range **resume**, atomically renamed, and cached -- a second run
 is a no-op. Under DDP only rank 0 downloads (the others wait on a barrier).
 ``--verify`` additionally ``torch.load``s the file and checks that it looks like
-a ViT state dict; it is opt-in because the largest checkpoint is ~1.3 GB.
+a ViT state dict; it is opt-in because the checkpoint is ~377 MB.
 
 .. note::
    The loader functions (``core.multimae.load_pretrained_encoder``,
-   ``core.au_probe.load_au_probe_weights``) map MAE/timm key layouts
+   ``core.au_probe.load_au_probe_weights``) map the MAE key layout
    (``blocks.*`` -> ``enc_blocks.*``, ``patch_embed.proj.*`` -> the RGB tubelet
    adapter) and the HF VideoMAE layout
-   (``core.multimae.canonicalise_vit_state_dict``). A 3-D ``Conv3d`` patch
-   embed is copied verbatim, a 2-D one is boxcar-inflated over the tubelet.
-   They raise on a geometry mismatch, so pick the variant that matches your
+   (``core.multimae.canonicalise_vit_state_dict``). Only a 3-D ``Conv3d`` patch
+   embed is accepted (copied verbatim); the legacy 2-D boxcar inflation was
+   removed with the non-VideoMAE sources. They raise on a geometry mismatch and
+   on a checkpoint that contributes **zero** encoder tensors (e.g. a Stage-2
+   MultiModalMAE checkpoint), so pick the corpus that matches your
    ``enc_embed_dim``/``enc_depth``/``enc_num_heads``.
 """
 import argparse
@@ -91,7 +92,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 __all__ = [
-    'VIT_VARIANTS', 'PRETRAINED_SOURCES', 'DEFAULT_SOURCE', 'PROJECT_ROOT',
+    'VIT_VARIANTS', 'PRETRAINED_SOURCES', 'DEFAULT_DATASET', 'PROJECT_ROOT',
     'initial_dir', 'available_specs', 'describe_sources', 'plan_download',
     'download_pretrained', 'resolve_encoder_weights', 'main',
 ]
@@ -103,35 +104,32 @@ _MIN_BYTES = 1 << 20      # no real ViT checkpoint is smaller than 1 MiB
 _CODE_DIR = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = _CODE_DIR.parent
 
-_FBAI = 'https://dl.fbaipublicfiles.com'
-
-#: ViT geometry per variant (matches the ``@register_model`` entrypoints in
-#: :mod:`core.model`). Used for user-facing hints and error messages.
-#: NOTE: only the variants that still have a Stage-1 checkpoint source are
-#: listed. The ``small`` (384/12/6) and ``huge`` (1280/32/16) geometries still
-#: exist as model entrypoints, but their only sources (DeiT-S and MAE ViT-H)
-#: were dropped with the plan; build them with an explicit path or a
-#: ``timm:<model_id>`` spec if ever needed.
+#: ViT geometry per variant. Stage 1 is **ViT-Base only** (the project does not
+#: use any other backbone geometry), so ``base`` is the sole entry. The
+#: non-Base ``project_multimae_*`` / ``project_vit_*`` entrypoints still exist
+#: for the model registry, but no Stage-1 checkpoint source is served for them.
 VIT_VARIANTS: Dict[str, Dict[str, int]] = {
     'base': {'embed_dim': 768, 'depth': 12, 'num_heads': 12},
-    'large': {'embed_dim': 1024, 'depth': 24, 'num_heads': 16},
 }
 
-#: ``source -> variant -> recipe``. ``candidates`` is a list of
-#: ``(url, kind)`` pairs tried in order (``kind`` is ``'torch'`` or
-#: ``'safetensors'``; the latter is converted to a ``.pth`` after download).
-#: ``file`` is the final, cache-checked file name inside ``models/initial/``.
-#: A candidate URL may contain ``{hf}``, which :func:`_lookup` substitutes with
-#: the CURRENT ``$HF_ENDPOINT`` (mirrors for restricted networks).
+#: ``source -> corpus -> recipe``. ``candidates`` is a list of ``(url, kind)``
+#: pairs tried in order (``kind`` is ``'torch'`` or ``'safetensors'``; the
+#: latter is converted to a ``.pth`` after download). ``file`` is the final,
+#: cache-checked file name inside ``models/initial/``; ``variant`` ties the
+#: corpus back to a :data:`VIT_VARIANTS` geometry. A candidate URL may contain
+#: ``{hf}``, which :func:`_lookup` substitutes with the CURRENT
+#: ``$HF_ENDPOINT`` (mirrors for restricted networks).
+#:
+#: Only VideoMAE ViT-Base is served, because Stage 1 compares the two VideoMAE
+#: pre-training corpora (Kinetics-400 vs Something-Something-v2) as the initial
+#: weights. The patch embed IS a tubelet ``Conv3d(3, D, (2,16,16))`` -- the
+#: exact shape this repo's adapters use -- so the tokenizer transfers verbatim
+#: and the model is not motion-blind at init. Weights: CC-BY-NC 4.0.
 PRETRAINED_SOURCES: Dict[str, Dict[str, dict]] = {
     'videomae': {
-        # The Stage-1 source of choice: the patch embed IS a tubelet
-        # Conv3d(3, D, (2,16,16)), i.e. the exact shape this repo's adapters
-        # use, so the tokenizer transfers verbatim (no boxcar inflation) and
-        # the model is not motion-blind at init. Objective (tube-masked video
-        # MAE) also matches Stage 2. Weights: CC-BY-NC 4.0.
-        'base': {
+        'k400': {
             'file': 'videomae_base_patch16_224.pth',
+            'variant': 'base',
             'candidates': [
                 ('{hf}/MCG-NJU/videomae-base/resolve/main/pytorch_model.bin',
                  'torch'),
@@ -141,50 +139,28 @@ PRETRAINED_SOURCES: Dict[str, Dict[str, dict]] = {
             'note': 'VideoMAE ViT-B (768/12/12), tube-masked video MAE on '
                     'Kinetics-400; 3-D tubelet patch embed 2x16x16',
         },
-        'large': {
-            'file': 'videomae_large_patch16_224.pth',
+        'ssv2': {
+            'file': 'videomae_base_ssv2_patch16_224.pth',
+            'variant': 'base',
             'candidates': [
-                ('{hf}/MCG-NJU/videomae-large/resolve/main/pytorch_model.bin',
-                 'torch'),
-                ('{hf}/MCG-NJU/videomae-large/resolve/main/model.safetensors',
-                 'safetensors'),
+                ('{hf}/MCG-NJU/videomae-base-ssv2/resolve/main/'
+                 'pytorch_model.bin', 'torch'),
+                ('{hf}/MCG-NJU/videomae-base-ssv2/resolve/main/'
+                 'model.safetensors', 'safetensors'),
             ],
-            'note': 'VideoMAE ViT-L (1024/24/16), tube-masked video MAE on '
-                    'Kinetics-400; 3-D tubelet patch embed 2x16x16',
-        },
-    },
-    'mae': {
-        'base': {
-            'file': 'mae_pretrain_vit_base.pth',
-            'candidates': [
-                (f'{_FBAI}/mae/pretrain/mae_pretrain_vit_base.pth', 'torch'),
-            ],
-            'note': 'MAE ViT-Base, self-supervised on ImageNet-1k',
-        },
-        'large': {
-            'file': 'mae_pretrain_vit_large.pth',
-            'candidates': [
-                (f'{_FBAI}/mae/pretrain/mae_pretrain_vit_large.pth', 'torch'),
-            ],
-            'note': 'MAE ViT-Large, self-supervised on ImageNet-1k',
+            'note': 'VideoMAE ViT-B (768/12/12), tube-masked video MAE on '
+                    'Something-Something-v2; 3-D tubelet patch embed 2x16x16',
         },
     },
 }
 
-#: Variant -> source used when the spec does not name one explicitly.
-#: ``base``/``large`` prefer VideoMAE: a real 3-D tubelet tokenizer transfers
-#: verbatim (see ``PRETRAINED_SOURCES['videomae']``). ``mae:base`` /
-#: ``mae:large`` are the 2-D ImageNet controls.
-DEFAULT_SOURCE: Dict[str, str] = {
-    'base': 'videomae',
-    'large': 'videomae',
-}
+#: Corpus used when a spec names the ``videomae`` source without a dataset
+#: (``videomae``) or uses the bare ``base`` alias. Also the default of the
+#: ``--videomae_dataset`` CLI knob on ``run_pretrain.py``.
+DEFAULT_DATASET = 'k400'
 
-#: Convenience ``timm:`` suggestions shown when a variant is missing upstream.
-_TIMM_SUGGESTIONS = {
-    'base': 'vit_base_patch16_224.mae',
-    'large': 'vit_large_patch16_224.mae',
-}
+#: Shorthand alias -> corpus, so ``base`` / ``videomae:base`` keep working.
+_DATASET_ALIASES = {'base': 'k400'}
 
 _NONE_ALIASES = {'', 'none', 'random', 'scratch', 'c0'}
 
@@ -245,7 +221,12 @@ def _hf_endpoint() -> str:
 # --------------------------------------------------------------------------- #
 def _split_spec(spec: str) -> Tuple[str, str, str]:
     """Classify ``spec`` -> ``(kind, source, name)`` with kind in
-    ``{'none', 'path', 'remote'}``."""
+    ``{'none', 'path', 'remote'}``.
+
+    ``name`` is a *corpus* (``k400`` / ``ssv2``) for the ``videomae`` source; it
+    may be the empty string when the spec names the source only (``videomae``),
+    in which case :func:`_lookup` fills in the default corpus.
+    """
     spec = (spec or '').strip()
     if spec.lower() in _NONE_ALIASES:
         return 'none', '', ''
@@ -258,79 +239,71 @@ def _split_spec(spec: str) -> Tuple[str, str, str]:
                                              '.safetensors'}):
         raise FileNotFoundError(
             f'--finetune/--pretrained_encoder path does not exist: {spec!r}. '
-            f'Use a variant spec ({"/".join(sorted(DEFAULT_SOURCE))}) to '
+            f'Use a corpus spec ({"/".join(available_specs())}) to '
             f'auto-download an initial encoder into {initial_dir()}.')
     if ':' in spec:
         source, name = spec.split(':', 1)
         return 'remote', source.strip().lower(), name.strip()
-    variant = spec.lower()
-    if variant not in VIT_VARIANTS:
-        # A bare unknown name is a typo far more often than a timm model id,
-        # so refuse it instead of firing a doomed Hub request.
-        choices = ', '.join(sorted(VIT_VARIANTS))
-        raise KeyError(
-            f'Unknown variant {spec!r}. Choose one of {choices}, use a '
-            f'<source>:<variant> spec (e.g. videomae:base, mae:large), or a '
-            f"timm model id as 'timm:<model_id>'.")
-    return 'remote', DEFAULT_SOURCE[variant], variant
+    bare = spec.lower()
+    if bare in _DATASET_ALIASES:
+        return 'remote', 'videomae', _DATASET_ALIASES[bare]
+    if bare == 'videomae':
+        return 'remote', 'videomae', ''
+    if bare in PRETRAINED_SOURCES['videomae']:
+        return 'remote', 'videomae', bare
+    raise KeyError(
+        f'Unknown Stage-1 weights spec {spec!r}. Stage 1 only accepts a '
+        f'VideoMAE ViT-Base corpus: {", ".join(available_specs())} '
+        f"(or 'videomae' + --videomae_dataset, or a local .pth path). "
+        f'ImageNet-MAE, timm and ViT-Large sources were removed.')
 
 
-def _lookup(source: str, name: str) -> Tuple[str, dict]:
-    """Return ``(cache_key, recipe)`` for a (source, name) pair."""
-    if source == 'timm':
-        safe = name.replace('/', '__')
-        return name, {
-            'file': f'timm-{safe}.pth',
-            'candidates': [
-                (f'{_hf_endpoint()}/timm/{name}/resolve/main/pytorch_model.bin',
-                 'torch'),
-                (f'{_hf_endpoint()}/{name}/resolve/main/pytorch_model.bin',
-                 'torch'),
-                (f'{_hf_endpoint()}/timm/{name}/resolve/main/model.safetensors',
-                 'safetensors'),
-                (f'{_hf_endpoint()}/{name}/resolve/main/model.safetensors',
-                 'safetensors'),
-            ],
-            'note': f'timm/HuggingFace weights ({name})',
-        }
+def _lookup(source: str, name: str) -> Tuple[str, str, dict]:
+    """Return ``(corpus, variant, recipe)`` for a ``(source, name)`` pair."""
     table = PRETRAINED_SOURCES.get(source)
     if table is None:
         raise KeyError(
-            f"Unknown weight source {source!r}. Known sources: "
-            f"{', '.join(sorted(PRETRAINED_SOURCES))}, timm")
+            f'Unknown weight source {source!r}. The only Stage-1 source is '
+            f"'videomae' (corpora: "
+            f"{', '.join(sorted(PRETRAINED_SOURCES['videomae']))}).")
+    if not name:
+        name = DEFAULT_DATASET
+    name = _DATASET_ALIASES.get(name, name)
     if name not in table:
-        alts = [f'{s}:{name}' for s, t in PRETRAINED_SOURCES.items()
-                if name in t]
-        if name in _TIMM_SUGGESTIONS:
-            alts.append(f'timm:{_TIMM_SUGGESTIONS[name]}')
         raise KeyError(
-            f"Source {source!r} has no entry for variant {name!r}. Available "
-            f"in {source!r}: {', '.join(sorted(table))}. "
-            + (f'Alternatives for {name!r}: {", ".join(alts)}.' if alts else ''))
+            f'Source {source!r} has no VideoMAE corpus {name!r}. Choose one of '
+            f"{', '.join(sorted(table))} (e.g. 'videomae:{DEFAULT_DATASET}').")
     recipe = table[name]
     if any('{hf}' in url for url, _ in recipe['candidates']):
         # resolve $HF_ENDPOINT at CALL time (mirrors must work without reimport)
         recipe = dict(recipe, candidates=[(url.format(hf=_hf_endpoint()), kind)
                                           for url, kind in recipe['candidates']])
-    return name, recipe
+    return name, recipe['variant'], recipe
 
 
-def plan_download(spec: str, dest_dir: Optional[str] = None) -> dict:
+def plan_download(spec: str, dest_dir: Optional[str] = None,
+                  dataset: str = DEFAULT_DATASET) -> dict:
     """Resolve ``spec`` to a download plan **without** touching the network.
 
-    :return: dict with ``kind``, ``source``, ``variant``, ``dest`` (Path),
-        ``urls`` and ``note``. Raises for un-downloadable specs.
+    ``dataset`` supplies the corpus when ``spec`` names the ``videomae`` source
+    without one (bare ``videomae``).
+
+    :return: dict with ``kind``, ``source``, ``dataset``, ``variant``,
+        ``dest`` (Path), ``urls`` and ``note``. Raises for un-downloadable specs.
     """
     kind, source, name = _split_spec(spec)
     if kind == 'none':
         raise ValueError('empty/random spec has nothing to download')
     if kind == 'path':
-        return {'kind': 'path', 'source': '', 'variant': '',
+        return {'kind': 'path', 'source': '', 'dataset': '', 'variant': '',
                 'dest': Path(name), 'urls': [], 'note': 'local file'}
-    variant, recipe = _lookup(source, name)
+    if not name:
+        name = _DATASET_ALIASES.get(dataset, dataset)
+    corpus, variant, recipe = _lookup(source, name)
     return {
         'kind': 'remote',
         'source': source,
+        'dataset': corpus,
         'variant': variant,
         'dest': initial_dir(dest_dir) / recipe['file'],
         'candidates': list(recipe['candidates']),
@@ -348,38 +321,31 @@ def available_specs() -> List[str]:
 
 
 def describe_sources() -> str:
-    """Human-readable table of variants -> source -> file (for ``--list``)."""
+    """Human-readable table of the Stage-1 corpora (for ``--list``)."""
     lines = [
-        f'Initial (Stage-1) encoder weights -> {initial_dir()}',
+        f'Stage-1 initial encoder weights (VideoMAE ViT-Base) -> '
+        f'{initial_dir()}',
         '',
-        f"{'spec':<22} {'geometry (dim/depth/heads)':<27} file / example",
+        f"{'spec':<22} {'geometry (dim/depth/heads)':<27} file",
     ]
-    for variant in ('base', 'large'):
-        geo = VIT_VARIANTS[variant]
-        geom = f"{geo['embed_dim']}/{geo['depth']}/{geo['num_heads']}"
-        default = f'{DEFAULT_SOURCE[variant]}:{variant}'
-        first = True
-        for source, table in PRETRAINED_SOURCES.items():
-            if variant not in table:
-                continue
-            spec = f'{source}:{variant}'
-            mark = ' *' if spec == default else ''
-            lines.append(f'{spec + mark:<22} {geom if first else "":<27} '
-                         f'{table[variant]["file"]}')
-            first = False
-        sugg = _TIMM_SUGGESTIONS.get(variant)
-        if sugg:
-            lines.append(f'{"timm:<model_id>":<22} {"":<27} e.g. timm:{sugg}')
+    geo = VIT_VARIANTS['base']
+    geom = f"{geo['embed_dim']}/{geo['depth']}/{geo['num_heads']}"
+    table = PRETRAINED_SOURCES['videomae']
+    first = True
+    for corpus in ('k400', 'ssv2'):
+        spec = f'videomae:{corpus}'
+        mark = ' *' if corpus == DEFAULT_DATASET else ''
+        lines.append(f'{spec + mark:<22} {geom if first else "":<27} '
+                     f'{table[corpus]["file"]}')
+        first = False
     lines += [
         '',
-        ' * = default source for that variant',
-        "Any HuggingFace/timm model id works as 'timm:<model_id>'; set "
-        'HF_ENDPOINT for a mirror.',
-        'Overloads anywhere a checkpoint path is accepted, e.g. '
-        '--finetune base --pretrained_encoder mae:large',
-        'stage2_local_pretrained.yaml pairs project_multimae_base with '
-        "pretrained_encoder: videomae:base (3-D tubelet tokenizer transfers "
-        'verbatim; a 5-D source kernel must equal `tubelet`).',
+        ' * = default corpus (Kinetics-400)',
+        "Use 'videomae' (source only) with --videomae_dataset k400|ssv2,",
+        "or the bare alias 'base' for videomae:k400.",
+        'A local .pth path is also accepted anywhere a spec is.',
+        'Stage 1 is VideoMAE-only: ImageNet-MAE, timm and ViT-Large were '
+        'removed.',
     ]
     return '\n'.join(lines)
 
@@ -472,13 +438,14 @@ def _write_sidecar(dest: Path, info: dict):
 
 def download_pretrained(spec: str, dest_dir: Optional[str] = None,
                         force: bool = False, quiet: bool = False,
-                        verify: bool = False) -> Path:
+                        verify: bool = False,
+                        dataset: str = DEFAULT_DATASET) -> Path:
     """Download (once) the checkpoint for ``spec``; return its local path.
 
     Cached files are reused unless ``force``. Under DDP only rank 0 downloads;
     the other ranks wait on a barrier and then use the shared file.
     """
-    plan = plan_download(spec, dest_dir)
+    plan = plan_download(spec, dest_dir, dataset=dataset)
     if plan['kind'] == 'path':
         return plan['dest']
 
@@ -548,21 +515,36 @@ def download_pretrained(spec: str, dest_dir: Optional[str] = None,
 
 def resolve_encoder_weights(spec: str, dest_dir: Optional[str] = None,
                             force: bool = False, quiet: bool = False,
-                            verify: bool = False) -> str:
-    """Map a checkpoint spec to a usable local path ('' when random init).
+                            verify: bool = False,
+                            dataset: str = DEFAULT_DATASET,
+                            require: bool = False) -> str:
+    """Map a checkpoint spec to a usable local path.
 
-    This is the single entry point used by the runners: it accepts a variant
-    spec (``base``, ``mae:large``, ``timm:vit_base_patch16_224.mae``), an
-    existing path (returned unchanged, relative paths preserved) or '' / None
-    (nothing to load).
+    This is the single entry point used by the runners: it accepts a corpus
+    spec (``videomae:k400`` / ``videomae:ssv2`` / ``videomae`` / ``base``), an
+    existing path (returned unchanged, relative paths preserved) or '' / None.
+
+    :param dataset: corpus used when ``spec`` names the ``videomae`` source
+        without one (``videomae``); see ``--videomae_dataset``.
+    :param require: when True (Stage-1 init), a blank / ``random`` / ``scratch``
+        spec is a HARD ERROR instead of returning ``''``. This is what removes
+        the blank Stage-1 backbone path; the Stage-3 runners keep
+        ``require=False`` so an empty ``--finetune`` still means "no checkpoint".
     """
     kind, _source, name = _split_spec(spec)
     if kind == 'none':
+        if require:
+            raise ValueError(
+                f'A VideoMAE initial encoder is required, but the spec is '
+                f'{spec!r} (blank/random). Choose one of '
+                f'{", ".join(available_specs())} (or a local .pth path); '
+                f'random-init backbones were removed.')
         return ''
     if kind == 'path':
         return name
     return str(download_pretrained(spec, dest_dir=dest_dir, force=force,
-                                   quiet=quiet, verify=verify))
+                                   quiet=quiet, verify=verify,
+                                   dataset=dataset))
 
 
 # --------------------------------------------------------------------------- #
@@ -574,12 +556,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         description='Download Stage-1 initial ViT encoder weights into '
                     f'{initial_dir()}.')
     parser.add_argument('specs', nargs='*',
-                        help="variant specs, e.g. small base mae:large "
-                             "timm:vit_large_patch16_224.mae")
+                        help="corpus specs, e.g. videomae:k400 videomae:ssv2")
     parser.add_argument('--all', action='store_true',
-                        help='download the default checkpoint of every variant')
+                        help='download every VideoMAE ViT-Base corpus '
+                             '(Kinetics-400 + SSV2)')
+    parser.add_argument('--dataset', default=DEFAULT_DATASET,
+                        choices=['k400', 'ssv2'],
+                        help="corpus for a bare 'videomae' spec "
+                             f'(default: {DEFAULT_DATASET})')
     parser.add_argument('--list', action='store_true',
-                        help='show available variants/sources and exit')
+                        help='show the available corpora and exit')
     parser.add_argument('--weights_dir', default=None,
                         help='destination directory '
                              '(default: $INITIAL_MODELS_DIR or '
@@ -598,12 +584,13 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     specs = list(args.specs)
     if args.all:
-        specs += [f'{DEFAULT_SOURCE[v]}:{v}' for v in DEFAULT_SOURCE]
+        specs += [f'videomae:{c}' for c in ('k400', 'ssv2')]
     done: List[Tuple[str, str]] = []
     for spec in dict.fromkeys(specs):        # de-duplicate, keep order
         path = resolve_encoder_weights(spec, dest_dir=args.weights_dir,
                                        force=args.force, quiet=args.quiet,
-                                       verify=args.verify)
+                                       verify=args.verify,
+                                       dataset=args.dataset)
         done.append((spec, path))
 
     if _is_main():

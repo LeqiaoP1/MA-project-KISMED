@@ -11,9 +11,8 @@ keeps the value hardcoded in the runner's ``get_args()``. Because
 (``roi_paddingg``) or a stale key used to be a silent no-op: the run proceeded
 with the default and looked perfectly healthy. The worst case is a key that
 misspells into a *different valid default* -- losing ``mask_ratio_resp: 0.50``
-reverts to 0.90, and losing ``pretrained_encoder: videomae:base`` silently
-trains from scratch. These tests pin the guard that turns that into a hard
-error.
+reverts to 0.90, and losing ``videomae_dataset: ssv2`` silently reverts to the
+K400 corpus. These tests pin the guard that turns that into a hard error.
 
 The tests use a SYNTHETIC parser (no torch, no dataset) so they stay fast and
 isolate the resolution logic. ``test_config_loading.py`` covers the real

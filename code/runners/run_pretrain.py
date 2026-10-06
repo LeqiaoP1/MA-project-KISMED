@@ -303,24 +303,24 @@ def get_args():
                              'sincos basis as the physio positional embeddings, '
                              'so query i starts at the instant a physical token '
                              "i would; 'random' = trunc_normal(0.02).")
-    parser.add_argument('--pretrained_encoder', default='', type=str,
-                        help='Stage-1 ViT checkpoint to initialise the shared '
-                             'encoder from: a local path OR a variant spec, '
-                             'e.g. base = videomae:base (downloads into '
-                             '<project_root>/models/initial) or mae:base as '
-                             'the 2-D control. VideoMAE is the default for '
-                             'base/large: its patch embed IS a tubelet '
-                             'Conv3d(3, D, (2,16,16)), so the tokenizer '
-                             'transfers verbatim (a 2-D MAE source is '
-                             'boxcar-inflated and leaves the model '
-                             'motion-blind at init)')
-    parser.add_argument('--inflate_rgb_patch', default=1, type=int,
-                        choices=[0, 1],
-                        help='1 (default) = transfer the RGB patch embed: a '
-                             '3-D Conv3d source is copied verbatim, a 2-D '
-                             'Conv2d source is averaged over the tubelet. '
-                             '0 = leave the tokenizer random (ablation: '
-                             'encoder blocks only)')
+    parser.add_argument('--pretrained_encoder', default='videomae', type=str,
+                        help='Stage-1 VideoMAE ViT-Base checkpoint that '
+                             'initialises the shared encoder. Corpus specs: '
+                             'videomae:k400 (Kinetics-400), videomae:ssv2 '
+                             '(Something-Something-v2), videomae (source only '
+                             '-> --videomae_dataset), base (alias of '
+                             'videomae:k400), or a local .pth path. A blank / '
+                             'random / scratch / mae / timm / large spec is '
+                             'REJECTED: Stage 1 has no blank-backbone path. '
+                             'Downloads into <project_root>/models/initial.')
+    parser.add_argument('--videomae_dataset', default='k400', type=str,
+                        choices=['k400', 'ssv2'],
+                        help='VideoMAE pre-training corpus used when '
+                             "--pretrained_encoder names the videomae source "
+                             "without a dataset (e.g. 'videomae'): k400 "
+                             '(Kinetics-400, default) or ssv2 '
+                             '(Something-Something-v2). An explicit '
+                             'videomae:k400 / videomae:ssv2 spec wins.')
     # training
     parser.add_argument('--batch_size', default=64, type=int)
     parser.add_argument('--epochs', default=800, type=int)
@@ -361,17 +361,28 @@ def main(args):
 
     # ----- model ---------------------------------------------------------- #
     if args.model.startswith('project_multimae'):
-        from core.multimae import build_pretraining_model, load_pretrained_encoder
+        from core.multimae import (build_pretraining_model,
+                                   load_pretrained_encoder)
+        from models.pretrained import resolve_encoder_weights
         model = build_pretraining_model(args)
-        if getattr(args, 'pretrained_encoder', ''):
-            from models.pretrained import resolve_encoder_weights
-            ckpt = resolve_encoder_weights(args.pretrained_encoder)
-            load_pretrained_encoder(
-                model, ckpt,
-                inflate_rgb_patch=bool(getattr(args, 'inflate_rgb_patch', 1)))
+        # Stage 1 ALWAYS inherits a VideoMAE ViT-Base encoder. require=True
+        # makes a blank/random --pretrained_encoder a hard error; the loader
+        # itself raises if the file contributes zero encoder tensors (e.g. a
+        # Stage-2 MultiModalMAE checkpoint).
+        ckpt = resolve_encoder_weights(
+            args.pretrained_encoder,
+            dataset=getattr(args, 'videomae_dataset', 'k400'),
+            require=True)
+        stats = load_pretrained_encoder(model, ckpt)
+        print(f'[stage1] init from {ckpt} '
+              f'(spec {args.pretrained_encoder!r}, '
+              f'{stats["loaded"]} encoder tensors)')
     else:
-        from models import create_model
-        model = create_model(args.model)
+        raise SystemExit(
+            f'--model {args.model!r}: Stage 1 only supports the multimodal '
+            f'ViT-Base entrypoints (project_multimae_*). The single-stream '
+            f'project_vit_* path would build a RANDOM backbone, which is not a '
+            f'valid Stage-1 model here.')
     model.to(device)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f'Model = {args.model}, params = {n_params:,}')

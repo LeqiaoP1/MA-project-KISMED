@@ -1,17 +1,16 @@
 # Stage 2 -- FIRST LOCAL overfit/smoke slice (do NOT run on HPC as-is).
 # Goal: prove adapters <-> encoder <-> decoder <-> loss wiring end-to-end (the
 # masked loss should drop towards ~0 here before any real run).
-# FROM SCRATCH (no Stage-1 init). The counterpart that DOES inherit the
-# VideoMAE encoder is configs/pretrain/stage2_local_pretrained.yaml. The two are
-# deliberately NOT the same recipe: this file is the cheapest possible WIRING
-# proof (2 streams, 2 sessions, 8 clips), while the pretrained one is a bounded
-# run over all local sessions with a second physio stream (3 streams, 11
-# sessions, 32 clips) and its own output_dir. To compare the two INITS strictly,
-# align streams / max_sessions / max_entries first.
+# The shared encoder is still initialised from a VideoMAE ViT-B checkpoint
+# (Stage 1 has no blank-backbone path); this file is the cheapest possible
+# WIRING proof (2 streams, 2 sessions, 8 clips). The larger local recipe is
+# configs/pretrain/stage2_local_pretrained.yaml.
 #
 # Run from code/:  python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml
 
 model: project_multimae_base       # 768-d/12-layer/12-head -- the NAME sets it
+pretrained_encoder: videomae:k400  # Stage-1 VideoMAE ViT-B corpus: k400
+                                   #   (Kinetics-400) or videomae:ssv2
 
 # ---- streams & tokenizer geometry ----
 # Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bp/resp/eda).
@@ -61,7 +60,7 @@ signal_weight: 0.5
 
 # ---- 1-D periodicity prior: multi-resolution STFT magnitude loss -----------
 # Adds an MR-STFT magnitude term on the ASSEMBLED clip waveform (see
-# stage2_local_scratch.yaml for the full rationale and the target_norm: clip
+# stage2_local_pretrained.yaml for the full rationale and the target_norm: clip
 # requirement). 0.0 = off = masked-MSE-only.
 target_norm: clip
 spectral_weight: 0.0               # RETIRED FROM STAGE 2 (decision 2026-09-26);

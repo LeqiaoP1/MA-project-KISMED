@@ -562,7 +562,7 @@ Geometry guard: `pos_embed` shape mismatch raises `ValueError` with actionable m
 
 **[design]** — `SolutionA_vs_SolutionC.md §2` (Invariant I2): the only Solution A-only tensors are `signal_queries.*` and `xdec_blocks.*`; the loader whitelists only `enc_blocks.` / `enc_norm.` / `adapters.` / `positions.` and silently ignores the rest. Either pre-trained checkpoint loads into the same fine-tuning model without any key renaming.
 
-Stage-1 ViT -> Stage-2: `canonicalise_vit_state_dict` handles MAE, VideoMAE, and HF-transformers checkpoint layouts. 2-D `patch_embed.proj.weight [D, C, ph, pw]` is inflated along the tubelet time axis to `[D, C, t, ph, pw]` (repeating, divided by t).
+Stage-1 VideoMAE -> Stage-2: `canonicalise_vit_state_dict` handles the official MAE/VideoMAE and the HF-transformers VideoMAE checkpoint layouts. The 3-D `patch_embed.proj.weight [D, C, t, ph, pw]` (VideoMAE tubelet) is copied **verbatim**; a tubelet mismatch raises. The legacy 2-D boxcar inflation was removed with the non-VideoMAE sources.
 
 ---
 

@@ -3,15 +3,15 @@
 # encoder weights into the shared cache.
 #
 # WHY: the compute nodes have NO internet. runners/*.py resolve a
-# `--pretrained_encoder base` / `--finetune large` spec by DOWNLOADING on first
-# use, which works on a login node but hangs/fails inside a batch job. Download
-# once here, then every job reuses the cache.
+# `--pretrained_encoder videomae:k400` / `--finetune videomae:ssv2` spec by
+# DOWNLOADING on first use, which works on a login node but hangs/fails inside a
+# batch job. Download once here, then every job reuses the cache.
 #
 # Run from code/ (do NOT sbatch this):
-#   bash scripts/hpc/download_weights.sh            # VideoMAE ViT-B (~1.3 GB)
-#   bash scripts/hpc/download_weights.sh --all      # base + large (~4 GB)
-#   bash scripts/hpc/download_weights.sh --list     # show the spec table
-#   bash scripts/hpc/download_weights.sh mae:base   # 2-D MAE control
+#   bash scripts/hpc/download_weights.sh            # VideoMAE K400 ViT-B (~377 MB)
+#   bash scripts/hpc/download_weights.sh --all      # K400 + SSV2 (~754 MB)
+#   bash scripts/hpc/download_weights.sh --list     # show the corpus table
+#   bash scripts/hpc/download_weights.sh videomae:ssv2   # SSV2 corpus only
 #
 # Cache location: $WEIGHTS_DIR, else $PROJ_DIR/models/initial (in-repo, matches
 # scripts/env_local.sh). NOTE env_hpc.sh itself resolves INITIAL_MODELS_DIR to

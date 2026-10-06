@@ -51,11 +51,11 @@ task_set: ''                       # '' = all tasks (FULL corpus, the default
 
 # ------------------------------------------------------- model / initialisation
 model: project_multimae_base       # 768-d / 12-layer -- MUST match pretrained_encoder
-pretrained_encoder: videomae:base  # Stage-1 init. Compute nodes have NO
+pretrained_encoder: videomae:k400  # Stage-1 VideoMAE corpus: k400 (Kinetics-400)
+                                   #   or videomae:ssv2. Compute nodes have NO
                                    #   internet: pre-fetch ONCE on a login node
                                    #   with scripts/hpc/download_weights.sh, then
                                    #   the cache under models/initial is reused.
-inflate_rgb_patch: 1               # unused for a 3-D source (copied verbatim)
 
 # ---- streams & tokenizer geometry (MUST match the Stage-3 sibling) ----
 streams: tir,resp

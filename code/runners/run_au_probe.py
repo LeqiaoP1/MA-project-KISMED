@@ -3,11 +3,12 @@
 ADD-ON diagnostic, separate from the Stage-1/2/3 runners. Probes the Stage-2
 shared-encoder representations with FACS AU *occurrence* detection: does the
 frozen (linear) or fine-tuned encoder linearly separate facial-action
-semantics? Compare controls by pointing ``--finetune`` at different
-checkpoints with an identical probe protocol:
-  * random init          (no --finetune)                -- lower bound C0
-  * Stage-1 VideoMAE     (--finetune base)              -- C1 (default source)
-  * Stage-2 BP4D multimodal MAE (output/pretrain/...)   -- C2 (headline)
+semantics? Compare checkpoints with an identical probe protocol:
+  * Stage-1 VideoMAE     (--finetune videomae:k400 / videomae:ssv2)  -- C1
+  * Stage-2 multimodal MAE (output/pretrain/...)                     -- C2
+
+``--finetune`` is REQUIRED: the random-init C0 lower bound was removed, so a
+blank spec is a hard error.
 
 Usage (from ``code/``)::
 
@@ -89,21 +90,11 @@ def get_args():
     parser.add_argument('--pool', default='mean', type=str,
                         help='token pooling (only "mean" implemented)')
     parser.add_argument('--finetune', default=env_or('MODEL_PATH'), type=str,
-                        help='checkpoint to probe: Stage-2 MAE or Stage-1 '
-                             'ViT. Either a local path or a variant spec '
-                             '(base = videomae:base, mae:base) '
-                             'that is downloaded into '
-                             '<project_root>/models/initial. Empty => random '
-                             'init (C0).')
-    parser.add_argument('--inflate_rgb_patch', default=1, type=int,
-                        choices=[0, 1],
-                        help='1 (default) = transfer the RGB patch embed from '
-                             'a Stage-1 checkpoint: a 3-D Conv3d source is '
-                             'copied verbatim, a 2-D Conv2d source is '
-                             'averaged over the tubelet. 0 = leave the '
-                             'tokenizer random (ablation). No effect on a '
-                             'Stage-2 checkpoint (`adapters.rgb.*` is loaded '
-                             'directly).')
+                        help='checkpoint to probe, REQUIRED: a Stage-2 '
+                             'multimodal-MAE checkpoint, a Stage-1 VideoMAE '
+                             'corpus spec (videomae:k400 / videomae:ssv2 / '
+                             'base) or a local path. A blank spec is a HARD '
+                             'ERROR: the random-init C0 control was removed.')
 
     # --- training -------------------------------------------------------- #
     parser.add_argument('--batch_size', default=16, type=int)
@@ -147,11 +138,10 @@ def main(args):
     print(f'AU probe: streams={args.streams} AUs={au_list} '
           f'params={n_params:,}')
 
-    if args.finetune:
-        from models.pretrained import resolve_encoder_weights
-        load_au_probe_weights(
-            model, resolve_encoder_weights(args.finetune),
-            inflate_rgb_patch=bool(getattr(args, 'inflate_rgb_patch', 1)))
+    from models.pretrained import resolve_encoder_weights
+    ckpt = resolve_encoder_weights(args.finetune, require=True)
+    load_au_probe_weights(model, ckpt)
+    print(f'[au_probe] encoder init from {ckpt}')
     if args.probe == 'linear':
         model.freeze_features()
         n_head = sum(p.numel() for p in model.head.parameters())

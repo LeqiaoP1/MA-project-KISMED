@@ -33,9 +33,9 @@ Stage 1  ──►  Stage 2  ──►  Stage 3
 ```
 
 ### Stage 1 — Pretrained Visual Encoder
-- **Source**: Published VideoMAE-base / MAE-base weights, downloaded by `runners/run_download_weights.py` into `models/initial/`.
-- **Model**: `ProjectViT` (`core/model.py`) — a standard 2-D ViT scaffold.
-- **Purpose**: Provides the initial encoder weights (tubelet Conv3d) for Stage 2. The Stage-1 checkpoint is **not retrained** in this project.
+- **Source**: Published VideoMAE **ViT-Base** weights — Kinetics-400 (`videomae:k400`) or Something-Something-v2 (`videomae:ssv2`) — downloaded by `runners/run_download_weights.py` into `models/initial/`.
+- **Loading**: `core/multimae.load_pretrained_encoder` copies the transformer blocks and the 3-D tubelet `Conv3d` patch embed into the Stage-2 `MultiModalMAE` encoder. A blank/random or non-VideoMAE source is rejected.
+- **Purpose**: Provides the initial encoder weights (tubelet Conv3d) for Stage 2. The Stage-1 checkpoint is **not retrained** in this project; the project compares the K400 vs SSV2 corpora as these initial weights.
 
 ### Stage 2 — Multimodal Masked Autoencoder Pre-training
 - **Model**: `MultiModalMAE` (`core/multimae.py`)

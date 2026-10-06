@@ -1481,26 +1481,21 @@ def canonicalise_vit_state_dict(state: Dict[str, 'torch.Tensor']):
 
 
 def fit_visual_patch_embed(model: 'MultiModalMAE',
-                           tensor: 'torch.Tensor', dst_key: str,
-                           target_shape, inflate: bool = True):
-    """Adapt an RGB patch-embed tensor to this model's tubelet ``Conv3d``.
+                           tensor: 'torch.Tensor', dst_key: str):
+    """Validate a VideoMAE patch-embed tensor against this model's tubelet.
 
-    * **5-D** ``[out, in, t, ph, pw]`` (VideoMAE): copied **verbatim**. Its
-      temporal kernel is real prior knowledge -- re-averaging it would throw
-      away exactly the part a 2-D source cannot provide, and with
-      ``tubelet 2,16,16`` the shape matches the model's adapter exactly. A
-      kernel that does NOT equal the model's ``tubelet`` raises, because the
-      inherited temporal filter would then be meaningless; that case used to be
-      counted as a quiet shape mismatch instead.
-    * **4-D** ``[out, in, ph, pw]`` (MAE / timm): the only honest
-      conversion is a boxcar -- broadcast along the tubelet axis and average.
-      The model is then motion-blind at init (the documented Stage-1
-      limitation), which is the whole reason a 3-D source is preferred.
+    Only a **5-D** ``[out, in, t, ph, pw]`` ``Conv3d`` source is accepted, and
+    it is copied **verbatim**: its temporal kernel is real prior knowledge, and
+    with ``tubelet 2,16,16`` the shape matches the model's adapter exactly. A
+    kernel that does NOT equal the model's ``tubelet`` raises, because the
+    inherited temporal filter would then be meaningless.
 
-    :param target_shape: the destination tensor's shape (``cur[dst_key].shape``).
-    :param inflate: set ``False`` to skip the 4-D conversion entirely (ablation
-        knob, ``--inflate_rgb_patch 0``): the adapter then stays random.
-    :return: the tensor to store, or ``None`` when it cannot be adapted.
+    The legacy 2-D ``[out, in, ph, pw]`` boxcar inflation was removed together
+    with the ImageNet-MAE / timm sources: Stage 1 is VideoMAE-only, so every
+    built-in checkpoint already carries a 3-D tubelet.
+
+    :return: the tensor to store, or ``None`` when it cannot be adapted (the
+        caller counts that as a shape mismatch).
 
     .. note::
        This is for the conv **weight** only. The ``Conv3d`` bias is a plain
@@ -1517,38 +1512,35 @@ def fit_visual_patch_embed(model: 'MultiModalMAE',
                 f'default are 2,16,16) so the inherited temporal filter stays '
                 f'meaningful.')
         return tensor
-    if tensor.ndim == 4:
-        if not inflate or len(tuple(target_shape)) != 5:
-            return None
-        t = int(tuple(model.tubelet)[0])
-        # [out, in, ph, pw] -> [out, in, t, ph, pw], averaged over the tube
-        return tensor.unsqueeze(2).expand(-1, -1, t, -1, -1).contiguous() / t
     return None
 
 
 def load_pretrained_encoder(model: 'MultiModalMAE', path: str,
-                            inflate_rgb_patch: bool = True,
                             patch_stream: str = '') -> Dict[str, int]:
-    """Copy a (MAE / VideoMAE / timm) checkpoint's transformer weights in.
+    """Copy a VideoMAE ViT-Base checkpoint's transformer weights in.
 
-    Two source layouts are accepted (see :func:`canonicalise_vit_state_dict`),
+    Two on-disk layouts are accepted (see :func:`canonicalise_vit_state_dict`),
     after which the mapping is always the same::
 
         blocks.{i}.*  -> enc_blocks.{i}.*
         norm.*        -> enc_norm.*
-        patch_embed.proj.{weight,bias} -> adapters.rgb.patch_embed.*
-                    (copied VERBATIM for a 3-D VideoMAE source; inflated from a
-                    2-D Conv2d for MAE/timm -- see
+        patch_embed.proj.{weight,bias} -> adapters.<visual>.patch_embed.*
+                    (copied VERBATIM: a VideoMAE patch embed IS a 3-D
+                    Conv3d(3, D, (2,16,16)) tubelet -- see
                     :func:`fit_visual_patch_embed`)
 
-    A VideoMAE source is preferred over a plain ImageNet/MAE one: its
-    ``patch_embed.proj`` IS a ``Conv3d(3, D, (2,16,16))`` tubelet filter, so the
-    temporal prior transfers instead of being faked by averaging two frames,
-    and its objective (tube-masked video MAE) matches Stage 2.
+    Stage 1 is VideoMAE-only, so the source ``patch_embed.proj`` IS a
+    ``Conv3d(3, D, (2,16,16))`` tubelet filter: the temporal prior transfers
+    verbatim instead of being faked by averaging two frames.
 
     Everything else (cls_token / pos_embed / head / other adapters / signal
     streams) is left at its random initialisation. Encoder geometry must match
     the checkpoint (e.g. embed_dim=768, depth=12, heads=12 for ViT-Base).
+
+    A checkpoint that contributes **zero** encoder tensors raises: this catches
+    a Stage-2 ``MultiModalMAE`` checkpoint (``enc_blocks.*`` keys, which this
+    Stage-1 mapping cannot read) or any unsupported layout, instead of leaving
+    the encoder silently random.
 
     :param patch_stream: which VISUAL stream receives the tokenizer. ``''``
         (default) resolves to ``rgb`` when that adapter exists and otherwise to
@@ -1609,12 +1601,9 @@ def load_pretrained_encoder(model: 'MultiModalMAE', path: str,
             name = src_key.rsplit('.', 1)[-1]
             dst_key = f'{dst_patch}.{name}'
             if name == 'weight' and dst_key in cur:
-                # 3-D source -> verbatim; 2-D source -> boxcar inflation (or
-                # left random when inflate_rgb_patch=False). Raises on a
+                # VideoMAE 3-D Conv3d source -> verbatim; raises on a
                 # tubelet-geometry mismatch rather than skipping quietly.
-                v = fit_visual_patch_embed(model, v, dst_key,
-                                           cur[dst_key].shape,
-                                           inflate_rgb_patch)
+                v = fit_visual_patch_embed(model, v, dst_key)
                 if v is None:
                     shape_mismatch.append(src_key)
                     continue
@@ -1631,6 +1620,15 @@ def load_pretrained_encoder(model: 'MultiModalMAE', path: str,
         loaded.append(src_key)
 
     n_loaded = len(loaded)
+    if n_loaded == 0:
+        raise ValueError(
+            f'{path}: no encoder tensors could be mapped into '
+            f'enc_blocks.* / enc_norm.* / adapters.* -- this is not a Stage-1 '
+            f'VideoMAE/ViT checkpoint (layout {layout!r}, {len(skipped)} keys '
+            f'skipped, {len(shape_mismatch)} shape-mismatched). A Stage-2 '
+            f'MultiModalMAE checkpoint (`enc_blocks.*`) cannot initialise '
+            f'Stage 1. Pass a VideoMAE ViT-Base file (`videomae:k400` / '
+            f'`videomae:ssv2`) or a compatible local ViT state dict.')
     model.load_state_dict(new_state, strict=False)
     print(f'[pretrained] {path}: loaded {n_loaded} encoder tensors '
           f'(layout {layout}, patch embed -> '

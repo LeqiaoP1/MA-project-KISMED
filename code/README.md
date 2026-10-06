@@ -57,8 +57,9 @@ python runners/run_inspect_data.py --data_path ../data/processed/bp4d_canonical 
 python runners/run_inspect_physio.py --subject F001 --task T1 --channel all
 
 # (1) Stage-2 multimodal masked pre-training (local milestone)
-#   from-scratch smoke slice (base, 768-d) . configs/pretrain/stage2_local_scratch.yaml
-#   VideoMAE/MAE ViT-Base inheritance (768-d) . configs/pretrain/stage2_local_pretrained.yaml
+#   wiring smoke slice (base, 768-d) ............ configs/pretrain/stage2_local.yaml
+#   VideoMAE K400 ViT-Base inheritance (768-d) .. configs/pretrain/stage2_local_pretrained.yaml
+#   VideoMAE SSV2 twin (the K400-vs-SSV2 A/B) ... configs/pretrain/stage2_local_pretrained_ssv2.yaml
 python runners/run_pretrain.py -c configs/pretrain/stage2_local_pretrained.yaml
 
 # (2) Stage-3 waveform fine-tuning per branch (needs a Stage-2 encoder ckpt)
@@ -361,8 +362,8 @@ subsection above.)
 
 | Plan stage                                                                            | Supported here                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Still to port (thesis work)                                                                                                                                                                                                                                                                                                                           |
 | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Stage 1 — ImageNet init of ViT-Base encoder                                          | `core/model.py` entrypoints (`project_vit_base_patch16_224`)                                                                                                                                                                                                                                                                                                                                                                                                                     | official ImageNet-1K timm classifier converter; encoder inheritance IMPLEMENTED (`core/multimae.py::load_pretrained_encoder` + `canonicalise_vit_state_dict` -- 3-D tubelet kernel transferred verbatim for VideoMAE, 2-D filter boxcar-inflated for MAE, `--inflate_rgb_patch` to disable) via `--pretrained_encoder`; variant specs (`small |
-| Stage 2 — multimodal masked pre-training on BP4D+ (RGB/TIR 50-75%, BP/RESP/EDA 90%+) | `core/input_adapters.py` (`SignalInputAdapter`), `data/masking_generator.py` (`MultiModalMaskingGenerator` asymmetric), `core/criterion.py` (`MaskedMSELoss`), configs `configs/pretrain/stage2_local_scratch.yaml` (from scratch) + `stage2_local_pretrained.yaml` (base + Stage-1 init) + HPC template `stage2_multimodal.yaml`; implemented local milestone: `core/multimae.py` (`MultiModalMAE`) + `PairedPretrainDataset` + `runners/run_pretrain.py` | separate deeper decoders; full-data HPC run at larger 224 geometry. Local five-stream milestone (rgb+tir+bp+resp+eda) is implemented & run:`core/multimae.py` (`MultiModalMAE`), `data/paired_dataset.PairedPretrainDataset`, `runners/run_pretrain.py`, `configs/pretrain/stage2_local{_scratch,_pretrained}.yaml`                         |
+| Stage 1 — ImageNet init of ViT-Base encoder                                          | `core/model.py` entrypoints (`project_vit_base_patch16_224`)                                                                                                                                                                                                                                                                                                                                                                                                                     | official ImageNet-1K timm classifier converter; encoder inheritance IMPLEMENTED (`core/multimae.py::load_pretrained_encoder` + `canonicalise_vit_state_dict` -- 3-D tubelet kernel transferred verbatim; K400 vs SSV2 corpus selectable via `--videomae_dataset` / `videomae:k400` / `videomae:ssv2`; blank/random is rejected) via `--pretrained_encoder`; variant specs (`small |
+| Stage 2 — multimodal masked pre-training on BP4D+ (RGB/TIR 50-75%, BP/RESP/EDA 90%+) | `core/input_adapters.py` (`SignalInputAdapter`), `data/masking_generator.py` (`MultiModalMaskingGenerator` asymmetric), `core/criterion.py` (`MaskedMSELoss`), configs `configs/pretrain/stage2_local.yaml` (wiring smoke) + `stage2_local_pretrained.yaml` (VideoMAE K400 + Stage-1 init) + `stage2_local_pretrained_ssv2.yaml` (SSV2 twin) + HPC template `stage2_multimodal.yaml`; implemented local milestone: `core/multimae.py` (`MultiModalMAE`) + `PairedPretrainDataset` + `runners/run_pretrain.py` | separate deeper decoders; full-data HPC run at larger 224 geometry. Local five-stream milestone (rgb+tir+bp+resp+eda) is implemented & run:`core/multimae.py` (`MultiModalMAE`), `data/paired_dataset.PairedPretrainDataset`, `runners/run_pretrain.py`, `configs/pretrain/stage2_local{,_pretrained,_pretrained_ssv2}.yaml`                         |
 | Stage 3 — three branches BP, RESP & EDA, unified spatio-temporal-spectral loss       | `core/waveform_losses.py` (`WaveformJointLoss`: L1 + Pearson + MR-STFT; 64/128/256 for BP/RESP, 256/512/1024 for EDA), regression head (`ProjectViT(output_len=...)`, baseline CLS->seq), `runners/run_waveform.py`, configs `configs/finetune/{bp,resp,eda}.yaml`                                                                                                                                                                                                         | lightweight conv decoder over all tokens for finer temporal resolution; session-level whole-waveform reconstruction/stitching (offline inference, not yet implemented)                                                                                                                                                                                |
 | Evaluation — Tier 1/2/3 post-processing                                              | `evaluation/metrics.py` (MAE/RMSE/Pearson; Welch PSD), `evaluation/clinical.py` (NeuroKit2 RMSSD/pNN50/MedianNN/ShanEn), `runners/run_evaluate.py`                                                                                                                                                                                                                                                                                                                             | —                                                                                                                                                                                                                                                                                                                                                    |
 
@@ -724,8 +725,9 @@ independent, self-contained module that re-uses the Stage-2 shared encoder
 * **Probe modes & controls** (identical protocol; only `--finetune` differs):
   * `--probe linear` (default) freezes the encoder ⇒ the formal diagnostic;
     `--probe ft` fine-tunes the whole model.
-  * C0 random init (`--finetune ''`), C1 Stage-1 (`--finetune base` =
-    `videomae:base`, or that checkpoint's path), **C2 Stage-2** (headline).
+  * C1 Stage-1 (`--finetune videomae:k400` / `videomae:ssv2`), **C2 Stage-2**
+    (headline). `--finetune` is REQUIRED -- the random-init C0 control was
+    removed, so a blank spec is a hard error.
 * **Configurable AU set.** `--au_list` (explicit, string or YAML list) **or**
   `--au_freq_topk N` (top-N by presence rate over the full AU corpus;
   `5` ⇒ AU6/7/10/12/14); default = the BP4D 12-AU subset. The head width,
@@ -733,14 +735,14 @@ independent, self-contained module that re-uses the Stage-2 shared encoder
 * **Two local configs = two probe variants of the same control.** Each of
   `configs/finetune/au_local.yaml` and `au_local_pretrained.yaml` probes ONE
   locally-trained Stage-2 encoder, so each must mirror that checkpoint's
-  geometry: `au_local.yaml` -> `stage2_local_scratch` (768-d/12-layer from-scratch;
-  clip 4.0 s -> num_frames 100, batch 4, full 12-AU subset),
-  `au_local_pretrained.yaml` -> `stage2_local_pretrained` (MAE ViT-Base-inherited
+  geometry: `au_local.yaml` -> `stage2_local_pretrained_ssv2` (VideoMAE-SSV2-init
+  768-d/12-layer; clip 4.0 s -> num_frames 100, batch 4, full 12-AU subset),
+  `au_local_pretrained.yaml` -> `stage2_local_pretrained` (VideoMAE-K400-inherited
   768-d/12-layer; clip 4.0 s -> num_frames 100, batch 2, top-5 frequent AUs
   `{6,7,10,12,14}`). Both use the SAME window length; only `batch_size` is
   smaller (2 vs 4) to keep the ~16x bigger 768-d encoder within a LOCAL GPU (see
   the `Geometry contract` bullet). Within one geometry, keep the protocol
-  identical across C0/C1/C2 (C1 = the MAE 768-d checkpoint only fits the 768-d
+  identical across C1/C2 (C1 = a VideoMAE ViT-B checkpoint only fits the 768-d
   geometry). The two configs use DIFFERENT AU sets by design, so they are not a
   head-to-head A/B of the two encoders - fix one AU set before comparing across
   encoders.
@@ -761,7 +763,9 @@ python runners/run_au_probe.py -c configs/finetune/au_local.yaml
 python runners/run_au_probe.py -c configs/finetune/au_local_pretrained.yaml
 # controls / AU subset
 python runners/run_au_probe.py -c configs/finetune/au_local_pretrained.yaml \
-    --finetune base                                         # C1 Stage-1 (768-d)
+    --finetune videomae:k400                                # C1 Stage-1 (768-d)
+python runners/run_au_probe.py -c configs/finetune/au_local_pretrained.yaml \
+    --finetune videomae:ssv2                                # C1, SSV2 corpus
 python runners/run_au_probe.py -c configs/finetune/au_local.yaml \
     --au_list '' --au_freq_topk 5                            # top-5 frequent AUs
 ```
@@ -794,55 +798,55 @@ Env vars read by the runners: `DATA_PATH`, `OUTPUT_DIR`, `DATA_SET`,
 (HuggingFace mirror). CLI flags always take precedence over env/YAML.
 
 **Initial (Stage-1) encoder weights.** `models.build.create_model` initialises
-randomly; the Stage-1 spatial priors come from a public checkpoint. Instead of a
-path you may pass a *variant spec* to `--finetune` / `--pretrained_encoder`; the
-matching checkpoint is downloaded **once** into `<repo>/models/initial/`
-(already git-ignored via `models/*`; relocate with `$INITIAL_MODELS_DIR` or
-`--weights_dir`, e.g. a scratch volume on the HPC).
+randomly; the Stage-1 spatial priors come from a public checkpoint. Stage 1 is
+**VideoMAE ViT-Base only**, and the project compares the two VideoMAE
+pre-training corpora as those initial weights. Pass a *corpus spec* to
+`--finetune` / `--pretrained_encoder`; the matching checkpoint is downloaded
+**once** into `<repo>/models/initial/` (already git-ignored via `models/*`;
+relocate with `$INITIAL_MODELS_DIR` or `--weights_dir`, e.g. a scratch volume on
+the HPC).
 
-| spec                            | source                                                            | geometry (dim/depth/heads) |
-| ------------------------------- | ----------------------------------------------------------------- | -------------------------- |
-| `base` \| `videomae:base`   | **VideoMAE ViT-Base, tube-masked video MAE (Kinetics-400)** | 768/12/12                  |
-| `mae:base`                    | MAE ViT-Base, self-supervised ImageNet-1k                         | 768/12/12                  |
-| `large` \| `videomae:large` | VideoMAE ViT-Large                                                | 1024/24/16                 |
-| `mae:large`                   | MAE ViT-Large                                                     | 1024/24/16                 |
-| `timm:<model_id>`             | any timm/HF checkpoint, e.g.`timm:vit_base_patch16_224.mae`     | as named                   |
+| spec            | VideoMAE ViT-Base corpus                                   | geometry (dim/depth/heads) |
+| --------------- | ---------------------------------------------------------- | -------------------------- |
+| `videomae:k400` | **Kinetics-400** (the default; also `base` / `videomae:base`) | 768/12/12               |
+| `videomae:ssv2` | **Something-Something-v2**                                 | 768/12/12                  |
+| `videomae`      | source only -> `--videomae_dataset k400\|ssv2`             | 768/12/12                  |
 
-**VideoMAE is the default Stage-1 source for `base`/`large`, and it is the
-better one.** Its `patch_embed.proj` is a `Conv3d(3, D, (2,16,16))` tubelet
+**Why VideoMAE.** Its `patch_embed.proj` is a `Conv3d(3, D, (2,16,16))` tubelet
 filter -- the *exact* shape this repo's adapters use (`tubelet: 2,16,16`) -- so
 the tokenizer transfers **verbatim**: the learned temporal kernel is inherited
-instead of being faked by averaging two frames (a plain MAE source leaves the
-model motion-blind at init), and its objective (tube-masked *video* MAE) is the
-same family as Stage 2. Verified on the real checkpoint: 148 encoder tensors
-loaded, 0 shape-mismatched, 102 pre-training/decoder keys dropped. Weights are
-**CC-BY-NC 4.0** (fine for academic work -- state it if you redistribute).
+instead of being faked by averaging two frames, and its objective (tube-masked
+*video* MAE) is the same family as Stage 2. Verified on the real checkpoint: 148
+encoder tensors loaded, 0 shape-mismatched, 102 pre-training/decoder keys
+dropped. Weights are **CC-BY-NC 4.0** (fine for academic work -- state it if you
+redistribute).
 
 Both on-disk layouts are accepted by `core.multimae.canonicalise_vit_state_dict`:
 the official MCG-NJU/MAE key layout, and the HuggingFace `transformers` one
 (`videomae.encoder.layer.N.layernorm_before.*` etc., where Q/K/V are re-fused
-into one `attn.qkv` with MAE's zero-key-bias convention). `--inflate_rgb_patch 0`
-skips the tokenizer transfer entirely (encoder blocks only) as an ablation.
-Because a 5-D source kernel must equal the model's `tubelet`, a mismatch raises
-instead of being quietly counted as a shape mismatch.
+into one `attn.qkv` with MAE's zero-key-bias convention). Because a 5-D source
+kernel must equal the model's `tubelet`, a mismatch raises instead of being
+quietly counted as a shape mismatch, and a checkpoint that contributes **zero**
+encoder tensors (e.g. a Stage-2 `MultiModalMAE` file) raises too -- nothing is
+ever silently loaded.
 
-There is **no ViT-S MAE release** and no VideoMAE ViT-S/ViT-H on the Hub, so
-only `base`/`large` have a built-in Stage-1 source (the DeiT-Small and MAE
-ViT-Huge sources were dropped with the `small`/`huge` weight variants: the
-project plan no longer uses those geometries). The `small`/`huge` *model*
-entrypoints still exist for an explicit checkpoint path, and `timm:<model_id>`
-reaches any other backbone.
-For Stage 2 the model name sets the ViT geometry, so `model: project_multimae_base` pairs with `pretrained_encoder: base`
+**No blank path.** Stage-1 init is always a VideoMAE checkpoint: a blank /
+`none` / `random` / `scratch` / `c0` spec is a hard error on `run_pretrain.py`
+(and the AU probe). ImageNet-MAE (`mae:*`), `timm:*` and the ViT-Large weights
+were **removed**; the non-Base `project_multimae_*` / `project_vit_*` *model*
+entrypoints still exist, but no Stage-1 checkpoint is served for them.
+For Stage 2 the model name sets the ViT geometry, so
+`model: project_multimae_base` pairs with `pretrained_encoder: videomae:k400`
 (`enc_embed_dim`/`enc_depth`/`enc_num_heads` remain explicit overrides). The
 multimodal/probe loaders raise on mismatch instead of silently loading nothing.
 
 ```bash
-python runners/run_download_weights.py --list        # variants + geometry
-python runners/run_download_weights.py base          # pre-fetch (login node!)
-python runners/run_download_weights.py mae:base      # plain MAE alternative
-python runners/run_finetune.py --finetune large ...  # downloads on demand
+python runners/run_download_weights.py --list          # corpora + geometry
+python runners/run_download_weights.py videomae:k400   # pre-fetch (login node!)
+python runners/run_download_weights.py --all           # K400 + SSV2
+python runners/run_pretrain.py -c configs/pretrain/stage2_local_pretrained_ssv2.yaml
 python runners/run_au_probe.py -c configs/finetune/au_local_pretrained.yaml \
-    --finetune base                                  # C1 Stage-1 (768-d)
+    --finetune videomae:k400                           # C1 Stage-1 (768-d)
 ```
 
 Downloads stream to a `.part` file (HTTP-Range resume), are renamed atomically

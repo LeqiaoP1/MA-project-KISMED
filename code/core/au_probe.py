@@ -224,8 +224,7 @@ def build_au_probe_model(args, num_classes: int):
 # --------------------------------------------------------------------------- #
 # checkpoint loading (Stage-2 multimodal OR Stage-1 MAE/ViT)
 # --------------------------------------------------------------------------- #
-def load_au_probe_weights(model: MultiModalMAEProbe, path: str,
-                          inflate_rgb_patch: bool = True):
+def load_au_probe_weights(model: MultiModalMAEProbe, path: str):
     """Load encoder weights from either checkpoint layout:
 
     * Stage-2 multimodal MAE (``enc_blocks.*`` / ``enc_norm`` / ``adapters.*``
@@ -234,9 +233,9 @@ def load_au_probe_weights(model: MultiModalMAEProbe, path: str,
       mapped ``blocks->enc_blocks``, ``norm->enc_norm``. Both the official
       MAE/VideoMAE layout and the HF ``transformers`` VideoMAE one
       (``videomae.encoder.layer.N.*``, fused back into ``attn.qkv``) are
-      accepted -- see ``core.multimae.canonicalise_vit_state_dict``. A 3-D
-      (Conv3d) patch embed is copied verbatim, a 2-D (Conv2d) one is inflated
-      along the tubelet time axis.
+      accepted -- see ``core.multimae.canonicalise_vit_state_dict``. Only a 3-D
+      (Conv3d) patch embed is accepted (copied verbatim); the legacy 2-D
+      boxcar inflation was removed with the non-VideoMAE sources.
 
     The head, decoder, and any non-visual stream weights are not used.
     """
@@ -289,9 +288,7 @@ def load_au_probe_weights(model: MultiModalMAEProbe, path: str,
             name = src_key.rsplit('.', 1)[-1]
             dst_key = f'adapters.rgb.patch_embed.{name}'
             if name == 'weight' and dst_key in cur:
-                v = fit_visual_patch_embed(model, v, dst_key,
-                                           cur[dst_key].shape,
-                                           inflate=inflate_rgb_patch)
+                v = fit_visual_patch_embed(model, v, dst_key)
                 if v is None:
                     mism.append(src_key)
                     continue

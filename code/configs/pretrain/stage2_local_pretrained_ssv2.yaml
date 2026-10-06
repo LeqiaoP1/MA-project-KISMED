@@ -1,26 +1,32 @@
-# Stage 2 -- LOCAL run WITH Stage-1 encoder inheritance (VideoMAE K400).
+# Stage 2 -- LOCAL run WITH Stage-1 encoder inheritance (VideoMAE SSV2).
+# This is the A/B twin of configs/pretrain/stage2_local_pretrained.yaml: the
+# ONLY differences between the two files are `pretrained_encoder` (K400 vs SSV2)
+# and `output_dir`. Everything else -- streams, geometry, masking, loss weights,
+# LR schedule, epochs, session/clip counts -- is identical on purpose, so the
+# pair isolates the effect of the VideoMAE pre-training CORPUS and nothing else.
+# **If you change a knob here, mirror it in the other file.**
+#
 # The shared encoder's transformer blocks AND the RGB tubelet patch embed are
 # initialised from the **VideoMAE ViT-B** checkpoint pre-trained on
-# **Kinetics-400**: its patch embed IS a Conv3d(3, 768, (2,16,16)) tubelet
-# filter, so the tokenizer transfers VERBATIM -- the temporal kernel is
+# **Something-Something-v2**: its patch embed IS a Conv3d(3, 768, (2,16,16))
+# tubelet filter, so the tokenizer transfers VERBATIM -- the temporal kernel is
 # inherited rather than faked by averaging two frames, and the objective
 # (tube-masked video MAE) matches Stage 2.
-# The SSV2 counterpart (identical recipe, different corpus + output_dir) is
-# configs/pretrain/stage2_local_pretrained_ssv2.yaml -- the K400-vs-SSV2 A/B.
 # The TIR/signal adapters, position embeddings, cls_token and head stay random
 # (no counterpart in either source).
 #
-# `videomae:k400` downloads the checkpoint once into ../models/initial/ (see
+# `videomae:ssv2` downloads the checkpoint once into ../models/initial/ (see
 # `python runners/run_download_weights.py --list`); a plain path works too.
 # The input size and batch are kept small (64 px) so this still fits a LOCAL
 # GPU; switch to the larger geometry (input_size 224) on the HPC. The data
-# block below now uses ALL locally available clips.
+# block below uses ALL locally available clips.
 #
-# Run from code/:  python runners/run_pretrain.py -c configs/pretrain/stage2_local_pretrained.yaml
+# Run from code/:  python runners/run_pretrain.py -c configs/pretrain/stage2_local_pretrained_ssv2.yaml
 
 model: project_multimae_base       # 768-d/12-layer -- MUST match pretrained_encoder
-pretrained_encoder: videomae:k400  # VideoMAE ViT-B corpus: k400 (Kinetics-400)
-                                   # or videomae:ssv2 (Something-Something-v2)
+pretrained_encoder: videomae:ssv2  # VideoMAE ViT-B corpus: ssv2
+                                   # (Something-Something-v2); the K400 twin is
+                                   # configs/pretrain/stage2_local_pretrained.yaml
 
 # ---- streams & tokenizer geometry (small for a local GPU) ----
 # Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bp/resp/eda).
@@ -59,9 +65,7 @@ mask_ratio_tir: 0.90
 # `cat([z[:, visible], mask_token...])`, so the VISIBLE physio token count is
 # the encoder's only gradient path for that stream: at 0.90 only ~5 of 50 were
 # visible (a very thin path -- and with 0 visible the path is exactly zero),
-# while 0.50 gives ~25. This is the lever for the measured failure that the
-# encoder's pooled rgb features varied only 0.4 % across clips (2.9 % at init)
-# and bp/resp reconstruction never beat a constant predictor.
+# while 0.50 gives ~25.
 mask_ratio_bp: 0.50
 mask_ratio_resp: 0.50
 mask_ratio_eda: 0.50               # waveform family (unused while streams=rgb,bp,resp)
@@ -85,8 +89,8 @@ spectral_weight: 0.0               # RETIRED FROM STAGE 2 (decision 2026-09-26):
                                    # this file is not comparable on the
                                    # spect_* columns.
                                    # See TirROI_Resp_plan.md §7.5 + §9;
-                                   # keep this line identical to the SSV2 twin
-                                   # (stage2_local_pretrained_ssv2.yaml).
+                                   # keep this line identical to the K400 twin
+                                   # (stage2_local_pretrained.yaml).
 spectral_fft_sizes: 64,128,256     # fs=100 Hz -> 1.56 / 0.78 / 0.39 Hz bins
 spectral_hop_ratio: 0.25
 
@@ -104,8 +108,6 @@ clip_stride: 3.0                   # window hop in SECONDS: a 4.0 s window with
                                    # 0 s -> 101 clips / 1 s -> 132 / 2 s -> 196
                                    # / 3 s -> 386. The train split F001-F003 takes
                                    # 84 / 110 / 162 / 320 respectively.
-                                   # On the full BP4D set over all sessions,
-                                   # clip_stride 1.0 (3 s overlap) reaches ~10-20k.
 
 # ---- training (local run: full local clip budget at 64 px) ----
 epochs: 40
@@ -119,13 +121,9 @@ min_lr: 1.0e-4                     # keep the cosine tail learning
 warmup_epochs: 5
 weight_decay: 0.05
 clip_grad: 0.0                     # 0.0 = OFF (no clipping), which is fine NOW.
-                                   # Before the 2026-09-23 fix in
-                                   # utils/native_scaler.py this 0.0 zeroed EVERY
-                                   # gradient through the AMP path, so the run
-                                   # trained nothing (see code/README.md).
 # data loading: the run is JPEG-decoding bound, so decode frames in parallel
 num_workers: 4
 
 # ---- logging ----
-output_dir: ../output/pretrain/stage2_local_pretrained
+output_dir: ../output/pretrain/stage2_local_pretrained_ssv2
 log_wandb: false

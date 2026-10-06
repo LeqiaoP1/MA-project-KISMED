@@ -21,9 +21,7 @@
 # ViT-B. With streams: tir,resp there is no rgb adapter, so
 # load_pretrained_encoder routes the checkpoint's Conv3d(3, 768, (2,16,16))
 # patch embed into adapters.tir VERBATIM (same 3 channels, same tubelet) -- the
-# temporal kernel is inherited rather than faked by boxcar averaging.
-# From-scratch A/B twin = a CLI override:
-#     --pretrained_encoder '' --output_dir ../output/pretrain/stage2_local_tir_roi_resp_scratch
+# temporal kernel is inherited verbatim.
 #
 # Run from code/ (ALWAYS with `-u`: without it stdout is block-buffered through
 # `tee`, so an interrupted run leaves a log with NO epoch lines):
@@ -58,8 +56,8 @@ task_set: ''                       # '' = all tasks; 'low' or 'low,high'
                                    #   (union of groups). CLI: --task_set
 
 model: project_multimae_base       # 768-d/12-layer -- MUST match pretrained_encoder
-pretrained_encoder: videomae:base  # 'base' = same; mae:base = plain MAE (2-D -> boxcar)
-inflate_rgb_patch: 1               # unused for a 3-D source (copied verbatim)
+pretrained_encoder: videomae:k400  # VideoMAE ViT-B corpus: k400 (Kinetics-400)
+                                   #   or videomae:ssv2
 
 # ---- streams & tokenizer geometry (small for a local GPU) ----
 # Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bp/resp/eda).

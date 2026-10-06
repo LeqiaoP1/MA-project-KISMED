@@ -1,19 +1,20 @@
 # AU-occurrence probe -- LOCAL smoke / dev (linear probe).
 # ADD-ON diagnostic: does the Stage-2 shared encoder linearly separate FACS
-# AU occurrence? This config probes the FROM-SCRATCH Stage-2 encoder
-# (stage2_local_scratch, 768/12/12). Its Stage-1-inherited counterpart is
+# AU occurrence? This config probes the SSV2-init Stage-2 encoder
+# (stage2_local_pretrained_ssv2, 768/12/12). Its K400-init counterpart is
 # configs/finetune/au_local_pretrained.yaml (probes stage2_local_pretrained,
 # 768/12/12 @ clip 4.0 s, batch 2, top-5 frequent AUs). Both are variants of
 # the SAME control: within one geometry keep every protocol knob (mode, split,
 # AU set, LR) fixed and change only the probed checkpoint:
-#   C0 random init   : finetune: ''            (lower bound)
-#   C1 Stage-1       : finetune: base          (videomae:base)
-#   C2 Stage-2       : finetune: ../output/pretrain/stage2_local_scratch/checkpoints/checkpoint-0039.pth
+#   C1 Stage-1 : finetune: videomae:k400      (or videomae:ssv2)
+#   C2 Stage-2 : finetune: ../output/pretrain/stage2_local_pretrained_ssv2/checkpoints/checkpoint-0039.pth
+# (The random-init C0 control was REMOVED: a blank --finetune is a hard error.)
 #
 # IMPORTANT (geometry contract): every encoder field below (tubelet,
 # input_size, clip_duration -> num_frames, enc_embed_dim, enc_depth,
 # enc_num_heads, mlp_ratio) MUST reproduce the geometry of the Stage-2 run
-# whose checkpoint is probed. Here it mirrors configs/pretrain/stage2_local_scratch.yaml
+# whose checkpoint is probed. Here it mirrors
+# configs/pretrain/stage2_local_pretrained_ssv2.yaml
 # (enc 768/12/12, clip_duration 4.0 s => num_frames 100, input 64).
 #
 # Run from code/:  python runners/run_au_probe.py -c configs/finetune/au_local.yaml
@@ -46,7 +47,7 @@ mlp_ratio: 4.0
 # ---- probe mode / init ----
 probe: linear                 # linear = frozen encoder + head (diagnostic)
 pool: mean
-finetune: ../output/pretrain/stage2_local_scratch/checkpoints/checkpoint-0039.pth
+finetune: ../output/pretrain/stage2_local_pretrained_ssv2/checkpoints/checkpoint-0039.pth
 
 # ---- dev caps (remove for the real run on full data) ----
 max_entries: 48               # per split; keeps local image I/O cheap

@@ -1,6 +1,6 @@
 """Public model API."""
 from .build import create_model, is_model, list_models
-from .pretrained import (DEFAULT_SOURCE, PRETRAINED_SOURCES, VIT_VARIANTS,
+from .pretrained import (DEFAULT_DATASET, PRETRAINED_SOURCES, VIT_VARIANTS,
                          available_specs, describe_sources, download_pretrained,
                          initial_dir, resolve_encoder_weights)
 
@@ -12,7 +12,7 @@ from core import multimae as _multimae  # noqa: F401,E402
 
 __all__ = [
     'create_model', 'is_model', 'list_models',
-    'VIT_VARIANTS', 'PRETRAINED_SOURCES', 'DEFAULT_SOURCE', 'initial_dir',
+    'VIT_VARIANTS', 'PRETRAINED_SOURCES', 'DEFAULT_DATASET', 'initial_dir',
     'available_specs', 'describe_sources', 'download_pretrained',
     'resolve_encoder_weights',
 ]

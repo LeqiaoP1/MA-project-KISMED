@@ -32,9 +32,9 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 
 | File | Purpose |
 |------|---------|
-| `stage2_local.yaml` | Local smoke, from scratch, `streams: rgb,bp`, 2 sessions, 8 clips |
-| `stage2_local_scratch.yaml` | Local wiring proof with extended rationale comments |
-| `stage2_local_pretrained.yaml` | Local with VideoMAE init, 11 sessions, 32 clips |
+| `stage2_local.yaml` | Local smoke (VideoMAE K400 init), `streams: rgb,bp`, 2 sessions, 8 clips |
+| `stage2_local_pretrained.yaml` | Local with VideoMAE **K400** init, 11 sessions, full local clip budget |
+| `stage2_local_pretrained_ssv2.yaml` | Twin of the above with VideoMAE **SSV2** init (the corpus A/B) |
 | `stage2_local_rgb_roi_bp.yaml` | RGB face-ROI + BP, raw tree |
 | `stage2_local_tir_roi_resp.yaml` | TIR-ROI + RESP, raw tree |
 | `stage2_local_tir_roi_crossmae.yaml` | TIR-ROI, Solution A cross-MAE |
@@ -96,7 +96,8 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `target_norm` | str | `token` (per-token z-score) or `clip` (per-clip z-score) |
 | `spectral_weight` | float | MR-STFT loss weight; **0.0 in all current configs** |
 | `spectral_fft_sizes` / `spectral_hop_ratio` | str / float | STFT config |
-| `pretrained_encoder` | str | `base` / `large` / `''` (from scratch) |
+| `pretrained_encoder` | str | Stage-1 VideoMAE corpus: `videomae:k400` / `videomae:ssv2` / `videomae` / `base` (= k400) / a local path. Blank/random is **rejected** |
+| `videomae_dataset` | str | `k400` (default) / `ssv2`: corpus for a bare `videomae` spec |
 | `epochs` / `batch_size` / `update_freq` / `save_ckpt_freq` | int | Training schedule |
 | `opt` / `lr` / `blr` / `min_lr` / `warmup_epochs` | str / float | Optimizer + LR |
 | `weight_decay` / `clip_grad` | float | Regularisation + grad clip (0.0 = OFF) |
@@ -181,8 +182,7 @@ Available Slurm batch files (`code/scripts/hpc/`): `submit_inspect.sbatch`, `sub
 
 ## 6. Pretrained Weight Management — `models/pretrained.py`
 
-Downloads Stage-1 ViT weights (VideoMAE-base, MAE-base, etc.) from Hugging Face to `$INITIAL_MODELS_DIR`.
-`resolve_encoder_weights('base', initial_dir)` maps short names to checkpoint paths.
+Downloads the Stage-1 **VideoMAE ViT-Base** checkpoints from Hugging Face to `$INITIAL_MODELS_DIR`: `videomae:k400` (Kinetics-400) and `videomae:ssv2` (Something-Something-v2). `resolve_encoder_weights('videomae:k400', initial_dir)` maps a corpus spec to a checkpoint path; Stage-1 callers pass `require=True` so a blank spec is a hard error (no random-init backbone). ImageNet-MAE / timm / ViT-Large sources were removed.
 
 > On HPC: pre-download on a **login node** (compute nodes have no internet). Use `run_download_weights.py --list` to see available specs.
 

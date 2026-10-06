@@ -78,6 +78,34 @@ def test_config_inventory_is_not_empty():
     assert any(p.endswith('resp_tir_roi_hpc.yaml') for p in SHIPPED_CONFIGS)
 
 
+PRETRAIN_CONFIGS = sorted(
+    path for path in SHIPPED_CONFIGS
+    if os.path.relpath(path, CODE_DIR).startswith('configs/pretrain/')
+)
+
+
+def test_every_pretrain_config_declares_a_videomae_init(monkeypatch):
+    """Stage 1 has no blank path: every shipped Stage-2 config must name a
+    VideoMAE corpus (never '' / random / scratch / mae / timm / large)."""
+    assert PRETRAIN_CONFIGS
+    for cfg in PRETRAIN_CONFIGS:
+        a = _args_for(cfg, monkeypatch)
+        spec = a.pretrained_encoder
+        rel = os.path.relpath(cfg, CODE_DIR)
+        assert spec and spec not in ('none', 'random', 'scratch', 'c0'), (
+            f'{rel}: blank Stage-1 init {spec!r}')
+        assert not spec.startswith(('mae:', 'timm:')) and spec != 'large', (
+            f'{rel}: removed Stage-1 source {spec!r}')
+        assert spec.startswith(('videomae', 'base')), (
+            f'{rel}: not a VideoMAE corpus spec {spec!r}')
+
+
+def test_ssv2_twin_pins_the_ssv2_corpus(monkeypatch):
+    cfg = os.path.join(CODE_DIR,
+                       'configs/pretrain/stage2_local_pretrained_ssv2.yaml')
+    assert _args_for(cfg, monkeypatch).pretrained_encoder == 'videomae:ssv2'
+
+
 # --------------------------------------------------------------------------- #
 # the HPC TIR-ROI pair: resolved values + the cross-stage contract
 # --------------------------------------------------------------------------- #
@@ -92,7 +120,7 @@ def test_stage2_hpc_resolves_the_intended_values(monkeypatch):
     assert a.sig_kernel == 16
     assert a.tubelet == '2,16,16'
     assert a.target_norm == 'clip'
-    assert a.pretrained_encoder == 'videomae:base'
+    assert a.pretrained_encoder == 'videomae:k400'
     # large-batch MAE convention: blr is set and lr stays None so it is DERIVED
     # (setting a YAML `lr` would silently switch the runner to an absolute LR).
     assert a.lr is None

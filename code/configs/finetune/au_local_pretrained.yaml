@@ -2,11 +2,11 @@
 # (enc ViT-Base 768/12/12, mirrored from configs/pretrain/stage2_local_pretrained.yaml:
 # clip_duration 4.0 s => num_frames 100, input 64, tubelet 2,16,16).
 #
-# COUNTERPART of configs/finetune/au_local.yaml (which probes the FROM-SCRATCH
-# encoder stage2_local_scratch, 768/12/12 @ clip 4.0 s, full 12-AU subset). Both are
-# probe variants of the SAME linear-decodability control; the
+# COUNTERPART of configs/finetune/au_local.yaml (which probes the SSV2-init
+# encoder stage2_local_pretrained_ssv2, 768/12/12 @ clip 4.0 s, full 12-AU
+# subset). Both are probe variants of the SAME linear-decodability control; the
 # geometry below MUST reproduce the probed checkpoint (stage2_local_pretrained,
-# MAE ViT-Base inherited) and protocol knobs must stay fixed across the
+# VideoMAE ViT-Base inherited) and protocol knobs must stay fixed across the
 # runs of THIS geometry. RESOURCE RATIONALE: a 768-d encoder needs a small
 # batch to fit a LOCAL GPU, so batch_size is 2 (same as au_local.yaml). The
 # window length matches au_local.yaml (4.0 s => num_frames 100)
@@ -19,12 +19,12 @@
 # within this geometry change only --finetune below.
 #
 # Controls with an IDENTICAL probe protocol (only --finetune changes):
-#   C0 random (lower bound):  finetune: ''
-#   C1 Stage-1 (VideoMAE/ImageNet only) -- 'base' downloads VideoMAE ViT-B once
-#       into ../models/initial/ (a local path works too; 'mae:base' = plain MAE):
-#        finetune: base            # or ../models/initial/videomae_base_patch16_224.pth
+#   C1 Stage-1 (VideoMAE only) -- downloads once into ../models/initial/
+#       (a local path works too):
+#        finetune: videomae:k400    # or videomae:ssv2
 #   C2 Stage-2 (Stage-1 init + BP4D multimodal masked pre-training):
 #        finetune: ../output/pretrain/stage2_local_pretrained/checkpoints/checkpoint-0039.pth
+# (The random-init C0 control was REMOVED: a blank --finetune is a hard error.)
 #
 # Run from code/:  python runners/run_au_probe.py -c configs/finetune/au_local_pretrained.yaml
 
