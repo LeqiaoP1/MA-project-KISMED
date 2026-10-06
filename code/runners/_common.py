@@ -5,6 +5,7 @@ Implements the MultiMAE pattern:
   * explicit command-line flags override the YAML values
 """
 import argparse
+import difflib
 import os
 import random
 
@@ -66,6 +67,33 @@ def add_common_args(parser: argparse.ArgumentParser):
                         help='limit number of clips per split (smoke tests)')
 
 
+def _check_config_keys(parser: argparse.ArgumentParser, cfg: dict, path: str):
+    """Fail loudly on YAML keys the target parser does not define.
+
+    ``parser.set_defaults(**cfg)`` accepts ARBITRARY keywords, so a typo
+    (``roi_paddingg``) or a key that was renamed/removed in code becomes a
+    silent no-op: the run proceeds with the argparse default instead and looks
+    perfectly healthy. A key that is misspelled into a *different valid* default
+    is the worst case -- e.g. dropping ``mask_ratio_resp: 0.50`` silently falls
+    back to 0.90, or a lost ``pretrained_encoder`` silently trains from scratch.
+
+    So the one soft spot of the "YAML supplies defaults" design is turned into a
+    hard error here. Keys with a close match get a spelling hint.
+    """
+    known = {a.dest for a in parser._actions}
+    unknown = sorted(k for k in cfg if k not in known)
+    if not unknown:
+        return
+    lines = [f'[config] {path}: {len(unknown)} key(s) are not options of '
+             f'{parser.prog!r} and would be SILENTLY IGNORED:']
+    for key in unknown:
+        near = difflib.get_close_matches(key, known, n=1, cutoff=0.7)
+        lines.append(f'    {key}' + (f"   (did you mean {near[0]!r}?)" if near else ''))
+    lines.append('        A key here is either a typo or a leftover from an '
+                 'older config. Fix the YAML (or delete the key) and re-run.')
+    raise SystemExit('\n'.join(lines))
+
+
 def parse_args_with_config(parser: argparse.ArgumentParser, argv=None):
     """Parse ``argv``; if ``-c/--config`` given, its YAML supplies defaults.
 
@@ -75,6 +103,11 @@ def parse_args_with_config(parser: argparse.ArgumentParser, argv=None):
     must therefore use ``add_help=True`` (argparse's default) or ``--help``
     dies with "unrecognized arguments: --help". Every training/eval runner had
     ``add_help=False`` and no ``-h`` action until 2026-10-01.
+
+    Resolution order (highest first): explicit CLI flag > YAML value > argparse
+    hardcoded default. Only keys PRESENT in the YAML are set; anything absent
+    keeps the hardcoded default from the runner's ``get_args()``. Unknown keys
+    are rejected (see :func:`_check_config_keys`).
     """
     config_parser = argparse.ArgumentParser('Training Config', add_help=False)
     config_parser.add_argument('-c', '--config', default='', type=str,
@@ -84,7 +117,14 @@ def parse_args_with_config(parser: argparse.ArgumentParser, argv=None):
     if cfg_args.config:
         with open(cfg_args.config, 'r') as f:
             cfg = yaml.safe_load(f)
-            parser.set_defaults(**cfg)
+        if cfg is None:                      # empty file -> keep all defaults
+            cfg = {}
+        if not isinstance(cfg, dict):
+            raise SystemExit(
+                f'[config] {cfg_args.config}: expected a YAML mapping at the '
+                f'top level, got {type(cfg).__name__}.')
+        _check_config_keys(parser, cfg, cfg_args.config)
+        parser.set_defaults(**cfg)
     return parser.parse_args(remaining)
 
 
