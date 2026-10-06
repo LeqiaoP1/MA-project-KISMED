@@ -82,6 +82,118 @@ def impact(survey: dict, forensics: List[dict]) -> Dict[str, object]:
     }
 
 
+def sweep_tables(survey: dict, forensics: List[dict]) -> Dict[str, list]:
+    """Trade-off curves for the two knobs, attributed by the cause of the rail.
+
+    Uses the survey's own sweep columns -- ``clips_ge_<V>`` per session for the
+    rail threshold and ``kept_flat_lt_<V>`` for the spread guard (which counts
+    only the windows that SURVIVE the shipped rail rule) -- and splits every
+    threshold's EXTRA drop (relative to the shipped ``rail_touch_v``) into:
+
+    * ``from_dead`` -- dead-channel sessions (removing these is a gain);
+    * ``from_clipped`` -- genuine-clipping sessions (the cost);
+    * ``from_residual`` -- the dead-channel sessions that still keep clips at
+      the shipped threshold (i.e. the windows a rail-CONTACT test cannot see).
+    """
+    rows = [r for r in survey['sessions'] if _used(r)]
+    agg = survey['aggregate']
+    kind = {f['session']: ('dead' if rf.dead_channel(f) else 'clipped')
+            for f in forensics}
+
+    def _sum(col: str, want: str) -> int:
+        return sum((r.get(col) or 0) for r in rows
+                   if kind.get(r['session']) == want)
+
+    def _extra(col: str, r: dict) -> int:
+        return max(0, (r.get(col) or 0) - (r['clip_touched'] or 0))
+
+    residual = [r for r in rows if kind.get(r['session']) == 'dead'
+                and r['clips'] - (r['clip_touched'] or 0) > 0]
+    n_resid = sum(r['clips'] - (r['clip_touched'] or 0) for r in residual)
+    out: Dict[str, object] = {'rail_touch': [], 'spread': [],
+                              'residual_clips': n_resid,
+                              'residual_sessions': len(residual)}
+    base = agg['clips_dropped_by_touch_rule']
+    for k, d in agg.get('rail_touch_curve', {}).items():
+        col = f'clips_ge_{k}'
+        dead = _sum(col, 'dead') - _sum('clip_touched', 'dead')
+        clipped = _sum(col, 'clipped') - _sum('clip_touched', 'clipped')
+        extra = d['dropped'] - base
+        out['rail_touch'].append({
+            'threshold': float(k),
+            'dropped': d['dropped'],
+            'extra': extra,
+            'kept': d['kept'],
+            'sessions_emptied': d['sessions_emptied'],
+            'extra_dead': dead,
+            'extra_clipped': clipped,
+            'extra_unclassified': extra - dead - clipped,
+            'residual_dropped': sum(_extra(col, r) for r in residual),
+            'residual_kept': sum(r['clips'] - (r.get(col) or 0)
+                                 for r in residual),
+        })
+    for k, d in agg.get('spread_curve', {}).items():
+        col = f'kept_flat_lt_{k}'
+        dead = _sum(col, 'dead')
+        clipped = _sum(col, 'clipped')
+        out['spread'].append({
+            'threshold': float(k),
+            'dropped': d['dropped_from_kept'],
+            'kept': d['kept_after'],
+            'dead': dead,
+            'clipped': clipped,
+            'unclassified': d['dropped_from_kept'] - dead - clipped,
+            'residual_dropped': sum((r.get(col) or 0) for r in residual),
+            'residual_kept': n_resid - sum((r.get(col) or 0)
+                                           for r in residual),
+        })
+    return out
+
+
+def _print_sweep(tables: Dict[str, object], survey: dict) -> None:
+    L = '=' * 76
+    agg = survey['aggregate']
+    n_resid = tables['residual_clips']
+    print(L)
+    print('TRADE-OFF CURVE -- what each threshold costs, and where the extra '
+          'drop lands')
+    print(f"shipped: rail_touch_v={agg['rail_touch_v']:g} V, "
+          f"min_signal_spread=0.1 V  ->  "
+          f"{agg['clips_kept_by_touch_rule']} of {agg['clips']} clip(s) kept "
+          f"by the RAIL rule (the spread guard runs after it)")
+    print(f"the residual (dead-channel windows no rail test can see): "
+          f"{n_resid} clip(s) in {tables['residual_sessions']} session(s)")
+    print(L)
+    if tables['rail_touch']:
+        print('--- rail_touch_v (this rule alone) ---')
+        hdr = (f"  {'V':>5} {'dropped':>8} {'vs 9.9':>7} {'kept':>6} "
+               f"{'emptied':>7} | {'of the EXTRA drop':>17} "
+               f"{'dead':>6} {'clipped':>8} {'near-rail':>10} | "
+               f"{'residual left':>13}")
+        print(hdr)
+        print('  ' + '-' * (len(hdr) - 2))
+        for d in tables['rail_touch']:
+            print(f"  {d['threshold']:5g} {d['dropped']:8d} {d['extra']:+7d} "
+                  f"{d['kept']:6d} {d['sessions_emptied']:7d} | "
+                  f"{'':>17} {d['extra_dead']:6d} {d['extra_clipped']:8d} "
+                  f"{d['extra_unclassified']:10d} | "
+                  f"{d['residual_kept']:6d} / {n_resid:<4d}")
+    if tables['spread']:
+        print()
+        print('--- min_signal_spread (ON TOP of the shipped rail rule) ---')
+        hdr = (f"  {'< V':>5} {'dropped':>8} {'kept':>6} | "
+               f"{'of the drop:':>13} {'dead':>6} {'clipped':>8} "
+               f"{'other':>8} | {'residual left':>13}")
+        print(hdr)
+        print('  ' + '-' * (len(hdr) - 2))
+        for d in tables['spread']:
+            print(f"  {d['threshold']:5g} {d['dropped']:8d} {d['kept']:6d} | "
+                  f"{'':>13} {d['dead']:6d} {d['clipped']:8d} "
+                  f"{d['unclassified']:8d} | "
+                  f"{d['residual_kept']:6d} / {n_resid:<4d}")
+    print(L)
+
+
 def _print(imp: Dict[str, object]) -> None:
     L = '=' * 76
     print(L)
@@ -125,6 +237,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument('--forensics', required=True,
                    help='JSON from analysis/tir_resp/rail_forensics.py --json')
     p.add_argument('--json', default=None, help='write the table as JSON')
+    p.add_argument('--sweep', action='store_true',
+                   help='also print the threshold trade-off curves from the '
+                        "survey's --rail_touch_sweep / --spread_sweep columns")
     args = p.parse_args(argv)
 
     with open(args.survey) as fh:
@@ -133,6 +248,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         forensics = json.load(fh)
     imp = impact(survey, forensics)
     _print(imp)
+    if args.sweep:
+        _print_sweep(sweep_tables(survey, forensics), survey)
     if args.json:
         with open(args.json, 'w') as fh:
             json.dump(imp, fh, indent=2)

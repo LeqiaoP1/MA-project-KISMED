@@ -496,16 +496,21 @@ class BP4DPlusTIRRespDataset(Dataset):
     :param target_landmarks: 1-indexed landmark labels forming the ROI.
     :param min_signal_spread: DROP a clip whose respiration window is
         (near-)constant, i.e. ``max(window) - min(window) < min_signal_spread``
-        in raw VOLTS (``0.0`` = disabled, the historical behaviour). This is
-        the **degenerate-window guard**: a constant target carries no
-        information whatever its cause, and under ``norm='clip'`` / the Stage-3
-        ``signal_norm: zscore`` it z-scores to an all-zero (or, if only NEARLY
-        constant, noise-amplified) label that no model can meaningfully fit.
-        NOTE this rule is per WINDOW. A fully railed window is of course also
-        "flat", but the rail case is handled FIRST by
-        :paramref:`rail_touch_v`; this guard is kept as a safety net for a dead
-        channel stuck at a NON-rail value (the two rules are complementary, see
-        ``analysis/tir_resp/resp_data_quality.md`` §3.4).
+        in raw VOLTS (``0.0`` = disabled). **The shipped ``0.1`` is the
+        DEAD-SIGNAL guard**: measured on the corpus, every window with a
+        spread below 0.1 V sits with a median level of ``+9.1 V`` -- i.e. the
+        channel is PINNED just inside the ``+/-10 V`` clamp with a
+        0.05-0.09 V ripple (a disconnected belt / loose contact). Such a
+        window is not a breathing target: under ``norm='clip'`` / the Stage-3
+        ``signal_norm: zscore`` it is rescaled to UNIT variance, so it enters
+        training as a full-amplitude label that is pure artifact. Genuine
+        breathing is >= 0.3 V p-p (corpus p10 ~0.75 V), so the guard does not
+        reach real (even shallow) respiration. NOTE this rule is per WINDOW and
+        is applied AFTER :paramref:`rail_touch_v`: the two rules are
+        COMPLEMENTARY -- the rail test catches what touches a clamp, this one
+        what is pinned near it without touching (see
+        ``analysis/tir_resp/resp_data_quality.md`` §3.4 and
+        ``analysis/tir_resp/resp_rail_touch_filter_results.md`` §5).
     :param rail_touch_v: DROP a clip whose respiration window contains ANY
         sample that has TOUCHED THE RAIL, i.e. ``abs(sample) >= rail_touch_v``
         volts (``0.0`` = disabled, the default). **This is the cleaning knob for

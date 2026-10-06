@@ -1,26 +1,36 @@
 # Respiration clip filter — the rail-TOUCH rule (one rule, corpus results)
 
 **Date:** 2026-10-06
-**Jobs:** Slurm **55347758** — the SHIPPED geometry (8 s window, **1 s hop**) —
-and **55347699** — the reference geometry (8 s window, 8 s hop =
-non-overlapping). Both `deflt_short`, 16 workers, ~30 s.
+**Jobs:** Slurm **55348993** — the SHIPPED policy (8 s window, **1 s hop**,
+`rail_touch_v 9.90` + `min_signal_spread 0.1`) — **55347758** (the same geometry
+with the guard at 0.01), **55347699** (reference geometry: 8 s hop =
+non-overlapping) and **55347966** (the threshold sweep of §5). All `deflt_short`,
+16 workers, ~30 s.
 **Tools:** `runners/run_survey_tir_resp.py`
-(`--clip_stride 1.0 --rail_touch_v 9.90`),
+(`--clip_stride 1.0 --rail_touch_v 9.90 --flat_spread 0.1
+[--rail_touch_sweep/--spread_sweep]`),
 `analysis/tir_resp/rail_forensics.py`, `analysis/tir_resp/rail_filter_impact.py`
-**Artifacts:** `$WORK_SCRATCH/tir_resp_survey_1s/` (shipped) and
-`$WORK_SCRATCH/tir_resp_survey_touch/` (reference), each with
-`tir_resp_survey.json` + `..._sessions.csv`; `$WORK_SCRATCH/rail_forensics_all.json`;
-`$WORK_SCRATCH/rail_filter_impact_1s.json`; logs
-`code/logs/survey_tir_resp_5534775{8,9}.out`
+(`--sweep`)
+**Artifacts:** `$WORK_SCRATCH/tir_resp_survey_1s/` (shipped),
+`.../tir_resp_survey_touch/` (reference) and `.../tir_resp_survey_sweep/` (§5),
+each with `tir_resp_survey.json` + `..._sessions.csv`;
+`$WORK_SCRATCH/rail_forensics_all.json`;
+`$WORK_SCRATCH/rail_filter_impact{,_1s,_sweep}.json`; logs
+`code/logs/survey_tir_resp_5534775{8,9}.out`, `..._55347966.out` and
+`..._55348993.out`
 **See also:** §3.4 of [`resp_data_quality.md`](resp_data_quality.md) for the
 two-cause analysis of the rail.
 
 ---
 
-## 1. The rule
+## 1. The two rules
 
-> **A clip is dropped if its respiration reading EVER TOUCHED the rail.**
-> Concretely: the clip's 8 s respiration window contains any sample with
+Both are per-WINDOW and both must match between Stage 2 and Stage 3. The rail
+test runs FIRST, then the spread guard (so the two drop counters never overlap).
+
+### 1.1 Rail: drop a clip whose reading EVER TOUCHED the rail
+
+> The clip's 8 s respiration window contains any sample with
 > `abs(x) >= rail_touch_v`, with **`rail_touch_v = 9.90 V`** (`0.0` = off).
 
 The recorder clamps at `+/-10 V`, so `9.90` is "within 0.1 V of either end of the
@@ -39,10 +49,35 @@ range". Implementation notes:
 a rail-valued, physically unrepresentable sample in the LABEL, and the rule keys
 on exactly that — so both go. §3 reports the cost of removing the second kind.
 
-`min_signal_spread` (0.01 V) stays as the degenerate-window guard and is probed
-**after** the rail test, so `clips_dropped_rail` keeps the attribution.
+`min_signal_spread` (0.1 V, §1.2) is the second guard and is probed AFTER the
+rail test, so `clips_dropped_rail` keeps the attribution.
 
-### 1.1 Geometry: the 8 s window moves with a 1 s hop
+### 1.2 Spread: drop a clip whose window is a pinned / dead signal
+
+> The window's spread `max(x) - min(x)` is **below `min_signal_spread = 0.1 V`**
+> (`0.0` = off).
+
+This is the **complement** of §1.1, not a duplicate: the rail test catches what
+*reaches* a clamp, this one catches a channel **pinned just inside** it. Measured
+on the 43 360 clips that survive the rail rule:
+
+* every window below 0.1 V sits at a **median level of +9.1 V** — 0.9 V under the
+  positive clamp — with a **0.05-0.09 V ripple** (disconnected belt / loose
+  contact / sensor resting on a surface);
+* **no** window in that band is at a plausible breathing level (-2..+2 V), and
+  the 0.05-0.10 V part of the band is *even more* strongly pinned (88.8 % above
+  +8 V) than the 0-0.05 V core (76.5 %);
+* genuine breathing is >= 0.3 V p-p (corpus p10 ~0.75 V), so the guard does not
+  reach even shallow respiration;
+* it is not "noise filtering": `max - min` is a RANGE, so one spike inflates it
+  (a pinned channel with a single 0.5 V glitch passes any threshold), and a loose
+  belt that *swings* gives a LARGE artifact — no spread value sees either.
+
+Why it matters beyond removing dead data: under `target_norm: clip` (Stage 2) and
+`signal_norm: zscore` (Stage 3) a 0.06 V ripple is **rescaled to unit variance**,
+so it would enter training as a full-amplitude label that is pure artifact.
+
+### 1.3 Geometry: the 8 s window moves with a 1 s hop
 
 `clip_stride` is `1.0` in all 7 TIR-ROI/RESP configs (it was `4.0` in Stage 2 and
 `2.0` in Stage 3), so **7 of every 8 consecutive windows overlap**. The intent is
@@ -63,7 +98,7 @@ python analysis/tir_resp/rail_forensics.py \
   --raw_root "$RAW_DATA_PATH" --json $WORK_SCRATCH/rail_forensics_all.json
 SURVEY_WORKERS=16 SURVEY_OUTPUT_DIR=$WORK_SCRATCH/tir_resp_survey_1s \
   sbatch -p deflt_short -t 00:25:00 -c 16 scripts/hpc/submit_survey_tir_resp.sbatch \
-         --clip_stride 1.0 --rail_touch_v 9.90
+         --clip_stride 1.0 --rail_touch_v 9.90 --flat_spread 0.1
 python analysis/tir_resp/rail_filter_impact.py \
   --survey $WORK_SCRATCH/tir_resp_survey_1s/tir_resp_survey.json \
   --forensics $WORK_SCRATCH/rail_forensics_all.json
@@ -71,33 +106,34 @@ python analysis/tir_resp/rail_filter_impact.py \
 
 ## 2. Corpus result
 
-| | 8 s hop (reference, job 55347699) | **1 s hop (shipped, job 55347758)** |
+| | 8 s hop (reference, job 55347699) | **1 s hop (shipped, job 55348969)** |
 |---|---|---|
 | sessions discovered | 1400 | 1400 |
 | sessions usable | 1353 (47 skipped) | **1361 (39 skipped)** |
 | **clips (8 s windows)** | 6718 | **48 999** |
-| clips touching the rail | 786 (11.7 %) | **5639 (11.5 %)** |
-| **clips kept** | 5932 | **43 360** |
-| sessions whose every clip touched | 106 | **84** |
-| **sessions remaining** | 1247 | **1277** |
+| dropped by `rail_touch_v` (§1.1) | 786 (11.7 %) | **5639 (11.5 %)** |
+| dropped by `min_signal_spread` (§1.2, on top) | – | **1434 (3.3 % of the survivors)** |
+| **clips kept (both rules)** | – | **41 926 (85.6 %)** |
+| sessions emptied (rail + spread) | 106 | **84 + 9 = 93** |
+| **sessions remaining** | 1247 | **1268** (of 1361) |
 
 The finer hop both **enlarges** the corpus (7.3x more windows) and **softens** the
 session-level effect: fewer sessions are skipped (47 -> 39; `all_clips_dropped`
-25 -> 17) and fewer are emptied (106 -> 84), because a longer recording now has
-many more windows, so it is far less likely that *every* one of them is railed.
-The **fraction** of clips that touch the rail is essentially unchanged
-(11.7 % -> 11.5 %): the rail is a property of the channel and overlapping windows
-each see it.
+25 -> 17) and fewer are emptied by the rail rule (106 -> 84), because a longer
+recording now has many more windows, so it is far less likely that *every* one of
+them is railed. The **fraction** of clips that touch the rail is essentially
+unchanged (11.7 % -> 11.5 %): the rail is a property of the channel and
+overlapping windows each see it.
 
 Skip reasons at the 1 s hop: `all_clips_dropped` 17, missing IRFeatures 15, resp
 too short 6, missing Resp_Volts 1.
 
-| level | sessions | clips | touched | kept | sessions emptied | mean file rail % |
-|---|---|---|---|---|---|---|
-| low (T2,T3) | 275 | 11 858 | 1100 | 10 758 | 14 | 3.31 |
-| moderate (T4,T7,T8,T10) | 535 | 11 771 | 1335 | 10 436 | 36 | 3.02 |
-| high (T1,T5,T6,T9) | 551 | 25 370 | 3204 | 22 166 | 34 | 3.65 |
-| **total** | **1361** | **48 999** | **5639** | **43 360** | **84** | **3.33** |
+| level | sessions | clips | rail-dropped | kept | spread-dropped | **kept (both)** | sessions emptied (rail+spread) |
+|---|---|---|---|---|---|---|---|
+| low (T2,T3) | 275 | 11 858 | 1100 | 10 758 | 537 | **10 221** | 14 + 3 |
+| moderate (T4,T7,T8,T10) | 535 | 11 771 | 1335 | 10 436 | 184 | **10 252** | 36 + 5 |
+| high (T1,T5,T6,T9) | 551 | 25 370 | 3204 | 22 166 | 713 | **21 453** | 34 + 1 |
+| **total** | **1361** | **48 999** | **5639** | **43 360** | **1434** | **41 926** | **84 + 9** |
 
 ### 2.1 What the 0.1 V margin buys
 
@@ -157,24 +193,97 @@ do — their baseline is pinned *just above* the floor (non-rail gap
 | `M002_T7` | 22.4 | 1.85 | 1.34 | 22 | **1** |
 
 These are small-amplitude channels (`F054_T3`, the worst, has a mean breathing
-amplitude below 0.8 V), not constant ones, so `min_signal_spread = 0.01` does not
-catch them either. They are **accepted**: the corpus is otherwise rail-free, and
-0.29 % at a near-zero amplitude is well inside the noise of the metric.
+amplitude below 0.8 V), not constant ones, so the `min_signal_spread` guard does
+not reach them either (their spread is 0.33-6.9 V). §5 prices the two knobs that
+COULD remove them.
 
-## 5. Where the rule applies (audited) + end-to-end spot check
+## 5. Trade-off curve: what each threshold would cost
 
-| stage | entry point | path to the dataset | flag |
+Measured in ONE survey pass (`--rail_touch_sweep` / `--spread_sweep`, job
+**55347966**). The sweep only CLASSIFIES — it never filters the corpus it builds.
+`vs 9.9` is the change relative to the shipped value; `residual left` counts the
+windows still kept out of the **144** of §4.
+
+### 5.1 The rail threshold `rail_touch_v`
+
+| V | dropped | vs 9.9 V | kept | sessions emptied | residual left | extra drop: dead / clipped / near-rail¹ |
+|---|---|---|---|---|---|---|
+| 9.99 | 5225 | −414 | 43 774 | 81 | 159 | −26 / −97 / −291 |
+| 9.97 | 5274 | −365 | 43 725 | 81 | 152 | −13 / −69 / −283 |
+| 9.95 | 5377 | −262 | 43 622 | 82 | 147 | −3 / −46 / −213 |
+| **9.90 (shipped)** | **5639** | **0** | **43 360** | **84** | **144** | 0 / 0 / 0 |
+| 9.80 | 5880 | +241 | 43 119 | 92 | 115 | 29 / 98 / 114 |
+| 9.70 | 6053 | +414 | 42 946 | 97 | 93 | 51 / 134 / 229 |
+| 9.50 | 6746 | +1107 | 42 253 | 109 | 66 | 78 / 295 / 734 |
+| 9.00 | 8694 | +3055 | 40 305 | 166 | 21 | 123 / 686 / 2246 |
+| 8.00 | 14 213 | +8574 | 34 786 | 301 | 0 | 144 / 1626 / 6804 |
+
+¹ sessions whose file never reaches the exact `-10.0 V` floor (so the forensics
+sweep does not classify them) but whose windows DO reach the threshold — the
+positive clamp and the near-rail negatives. They are clip-like excursions too,
+and they dominate the extra drop below 9.5 V.
+
+The curve is flat at the safe end and steepens fast: the 0.1 V margin
+(`9.99 -> 9.90`) costs 414 clips, and each further step down costs 241 (9.80),
+414 (9.70), 1107 (9.50), 3055 (9.00).
+
+| target | setting | residual removed | corpus cost | among the extra drop: dead / clipped / near-rail | residual clips per 1000 clips lost |
+|---|---|---|---|---|---|
+| −20 % of the residual | `9.80` | 29 / 144 | 241 (0.5 %) | 29 / 98 / 114 | **120** |
+| −35 % | `9.70` | 51 / 144 | 414 (0.8 %) | 51 / 134 / 229 | **123** |
+| −54 % | `9.50` | 78 / 144 | 1107 (2.3 %) | 78 / 295 / 734 | 70 |
+| −85 % | `9.00` | 123 / 144 | 3055 (6.2 %) | 123 / 686 / 2246 | 40 |
+| −100 % | `8.00` | 144 / 144 | 8574 (17.5 %) | 144 / 1626 / 6804 | 17 |
+
+### 5.2 The degenerate-window guard `min_signal_spread`
+
+Applied ON TOP of the shipped rail rule (the guard runs second):
+
+| spread < V | dropped | kept | residual left | among the drop: dead / clipped / other² | residual clips per 1000 clips lost |
+|---|---|---|---|---|---|
+| 0.01 | 0 | 43 360 | 144 | 0 / 0 / 0 | — |
+| 0.10 | 1434 (3.3 %) | 41 926 | 144 | 0 / 1 / 1433 | **0** |
+| 0.25 | 2639 (6.1 %) | 40 721 | 144 | 0 / 14 / 2625 | **0** |
+| 0.50 | 3908 (9.0 %) | 39 452 | 138 | 6 / 54 / 3848 | 1.5 |
+| 1.00 | 6448 (14.9 %) | 36 912 | 112 | 32 / 120 / 6296 | 5.0 |
+| 1.50 | 8783 (20.3 %) | 34 577 | 84 | 60 / 218 / 8505 | 6.8 |
+| 2.00 | 11 568 (26.7 %) | 31 792 | 45 | 99 / 327 / 11 142 | 8.6 |
+| 3.00 | 17 397 (40.1 %) | 25 963 | 42 | 102 / 598 / 16 697 | 5.9 |
+
+² sessions that are neither dead-channel nor clipping-labelled: the drop is
+ordinary low-amplitude BREATHING, i.e. the cost of the guard is paid mostly on
+valid data.
+
+**Reading.** Below 0.5 V the guard removes *none* of the residual (its smallest
+window spread is 0.33 V) while already costing 1434–2639 clips of normal data;
+the window into which it starts biting is the same one that thins the whole
+corpus (p10 of the surviving spread is 0.75 V). Per residual clip removed it
+costs **15–80x more** than lowering `rail_touch_v` (§5.1), and most of what it
+drops is legitimate respiration.
+
+So the two knobs answer different questions: `rail_touch_v` targets
+rail-adjacent windows (the residual included), `min_signal_spread` targets
+low-amplitude ones whatever their cause — and the residual is the former, not
+the latter. The SHIPPED guard is `0.1` (§1.2): it takes the 1434 clips of the
+first two rows (`max - min` is a range, so it is the only value on this table
+that removes the pinned class without touching anything that moves), leaving
+**41 926 clips in 1268 sessions** after both rules. The rail threshold stays at
+`9.90` unless the ~0.29 % residual of §4 is judged worth the prices in §5.1.
+
+## 6. Where the rule applies (audited) + end-to-end spot check
+
+| stage | entry point | path to the dataset | flags |
 |---|---|---|---|
-| 2 — masked pretraining | `runners/run_pretrain.py` | `build_pretraining_dataset` -> `build_tir_roi_pretrain_dataset` | `--rail_touch_v` |
-| 3 — waveform | `runners/run_waveform.py` | `build_dataset` -> `build_tir_roi_finetune_dataset` | `--rail_touch_v` |
-| 3 — classification | `runners/run_finetune.py` | `build_dataset` -> `build_tir_roi_finetune_dataset` | `--rail_touch_v` |
-| clip inspection | `runners/run_inspect_tir_resp.py` | `BP4DPlusTIRRespDataset` | `--rail_touch_v` |
-| corpus survey | `runners/run_survey_tir_resp.py` | `BP4DPlusTIRRespDataset` built UNFILTERED on purpose (it CLASSIFIES with the rule) | `--rail_touch_v` |
-| dataset self-test / ROI parity | `data/tir_resp_dataset.py`, `check_view_parity()` | same class | `--rail_touch_v` |
+| 2 — masked pretraining | `runners/run_pretrain.py` | `build_pretraining_dataset` -> `build_tir_roi_pretrain_dataset` | `--rail_touch_v`, `--min_signal_spread` |
+| 3 — waveform | `runners/run_waveform.py` | `build_dataset` -> `build_tir_roi_finetune_dataset` | both |
+| 3 — classification | `runners/run_finetune.py` | `build_dataset` -> `build_tir_roi_finetune_dataset` | both |
+| clip inspection | `runners/run_inspect_tir_resp.py` | `BP4DPlusTIRRespDataset` | both |
+| corpus survey | `runners/run_survey_tir_resp.py` | `BP4DPlusTIRRespDataset` built UNFILTERED on purpose (it CLASSIFIES with the rules) | `--rail_touch_v`, `--flat_spread` |
+| dataset self-test / ROI parity | `data/tir_resp_dataset.py`, `check_view_parity()` | same class | both |
 
 Real dataset build for **F001, low + moderate** (`input_size 64`, `roi_padding
-0.2`, `min_signal_spread 0.01`, no dev caps), only the hop and the rail knob
-changed:
+0.2`, `min_signal_spread 0.1`, `rail_touch_v 9.90`, no dev caps), only the hop
+and the spread guard changed:
 
 ```
 clip_stride = 4.0, rail_touch_v = 0.0   -> 36 clips / 5 sessions
@@ -185,9 +294,10 @@ clip_stride = 1.0, rail_touch_v = 9.90  ->  88 clips / 4 sessions  (T2 15->9, T3
 
 Which matches the per-file rail% of `resp_data_quality.md` §6: `F001_T10`
 (36.9 %) and `F001_T7` (13.2 %) are emptied (`T7` keeps one clip at the 1 s hop),
-`F001_T2` (11.7 %) loses 6 of 15, and the clean `T3`/`T4` are untouched.
+`F001_T2` (11.7 %) loses 6 of 15, and the clean `T3`/`T4` are untouched. The
+spread guard changes none of these (F001 is a rail problem, not a pin problem).
 
-## 6. Verification
+## 7. Verification
 
 * `pytest -q` -> **111 passed**:
   * `tests/test_tir_resp_rail_filter.py` (12) — fully railed channel, pinned
@@ -200,7 +310,7 @@ Which matches the per-file rail% of `resp_data_quality.md` §6: `F001_T10`
     (`build_pretraining_dataset` for Stage 2, `build_dataset` for Stage 3) hands
     `rail_touch_v` to the dataset, an absent key means off *and printed*, every
     entry point exposes the flag, and all 7 configs ship `rail_touch_v: 9.90` +
-    `min_signal_spread: 0.01` + `clip_stride: 1.0`.
+    `min_signal_spread: 0.1` + `clip_stride: 1.0`.
 * Two guards make a silently-off rule impossible: both builders print
   `[data] stage2|stage3 corpus cleaning: rail_touch_v=... V (DROP ... | OFF)`,
   and `run_waveform.py` lists `rail_touch_v` **and** `clip_stride` in its
@@ -209,15 +319,17 @@ Which matches the per-file rail% of `resp_data_quality.md` §6: `F001_T10`
 * `compileall` clean; the 7 configs load with `rail_touch_v=9.9`,
   `clip_stride=1.0`; `tests/test_config_loading.py` asserts both.
 
-## 7. Artifacts
+## 8. Artifacts
 
 | path | content |
 |---|---|
-| `runners/run_survey_tir_resp.py` | survey; `--rail_touch_v`, `--clip_stride` |
+| `runners/run_survey_tir_resp.py` | survey; `--rail_touch_v`, `--clip_stride`, `--rail_touch_sweep` / `--spread_sweep` (the §5 curve) |
 | `analysis/tir_resp/rail_forensics.py` | per-session rail structure + `dead_channel()` (a description, not a filter) |
-| `analysis/tir_resp/rail_filter_impact.py` | this report's cost table (survey x forensics) |
+| `analysis/tir_resp/rail_filter_impact.py` | this report's cost table + `--sweep` for §5 (survey x forensics) |
 | `$WORK_SCRATCH/tir_resp_survey_1s/` | `tir_resp_survey.json`, `..._sessions.csv` (shipped geometry) |
+| `$WORK_SCRATCH/tir_resp_survey_sweep/` | the same + the sweep columns / curves of §5 |
 | `code/logs/survey_tir_resp_55347758.out` | the human-readable survey report |
+| `code/logs/survey_tir_resp_55347966.out` | the trade-off curve printout |
 
 **Caveat.** The clip counts come from the survey's *classification* of windows
 the dataset builds UNFILTERED (it builds with the rule off and counts

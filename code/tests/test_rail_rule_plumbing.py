@@ -180,7 +180,7 @@ def test_the_tir_configs_use_the_strict_rule_and_a_1s_hop():
             cfg = yaml.safe_load(fh)
         rel = os.path.relpath(path, CODE_DIR)
         assert cfg['rail_touch_v'] == pytest.approx(9.90), rel
-        assert cfg['min_signal_spread'] == pytest.approx(0.01), rel
+        assert cfg['min_signal_spread'] == pytest.approx(0.1), rel
         assert cfg['clip_stride'] == pytest.approx(STRIDE_S), rel
         assert cfg['clip_duration'] == pytest.approx(CLIP_S), rel
 

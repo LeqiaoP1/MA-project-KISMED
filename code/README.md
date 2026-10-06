@@ -272,15 +272,24 @@ thermal-ROI path, all also exposed on `run_inspect_tir_resp.py`:
   EXACTLY at the threshold is not silently missed. Keep it IDENTICAL in Stage 2
   and Stage 3. Also on `run_waveform.py` / `run_inspect_tir_resp.py` (reported,
   not hard-enforced across stages).
-* `--min_signal_spread` (volts, default `0.0` = off): the **degenerate-window
-  guard** — DROPs a clip whose respiration window is (near-)constant
-  (`max - min < threshold`) whatever the cause. Such a target z-scores to an
-  all-zero (or, if only *nearly* constant, noise-amplified) label that no model
-  can meaningfully fit, and it *rewards* a trivial zero predictor, which deflates
-  the baseline the model is compared against. The `--rail_touch_v` rule above
-  is checked FIRST, so this guard only catches a dead channel stuck at a
-  NON-rail value — the two rules are complementary. The shipped configs use
-  `0.01`.
+* `--min_signal_spread` (volts, default `0.0` = off; the shipped `0.1` is the
+  **dead-signal guard**): DROPs a clip whose respiration window spread
+  (`max - min`) is below the threshold. It is the **complement** of
+  `--rail_touch_v`, which is checked FIRST: the rail test catches what *touches*
+  a clamp, this one catches a channel **pinned just inside** it. Measured on the
+  corpus (43 360 clips kept by the rail rule), every window below 0.1 V sits
+  with a median level of **+9.1 V** -- 0.9 V under the positive clamp, with a
+  0.05-0.09 V ripple (disconnected belt / loose contact) -- and **no** window in
+  that band is at a plausible breathing level. Genuine breathing is >= 0.3 V p-p
+  (corpus p10 ~0.75 V), so the guard does not reach even shallow respiration.
+  Why it matters more than "noise": under `target_norm: clip` / Stage-3
+  `signal_norm: zscore` such a window is rescaled to UNIT variance, so it would
+  enter training as a **full-amplitude label that is pure artifact**. Cost at
+  `0.1`: 1434 clips (3.3 % of the kept corpus) and 9 sessions emptied.
+  `max - min` is a RANGE, so a single spike inflates it (a pinned channel with
+  one 0.5 V glitch passes any threshold) and a loose belt that *swings* gives a
+  LARGE artifact: neither is visible to this knob. See §5 of
+  `analysis/tir_resp/resp_rail_touch_filter_results.md` for the full curve.
 * `--roi_landmarks` / `--roi_quantile`: see the measured preset table in
   `data/tir_resp_dataset.ROI_LANDMARK_PRESETS` — `nostrils` (2 points) is an
   unstable thin slab (100x81 px on a still session, 91x15 px on a moving one);
@@ -326,7 +335,7 @@ Two guards make a silently-off rule impossible:
   (`build_pretraining_dataset` / `build_dataset`) and asserts the value arrives
   at the dataset in both views, that it is off + reported when the key is
   absent, that all five entry points expose the flag, and that all 7 configs
-  ship `rail_touch_v: 9.90` with `min_signal_spread: 0.01` and `clip_stride: 1.0`.
+  ship `rail_touch_v: 9.90` with `min_signal_spread: 0.1` and `clip_stride: 1.0`.
 
 **The Stage-3 ROI contract is now ENFORCED (2026-10-01).** The ROI keys
 (`roi_landmarks`, `roi_padding`, `roi_quantile`, `input_size`) decide *which

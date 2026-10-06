@@ -47,8 +47,10 @@ def get_args():
     # analysis/tir_resp/resp_rail_touch_filter_results.md)
     parser.add_argument('--min_signal_spread', default=0.0, type=float,
                         help='TIR-ROI only: DROP a clip whose respiration '
-                             'window is (near-)constant, i.e. max-min < this '
-                             'many VOLTS (0.0 = off)')
+                             'window spread (max-min) is below this many VOLTS '
+                             '(0.0 = off; the study value is 0.1 -- the '
+                             'dead-signal guard, complementary to '
+                             '--rail_touch_v)')
     parser.add_argument('--rail_touch_v', default=0.0, type=float,
                         help='TIR-ROI only: DROP a clip whose respiration '
                              'window contains ANY sample that touched the '

@@ -99,7 +99,7 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `pretrained_encoder` | str | Stage-1 VideoMAE corpus: `videomae:k400` / `videomae:ssv2` / `videomae` / `base` (= k400) / a local path. Blank/random is **rejected** |
 | `videomae_dataset` | str | `k400` (default) / `ssv2`: corpus for a bare `videomae` spec |
 | `rail_touch_v` | float | TIR-ROI: drop a clip whose respiration window contains ANY sample that touched the recorder rail (`abs(x) >=` volts; 0.0 = off). **The cleaning knob**; the shipped `9.90` sits 0.1 V inside the `+/-10 V` clamp, so a dead/pinned channel AND a clipped flat-topped trough are both removed. Keep equal in Stage 2/3 |
-| `min_signal_spread` | float | TIR-ROI: drop a (near-)constant window (`max−min <` volts; 0.0 = off). Degenerate-target guard |
+| `min_signal_spread` | float | TIR-ROI: drop a window whose spread (`max−min`) is below this many volts (0.0 = off). The shipped `0.1` is the **dead-signal guard**: every corpus window below it sits at a median level of `+9.1 V` (pinned just inside the clamp, 0.05–0.09 V ripple); checked AFTER `rail_touch_v`, keep equal in Stage 2/3 |
 | `epochs` / `batch_size` / `update_freq` / `save_ckpt_freq` | int | Training schedule |
 | `opt` / `lr` / `blr` / `min_lr` / `warmup_epochs` | str / float | Optimizer + LR |
 | `weight_decay` / `clip_grad` | float | Regularisation + grad clip (0.0 = OFF) |

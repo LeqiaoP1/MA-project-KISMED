@@ -353,11 +353,12 @@ def get_args():
                              'deviation is deliberate.')
     parser.add_argument('--min_signal_spread', default=0.0, type=float,
                         help='thermal-ROI path: DROP a clip whose respiration '
-                             'window is (near-)constant, i.e. max-min < this '
-                             'many VOLTS (0.0 = off). A railed window is a '
-                             'dead sensor, not a breathing target. MUST equal '
-                             'the Stage-2 value, else the evaluated corpus is '
-                             'not the pre-trained one.')
+                             'window spread (max-min) is below this many VOLTS '
+                             '(0.0 = off; for the study use 0.1). The '
+                             'DEAD-SIGNAL guard (a channel pinned just inside a '
+                             'clamp), complementary to --rail_touch_v. MUST '
+                             'equal the Stage-2 value, else the evaluated '
+                             'corpus is not the pre-trained one.')
     parser.add_argument('--rail_touch_v', default=0.0, type=float,
                         help='thermal-ROI path: DROP a clip whose respiration '
                              'window contains ANY sample that touched the '

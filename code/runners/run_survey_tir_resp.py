@@ -36,7 +36,7 @@ import os
 import sys
 import traceback
 from collections import Counter, defaultdict
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -55,12 +55,25 @@ DEFAULT_RAIL_V = -10.0
 #: contains any sample at/past this is dropped by the touch rule.
 DEFAULT_RAIL_TOUCH_V = 9.90
 
-#: the dataset's own flat-window threshold (volts)
-DEFAULT_FLAT_SPREAD = 0.01
+#: the dataset's own flat-window threshold (volts) -- the SHIPPED value, so the
+#: ``clips flat`` line counts exactly what the guard is configured to drop.
+DEFAULT_FLAT_SPREAD = 0.10
 
 #: the shipped configs' clip geometry: an 8 s window with a 1 s hop
 DEFAULT_CLIP_SECONDS = trd.DEFAULT_CLIP_SECONDS
 DEFAULT_CLIP_STRIDE = 1.0
+
+#: candidate thresholds for the trade-off curve (see ``--sweep``). The rail
+#: values are magnitudes in volts; the spread values are the
+#: ``min_signal_spread`` guard. Both are CLASSIFICATION thresholds -- the survey
+#: always builds the corpus unfiltered and counts afterwards.
+DEFAULT_RAIL_TOUCH_SWEEP = '9.99,9.97,9.95,9.9,9.8,9.7,9.5,9.0,8.0'
+DEFAULT_SPREAD_SWEEP = '0.01,0.1,0.25,0.5,1.0,1.5,2.0,3.0'
+
+
+def _sweep_keys(sweep: Sequence[float]) -> List[str]:
+    """Stable column names for a sweep (``9.90 -> '9.9'``)."""
+    return [f'{float(v):g}' for v in sweep]
 
 
 def _subjects_from_arg(value: str) -> Optional[List[str]]:
@@ -68,6 +81,12 @@ def _subjects_from_arg(value: str) -> Optional[List[str]]:
         return None
     subs = [v.strip() for v in value.replace('|', ',').split(',') if v.strip()]
     return subs or None
+
+
+def _float_list(value: str) -> List[float]:
+    """``'9.9,9.5'`` -> ``[9.9, 9.5]`` (empty string -> no sweep)."""
+    return [float(v) for v in str(value or '').replace('|', ',').split(',')
+            if v.strip()]
 
 
 def _list_subjects(raw_root: str) -> List[str]:
@@ -101,6 +120,8 @@ def _survey_subject(args: dict) -> dict:
     # on a sample valued exactly at the threshold (see BP4DPlusTIRRespDataset)
     touch_v = float(np.float32(args['rail_touch_v']))
     flat_spread = args['flat_spread']
+    rail_sweep = [float(v) for v in args['rail_touch_sweep']]
+    spread_sweep = [float(v) for v in args['spread_sweep']]
     rows: List[dict] = []
 
     def _session_row(sess: str, meta: Optional[dict], status: str,
@@ -118,6 +139,12 @@ def _survey_subject(args: dict) -> dict:
                'clip_flat': None,
                'clip_touched': None, 'clip_touched_lo': None,
                'clip_touched_hi': None}
+        # trade-off curve: how many of THIS session's windows are dropped by
+        # each candidate rail threshold, and -- among the windows that survive
+        # the shipped rail rule -- by each candidate min_signal_spread
+        row.update({f'clips_ge_{k}': None for k in _sweep_keys(rail_sweep)})
+        row.update({f'kept_flat_lt_{k}': None
+                    for k in _sweep_keys(spread_sweep)})
         if meta is not None:
             row.update(n_vid=meta.get('n_vid'), n_ir=meta.get('n_ir'),
                        n_resp=meta.get('n_resp'))
@@ -156,6 +183,8 @@ def _survey_subject(args: dict) -> dict:
         if clips:
             rails, flats = [], 0
             n_lo = n_hi = n_touch = 0
+            n_ge = {k: 0 for k in _sweep_keys(rail_sweep)}
+            n_kept_flat = {k: 0 for k in _sweep_keys(spread_sweep)}
             for e in clips:
                 w = ds._resp_clip(e).astype(np.float64)
                 frac = float(np.count_nonzero(w <= rail_v) / w.size)
@@ -165,8 +194,17 @@ def _survey_subject(args: dict) -> dict:
                 n_lo += int(lo)
                 n_hi += int(hi)
                 n_touch += int(lo or hi)
-                if float(w.max() - w.min()) < flat_spread:
+                sprd = float(w.max() - w.min())
+                if sprd < flat_spread:
                     flats += 1
+                peak = float(np.abs(w).max())
+                for v in rail_sweep:
+                    if peak >= v:
+                        n_ge[f'{v:g}'] += 1
+                if not (lo or hi):            # survives the shipped rail rule
+                    for v in spread_sweep:
+                        if sprd < v:
+                            n_kept_flat[f'{v:g}'] += 1
             rails_arr = np.asarray(rails)
             row['clip_rail_gt0'] = int(np.count_nonzero(rails_arr > 0.0))
             row['clip_rail_gt10'] = int(np.count_nonzero(rails_arr > 0.10))
@@ -177,6 +215,9 @@ def _survey_subject(args: dict) -> dict:
             row['clip_touched_lo'] = n_lo
             row['clip_touched_hi'] = n_hi
             row['clip_touched'] = n_touch
+            row.update({f'clips_ge_{k}': n for k, n in n_ge.items()})
+            row.update({f'kept_flat_lt_{k}': n
+                        for k, n in n_kept_flat.items()})
         rows.append(row)
 
     # a task that has a video but no usable clips is recorded as skipped only;
@@ -202,7 +243,10 @@ def _pct(a: int, b: int) -> str:
 
 
 def _aggregate(rows: List[dict], task_groups: dict,
-               rail_touch_v: float = DEFAULT_RAIL_TOUCH_V) -> dict:
+               rail_touch_v: float = DEFAULT_RAIL_TOUCH_V,
+               rail_sweep: Sequence[float] = (),
+               spread_sweep: Sequence[float] = (),
+               flat_spread: float = DEFAULT_FLAT_SPREAD) -> dict:
     n_sess = len(rows)
     used = [r for r in rows if r['status'] == 'used']
     skipped = [r for r in rows if r['status'] != 'used']
@@ -223,6 +267,7 @@ def _aggregate(rows: List[dict], task_groups: dict,
 
     # per level
     per_level: Dict[str, dict] = {}
+    flat_col = f'kept_flat_lt_{flat_spread:g}'
     for name, tasks in task_groups.items():
         tset = set(tasks)
         lv_used = [r for r in used if r['task'] in tset]
@@ -230,6 +275,7 @@ def _aggregate(rows: List[dict], task_groups: dict,
         lv_clips = sum(r['clips'] for r in lv_used)
         lv_rail = sum(r['clip_rail_gt0'] or 0 for r in lv_used)
         lv_touch = sum(r['clip_touched'] or 0 for r in lv_used)
+        lv_spread = sum(r.get(flat_col) or 0 for r in lv_used)
         rails = [r['resp_rail_pct'] for r in lv_used
                  if r['resp_rail_pct'] is not None]
         per_level[name] = {
@@ -239,9 +285,15 @@ def _aggregate(rows: List[dict], task_groups: dict,
             'clips_with_rail': lv_rail,
             'clips_touching_rail': lv_touch,
             'clips_kept_by_touch_rule': lv_clips - lv_touch,
+            'clips_dropped_by_spread_rule': lv_spread,
+            'clips_kept_after_both_rules': lv_clips - lv_touch - lv_spread,
             'sessions_emptied_by_touch_rule': sum(
                 1 for r in lv_used
                 if r['clips'] and (r['clip_touched'] or 0) == r['clips']),
+            'sessions_emptied_by_spread_rule': sum(
+                1 for r in lv_used
+                if (r['clips'] - (r['clip_touched'] or 0))
+                and (r.get(flat_col) or 0) == r['clips'] - (r['clip_touched'] or 0)),
             'sessions_with_any_rail': sum(1 for r in lv_used
                                           if (r['resp_rail_pct'] or 0) > 0),
             'mean_file_rail_pct': (float(np.mean(rails)) if rails else None),
@@ -261,6 +313,23 @@ def _aggregate(rows: List[dict], task_groups: dict,
 
     rails = [r['resp_rail_pct'] for r in used
              if r['resp_rail_pct'] is not None]
+
+    # ---- trade-off curve over the two per-window knobs ----------------------
+    rail_curve: Dict[str, dict] = {}
+    for k in _sweep_keys(rail_sweep):
+        col = f'clips_ge_{k}'
+        n = sum(r.get(col) or 0 for r in used)
+        emptied = sum(1 for r in used
+                      if r['clips'] and (r.get(col) or 0) == r['clips'])
+        rail_curve[k] = {'dropped': n, 'kept': n_clips - n,
+                         'sessions_emptied': emptied,
+                         'sessions_remaining': len(used) - emptied}
+    spread_curve: Dict[str, dict] = {}
+    kept_by_rail = n_clips - clips_touch
+    for k in _sweep_keys(spread_sweep):
+        n = sum(r.get(f'kept_flat_lt_{k}') or 0 for r in used)
+        spread_curve[k] = {'dropped_from_kept': n,
+                           'kept_after': kept_by_rail - n}
     return {
         'sessions_discovered': n_sess,
         'sessions_used': len(used),
@@ -272,6 +341,16 @@ def _aggregate(rows: List[dict], task_groups: dict,
         'clips_with_rail_gt50': clips_rail50,
         'clips_fully_railed': clips_full,
         'clips_flat_spread_lt_threshold': clips_flat,
+        'flat_spread': flat_spread,
+        'clips_dropped_by_spread_rule': sum(
+            r.get(f'kept_flat_lt_{flat_spread:g}') or 0 for r in used),
+        'clips_kept_after_both_rules': n_clips - clips_touch - sum(
+            r.get(f'kept_flat_lt_{flat_spread:g}') or 0 for r in used),
+        'sessions_emptied_by_spread_rule': sum(
+            1 for r in used
+            if (r['clips'] - (r['clip_touched'] or 0))
+            and (r.get(f'kept_flat_lt_{flat_spread:g}') or 0)
+            == r['clips'] - (r['clip_touched'] or 0)),
         'clips_touching_rail': clips_touch,
         'clips_touching_rail_neg': clips_touch_lo,
         'clips_touching_rail_pos': clips_touch_hi,
@@ -279,6 +358,8 @@ def _aggregate(rows: List[dict], task_groups: dict,
         'clips_kept_by_touch_rule': n_clips - clips_touch,
         'sessions_emptied_by_touch_rule': sessions_emptied_touch,
         'rail_touch_v': rail_touch_v,
+        'rail_touch_curve': rail_curve,
+        'spread_curve': spread_curve,
         'sessions_with_rail_file_gt0': sum(1 for r in used
                                            if (r['resp_rail_pct'] or 0) > 0),
         'sessions_file_rail_gt10': sum(1 for r in used
@@ -325,10 +406,12 @@ def _print_report(agg: dict, worst: List[dict], task_groups: dict) -> None:
     print(f"  clips >50% railed       : {agg['clips_with_rail_gt50']:6d} "
           f"({_pct(agg['clips_with_rail_gt50'], c)})")
     print(f"  clips 100% railed       : {agg['clips_fully_railed']:6d} "
-          f"({_pct(agg['clips_fully_railed'], c)})  [dropped by "
-          f"min_signal_spread]")
-    print(f"  clips flat (<0.01 V)    : {agg['clips_flat_spread_lt_threshold']:6d}"
-          f"  ({_pct(agg['clips_flat_spread_lt_threshold'], c)})")
+          f"({_pct(agg['clips_fully_railed'], c)})")
+    flat_lbl = (f"clips flat (<{agg.get('flat_spread', DEFAULT_FLAT_SPREAD):g} "
+                f"V)")
+    print(f"  {flat_lbl:<24}: {agg['clips_flat_spread_lt_threshold']:6d} "
+          f"({_pct(agg['clips_flat_spread_lt_threshold'], c)})  "
+          f"[dropped by min_signal_spread]")
     print()
     print(f"--- the rail-touch rule: drop a clip whose window EVER TOUCHES the "
           f"rail, |x| >= {agg['rail_touch_v']:g} V ---")
@@ -345,14 +428,32 @@ def _print_report(agg: dict, worst: List[dict], task_groups: dict) -> None:
           f"{agg['sessions_used'] - agg['sessions_emptied_by_touch_rule']} "
           f"sessions remain")
     print()
+    print(f"--- the spread guard: drop a clip whose window spread (max-min) < "
+          f"{agg.get('flat_spread', DEFAULT_FLAT_SPREAD):g} V ---")
+    print(f"  clips                   : {c:6d}")
+    print(f"  dropped by the guard    : "
+          f"{agg['clips_dropped_by_spread_rule']:6d} "
+          f"({_pct(agg['clips_dropped_by_spread_rule'], c)} of ALL clips; "
+          f"{_pct(agg['clips_dropped_by_spread_rule'], agg['clips_kept_by_touch_rule'])} "
+          f"of those surviving the rail rule)")
+    print(f"  clips remaining         : "
+          f"{agg['clips_kept_after_both_rules']:6d}  (both rules)")
+    print(f"  sessions emptied        : "
+          f"{agg['sessions_emptied_by_spread_rule']:6d}  -> "
+          f"{agg['sessions_used'] - agg['sessions_emptied_by_touch_rule'] - agg['sessions_emptied_by_spread_rule']} "
+          f"sessions remain (both rules)")
+    print()
     print('--- by distortion level ---')
     for name, d in agg['per_level'].items():
         mr = d['mean_file_rail_pct']
         mr_s = f'{mr:5.2f}%' if mr is not None else '  n/a'
         print(f"  {name:<9} sessions {d['sessions_used']:4d}/{d['sessions_discovered']:<4d}"
-              f" clips {d['clips']:6d}  touching {d['clips_touching_rail']:6d}"
+              f" clips {d['clips']:6d}  touched {d['clips_touching_rail']:6d}"
               f"  kept {d['clips_kept_by_touch_rule']:6d}"
-              f"  emptied {d['sessions_emptied_by_touch_rule']:3d}"
+              f"  then spread-dropped {d['clips_dropped_by_spread_rule']:5d}"
+              f"  -> {d['clips_kept_after_both_rules']:6d}"
+              f"  emptied {d['sessions_emptied_by_touch_rule']:3d}+"
+              f"{d['sessions_emptied_by_spread_rule']:3d}"
               f"  mean_file_rail {mr_s}")
     print()
     print('--- per task ---')
@@ -365,6 +466,40 @@ def _print_report(agg: dict, worst: List[dict], task_groups: dict) -> None:
         print(f"  {r['session']:<10} rail {r['resp_rail_pct']:5.1f}%  "
               f"clips {r['clips']:3d}  (with rail {r['clip_rail_gt0']}/"
               f">50% {r['clip_rail_gt50']})  resp_n {r['resp_n']}")
+    print(L)
+    _print_sweep(agg)
+
+
+def _print_sweep(agg: dict) -> None:
+    """The trade-off curve over the two per-window knobs (see ``--sweep``)."""
+    L = '=' * 76
+    if not agg.get('rail_touch_curve') and not agg.get('spread_curve'):
+        return
+    c = agg['clips']
+    print(L)
+    print('TRADE-OFF CURVE (classification thresholds; the corpus is built '
+          'unfiltered)')
+    print(L)
+    if agg.get('rail_touch_curve'):
+        print('--- rail_touch_v: drop a clip whose window holds any sample '
+              'with abs(x) >= V ---')
+        print(f"  {'V':>6} {'dropped':>8} {'share':>7} {'kept':>8} "
+              f"{'sessions emptied':>17}")
+        for k, d in agg['rail_touch_curve'].items():
+            print(f"  {k:>6} {d['dropped']:8d} "
+                  f"{_pct(d['dropped'], c):>7} {d['kept']:8d} "
+                  f"{d['sessions_emptied']:17d}")
+    if agg.get('spread_curve'):
+        print()
+        print(f"--- min_signal_spread: drop a clip whose window spread "
+              f"(max-min) is BELOW V, ON TOP of rail_touch_v="
+              f"{agg['rail_touch_v']:g} V ---")
+        kept = agg['clips_kept_by_touch_rule']
+        print(f"  {'< V':>6} {'dropped':>8} {'of kept':>8} {'kept':>8}")
+        for k, d in agg['spread_curve'].items():
+            print(f"  {k:>6} {d['dropped_from_kept']:8d} "
+                  f"{_pct(d['dropped_from_kept'], kept):>8} "
+                  f"{d['kept_after']:8d}")
     print(L)
 
 
@@ -385,13 +520,23 @@ def main(argv=None) -> int:
                         'shipped TIR-ROI/RESP configs use 1.0 (an 8 s window '
                         'with 7/8 overlap), 0 = non-overlapping')
     p.add_argument('--rail_v', type=float, default=DEFAULT_RAIL_V)
-    p.add_argument('--flat_spread', type=float, default=DEFAULT_FLAT_SPREAD)
+    p.add_argument('--flat_spread', type=float, default=DEFAULT_FLAT_SPREAD,
+                   help='VOLTS: count (and report) a clip whose window spread '
+                        'is below this -- the min_signal_spread guard the '
+                        'configs ship')
     p.add_argument('--rail_touch_v', type=float, default=DEFAULT_RAIL_TOUCH_V,
                    help='VOLTS (magnitude): the clip filter -- a clip whose '
                         'window contains any sample at/past this is counted as '
                         'dropped by the rule (the survey always builds '
                         'unfiltered) and the retained corpus is clips - that '
                         'count')
+    p.add_argument('--rail_touch_sweep', default=DEFAULT_RAIL_TOUCH_SWEEP,
+                   help='comma list of VOLTS: candidate rail thresholds for '
+                        'the trade-off curve (empty = skip the sweep)')
+    p.add_argument('--spread_sweep', default=DEFAULT_SPREAD_SWEEP,
+                   help='comma list of VOLTS: candidate min_signal_spread '
+                        'values for the trade-off curve, applied ON TOP of '
+                        '--rail_touch_v')
     p.add_argument('--workers', type=int, default=min(32, os.cpu_count() or 1))
     p.add_argument('--limit_subjects', type=int, default=0, help='0 = no cap')
     args = p.parse_args(argv)
@@ -410,7 +555,9 @@ def main(argv=None) -> int:
                 'clip_seconds': args.clip_seconds,
                 'clip_stride': args.clip_stride,
                 'flat_spread': args.flat_spread,
-                'rail_touch_v': args.rail_touch_v} for s in subjects]
+                'rail_touch_v': args.rail_touch_v,
+                'rail_touch_sweep': _float_list(args.rail_touch_sweep),
+                'spread_sweep': _float_list(args.spread_sweep)} for s in subjects]
 
     print(f'[survey] raw_root  : {args.raw_root}')
     print(f'[survey] subjects  : {len(subjects)}')
@@ -442,7 +589,9 @@ def main(argv=None) -> int:
     rows.sort(key=lambda r: (r['subject'], r['task']))
     used = [r for r in rows if r['status'] == 'used']
     worst = sorted(used, key=lambda r: (r['resp_rail_pct'] or 0), reverse=True)
-    agg = _aggregate(rows, task_groups, args.rail_touch_v)
+    agg = _aggregate(rows, task_groups, args.rail_touch_v,
+                     _float_list(args.rail_touch_sweep),
+                     _float_list(args.spread_sweep), args.flat_spread)
 
     out_dir = args.output_dir
     if out_dir:

@@ -61,9 +61,10 @@ roi_landmarks: ''                  # '' = the historical 12-point nose+mouth set
                                    #   a preset (nose_tip preferred) or a CSV.
                                    #   MUST equal the Stage-2 run.
 roi_quantile: 0.0                  # MUST equal the Stage-2 run (0.0 = min/max)
-min_signal_spread: 0.01            # VOLTS: degenerate-window guard (a
-                                   #   (near-)constant target). MUST equal the
-                                   #   Stage-2 value.
+min_signal_spread: 0.1              # VOLTS: DROP a window whose spread
+                                   #   (max-min) is below this -- a pinned /
+                                   #   unclipped channel. MUST equal the Stage-2
+                                   #   value.
 rail_touch_v: 9.900                # VOLTS (magnitude): cleaning knob -- drop a
                                    #   clip whose window contains ANY sample that
                                    #   touched the recorder rail (|x| >= 9.90;

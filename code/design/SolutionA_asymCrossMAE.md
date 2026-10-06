@@ -102,7 +102,8 @@ The Stage-1 and Stage-3 regression objectives operate on `y_norm`. The
 statistics are required for optional reconstruction in volts and must not be
 discarded. Use one explicit quality criterion, not an ambiguous “std or
 spread” choice: the dataset rejects a clip when
-`max(y) - min(y) < min_signal_spread` (the repository default is `0.01 V`).
+`max(y) - min(y) < min_signal_spread` (the shipped TIR-ROI/RESP configs use
+`0.1 V`).
 The guard is applied before normalization.
 
 Train, validation, and test splits must be subject-disjoint. Unit tests must

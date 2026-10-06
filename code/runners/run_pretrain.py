@@ -93,14 +93,15 @@ def get_args():
                              'outliers.')
     parser.add_argument('--min_signal_spread', default=0.0, type=float,
                         help='tir_roi only: DROP a clip whose respiration '
-                             'window is (near-)constant, i.e. max-min < this '
-                             'many VOLTS (0.0 = off, the historical behaviour). '
-                             'A railed window (the corpus\' -10 V '
-                             'dead-channel marker) z-scores to an all-zero '
-                             'label no model can predict and only inflates '
-                             'MAE/RMSE. Measured: railed windows have spread '
-                             'exactly 0 V and the next smallest clip is '
-                             '0.093 V, so 0.01 selects exactly them.')
+                             'window spread (max-min) is below this many VOLTS '
+                             '(0.0 = off; for the study use 0.1). It is the '
+                             'DEAD-SIGNAL guard, complementary to '
+                             '--rail_touch_v: every corpus window below 0.1 V '
+                             'sits with a median level of +9.1 V, i.e. a '
+                             'channel pinned just inside the +/-10 V clamp with '
+                             'a 0.05-0.09 V ripple (disconnected belt / loose '
+                             'contact). Real breathing is >= 0.3 V p-p. Must '
+                             'match the Stage-3 value.')
     parser.add_argument('--rail_touch_v', default=0.0, type=float,
                         help='tir_roi only: DROP a clip whose respiration '
                              'window contains ANY sample that touched the '

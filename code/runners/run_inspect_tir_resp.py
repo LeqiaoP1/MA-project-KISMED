@@ -323,10 +323,10 @@ def main(argv=None) -> int:
                         '(measured: "nostrils" gives an unstable thin slab, '
                         'prefer "nose_tip")')
     p.add_argument('--min_signal_spread', type=float, default=0.0,
-                   help='DROP a clip whose respiration window is '
-                        '(near-)constant, i.e. max-min < this many VOLTS '
-                        '(0.0 = off). A railed window is a dead sensor, not a '
-                        'breathing target. Must match the run being inspected.')
+                   help='DROP a clip whose respiration window spread '
+                        '(max-min) is below this many VOLTS (0.0 = off; the '
+                        'study value is 0.1). Must match the run being '
+                        'inspected.')
     p.add_argument('--rail_touch_v', type=float, default=0.0,
                    help='DROP a clip whose respiration window contains any '
                         'sample that touched the rail, i.e. abs(x) >= this '

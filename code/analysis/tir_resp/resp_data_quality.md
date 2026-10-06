@@ -115,15 +115,14 @@ These are FILE-level statistics, so they do not depend on the clip geometry (the
 | moderate (10–50 %) | 2293 | 4.7 % |
 | severe (> 50 %) | 1015 | **2.1 %** |
 | 100 % railed | 231 | 0.5 % |
-| flat (`max−min < 0.01 V`) | 244 | 0.5 % |
+| flat (`max−min < 0.1 V`) | 1961 | 4.0 % |
 
-> **Key point.** `min_signal_spread: 0.01` alone drops only the
-> fully-railed/constant windows (0.5 % of clips), so the ~10 % with PARTIAL
-> clipping used to pass silently into pre-training, where their troughs are
-> physically absent and no model can predict them (it inflates MAE/RMSE and
-> weakens the periodic gradient). The adopted **rail-touch rule removes every
-> clip with ANY rail sample** — 5639 clips (11.5 %) — so no rail-valued target
-> survives; see
+> **Key point.** `min_signal_spread` is shipped at `0.1` V (the DEAD-SIGNAL
+> guard: every corpus window below 0.1 V is a channel pinned just inside a
+> clamp, median level +9.1 V -- see §7 item 2), which removes **1434** of the
+> 43 360 clips that survive the rail rule. The adopted **rail-touch rule removes
+> every clip with ANY rail sample** — 5639 clips (11.5 %) — so no rail-valued
+> target survives either; 41 926 clips in 1268 sessions remain. See
 > [`resp_rail_touch_filter_results.md`](resp_rail_touch_filter_results.md).
 
 ### 3.3 The worst sessions (every clip > 50 % railed, 8 s hop)
@@ -259,7 +258,8 @@ recordings are longest (median resp length ≈ 35 s → 4 clips; T3/T9 ≈ 75 s 
 ## 6. Single-subject spot check (F001, low+moderate)
 
 Produced with `runners/run_inspect_tir_resp.py` (job **55340348**), 5/5 clip
-checks passed, `input_size 112`, `roi_padding 0.2`, `min_signal_spread 0.01`:
+checks passed, `input_size 112`, `roi_padding 0.2` (that job ran with
+`min_signal_spread 0.01`, i.e. before the guard was raised to 0.1):
 
 ```
 F001_T2  clip 0    roi 103x160px   resp raw[-10.000, -4.665]V  11.7% railed (whole file)
@@ -294,11 +294,20 @@ The corpus is **89 % clean at clip level**, so a default run is viable, but:
    clips in 1277 sessions** remain, with **92.5 %** of the dead-channel-session
    clips removed (36 of 47 such sessions fully excluded). It also removes the
    3565 clips of genuine-clipping sessions whose label is flat-topped at the
-   clamp — the deliberate, stricter trade.
-2. **`min_signal_spread` is now the degenerate-window guard, not the rail
-   filter.** The **rail-touch test runs FIRST**, so `clips_dropped_rail` is
-   attributed correctly; this guard then only catches a dead channel stuck at a
-   NON-rail value (the two rules are complementary — see §3.4).
+   clamp — the deliberate, stricter trade. On top of it the **spread guard**
+   (§7 item 2) removes another 1434 clips / 9 sessions (41 926 clips in 1268
+   sessions remain in total).
+2. **`min_signal_spread` (shipped `0.1`, not `0.01`) is the DEAD-SIGNAL guard.**
+   The **rail-touch test runs FIRST**, so `clips_dropped_rail` is attributed
+   correctly; the guard then catches what the rail test cannot see -- a channel
+   PINNED just inside a clamp without touching it. Measured: every corpus window
+   whose spread is below 0.1 V sits at a median level of **+9.1 V** (0.9 V under
+   the positive clamp) with a 0.05-0.09 V ripple, and **none** is at a plausible
+   breathing level; genuine breathing is >= 0.3 V p-p. At `0.1` it removes
+   **1434 clips (3.3 % of the 43 360 that survive the rail rule)** and empties
+   **9** sessions -> **41 926 clips in 1268 sessions** remain. It is not "noise
+   filtering": `max−min` is a RANGE, so a single spike inflates it, and a loose
+   belt that *swings* gives a LARGE artifact that no spread threshold sees.
 
 Whichever is chosen, keep `rail_touch_v` **identical in the Stage-2,
 Stage-3 and K400-vs-SSV2 runs** so the comparison is not confounded.
