@@ -117,6 +117,8 @@ def test_stage2_hpc_resolves_the_intended_values(monkeypatch):
     assert a.roi_padding == pytest.approx(0.2)
     assert a.roi_quantile == pytest.approx(0.0)
     assert a.min_signal_spread == pytest.approx(0.01)
+    assert a.rail_touch_v == pytest.approx(9.90)
+    assert a.clip_stride == pytest.approx(1.0)
     assert a.sig_kernel == 16
     assert a.tubelet == '2,16,16'
     assert a.target_norm == 'clip'

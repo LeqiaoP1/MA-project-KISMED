@@ -64,7 +64,12 @@ tubelet: 2,16,16
 fs: 100.0                          # respiration resampled 1000 -> 100 Hz
 fps: 25.0
 clip_duration: 8.0                 # 200 source frames -> 100 after decimation
-clip_stride: 4.0                   # window hop (s) -- 4 s overlap
+clip_stride: 1.0                   # window hop (s) -- 7/8 of consecutive windows
+                                   # OVERLAP, so the TRANSIENT breathing
+                                   # dynamics are sampled at 1 s resolution (a
+                                   # 4 s hop missed them). ~4x the clips (and
+                                   # epoch time) of 4.0; defines WHICH windows
+                                   # exist, so mirror it in Stage 3.
 temporal_stride: 2                 # clipless decimation INSIDE the window
 seq_len: 0                         # 0 => round(kept_seconds * fs) = 800 samples
 input_size: 112                    # ROI patch side. 112/16 -> a 7x7 grid =
@@ -88,7 +93,17 @@ input_size: 112                    # ROI patch side. 112/16 -> a 7x7 grid =
 roi_padding: 0.2                   # landmark-box margin on EACH side
 roi_landmarks: ''                  # '' = the historical 12-point nose+mouth set
 roi_quantile: 0.0                  # 0.0 = min/max over the clip
-min_signal_spread: 0.01            # VOLTS: drop (near-)constant/railed windows
+min_signal_spread: 0.01            # VOLTS: degenerate-window guard -- drop a
+                                   #   (near-)constant target (spread < 0.01 V)
+                                   #   whatever its cause
+rail_touch_v: 9.900                # VOLTS (magnitude): cleaning knob -- drop a
+                                   #   clip whose window contains ANY sample that
+                                   #   touched the recorder rail (|x| >= 9.90;
+                                   #   the recorder clamps at +/-10 V). Removes a
+                                   #   dead/pinned sensor AND a clipped
+                                   #   flat-topped trough, so no rail-valued
+                                   #   label survives. Keep IDENTICAL in Stage 2
+                                   #   and Stage 3.
 
 # ---- asymmetric masking ----
 mask_ratio_tir: 0.90               # the ROI is the PRIMARY visual stream

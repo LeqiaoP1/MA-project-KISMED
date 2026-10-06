@@ -36,9 +36,15 @@ data_set: tir_roi_resp             # -> build_tir_roi_finetune_dataset (Stage-3 
 roi_padding: 0.2                   # MUST equal the Stage-2 run
 roi_landmarks: ''                  # '' = the historical 12-point nose+mouth set
 roi_quantile: 0.0                  # MUST equal the Stage-2 run
-min_signal_spread: 0.01            # VOLTS: drop railed / (near-)constant windows.
-                                   #   MUST equal the Stage-2 value, else Stage 3
-                                   #   is evaluated on a different corpus.
+min_signal_spread: 0.01            # VOLTS: degenerate-window guard (a
+                                   #   (near-)constant target). MUST equal the
+                                   #   Stage-2 value.
+rail_touch_v: 9.900                # VOLTS (magnitude): cleaning knob -- drop a
+                                   #   clip whose window contains ANY sample that
+                                   #   touched the recorder rail (|x| >= 9.90;
+                                   #   the recorder clamps at +/-10 V). MUST
+                                   #   equal the Stage-2 value, else Stage 3 is
+                                   #   not evaluated on the pre-trained corpus.
 # ---- task GROUPS ("distortion levels") -- MUST mirror the Stage-2 config ----
 task_groups:
   low: [T2, T3]
@@ -84,7 +90,10 @@ train_ratio: 0.8                   # full corpus (~140 subjects) -> ~113 / ~27,
                                    #   LOSO sweep via --val_subject was required)
 split_by: subject
 val_subject: ''                    # e.g. F001 = a LOSO fold (overrides the above)
-clip_stride: 2.0                   # window hop in SECONDS (overlapping)
+clip_stride: 1.0                   # window hop in SECONDS (overlapping): 7/8 of
+                                   #   consecutive windows overlap -> the
+                                   #   TRANSIENT breathing dynamics are sampled
+                                   #   at 1 s resolution (~2x a 2 s hop)
 max_clips: 0                       # 0 = no per-session cap
 
 # ---- joint spatio-temporal-spectral loss (the MR-STFT term lives in Stage 3) ----

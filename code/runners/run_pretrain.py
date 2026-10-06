@@ -101,6 +101,16 @@ def get_args():
                              'MAE/RMSE. Measured: railed windows have spread '
                              'exactly 0 V and the next smallest clip is '
                              '0.093 V, so 0.01 selects exactly them.')
+    parser.add_argument('--rail_touch_v', default=0.0, type=float,
+                        help='tir_roi only: DROP a clip whose respiration '
+                             'window contains ANY sample that touched the '
+                             'recorder rail, i.e. abs(x) >= this many VOLTS '
+                             '(0.0 = off). The recorder clamps at +/-10 V, so '
+                             'the study value 9.90 rejects every window whose '
+                             'label contains even ONE rail-valued reading -- a '
+                             'dead / pinned sensor AND a clipped flat-topped '
+                             'trough, so no unrepresentable target survives. '
+                             'Must match the Stage-3 value.')
     parser.add_argument('--roi_landmarks', default='', type=str,
                         help='ROI paths (tir_roi AND rgb_roi): the landmarks '
                              'whose bounding box IS the crop. Empty = the path '

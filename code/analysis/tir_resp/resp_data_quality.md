@@ -34,7 +34,11 @@ WORK_PROJ=/work/projects/l0003511 WORK_SCRATCH=/work/scratch/ne95ocyg \
 `data/tir_resp_dataset.BP4DPlusTIRRespDataset` (so the *same* discovery and
 usability gates apply) built per subject with `task_set=None` (all tasks),
 `input_size=112`, `roi_padding=0.2`, `min_signal_spread=0.0` (keep every window;
-the rail is classified afterwards). The "rail" is a sample `<= -9.999 V`.
+the rail is classified afterwards), `clip_seconds=8`, `clip_stride=1` (the
+shipped hop; pass `--clip_stride 0` for the historical non-overlapping survey).
+The "rail" is a sample `<= -10.0 V` (float32-exact; the corpus' dead channel
+reads exactly `-10.0000`), and the ADOPTED clip rule additionally treats any
+`abs(x) >= 9.90 V` sample as a rail touch (§3.4).
 
 **Task levels** use the `stage2_local_tir_roi_resp.yaml` / HPC config
 convention: `low = {T2,T3}`, `moderate = {T4,T7,T8,T10}`,
@@ -44,19 +48,24 @@ convention: `low = {T2,T3}`, `moderate = {T4,T7,T8,T10}`,
 
 ## 2. Coverage & usability
 
-| | count |
-|---|---|
-| sessions discovered | **1400** (140 subjects × 10 tasks) |
-| **sessions usable** | **1353 (96.6 %)** |
-| sessions skipped | **47 (3.4 %)** |
-| 8 s clips yielded | **6718** |
+| | 8 s hop | **1 s hop (shipped)** |
+|---|---|---|
+| sessions discovered | **1400** (140 subjects × 10 tasks) | **1400** |
+| **sessions usable** | **1353 (96.6 %)** | **1361 (97.2 %)** |
+| sessions skipped | **47 (3.4 %)** | **39 (2.8 %)** |
+| 8 s clips yielded | **6718** | **48 999** |
 
-### Skip reasons (47)
+(Geometry: the shipped TIR-ROI/RESP configs use an 8 s window with a **1 s
+hop** — 7/8 overlap — since 2026-10-06; the earlier surveys used a
+non-overlapping 8 s hop. A finer hop yields more windows, so fewer sessions end
+up with every window dropped.)
+
+### Skip reasons (47 at the 8 s hop / 39 at the 1 s hop)
 
 | reason | n | detail |
 |---|---|---|
 | `missing_ir_features` | 15 | no `IRFeatures/<S>_<T>.txt` track |
-| `all_clips_dropped` | 25 | every window contains an IR `(0,0)` sentinel line (1–4 windows) |
+| `all_clips_dropped` | 25 -> **17** | every window contains an IR `(0,0)` sentinel line (1–4 windows) |
 | `resp_too_short` | 6 | fewer than 8000 samples (< 8 s) for the 8 s window |
 | `missing_resp_volts` | 1 | no `Resp_Volts.txt` |
 
@@ -79,40 +88,45 @@ The `Physiology/<S>/<T>/Resp_Volts.txt` channel **saturates at exactly
 troughs**. The plot below (F001_T10, `run_inspect_tir_resp.py`) shows ~37 % of
 the 8 s window pinned to a flat −10 V line.
 
-### 3.1 Whole-file rail fraction (1353 usable sessions)
+### 3.1 Whole-file rail fraction (1361 usable sessions)
 
 | rail % | sessions | share |
 |---|---|---|
-| 0 % (clean) | 1089 | 80.5 % |
-| 0–1 % | 36 | 2.7 % |
+| 0 % (clean) | 1098 | 80.7 % |
+| 0–1 % | 35 | 2.6 % |
 | 1–5 % | 84 | 6.2 % |
-| 5–10 % | 36 | 2.7 % |
-| 10–25 % | 50 | 3.7 % |
-| 25–50 % | 25 | 1.8 % |
+| 5–10 % | 36 | 2.6 % |
+| 10–25 % | 51 | 3.7 % |
+| 25–50 % | 24 | 1.8 % |
 | 50–90 % | 28 | 2.1 % |
 | > 90 % | 5 | 0.4 % |
 
-Mean file rail **3.36 %**, median **0 %**.
-**19.5 %** of sessions have any rail, **8.0 %** > 10 %, **2.4 %** > 50 %.
+Mean file rail **3.33 %**, median **0 %**.
+**19.3 %** of sessions have any rail, **7.9 %** > 10 %, **2.4 %** > 50 %.
+These are FILE-level statistics, so they do not depend on the clip geometry (the
+8 s-hop survey gave the same table within ±1 session).
 
-### 3.2 Impact on the clips that would be trained on (6718)
+### 3.2 Impact on the clips that would be trained on (48 999, 8 s window / 1 s hop)
 
 | clip severity | clips | share |
 |---|---|---|
-| clean (0 % railed) | 5994 | **89.2 %** |
-| mild (0–10 %) | 233 | 3.5 % |
-| moderate (10–50 %) | 318 | 4.7 % |
-| severe (> 50 %) | 173 | **2.6 %** |
-| 100 % railed | 34 | 0.5 % |
-| flat (`max−min < 0.01 V`) | 36 | 0.5 % |
+| clean (0 % railed) | 43 800 | **89.4 %** |
+| mild (0–10 %) | 1660 | 3.4 % |
+| moderate (10–50 %) | 2293 | 4.7 % |
+| severe (> 50 %) | 1015 | **2.1 %** |
+| 100 % railed | 231 | 0.5 % |
+| flat (`max−min < 0.01 V`) | 244 | 0.5 % |
 
-> **Key point.** The config knob `min_signal_spread: 0.01` drops **only** the
-> fully-railed/constant windows (≈ 1 % of clips). The ~7 % of clips with 10 % →
-> > 50 % clipping **pass silently** into pre-training, where their troughs are
-> physically absent and no model can predict them (this inflates MAE/RMSE and
-> weakens the periodic gradient).
+> **Key point.** `min_signal_spread: 0.01` alone drops only the
+> fully-railed/constant windows (0.5 % of clips), so the ~10 % with PARTIAL
+> clipping used to pass silently into pre-training, where their troughs are
+> physically absent and no model can predict them (it inflates MAE/RMSE and
+> weakens the periodic gradient). The adopted **rail-touch rule removes every
+> clip with ANY rail sample** — 5639 clips (11.5 %) — so no rail-valued target
+> survives; see
+> [`resp_rail_touch_filter_results.md`](resp_rail_touch_filter_results.md).
 
-### 3.3 Sessions where RESP is effectively unusable (16)
+### 3.3 The worst sessions (every clip > 50 % railed, 8 s hop)
 
 Every clip is > 50 % railed:
 
@@ -128,6 +142,66 @@ F038_T3   96.4% (9)           F004_T7   75.7% (4)     F077_T10 60.4% (1)
 
 Note `F004` is affected on **four** tasks (`T3`, `T4`, `T7`, `T10`) — a
 subject-level sensor problem, not a task-level one.
+
+### 3.4 Rail forensics — dead/pinned channel vs genuine clipped extreme
+
+A `-10 V` sample has two possible causes. BOTH leave a rail-valued sample in the
+LABEL (physically unrepresentable), so the adopted clip rule drops both — but the
+split still matters, because it says what that removal COSTS:
+
+1. **dead / pinned channel** (dead/disconnected belt, saturated amplifier, DC
+   offset below range) → the recording carries no usable respiration, so losing
+   it is a gain;
+2. **genuine clipping** (the task provoked an extreme the recorder cannot
+   represent, so the trough is flat-topped) → the rest of the window is valid, so
+   losing it is the price of the policy (3565 clips; §3 of
+   [`resp_rail_touch_filter_results.md`](resp_rail_touch_filter_results.md)).
+
+`analysis/tir_resp/rail_forensics.py` separates them from the rail's *structure*
+(no video decode) and its `dead_channel()` labels a session for the cost report;
+nothing in the pipeline filters on it. Run it with::
+
+    python analysis/tir_resp/rail_forensics.py --raw_root /work/projects/l0003511/test \
+        --json $WORK_SCRATCH/rail_forensics.json
+
+| signature | dead / pinned channel | genuine clipping |
+|---|---|---|
+| share of the file railed | high (often ~100 %) | low–moderate |
+| longest contiguous rail run | long (5 s – whole file) | short (≤ ~3 s) |
+| railed from `t = 0` | usually | rarely |
+| waveform above the rail | pinned at the floor; only narrow upward spikes | normal breathing well above the floor |
+| slope in / out of a run | arbitrary | **descends in, ascends out** (brackets the trough) |
+| non-rail mean gap above `-10 V` | < 1.5 V (baseline sits at the rail) | median ≈ 3.9 V |
+
+Visual confirmation (4 sessions, full + zoom):
+`$WORK_SCRATCH/rail_forensics_examples.png`. `F074_T1` / `F001_T10` show a normal
+breathing waveform whose **troughs** flat-top at `-10 V` (clipping); `F004_T3`
+shows a baseline **pinned** at `-10 V` with narrow upward spikes (failure);
+`F024_T8` is a flat line (dead channel).
+
+**Corpus-wide result (272 sessions with any rail):**
+
+| class | sessions | clips (8 s hop / **1 s hop**) | clips > 10 % railed |
+|---|---|---|---|
+| **dead / pinned channel** | **48** | 262 / **1909** | 218 |
+| **genuine clipping** | **224** | 1065 / **7705** | 273 |
+
+That split is what the adopted rule is designed for: both classes leave a
+rail-valued, physically unrepresentable sample in the LABEL, so the rule drops
+both (5639 of the 48 999 clips at the shipped geometry — 1765 from dead-channel
+sessions and 3565 from genuine-clipping ones). The cost is reported in
+[`resp_rail_touch_filter_results.md`](resp_rail_touch_filter_results.md) §3.
+
+**Resolution — the rail-TOUCH rule (2026-10-06).** Drop a clip whose respiration
+window contains ANY sample with `abs(x) >= rail_touch_v` (volts; `9.90` in the
+shipped TIR-ROI/RESP configs, `0.0` = off). The recorder clamps at `+/-10 V`, so
+`9.90` means "a reading reached within 0.1 V of either end of the range": that
+removes a dead/pinned channel AND a clipped flat-topped trough, i.e. **no
+rail-valued label survives in the training set**. `min_signal_spread` remains the
+degenerate-window guard and is probed **after** the rail rule. Results and the
+cost split by rail CAUSE are in
+[`resp_rail_touch_filter_results.md`](resp_rail_touch_filter_results.md); §7 has
+the details.
 
 ---
 
@@ -146,13 +220,18 @@ subject-level sensor problem, not a task-level one.
 
 ## 5. By distortion level and by task
 
-Levels (config convention):
+Levels (config convention; **8 s window / 1 s hop** -> 48 999 clips):
 
 ```
-low       sessions 275/280   clips 1619   clips_with_rail 138   mean file rail 3.31%
-moderate  sessions 530/560   clips 1705   clips_with_rail 174   mean file rail 3.05%
-high      sessions 548/560   clips 3394   clips_with_rail 412   mean file rail 3.68%
+low       sessions 275/280   clips 11858   touched 1100   kept 10758   emptied 14   mean file rail 3.31%
+moderate  sessions 535/560   clips 11771   touched 1335   kept 10436   emptied 36   mean file rail 3.02%
+high      sessions 551/560   clips 25370   touched 3204   kept 22166   emptied 34   mean file rail 3.65%
 ```
+
+(`touched` is the adopted rule's symmetric `abs(x) >= 9.90 V` test; `emptied` is
+the number of sessions whose EVERY clip touches the rail. The non-overlapping
+8 s-hop numbers — 1619 / 1705 / 3394 clips — plus the 0.1 V margin analysis are
+in [`resp_rail_touch_filter_results.md`](resp_rail_touch_filter_results.md) §2.)
 
 Rail prevalence is **roughly equal across levels** → the −10 V clipping is a
 sensor/recording artifact, **not** a head-motion ("distortion level") effect.
@@ -191,6 +270,11 @@ F001_T10 clip 18   roi 172x102px   resp raw[-10.000, -1.712]V  36.9%
 ```
 
 `F001_T8` yields **0 clips** — its only 8 s window hits a `(0,0)` sentinel line.
+Under the **adopted** `rail_touch_v = 9.90` the same low+moderate selection yields
+**22 clips from 3 sessions** at a 4 s hop and **88 from 4 sessions** at the
+shipped 1 s hop (137 with the rule OFF): `T10` (36.9 % rail) and `T7` (13.2 %)
+are emptied/decimated, `T2` (11.7 %) loses part of its clips, and the clean
+`T3`/`T4` are untouched.
 
 ---
 
@@ -198,20 +282,26 @@ F001_T10 clip 18   roi 172x102px   resp raw[-10.000, -1.712]V  36.9%
 
 The corpus is **89 % clean at clip level**, so a default run is viable, but:
 
-1. **Add a rail-aware drop (preferred).** Extend
-   `data/tir_resp_dataset.BP4DPlusTIRRespDataset` with an opt-in
-   `max_rail_fraction` (e.g. `0.10`) that drops a clip whose respiration window
-   is more than that fraction pinned at the rail — this removes the ~7 %
-   moderate+severe clips instead of only the 0.5 % fully-railed ones.
-   Surface it as a config key + CLI flag and document it next to
-   `min_signal_spread`.
-2. **Exclude the 16 RESP-unusable sessions** (§3.3) — or filter at session
-   level (rail > 50 %) — for a cleaner pre-training set.
-3. **Accept as-is** and rely on clip-level z-scoring, accepting that ~173 clips
-   have over half their target physically clipped (a hard floor on MAE).
+1. **Rail TOUCH clip drop — IMPLEMENTED 2026-10-06 (the adopted knob).**
+   `data/tir_resp_dataset.BP4DPlusTIRRespDataset` gained an opt-in
+   `rail_touch_v` (VOLTS, default `0.0` = off; `9.90` in the shipped
+   TIR-ROI/RESP configs) that drops a clip whose respiration window contains ANY
+   sample with `abs(x) >= rail_touch_v`. Exposed as `--rail_touch_v` on every
+   entry point that can build the path (`run_pretrain.py`, `run_waveform.py`,
+   `run_finetune.py`, `run_inspect_tir_resp.py`, `run_survey_tir_resp.py`) and
+   logged by both builders. With the shipped 8 s / **1 s** geometry it drops
+   **5639 / 48 999 clips (11.5 %)** and empties **84** sessions -> **43 360
+   clips in 1277 sessions** remain, with **92.5 %** of the dead-channel-session
+   clips removed (36 of 47 such sessions fully excluded). It also removes the
+   3565 clips of genuine-clipping sessions whose label is flat-topped at the
+   clamp — the deliberate, stricter trade.
+2. **`min_signal_spread` is now the degenerate-window guard, not the rail
+   filter.** The **rail-touch test runs FIRST**, so `clips_dropped_rail` is
+   attributed correctly; this guard then only catches a dead channel stuck at a
+   NON-rail value (the two rules are complementary — see §3.4).
 
-Whichever is chosen, keep the value **identical in the K400 and SSV2 runs** so
-the corpus comparison is not confounded.
+Whichever is chosen, keep `rail_touch_v` **identical in the Stage-2,
+Stage-3 and K400-vs-SSV2 runs** so the comparison is not confounded.
 
 ---
 
@@ -219,12 +309,20 @@ the corpus comparison is not confounded.
 
 | path | content |
 |---|---|
-| `$WORK_SCRATCH/tir_resp_survey/tir_resp_survey.json` | full per-session records + aggregate + warnings |
-| `$WORK_SCRATCH/tir_resp_survey/tir_resp_survey_sessions.csv` | one row per session (rail %, lengths, clip yield) |
+| `$WORK_SCRATCH/tir_resp_survey/` | full per-session records + aggregate + warnings (rail-prevalence run, job 55340713, 8 s hop) |
+| `$WORK_SCRATCH/tir_resp_survey_touch/` | the same survey with the ADOPTED touch rule (job 55347699, 8 s hop) |
+| `$WORK_SCRATCH/tir_resp_survey_1s/` | the SHIPPED geometry: the touch rule at an 8 s window / **1 s hop** (job 55347758) |
+| `$WORK_SCRATCH/rail_forensics_all.json` | per-session rail structure + `dead_channel` classification |
+| `$WORK_SCRATCH/rail_filter_impact{,_1s}.json` | the rule-vs-cause impact tables (`rail_filter_impact.py`) |
 | `$WORK_SCRATCH/inspect_tir_resp_lowmod/` | F001 low+moderate per-clip figures + JSONs |
-| `code/logs/survey_tir_resp_55340713.out` | the human-readable report |
+| `code/logs/survey_tir_resp_55340713.out` | the human-readable rail-prevalence report |
 
-**Caveat.** Rail prevalence is measured against the `-9.999 V` threshold; the
-underlying files use exactly `-10.0000` for the dead-channel marker, so the
-threshold is not sensitive. Frame counts come from an OpenCV *container probe*
-(no decode), matching what the dataset itself uses.
+**Caveat.** Rail *prevalence* (§2–§5) is measured against the `-10.0000 V`
+threshold (float32-exact, i.e. the dataset's `RESP_RAIL_V`). The underlying files
+use exactly `-10.0000` for the dead-channel marker, so that threshold is not
+sensitive; the ADOPTED clip filter is deliberately wider and symmetric
+(`abs(x) >= 9.90 V`), which additionally catches 63 clips (24 in the
+`[-10.0, -9.9)` band and 39 at the POSITIVE clamp) — see
+[`resp_rail_touch_filter_results.md`](resp_rail_touch_filter_results.md) §2.1.
+Frame counts come from an OpenCV *container probe* (no decode), matching what
+the dataset itself uses.

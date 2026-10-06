@@ -87,7 +87,7 @@ The session name encodes subject (`'F001_T1'.rsplit('_', 1)[0]` -> `'F001'`), en
 | `TirRoiRespPretrainDataset` | Stage 2 | `{'tir': [C,T,H,W], 'resp': [1,S]}` |
 | `TirRoiRespFinetuneDataset` | Stage 3 | `(tir_crop [C,T,H,W], target [output_len])` |
 
-**ROI crop pipeline**: `IRFeatures` landmarks -> `roi_box_from_landmarks` + `roi_padding`. Clips with all-(0,0) sentinel rows dropped. Optional `min_signal_spread` rejects near-constant (railed) respiration windows.
+**ROI crop pipeline**: `IRFeatures` landmarks -> `roi_box_from_landmarks` + `roi_padding`. Clips with all-(0,0) sentinel rows dropped. Optional `rail_touch_v` (**the cleaning knob**) rejects a window that TOUCHED the recorder rail -- i.e. it contains any sample with `abs(x) >= rail_touch_v` volts (the recorder clamps at `+/-10 V`, so the shipped `9.90` drops every window holding a rail-valued target sample: a dead/pinned channel AND a genuinely clipped trough). Optional `min_signal_spread` rejects (near-)constant windows (the degenerate-target guard); it is checked second.
 
 **Task groups** (`data/task_groups.py`): e.g. `low=[T2,T3]`, `moderate=[T4,T7,T8,T10]`, `high=[T1,T5,T6,T9]`. Stage-2 and Stage-3 must use **identical** `task_groups` / `task_set`.
 

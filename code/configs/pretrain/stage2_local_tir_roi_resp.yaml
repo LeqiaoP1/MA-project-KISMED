@@ -69,7 +69,13 @@ fps: 25.0
 clip_duration: 8.0                 # 200 source frames @ 25 fps, decimated by
                                    # temporal_stride 2 -> 100 frames -> 50
                                    # temporal tubelets
-clip_stride: 4.0                   # window hop (seconds) -- 4 s overlap
+clip_stride: 1.0                   # window hop (seconds) -- 7/8 of consecutive
+                                   # windows OVERLAP, so the TRANSIENT breathing
+                                   # dynamics are sampled at 1 s resolution (a
+                                   # 4 s hop missed them). ~4x the clips (and
+                                   # epoch time) of 4.0. It defines WHICH
+                                   # windows exist -> keep it IDENTICAL in the
+                                   # Stage-3 sibling.
 temporal_stride: 2                 # decimate INSIDE the window (1=every frame;
                                    # 2/4/8 -> 12.5/6.25/3.125 fps). NOT the
                                    # window hop (that is clip_stride).
@@ -97,15 +103,19 @@ roi_landmarks: ''                  # '' = the historical 12-point nose+mouth set
 roi_quantile: 0.0                  # 0.0 = min/max over the clip (historical);
                                    #   0.05 = 5th/95th percentile of the clip
                                    #   landmark cloud (motion-robust box)
-min_signal_spread: 0.01            # VOLTS: DROP a clip whose respiration window
-                                   #   is (near-)constant. A railed -10 V window
-                                   #   is a dead sensor: it z-scores to an
-                                   #   all-zero label no model can predict and
-                                   #   only inflates MAE/RMSE. MEASURED on this
-                                   #   corpus (low+moderate): 3 windows have
-                                   #   spread EXACTLY 0 V and the next smallest
-                                   #   is 0.86 V, so 0.01 removes exactly them
-                                   #   (181 -> 178 clips) and nothing else.
+min_signal_spread: 0.01            # VOLTS: degenerate-window guard -- DROP a clip
+                                   #   whose respiration window is (near-)constant
+                                   #   (spread < 0.01 V) whatever the cause.
+rail_touch_v: 9.900                # VOLTS (magnitude): cleaning knob -- DROP a
+                                   #   clip whose window contains ANY sample that
+                                   #   touched the recorder rail (|x| >= 9.90;
+                                   #   the recorder clamps at +/-10 V). Both a
+                                   #   dead/pinned sensor and a clipped
+                                   #   flat-topped trough are removed, so no
+                                   #   rail-valued label survives. See
+                                   #   analysis/tir_resp/resp_data_quality.md
+                                   #   §3.4 + rail_forensics.py. Keep IDENTICAL
+                                   #   in Stage 2/3.
                                    #   0.0 = off (the historical behaviour).
 # ---- space-time alignment (checked hard by the model) ----
 # tubelet_t*temporal_stride/fps == sig_kernel/fs -> 2*2/25 == 16/100 == 160 ms,

@@ -47,11 +47,20 @@ from data import tir_resp_dataset as trd
 #: the low/moderate/high split used by configs/pretrain/stage2_local_tir_roi_resp.yaml
 DEFAULT_TASK_GROUPS = 'low=T2|T3;moderate=T4|T7|T8|T10;high=T1|T5|T6|T9'
 
-#: the corpus' rail floor (a sample at/below this is a dead-channel reading)
-DEFAULT_RAIL_V = -9.999
+#: the corpus' rail floor -- kept equal to the dataset's ``RESP_RAIL_V`` so the
+#: survey and the clip filter never disagree (float32-exact, see the dataset).
+DEFAULT_RAIL_V = -10.0
+
+#: the ADOPTED clip filter threshold (volts, magnitude): a clip whose window
+#: contains any sample at/past this is dropped by the touch rule.
+DEFAULT_RAIL_TOUCH_V = 9.90
 
 #: the dataset's own flat-window threshold (volts)
 DEFAULT_FLAT_SPREAD = 0.01
+
+#: the shipped configs' clip geometry: an 8 s window with a 1 s hop
+DEFAULT_CLIP_SECONDS = trd.DEFAULT_CLIP_SECONDS
+DEFAULT_CLIP_STRIDE = 1.0
 
 
 def _subjects_from_arg(value: str) -> Optional[List[str]]:
@@ -75,6 +84,7 @@ def _survey_subject(args: dict) -> dict:
             raw_root=args['raw_root'], subjects=[subj], tasks=None,
             task_groups=args['task_groups'], task_set=None,
             input_size=args['input_size'], roi_padding=args['roi_padding'],
+            clip_seconds=args['clip_seconds'], clip_stride=args['clip_stride'],
             min_signal_spread=0.0,          # keep every window; we classify below
             norm='none', allow_empty=True, verbose=False)
     except Exception as exc:                                 # pragma: no cover
@@ -87,6 +97,9 @@ def _survey_subject(args: dict) -> dict:
         entries_by_session[e['session']].append(e)
 
     rail_v = args['rail_v']
+    # quantise exactly as the dataset does, so the survey and the filter agree
+    # on a sample valued exactly at the threshold (see BP4DPlusTIRRespDataset)
+    touch_v = float(np.float32(args['rail_touch_v']))
     flat_spread = args['flat_spread']
     rows: List[dict] = []
 
@@ -102,7 +115,9 @@ def _survey_subject(args: dict) -> dict:
                'resp_spread': None, 'resp_rail_pct': None,
                'clip_rail_gt0': None, 'clip_rail_gt10': None,
                'clip_rail_gt50': None, 'clip_fully_railed': None,
-               'clip_flat': None}
+               'clip_flat': None,
+               'clip_touched': None, 'clip_touched_lo': None,
+               'clip_touched_hi': None}
         if meta is not None:
             row.update(n_vid=meta.get('n_vid'), n_ir=meta.get('n_ir'),
                        n_resp=meta.get('n_resp'))
@@ -140,10 +155,16 @@ def _survey_subject(args: dict) -> dict:
         row['clips'] = len(clips)
         if clips:
             rails, flats = [], 0
+            n_lo = n_hi = n_touch = 0
             for e in clips:
                 w = ds._resp_clip(e).astype(np.float64)
                 frac = float(np.count_nonzero(w <= rail_v) / w.size)
                 rails.append(frac)
+                lo = bool(np.any(w <= -touch_v))
+                hi = bool(np.any(w >= touch_v))
+                n_lo += int(lo)
+                n_hi += int(hi)
+                n_touch += int(lo or hi)
                 if float(w.max() - w.min()) < flat_spread:
                     flats += 1
             rails_arr = np.asarray(rails)
@@ -152,6 +173,10 @@ def _survey_subject(args: dict) -> dict:
             row['clip_rail_gt50'] = int(np.count_nonzero(rails_arr > 0.50))
             row['clip_fully_railed'] = int(np.count_nonzero(rails_arr >= 1.0))
             row['clip_flat'] = int(flats)
+            # the rule, measured exactly as the dataset implements it
+            row['clip_touched_lo'] = n_lo
+            row['clip_touched_hi'] = n_hi
+            row['clip_touched'] = n_touch
         rows.append(row)
 
     # a task that has a video but no usable clips is recorded as skipped only;
@@ -176,7 +201,8 @@ def _pct(a: int, b: int) -> str:
     return f'{100.0 * a / b:.1f}%' if b else 'n/a'
 
 
-def _aggregate(rows: List[dict], task_groups: dict) -> dict:
+def _aggregate(rows: List[dict], task_groups: dict,
+               rail_touch_v: float = DEFAULT_RAIL_TOUCH_V) -> dict:
     n_sess = len(rows)
     used = [r for r in rows if r['status'] == 'used']
     skipped = [r for r in rows if r['status'] != 'used']
@@ -188,6 +214,12 @@ def _aggregate(rows: List[dict], task_groups: dict) -> dict:
     clips_rail50 = sum(r['clip_rail_gt50'] or 0 for r in used)
     clips_full = sum(r['clip_fully_railed'] or 0 for r in used)
     clips_flat = sum(r['clip_flat'] or 0 for r in used)
+    clips_touch = sum(r['clip_touched'] or 0 for r in used)
+    clips_touch_lo = sum(r['clip_touched_lo'] or 0 for r in used)
+    clips_touch_hi = sum(r['clip_touched_hi'] or 0 for r in used)
+    sessions_emptied_touch = sum(
+        1 for r in used
+        if r['clips'] and (r['clip_touched'] or 0) == r['clips'])
 
     # per level
     per_level: Dict[str, dict] = {}
@@ -197,6 +229,7 @@ def _aggregate(rows: List[dict], task_groups: dict) -> dict:
         lv_all = [r for r in rows if r['task'] in tset]
         lv_clips = sum(r['clips'] for r in lv_used)
         lv_rail = sum(r['clip_rail_gt0'] or 0 for r in lv_used)
+        lv_touch = sum(r['clip_touched'] or 0 for r in lv_used)
         rails = [r['resp_rail_pct'] for r in lv_used
                  if r['resp_rail_pct'] is not None]
         per_level[name] = {
@@ -204,6 +237,11 @@ def _aggregate(rows: List[dict], task_groups: dict) -> dict:
             'sessions_used': len(lv_used),
             'clips': lv_clips,
             'clips_with_rail': lv_rail,
+            'clips_touching_rail': lv_touch,
+            'clips_kept_by_touch_rule': lv_clips - lv_touch,
+            'sessions_emptied_by_touch_rule': sum(
+                1 for r in lv_used
+                if r['clips'] and (r['clip_touched'] or 0) == r['clips']),
             'sessions_with_any_rail': sum(1 for r in lv_used
                                           if (r['resp_rail_pct'] or 0) > 0),
             'mean_file_rail_pct': (float(np.mean(rails)) if rails else None),
@@ -234,6 +272,13 @@ def _aggregate(rows: List[dict], task_groups: dict) -> dict:
         'clips_with_rail_gt50': clips_rail50,
         'clips_fully_railed': clips_full,
         'clips_flat_spread_lt_threshold': clips_flat,
+        'clips_touching_rail': clips_touch,
+        'clips_touching_rail_neg': clips_touch_lo,
+        'clips_touching_rail_pos': clips_touch_hi,
+        'clips_dropped_by_touch_rule': clips_touch,
+        'clips_kept_by_touch_rule': n_clips - clips_touch,
+        'sessions_emptied_by_touch_rule': sessions_emptied_touch,
+        'rail_touch_v': rail_touch_v,
         'sessions_with_rail_file_gt0': sum(1 for r in used
                                            if (r['resp_rail_pct'] or 0) > 0),
         'sessions_file_rail_gt10': sum(1 for r in used
@@ -285,12 +330,29 @@ def _print_report(agg: dict, worst: List[dict], task_groups: dict) -> None:
     print(f"  clips flat (<0.01 V)    : {agg['clips_flat_spread_lt_threshold']:6d}"
           f"  ({_pct(agg['clips_flat_spread_lt_threshold'], c)})")
     print()
+    print(f"--- the rail-touch rule: drop a clip whose window EVER TOUCHES the "
+          f"rail, |x| >= {agg['rail_touch_v']:g} V ---")
+    print(f"  clips                   : {c:6d}")
+    print(f"  clips touching the rail : {agg['clips_touching_rail']:6d} "
+          f"({_pct(agg['clips_touching_rail'], c)})"
+          f"   [neg {agg['clips_touching_rail_neg']}, "
+          f"pos {agg['clips_touching_rail_pos']}]")
+    print(f"  clips dropped           : {agg['clips_dropped_by_touch_rule']:6d} "
+          f"({_pct(agg['clips_dropped_by_touch_rule'], c)})")
+    print(f"  clips remaining         : {agg['clips_kept_by_touch_rule']:6d}")
+    print(f"  sessions emptied        : "
+          f"{agg['sessions_emptied_by_touch_rule']:6d}  -> "
+          f"{agg['sessions_used'] - agg['sessions_emptied_by_touch_rule']} "
+          f"sessions remain")
+    print()
     print('--- by distortion level ---')
     for name, d in agg['per_level'].items():
         mr = d['mean_file_rail_pct']
         mr_s = f'{mr:5.2f}%' if mr is not None else '  n/a'
         print(f"  {name:<9} sessions {d['sessions_used']:4d}/{d['sessions_discovered']:<4d}"
-              f" clips {d['clips']:6d}  clips_with_rail {d['clips_with_rail']:6d}"
+              f" clips {d['clips']:6d}  touching {d['clips_touching_rail']:6d}"
+              f"  kept {d['clips_kept_by_touch_rule']:6d}"
+              f"  emptied {d['sessions_emptied_by_touch_rule']:3d}"
               f"  mean_file_rail {mr_s}")
     print()
     print('--- per task ---')
@@ -315,8 +377,21 @@ def main(argv=None) -> int:
     p.add_argument('--task_groups', default=DEFAULT_TASK_GROUPS)
     p.add_argument('--input_size', type=int, default=112)
     p.add_argument('--roi_padding', type=float, default=0.2)
+    p.add_argument('--clip_seconds', type=float, default=DEFAULT_CLIP_SECONDS)
+    p.add_argument('--clip_stride', type=float, default=DEFAULT_CLIP_STRIDE,
+                   help='window hop in SECONDS. The survey MUST use the same '
+                        'hop as the configs it is describing, else the clip '
+                        'counts do not refer to the corpus the runs build: the '
+                        'shipped TIR-ROI/RESP configs use 1.0 (an 8 s window '
+                        'with 7/8 overlap), 0 = non-overlapping')
     p.add_argument('--rail_v', type=float, default=DEFAULT_RAIL_V)
     p.add_argument('--flat_spread', type=float, default=DEFAULT_FLAT_SPREAD)
+    p.add_argument('--rail_touch_v', type=float, default=DEFAULT_RAIL_TOUCH_V,
+                   help='VOLTS (magnitude): the clip filter -- a clip whose '
+                        'window contains any sample at/past this is counted as '
+                        'dropped by the rule (the survey always builds '
+                        'unfiltered) and the retained corpus is clips - that '
+                        'count')
     p.add_argument('--workers', type=int, default=min(32, os.cpu_count() or 1))
     p.add_argument('--limit_subjects', type=int, default=0, help='0 = no cap')
     args = p.parse_args(argv)
@@ -332,13 +407,22 @@ def main(argv=None) -> int:
     payload = [{'subject': s, 'raw_root': args.raw_root,
                 'task_groups': args.task_groups, 'input_size': args.input_size,
                 'roi_padding': args.roi_padding, 'rail_v': args.rail_v,
-                'flat_spread': args.flat_spread} for s in subjects]
+                'clip_seconds': args.clip_seconds,
+                'clip_stride': args.clip_stride,
+                'flat_spread': args.flat_spread,
+                'rail_touch_v': args.rail_touch_v} for s in subjects]
 
     print(f'[survey] raw_root  : {args.raw_root}')
     print(f'[survey] subjects  : {len(subjects)}')
     print(f'[survey] workers   : {args.workers}')
     print(f'[survey] rail_v    : {args.rail_v}   flat_spread: {args.flat_spread}',
           flush=True)
+    print(f'[survey] touch rule: |x| >= {args.rail_touch_v:g} V (the cleaning '
+          f'rule; a clip is dropped when a window sample touches the rail)',
+          flush=True)
+    print(f'[survey] clip        : {args.clip_seconds:g} s window, '
+          f'{args.clip_stride:g} s hop '
+          f"({args.clip_seconds / args.clip_stride:g}x overlap)", flush=True)
 
     rows: List[dict] = []
     errors: List[dict] = []
@@ -358,7 +442,7 @@ def main(argv=None) -> int:
     rows.sort(key=lambda r: (r['subject'], r['task']))
     used = [r for r in rows if r['status'] == 'used']
     worst = sorted(used, key=lambda r: (r['resp_rail_pct'] or 0), reverse=True)
-    agg = _aggregate(rows, task_groups)
+    agg = _aggregate(rows, task_groups, args.rail_touch_v)
 
     out_dir = args.output_dir
     if out_dir:

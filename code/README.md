@@ -255,18 +255,32 @@ path (`run_pretrain.py`, `run_waveform.py`, `run_inspect_tir_resp.py`).
 **TIR-ROI corpus hygiene + ROI knobs (2026-10-01).** Three additions to the
 thermal-ROI path, all also exposed on `run_inspect_tir_resp.py`:
 
-* `--min_signal_spread` (volts, default `0.0` = off): DROPs a clip whose
-  respiration window is (near-)constant — `max - min < threshold`. A railed
-  window (the corpus' `-10.0000 V` dead-channel marker) is a missing sensor: it
-  z-scores to an all-zero label that no model can predict, and it *rewards* a
-  trivial zero predictor with a free perfect score, which deflates the baseline
-  the model is compared against. MEASURED on the low+moderate corpus: 3 windows
-  (8 s / 4 s hop) or 4 windows (2 s hop, all in the F004 val split) have spread
-  EXACTLY `0 V` and the **next smallest is 0.86 V**, so anything in `(0, 0.86)`
-  removes exactly those and nothing else. The shipped configs use `0.01`.
-  Effect there: Stage-2 181 -> 178 clips; Stage-3 val 79 -> 75 (train unchanged,
-  so it cleans the *evaluation* set, not training). A window that merely
-  CONTAINS a rail but has real breathing elsewhere is kept.
+* `--rail_touch_v` (volts, default `0.0` = off; **the cleaning knob**): DROPs a
+  clip whose respiration window contains **ANY** sample that **touched the
+  recorder rail**, i.e. `abs(x) >= rail_touch_v`. The recorder clamps at
+  `+/-10 V` (the negative end is the corpus' dead-channel floor), so the shipped
+  `9.90` rejects every window whose label holds even ONE rail-valued reading.
+  It is deliberately **strict and two-sided**, and that is the point: the rail
+  has two causes (see `analysis/tir_resp/resp_data_quality.md` §3.4 and
+  `rail_forensics.py`) -- a **sensor failure** (dead / disconnected belt, stuck
+  DAQ -- the channel is pinned at the rail) and a **genuine extreme expiration**
+  (the trough is driven into the clamp and sits there flat-topped until the
+  breath recovers). BOTH leave unrepresentable, clipped label samples, so both
+  go. Because it is a touch test, a single sample is enough. The test runs on
+  the **same interpolated window that becomes the target**, and the threshold is
+  quantised to float32 (the dtype of the raw samples) so that a reading valued
+  EXACTLY at the threshold is not silently missed. Keep it IDENTICAL in Stage 2
+  and Stage 3. Also on `run_waveform.py` / `run_inspect_tir_resp.py` (reported,
+  not hard-enforced across stages).
+* `--min_signal_spread` (volts, default `0.0` = off): the **degenerate-window
+  guard** — DROPs a clip whose respiration window is (near-)constant
+  (`max - min < threshold`) whatever the cause. Such a target z-scores to an
+  all-zero (or, if only *nearly* constant, noise-amplified) label that no model
+  can meaningfully fit, and it *rewards* a trivial zero predictor, which deflates
+  the baseline the model is compared against. The `--rail_touch_v` rule above
+  is checked FIRST, so this guard only catches a dead channel stuck at a
+  NON-rail value — the two rules are complementary. The shipped configs use
+  `0.01`.
 * `--roi_landmarks` / `--roi_quantile`: see the measured preset table in
   `data/tir_resp_dataset.ROI_LANDMARK_PRESETS` — `nostrils` (2 points) is an
   unstable thin slab (100x81 px on a still session, 91x15 px on a moving one);
@@ -275,6 +289,44 @@ thermal-ROI path, all also exposed on `run_inspect_tir_resp.py`:
 * `run_inspect_tir_resp.py` now accepts both, and its figure draws the
   landmarks the ROI was ACTUALLY built from (`ds.target_idx`) instead of a
   hardcoded 12-point set, so the box and its annotation can no longer disagree.
+
+**Clip geometry: an 8 s window with a 1 s hop (2026-10-06).** `clip_stride` is
+`1.0` in all 7 TIR-ROI/RESP configs (it was `4.0` in Stage 2 and `2.0` in
+Stage 3), so 7 of every 8 consecutive windows OVERLAP. The intent is to sample
+the **transient breathing dynamics** an emotional episode shows — a 4 s hop
+averages them away. Consequences to keep in mind:
+
+* the clip count rises ~4x. `clip_stride` decides **which windows exist**, so it
+  belongs to the corpus contract: `run_waveform.py` now prints a note when it
+  differs from the Stage-2 checkpoint's value, next to `rail_touch_v`;
+* consecutive clips are ~87 % correlated, so the *effective* sample size is much
+  smaller than the clip count — read a per-clip metric count as a count of
+  WINDOWS, not of independent observations;
+* epoch time and the validation set grow by the same factor; revisit `epochs` /
+  `eval_freq` instead of assuming the old schedule still fits.
+
+**Where the rail rule applies (audited 2026-10-06).** `rail_touch_v` and
+`min_signal_spread` are threaded through `args` in every stage that builds the
+TIR-ROI/RESP view:
+
+| stage | entry point | path to the dataset | flag |
+|---|---|---|---|
+| 2 — masked pretraining | `runners/run_pretrain.py` | `data.datasets.build_pretraining_dataset` -> `build_tir_roi_pretrain_dataset` | `--rail_touch_v` |
+| 3 — waveform | `runners/run_waveform.py` | `data.datasets.build_dataset` -> `build_tir_roi_finetune_dataset` | `--rail_touch_v` |
+| 3 — classification | `runners/run_finetune.py` | `data.datasets.build_dataset` -> `build_tir_roi_finetune_dataset` | `--rail_touch_v` |
+| clip inspection | `runners/run_inspect_tir_resp.py` | `BP4DPlusTIRRespDataset` directly | `--rail_touch_v` |
+| corpus survey | `runners/run_survey_tir_resp.py` | `BP4DPlusTIRRespDataset`, built UNFILTERED on purpose (it CLASSIFIES with the rule) | `--rail_touch_v` |
+| dataset self-test / ROI parity | `data/tir_resp_dataset.py`, `check_view_parity()` | same class | `--rail_touch_v` |
+
+Two guards make a silently-off rule impossible:
+
+* both builders print `[data] stage2|stage3 corpus cleaning:
+  rail_touch_v=... V (DROP a clip when ... | OFF -- ...)`;
+* `tests/test_rail_rule_plumbing.py` drives the DISPATCH layer
+  (`build_pretraining_dataset` / `build_dataset`) and asserts the value arrives
+  at the dataset in both views, that it is off + reported when the key is
+  absent, that all five entry points expose the flag, and that all 7 configs
+  ship `rail_touch_v: 9.90` with `min_signal_spread: 0.01` and `clip_stride: 1.0`.
 
 **The Stage-3 ROI contract is now ENFORCED (2026-10-01).** The ROI keys
 (`roi_landmarks`, `roi_padding`, `roi_quantile`, `input_size`) decide *which

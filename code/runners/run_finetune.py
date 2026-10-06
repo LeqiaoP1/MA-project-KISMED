@@ -41,6 +41,20 @@ def get_args():
     # data
     parser.add_argument('--data_set', default=env_or('DATA_SET', ''), type=str)
     parser.add_argument('--data_path', default=env_or('DATA_PATH'), type=str)
+    # corpus cleaning -- the SAME knobs as run_pretrain.py / run_waveform.py, so
+    # a tir_roi / tir_roi_resp run through THIS entry point cannot silently
+    # train or evaluate on rail-valued respiration targets (see
+    # analysis/tir_resp/resp_rail_touch_filter_results.md)
+    parser.add_argument('--min_signal_spread', default=0.0, type=float,
+                        help='TIR-ROI only: DROP a clip whose respiration '
+                             'window is (near-)constant, i.e. max-min < this '
+                             'many VOLTS (0.0 = off)')
+    parser.add_argument('--rail_touch_v', default=0.0, type=float,
+                        help='TIR-ROI only: DROP a clip whose respiration '
+                             'window contains ANY sample that touched the '
+                             'recorder rail, i.e. abs(x) >= this many VOLTS '
+                             '(0.0 = off; the study value is 9.90, the '
+                             'recorder clamps at +/-10 V)')
     # training
     parser.add_argument('--batch_size', default=64, type=int)
     parser.add_argument('--epochs', default=100, type=int)

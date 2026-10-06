@@ -94,7 +94,7 @@ __all__ = ['NUM_LANDMARKS', 'TARGET_LANDMARKS', 'TARGET_LANDMARK_IDX',
            'roi_box_from_landmarks', 'discover_sessions', 'find_thermal_video',
            'find_ir_features', 'find_resp_file', 'default_raw_root',
            'ROI_LANDMARK_PRESETS', 'resolve_roi_landmarks',
-           'DEFAULT_ROI_QUANTILE',
+           'DEFAULT_ROI_QUANTILE', 'RESP_RAIL_V',
            'BP4DPlusTIRRespDataset', 'TirRoiRespPretrainDataset',
            'TirRoiRespFinetuneDataset',
            'build_tir_roi_pretrain_dataset', 'build_tir_roi_finetune_dataset',
@@ -186,6 +186,19 @@ VIDEO_EXTS = ('.wmv', '.avi', '.mp4', '.mkv', '.mov')
 
 #: a landmark pair at exactly (0, 0) is the missing-data sentinel
 IR_SENTINEL = 0.0
+
+#: the corpus' ``Resp_Volts.txt`` DEAD-CHANNEL floor in volts, signed as
+#: stored: a saturated channel reads exactly ``-10.0``. This is the reference
+#: the RAIL DIAGNOSTICS measure against (``analysis/tir_resp/rail_forensics.py``
+#: and ``runners/run_survey_tir_resp.py``) -- it is NOT the clip filter. The
+#: filter is :paramref:`BP4DPlusTIRRespDataset.rail_touch_v`, a symmetric
+#: MAGNITUDE, because the rail is 2-sided (the recorder clamps at both ends).
+#:
+#: NOTE ``-10.0`` is EXACTLY representable in float32 -- the dtype ``_load_1d``
+#: returns -- while ``-9.999`` is NOT: it rounds to ``-9.9989996``, so a
+#: ``<= -9.999`` test on float32 data silently misses every railed sample.
+#: The same trap applies to the FILTER threshold (see :meth:`__init__`).
+RESP_RAIL_V = -10.0
 
 _TASK_RE = re.compile(r'^[Tt](\d+)$')
 
@@ -483,15 +496,45 @@ class BP4DPlusTIRRespDataset(Dataset):
     :param target_landmarks: 1-indexed landmark labels forming the ROI.
     :param min_signal_spread: DROP a clip whose respiration window is
         (near-)constant, i.e. ``max(window) - min(window) < min_signal_spread``
-        in raw VOLTS (``0.0`` = disabled, the historical behaviour). A railed
-        window (the corpus' ``-10.0000 V`` dead-channel marker) is a missing
-        sensor, not a breathing target: under ``norm='clip'`` / the Stage-3
-        ``signal_norm: zscore`` it z-scores to an all-zero label that no model
-        can predict and that only inflates MAE/RMSE. MEASURED on the local
-        corpus: the railed windows have spread EXACTLY ``0 V`` and the next
-        smallest clip is ``0.093 V``, so anything in ``(0, 0.09)`` selects
-        exactly them and nothing else. NOTE this rule is per WINDOW (a window
-        that merely CONTAINS a rail but has real breathing elsewhere is kept).
+        in raw VOLTS (``0.0`` = disabled, the historical behaviour). This is
+        the **degenerate-window guard**: a constant target carries no
+        information whatever its cause, and under ``norm='clip'`` / the Stage-3
+        ``signal_norm: zscore`` it z-scores to an all-zero (or, if only NEARLY
+        constant, noise-amplified) label that no model can meaningfully fit.
+        NOTE this rule is per WINDOW. A fully railed window is of course also
+        "flat", but the rail case is handled FIRST by
+        :paramref:`rail_touch_v`; this guard is kept as a safety net for a dead
+        channel stuck at a NON-rail value (the two rules are complementary, see
+        ``analysis/tir_resp/resp_data_quality.md`` §3.4).
+    :param rail_touch_v: DROP a clip whose respiration window contains ANY
+        sample that has TOUCHED THE RAIL, i.e. ``abs(sample) >= rail_touch_v``
+        volts (``0.0`` = disabled, the default). **This is the cleaning knob for
+        the TIR-ROI/RESP study** and it is deliberately STRICT: the recorder's
+        full-scale clamp is ``+/-10.0 V`` (see :data:`RESP_RAIL_V`), so the
+        shipped ``9.90`` rejects a window as soon as a single reading reached
+        within 0.1 V of either end of the range.
+
+        Why a MAGNITUDE and why a TOUCH test -- the ``-10 V`` rail has two
+        different causes (see ``analysis/tir_resp/resp_data_quality.md`` §3.4
+        and ``analysis/tir_resp/rail_forensics.py``):
+
+        * a SENSOR FAILURE (dead / disconnected belt, a stuck DAQ, or a DC
+          offset beyond the recorder's range) PINS the channel at the rail;
+        * a GENUINE clipped expiration drives the trough into the clamp, so the
+          waveform is flat-topped at the rail until the breath recovers.
+
+        BOTH leave a rail-valued sample in the label, which is what this rule
+        keys on:
+
+        * untouched window -> kept  (the normal case);
+        * any sample at ``|x| >= rail_touch_v`` -> dropped (clipped OR dead).
+
+        The cost is explicit and intended: clips that merely graze the clamp
+        are removed together with the dead-channel ones, so the retained corpus
+        contains no rail-valued label at all. The test is applied to the SAME
+        interpolated window that becomes the target (see ``_build_entries``),
+        so "touched" means "the label contains a rail-valued sample".
+        Must match between the Stage-2 and Stage-3 runs.
     :param norm: ``'clip'`` (per-clip z-score, default), ``'session'`` (z-score
         with the whole session's statistics) or ``'none'`` (raw volts).
     :param max_clips_per_session, max_entries: dev caps (smoke runs).
@@ -513,6 +556,7 @@ class BP4DPlusTIRRespDataset(Dataset):
                  roi_quantile: float = DEFAULT_ROI_QUANTILE,
                  target_landmarks: Sequence[int] = TARGET_LANDMARKS,
                  min_signal_spread: float = 0.0,
+                 rail_touch_v: float = 0.0,
                  norm: str = 'clip',
                  max_clips_per_session: Optional[int] = None,
                  max_entries: Optional[int] = None,
@@ -546,6 +590,17 @@ class BP4DPlusTIRRespDataset(Dataset):
         if self.min_signal_spread < 0.0:
             raise ValueError(f'min_signal_spread must be >= 0 (volts); got '
                              f'{min_signal_spread!r}')
+        # The threshold is quantised to float32 ONCE, because the samples it is
+        # compared against are float32-exact (``_load_1d`` -> float32): a
+        # decimal literal such as 9.9 is 9.90000000000000036 as a float64, so a
+        # window sample stored as 9.9000 (float32 9.89999961853027) would NOT
+        # satisfy ``>= 9.9`` -- exactly the trap that makes ``-9.999``
+        # invisible to a ``<= -9.999`` test on float32 data. Quantising the
+        # threshold makes ``>=`` match a sample OF the threshold's own value.
+        self.rail_touch_v = float(np.float32(rail_touch_v))
+        if self.rail_touch_v < 0.0:
+            raise ValueError(f'rail_touch_v must be >= 0 (volts); got '
+                             f'{rail_touch_v!r} (0.0 = disabled)')
         # sample offsets of one clip on the respiration grid (flat-window test)
         self._resp_offsets = np.arange(self.resp_len)
         self.preload = bool(preload)
@@ -589,6 +644,7 @@ class BP4DPlusTIRRespDataset(Dataset):
                        max_entries: Optional[int]) -> None:
         n_dropped_zero = 0
         n_dropped_flat = 0
+        n_dropped_rail = 0
         for spec in discovered:
             sess, subj, task = spec['session'], spec['subject'], spec['task']
 
@@ -643,12 +699,13 @@ class BP4DPlusTIRRespDataset(Dataset):
                 continue
 
             bad = missing_frame_mask(ir, self.target_idx)
-            # only read the raw series when the flat-window rule is active
-            y_raw = (_load_1d(spec['resp_file'])
-                     if self.min_signal_spread > 0.0 else None)
+            # read the raw series when EITHER window-content rule is active
+            needs_series = (self.min_signal_spread > 0.0
+                            or self.rail_touch_v > 0.0)
+            y_raw = _load_1d(spec['resp_file']) if needs_series else None
 
             # --- 4. slice clips (requirement 2: any sentinel line drops the clip)
-            kept, dropped, dropped_flat, starts = 0, 0, 0, []
+            kept, dropped, dropped_flat, dropped_rail, starts = 0, 0, 0, 0, []
             for start in range(0, n_avail - self.clip_frames + 1,
                                self.stride_frames):
                 if bad[start:start + self.clip_frames].any():
@@ -661,7 +718,18 @@ class BP4DPlusTIRRespDataset(Dataset):
                     w = np.interp(s0 + self._resp_offsets,
                                   np.arange(y_raw.shape[0], dtype=np.float64),
                                   y_raw.astype(np.float64))
-                    if float(w.max() - w.min()) < self.min_signal_spread:
+                    # RAIL FIRST: a fully railed window is also "flat", so the
+                    # probe order decides which rule gets the credit -- else
+                    # clips_dropped_rail would undercount by exactly those.
+                    # TOUCH TEST: ONE sample at +/-rail_touch_v or beyond
+                    # drops the clip, so neither a dead channel nor a clipped
+                    # flat-topped trough survives.
+                    if self.rail_touch_v > 0.0 and w.size and \
+                            bool(np.any(np.abs(w) >= self.rail_touch_v)):
+                        dropped_rail += 1
+                        continue
+                    if self.min_signal_spread > 0.0 and \
+                            float(w.max() - w.min()) < self.min_signal_spread:
                         dropped_flat += 1
                         continue
                 starts.append(start)
@@ -670,11 +738,15 @@ class BP4DPlusTIRRespDataset(Dataset):
                     break
             n_dropped_zero += dropped
             n_dropped_flat += dropped_flat
+            n_dropped_rail += dropped_rail
             if not starts:
                 why = [f'{dropped} window(s) contain a (0,0) sentinel line']
                 if dropped_flat:
                     why.append(f'{dropped_flat} have a (near-)constant '
                                f'respiration window (< {self.min_signal_spread:g} V)')
+                if dropped_rail:
+                    why.append(f'{dropped_rail} touch the rail '
+                               f'(|x| >= {self.rail_touch_v:g} V)')
                 self._skip(spec, 'all_clips_dropped: ' + '; '.join(why))
                 continue
 
@@ -682,7 +754,8 @@ class BP4DPlusTIRRespDataset(Dataset):
                                        n_vid=n_vid, n_resp=n_sig,
                                        resp_start_limit=start_limit,
                                        clips_dropped_sentinel=dropped,
-                                       clips_dropped_flat=dropped_flat)
+                                       clips_dropped_flat=dropped_flat,
+                                       clips_dropped_rail=dropped_rail)
             for start in starts:
                 self.entries.append(self._make_entry(spec, start))
                 if max_entries and len(self.entries) >= max_entries:
@@ -717,7 +790,10 @@ class BP4DPlusTIRRespDataset(Dataset):
             'clips': len(self.entries),
             'clips_dropped_sentinel': n_dropped_zero,
             'clips_dropped_flat': n_dropped_flat,
+            'clips_dropped_rail': n_dropped_rail,
             'min_signal_spread': self.min_signal_spread,
+            'rail_touch_v': self.rail_touch_v,
+            'rail_v': RESP_RAIL_V,
             'clip_seconds': self.clip_seconds,
             'clip_frames': self.clip_frames,
             'clip_stride_seconds': self.stride_frames / self.fps,
@@ -913,7 +989,10 @@ class BP4DPlusTIRRespDataset(Dataset):
             f'clips           : {s["clips"]} '
             f'({s["clips_dropped_sentinel"]} window(s) dropped for a (0,0) '
             f'sentinel line, {s["clips_dropped_flat"]} for a (near-)constant '
-            f'respiration window at min_signal_spread={s["min_signal_spread"]:g} V)',
+            f'respiration window at min_signal_spread={s["min_signal_spread"]:g} V, '
+            f'{s["clips_dropped_rail"]} for touching the rail '
+            f'(|x| >= {s["rail_touch_v"]:g} V; the recorder clamps at '
+            f'{s["rail_v"]:g} V)',
             f'clip            : {s["clip_seconds"]:g} s = {s["clip_frames"]} '
             f'frames @ {s["fps"]:g} fps, stride {s["clip_stride_frames"]} '
             f'frames; resp {s["resp_len"]} samples @ {s["resp_fs"]:g} Hz',
@@ -993,6 +1072,7 @@ class TirRoiRespPretrainDataset(Dataset):
                  roi_quantile: float = DEFAULT_ROI_QUANTILE,
                  target_landmarks: Sequence[int] = TARGET_LANDMARKS,
                  min_signal_spread: float = 0.0,
+                 rail_touch_v: float = 0.0,
                  resp_fs: float = DEFAULT_RESP_FS,
                  subjects=None, tasks=None,
                  task_groups=None, task_set=None,
@@ -1041,6 +1121,7 @@ class TirRoiRespPretrainDataset(Dataset):
             roi_quantile=self.roi_quantile,
             target_landmarks=target_landmarks, norm='none',
             min_signal_spread=min_signal_spread,
+            rail_touch_v=rail_touch_v,
             max_clips_per_session=max_clips_per_session,
             max_entries=max_entries, verbose=verbose)
         self.entries = self.base.entries
@@ -1145,6 +1226,7 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
                  fps: float = DEFAULT_FPS,
                  target_landmarks: Sequence[int] = TARGET_LANDMARKS,
                  min_signal_spread: float = 0.0,
+                 rail_touch_v: float = 0.0,
                  signal_norm: str = 'zscore',
                  subjects: Optional[Sequence[str]] = None,
                  tasks: Optional[Sequence[str]] = None,
@@ -1240,6 +1322,7 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
             roi_quantile=roi_quantile,
             target_landmarks=target_landmarks, resp_fs=resp_fs,
             min_signal_spread=min_signal_spread,
+            rail_touch_v=rail_touch_v,
             subjects=_as_list(keep_subjects), tasks=self.task_selection.tasks,
             task_groups=task_groups, task_set=task_set,
             max_clips_per_session=max_clips_per_session,
@@ -1294,6 +1377,26 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
                   f'session(s): {self.split_sessions}')
 
 
+def _log_corpus_cleaning(stats: dict, stage: str) -> None:
+    """Print the cleaning knobs a run ACTUALLY used (never silent).
+
+    Both knobs are opt-in (``0.0`` = off) and are threaded from the YAML/CLI, so
+    a config or entry point that forgets ``rail_touch_v`` would train on
+    rail-valued respiration targets without saying anything. This line makes the
+    effective policy visible in the log of EVERY stage that goes through a
+    builder (Stage 2, Stage 3, classification runs, ...).
+    """
+    touch = float(stats.get('rail_touch_v') or 0.0)
+    spread = float(stats.get('min_signal_spread') or 0.0)
+    if touch > 0.0:
+        rule = (f'DROP a clip when abs(x) >= {touch:g} V -- it TOUCHED the '
+                f'+/-{abs(RESP_RAIL_V):g} V recorder rail')
+    else:
+        rule = 'OFF -- rail-valued targets are NOT filtered'
+    print(f'[data] {stage} corpus cleaning: rail_touch_v={touch:g} V '
+          f'({rule}); min_signal_spread={spread:g} V')
+
+
 def build_tir_roi_finetune_dataset(is_train: bool, test_mode: bool,
                                    args) -> TirRoiRespFinetuneDataset:
     """Build the Stage-3 TIR-ROI -> respiration dataset from runner ``args``.
@@ -1309,7 +1412,7 @@ def build_tir_roi_finetune_dataset(is_train: bool, test_mode: bool,
     val_subject = getattr(args, 'val_subject', None)
     if isinstance(val_subject, (list, tuple)):
         val_subject = val_subject[0] if val_subject else None
-    return TirRoiRespFinetuneDataset(
+    ds = TirRoiRespFinetuneDataset(
         raw_root=(getattr(args, 'raw_root', None)
                   or getattr(args, 'data_path', None) or None),
         target=str(getattr(args, 'target', 'resp')),
@@ -1331,6 +1434,7 @@ def build_tir_roi_finetune_dataset(is_train: bool, test_mode: bool,
         fps=float(getattr(args, 'fps', DEFAULT_FPS)),
         signal_norm=str(getattr(args, 'signal_norm', 'zscore')),
         min_signal_spread=float(getattr(args, 'min_signal_spread', 0.0) or 0.0),
+        rail_touch_v=float(getattr(args, 'rail_touch_v', 0.0) or 0.0),
         subjects=getattr(args, 'subjects', None),
         tasks=getattr(args, 'tasks', None),
         task_groups=getattr(args, 'task_groups', None),
@@ -1338,6 +1442,8 @@ def build_tir_roi_finetune_dataset(is_train: bool, test_mode: bool,
         max_clips_per_session=getattr(args, 'max_clips', None),
         max_entries=getattr(args, 'max_entries', None),
         verbose=bool(getattr(args, 'verbose', False)))
+    _log_corpus_cleaning(ds.stats, 'stage3')
+    return ds
 
 
 def build_tir_roi_pretrain_dataset(args) -> TirRoiRespPretrainDataset:
@@ -1347,7 +1453,7 @@ def build_tir_roi_pretrain_dataset(args) -> TirRoiRespPretrainDataset:
     ``getattr``-reads, so an args namespace from any runner/config works.
     """
     tubelet = str(getattr(args, 'tubelet', '2,16,16')).split(',')
-    return TirRoiRespPretrainDataset(
+    ds = TirRoiRespPretrainDataset(
         raw_root=getattr(args, 'raw_root', None) or default_raw_root(),
         streams=tuple(s.strip() for s in
                       str(getattr(args, 'streams', 'tir,resp')).split(',')
@@ -1364,12 +1470,15 @@ def build_tir_roi_pretrain_dataset(args) -> TirRoiRespPretrainDataset:
         target_landmarks=resolve_roi_landmarks(
             getattr(args, 'roi_landmarks', None)),
         min_signal_spread=float(getattr(args, 'min_signal_spread', 0.0) or 0.0),
+        rail_touch_v=float(getattr(args, 'rail_touch_v', 0.0) or 0.0),
         subjects=getattr(args, 'subjects', None),
         tasks=getattr(args, 'tasks', None),
         task_groups=getattr(args, 'task_groups', None),
         task_set=getattr(args, 'task_set', None),
         max_clips_per_session=getattr(args, 'max_clips', None),
         max_entries=getattr(args, 'max_entries', None))
+    _log_corpus_cleaning(ds.stats, 'stage2')
+    return ds
 
 
 # --------------------------------------------------------------------------- #
@@ -1505,7 +1614,8 @@ def check_view_parity(raw_root=None, subjects=None, tasks=None,
                       roi_padding=DEFAULT_ROI_PADDING,
                       roi_quantile=DEFAULT_ROI_QUANTILE,
                       target_landmarks=TARGET_LANDMARKS,
-                      min_signal_spread=0.0, max_entries=None,
+                      min_signal_spread=0.0, rail_touch_v=0.0,
+                      max_entries=None,
                       n_check=3) -> List[str]:
     """Prove that the Stage-2 and Stage-3 views crop the ROI IDENTICALLY.
 
@@ -1534,6 +1644,7 @@ def check_view_parity(raw_root=None, subjects=None, tasks=None,
                   roi_quantile=roi_quantile,
                   target_landmarks=target_landmarks,
                   min_signal_spread=min_signal_spread,
+                  rail_touch_v=rail_touch_v,
                   max_entries=max_entries)
     s2 = TirRoiRespPretrainDataset(streams=('tir', 'resp'), **common)
     s3 = TirRoiRespFinetuneDataset(target='resp', is_train=True,
@@ -1615,6 +1726,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument('--min_signal_spread', type=float, default=0.0,
                    help='VOLTS: drop a clip whose respiration window is '
                         '(near-)constant (0.0 = off)')
+    p.add_argument('--rail_touch_v', type=float, default=0.0,
+                   help='VOLTS: drop a clip whose respiration window contains '
+                        'ANY sample that touched the rail, i.e. '
+                        'abs(x) >= this (0.0 = off). The recorder clamps at '
+                        '+/-10 V, so 9.90 rejects every window with a single '
+                        'rail-valued reading -- clipped troughs included')
     p.add_argument('--temporal_stride', type=int, default=2,
                    help='--check_views only: intra-window decimation')
     p.add_argument('--tubelet', type=int, default=2,
@@ -1639,7 +1756,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                   roi_padding=args.roi_padding,
                   roi_quantile=args.roi_quantile,
                   target_landmarks=resolve_roi_landmarks(args.roi_landmarks),
-                  min_signal_spread=args.min_signal_spread, norm=args.norm,
+                  min_signal_spread=args.min_signal_spread,
+                  rail_touch_v=args.rail_touch_v, norm=args.norm,
                   max_entries=args.max_entries or None, allow_empty=True)
         kw.update(over)
         return BP4DPlusTIRRespDataset(**kw)
@@ -1777,6 +1895,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             roi_padding=args.roi_padding, roi_quantile=args.roi_quantile,
             target_landmarks=resolve_roi_landmarks(args.roi_landmarks),
             min_signal_spread=args.min_signal_spread,
+            rail_touch_v=args.rail_touch_v,
             max_entries=args.max_entries or None, n_check=args.n_check)
         elapsed = time.time() - t0
         if pfails:

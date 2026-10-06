@@ -181,8 +181,11 @@ def check_stage2_roi_contract(args, stage2_args, allow_mismatch=False):
 
     # Corpus-level keys: the same hazard class (Stage 3 would be evaluated on a
     # corpus the encoder was not pre-trained on), but a deliberate ablation here
-    # is legitimate often enough that it only WARNS.
-    for key in ('task_set', 'tasks', 'min_signal_spread'):
+    # is legitimate often enough that it only WARNS. ``clip_stride`` belongs to
+    # this class too: with 1 s hops 7/8 of consecutive windows overlap, so it
+    # decides WHICH windows exist (it does not change any tensor shape).
+    for key in ('task_set', 'tasks', 'min_signal_spread', 'rail_touch_v',
+                'clip_stride'):
         stage2 = getattr(stage2_args, key, None)
         stage3 = getattr(args, key, None)
         if stage2 is None or stage3 is None:
@@ -355,6 +358,15 @@ def get_args():
                              'dead sensor, not a breathing target. MUST equal '
                              'the Stage-2 value, else the evaluated corpus is '
                              'not the pre-trained one.')
+    parser.add_argument('--rail_touch_v', default=0.0, type=float,
+                        help='thermal-ROI path: DROP a clip whose respiration '
+                             'window contains ANY sample that touched the '
+                             'recorder rail, i.e. abs(x) >= this many VOLTS '
+                             '(0.0 = off; the study value is 9.90). Removes '
+                             'both a dead/pinned sensor and a clipped '
+                             'flat-topped trough, so no rail-valued label '
+                             'survives. MUST equal the Stage-2 value, else the '
+                             'evaluated corpus is not the pre-trained one.')
     parser.add_argument('--decode_scale', default=1, type=int,
                         choices=[1, 2, 4, 8],
                         help='rgb_roi only: JPEG decode scale. 1 = native full '

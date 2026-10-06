@@ -327,6 +327,11 @@ def main(argv=None) -> int:
                         '(near-)constant, i.e. max-min < this many VOLTS '
                         '(0.0 = off). A railed window is a dead sensor, not a '
                         'breathing target. Must match the run being inspected.')
+    p.add_argument('--rail_touch_v', type=float, default=0.0,
+                   help='DROP a clip whose respiration window contains any '
+                        'sample that touched the rail, i.e. abs(x) >= this '
+                        'many VOLTS (0.0 = off; the study value is 9.90). Must '
+                        'match the run being inspected.')
     p.add_argument('--clip_index', default='0',
                    help='comma list of clip indices in the selection')
     p.add_argument('--max_entries', type=int, default=0, help='0 = no cap')
@@ -349,6 +354,7 @@ def main(argv=None) -> int:
         roi_quantile=args.roi_quantile,
         target_landmarks=trd.resolve_roi_landmarks(args.roi_landmarks),
         min_signal_spread=args.min_signal_spread,
+        rail_touch_v=args.rail_touch_v,
         max_entries=args.max_entries or None)
 
     print('=' * 76)
