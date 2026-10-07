@@ -502,7 +502,7 @@ class BP4DPlusTIRRespDataset(Dataset):
         channel is PINNED just inside the ``+/-10 V`` clamp with a
         0.05-0.09 V ripple (a disconnected belt / loose contact). Such a
         window is not a breathing target: under ``norm='clip'`` / the Stage-3
-        ``signal_norm: zscore`` it is rescaled to UNIT variance, so it enters
+        ``physio_norm: zscore`` it is rescaled to UNIT variance, so it enters
         training as a full-amplitude label that is pure artifact. Genuine
         breathing is >= 0.3 V p-p (corpus p10 ~0.75 V), so the guard does not
         reach real (even shallow) respiration. NOTE this rule is per WINDOW and
@@ -1046,10 +1046,19 @@ class TirRoiRespPretrainDataset(Dataset):
         {'tir':  float32 [3, T, input_size, input_size]   ROI crop, [0, 1]
          'resp': float32 [1, L]                           RAW volts}
 
-    The respiration values are deliberately RAW: the model z-scores a clip
-    internally under ``target_norm: clip`` (the same contract
-    ``PairedPretrainDataset`` follows for ``bp``/``resp``/``eda``). Do not
-    normalize here as well.
+    The 1-D target is normalised HERE, under ``physio_norm`` -- the ONE knob of
+    the whole pipeline (same flag name and values in Stage 2 and Stage 3, for
+    TIR-ROI+RESP and RGB+BP alike). The MODEL never normalises a 1-D stream:
+    ``run_pretrain.py`` pins ``target_norm='none'`` for every ROI lineage.
+
+    * ``'none'`` -- raw values (debug only: nothing else normalises either).
+    * ``'clip'`` (alias ``'zscore'``) -- per-clip z-score, one mean/std per
+      clip, applied by ``BP4DPlusTIRRespDataset(norm='clip')``.
+    * ``'session'`` -- z-scored with the WHOLE SESSION's mean/std (population
+      statistics over the entire ``Resp_Volts.txt``, via
+      ``BP4DPlusTIRRespDataset(norm='session')``), so a clip keeps its
+      SESSION-relative amplitude and offset instead of being flattened to unit
+      variance on its own. This is the target space the study uses.
 
     Geometry mirrors ``core.multimae.build_pretraining_model`` exactly::
 
@@ -1078,6 +1087,7 @@ class TirRoiRespPretrainDataset(Dataset):
                  target_landmarks: Sequence[int] = TARGET_LANDMARKS,
                  min_signal_spread: float = 0.0,
                  rail_touch_v: float = 0.0,
+                 physio_norm: str = 'none',
                  resp_fs: float = DEFAULT_RESP_FS,
                  subjects=None, tasks=None,
                  task_groups=None, task_set=None,
@@ -1097,6 +1107,17 @@ class TirRoiRespPretrainDataset(Dataset):
                 'TirRoiRespPretrainDataset: Stage 2 needs BOTH streams -- the '
                 f'thermal ROI visual + the respiration waveform; got '
                 f'{self.streams}.')
+
+        # WHERE the 1-D target is normalised -- the single knob of the pipeline
+        # (see the class docstring). 'zscore' is accepted as an ALIAS of 'clip'
+        # so the SAME value means the same thing in Stage 2 and Stage 3.
+        self.physio_norm = str(physio_norm or 'none').strip().lower()
+        if self.physio_norm == 'zscore':
+            self.physio_norm = 'clip'
+        if self.physio_norm not in ('none', 'clip', 'session'):
+            raise ValueError(
+                "TirRoiRespPretrainDataset: physio_norm must be 'none', '"
+                f"clip\" ('zscore') or 'session'; got {physio_norm!r}")
 
         self.fs = float(fs)
         self.fps = float(fps)
@@ -1124,7 +1145,7 @@ class TirRoiRespPretrainDataset(Dataset):
             fps=self.fps, resp_fs=self.resp_fs, input_size=self.input_size,
             clip_stride=clip_stride, roi_padding=self.roi_padding,
             roi_quantile=self.roi_quantile,
-            target_landmarks=target_landmarks, norm='none',
+            target_landmarks=target_landmarks, norm=self.physio_norm,
             min_signal_spread=min_signal_spread,
             rail_touch_v=rail_touch_v,
             max_clips_per_session=max_clips_per_session,
@@ -1207,10 +1228,20 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
     * the item is ``(tir, waveform)`` -- the tensor contract
       ``runners/run_waveform.py`` and ``engines/waveform.py`` consume -- rather
       than the Stage-2 stream dict;
-    * the target is normalised HERE (``signal_norm``), because Stage 3 scores the
-      FINAL waveform against the label: ``'zscore'`` (default) reproduces the
-      per-clip z-score Stage 2 applied internally under ``target_norm: clip``.
-      The base class returns RAW volts, so the two never stack.
+    * the target is normalised HERE (``physio_norm``), because Stage 3 scores the
+      FINAL waveform against the label:
+
+      - ``'zscore'`` (default) / ``'ac'``: per CLIP -- the twin of the Stage-2
+        model's internal ``target_norm: clip`` (the base class returns RAW
+        volts, so the two never stack);
+      - ``'session'``: the WHOLE session's mean/std. The base dataset is then
+        built with ``physio_norm='session'`` and performs the z-score itself, so
+        this class leaves the window untouched -- the twin of the Stage-2
+        ``physio_norm: session`` target space (where the model is pinned to
+        identity). Use it when the
+        checkpoint was pre-trained that way (the HPC TIR-ROI run) so both
+        stages share ONE target space;
+      - ``'none'``: raw volts.
     """
 
     def __init__(self, raw_root: Optional[str] = None,
@@ -1232,7 +1263,7 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
                  target_landmarks: Sequence[int] = TARGET_LANDMARKS,
                  min_signal_spread: float = 0.0,
                  rail_touch_v: float = 0.0,
-                 signal_norm: str = 'zscore',
+                 physio_norm: str = 'zscore',
                  subjects: Optional[Sequence[str]] = None,
                  tasks: Optional[Sequence[str]] = None,
                  task_groups=None, task_set=None,
@@ -1244,10 +1275,13 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
                 f'TirRoiRespFinetuneDataset serves the respiration waveform '
                 f'only (the ROI box is anchored on the mouth+nose landmarks); '
                 f'got target={target!r}.')
-        if signal_norm not in ('none', 'ac', 'zscore'):
+        physio_norm = str(physio_norm or 'zscore').strip().lower()
+        if physio_norm == 'clip':                       # Stage-2 name
+            physio_norm = 'zscore'
+        if physio_norm not in ('none', 'ac', 'zscore', 'session'):
             raise ValueError(
-                f"signal_norm must be 'none', 'ac' or 'zscore'; got "
-                f'{signal_norm!r}')
+                f"physio_norm must be 'none', 'ac', 'zscore' ('clip') or "
+                f"'session'; got {physio_norm!r}")
         if split_by not in ('session', 'subject'):
             raise ValueError(
                 f"split_by must be 'session' or 'subject'; got {split_by!r}")
@@ -1256,7 +1290,7 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
                 f'train_ratio must be in (0, 1]; got {train_ratio!r}')
 
         self.target = target
-        self.signal_norm = signal_norm
+        self.physio_norm = physio_norm
         self.split_by = split_by
         self.is_train = bool(is_train)
         self.train_ratio = float(train_ratio)
@@ -1328,10 +1362,21 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
             target_landmarks=target_landmarks, resp_fs=resp_fs,
             min_signal_spread=min_signal_spread,
             rail_touch_v=rail_touch_v,
+            # 'session'/'clip' are implemented by the BASE dataset (whole-
+            # session or per-clip statistics); this class then leaves the
+            # window alone -- see _normalize_target.
+            physio_norm=('session' if self.physio_norm == 'session' else 'none'),
             subjects=_as_list(keep_subjects), tasks=self.task_selection.tasks,
             task_groups=task_groups, task_set=task_set,
             max_clips_per_session=max_clips_per_session,
             max_entries=max_entries, verbose=verbose)
+
+        # The parent stores ITS canonical dataset norm under the same attribute
+        # name (it is the knob driving the base dataset's ``norm``), so restore
+        # this class's STAGE-3 value here: ``_normalize_target`` and
+        # ``describe`` must see the Stage-3 vocabulary ('zscore'/'ac'), not the
+        # Stage-2 one ('clip'/'none').
+        self.physio_norm = physio_norm
 
         # a SESSION-level split still needs the per-session filter: the subject
         # filter above admits every session of the kept subjects
@@ -1350,7 +1395,9 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
     # ------------------------------------------------------------------ item
     def __getitem__(self, index: int):
         """``(tir [3, T, S, S] float32, waveform [L] float32)``."""
-        item = super().__getitem__(index)       # RAW volts, Stage-2 geometry
+        # Stage-2 geometry; RAW volts unless physio_norm='session', where the
+        # base already applied the whole-session z-score.
+        item = super().__getitem__(index)
         tir = item['tir']
         if not torch.is_tensor(tir):
             tir = torch.from_numpy(np.ascontiguousarray(tir))
@@ -1361,21 +1408,29 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
             self._normalize_target(np.asarray(w)[0]))
 
     def _normalize_target(self, w: np.ndarray) -> np.ndarray:
-        """Per-clip waveform normalisation -- the Stage-3 analogue of the
+        """Stage-3 target normalisation.
+
+        ``'zscore'`` / ``'ac'`` are per CLIP -- the Stage-3 analogue of the
         Stage-2 model's internal ``target_norm: clip`` (same population std and
-        the same 1e-6 epsilon as ``data.paired_dataset``)."""
+        the same 1e-6 epsilon as ``data.paired_dataset``).
+
+        ``'session'`` is a NO-OP here: the base dataset was constructed with
+        ``physio_norm='session'`` and already z-scored the window with the WHOLE
+        session's mean/std (the Stage-2 ``physio_norm: session`` target space),
+        so re-normalising would silently collapse it back to a per-clip z-score.
+        """
         w = np.asarray(w, dtype=np.float64)
-        if self.signal_norm == 'none':
+        if self.physio_norm in ('none', 'session'):
             return w.astype(np.float32)
         w = w - float(w.mean())
-        if self.signal_norm == 'zscore':
+        if self.physio_norm == 'zscore':
             w = w / (float(w.std()) + 1e-6)
         return w.astype(np.float32)
 
     def describe(self) -> str:
         return (super().describe()
                 + f'\n  Stage-3 view: target={self.target} '
-                  f'signal_norm={self.signal_norm} '
+                  f'physio_norm={self.physio_norm} '
                   f'split={self.split_key_kind} '
                   f'({"train" if self.is_train else "val"}) = {self.split_keys}'
                   f'\n  clips {len(self)} over {len(self.split_sessions)} '
@@ -1437,7 +1492,7 @@ def build_tir_roi_finetune_dataset(is_train: bool, test_mode: bool,
             getattr(args, 'roi_landmarks', None)),
         resp_fs=float(getattr(args, 'resp_fs', DEFAULT_RESP_FS)),
         fps=float(getattr(args, 'fps', DEFAULT_FPS)),
-        signal_norm=str(getattr(args, 'signal_norm', 'zscore')),
+        physio_norm=str(getattr(args, 'physio_norm', 'zscore')),
         min_signal_spread=float(getattr(args, 'min_signal_spread', 0.0) or 0.0),
         rail_touch_v=float(getattr(args, 'rail_touch_v', 0.0) or 0.0),
         subjects=getattr(args, 'subjects', None),
@@ -1456,6 +1511,10 @@ def build_tir_roi_pretrain_dataset(args) -> TirRoiRespPretrainDataset:
 
     Selected by ``data_set: tir_roi`` (see ``data/datasets.py``). Only
     ``getattr``-reads, so an args namespace from any runner/config works.
+
+    ``--physio_norm`` is THE target-normalisation knob of the pipeline; the
+    model side is pinned to ``target_norm='none'`` by ``runners/run_pretrain.py``
+    for every ROI lineage, so there is no second knob to keep in sync.
     """
     tubelet = str(getattr(args, 'tubelet', '2,16,16')).split(',')
     ds = TirRoiRespPretrainDataset(
@@ -1476,6 +1535,7 @@ def build_tir_roi_pretrain_dataset(args) -> TirRoiRespPretrainDataset:
             getattr(args, 'roi_landmarks', None)),
         min_signal_spread=float(getattr(args, 'min_signal_spread', 0.0) or 0.0),
         rail_touch_v=float(getattr(args, 'rail_touch_v', 0.0) or 0.0),
+        physio_norm=str(getattr(args, 'physio_norm', 'none') or 'none'),
         subjects=getattr(args, 'subjects', None),
         tasks=getattr(args, 'tasks', None),
         task_groups=getattr(args, 'task_groups', None),
@@ -1527,6 +1587,18 @@ def _check_clip(ds: BP4DPlusTIRRespDataset, index: int) -> List[str]:
         mu, sd = float(resp.mean()), float(resp.std(unbiased=False))
         if abs(mu) > 1e-5 or abs(sd - 1.0) > 1e-3:
             fails.append(f'per-clip z-score off: mean {mu:.3e}, std {sd:.6f}')
+
+    if ds.norm == 'session' and resp.numel() > 1:
+        # Session-level z-score: the CLIP mean/std are deliberately NOT 0/1
+        # (that is the point) -- what must hold is that the returned window is
+        # exactly the raw window under the SESSION's affine map.
+        ds._resp_full(sess)                         # fills _norm_cache
+        mu_s, sd_s = ds._norm_cache[sess]
+        raw = ds.respiration_clip(index, normalized=False)
+        expect = (raw - mu_s) / (sd_s + 1e-8)
+        if not np.allclose(resp.numpy(), expect, atol=1e-5):
+            fails.append('session z-score != '
+                         '(raw - session_mean)/(session_std + 1e-8)')
 
     # --- task-group bookkeeping (the "distortion level" the clip belongs to)
     want = list(ds.task_selection.levels_of(entry['task']))

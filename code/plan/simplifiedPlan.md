@@ -330,7 +330,7 @@ fs: 100.0
 sig_kernel: 16
 seq_len: 0                          # -> output_len 800
 target: bp                         # resp in the other run
-signal_norm: zscore                 # [new] per-SESSION, not per-clip
+physio_norm: zscore                 # [new] per-SESSION, not per-clip
 finetune: <stage2 ckpt>             # heads.<target> -> waveform_head transfer [new]
 train_mask_ratios: 0,0.75,0.90,0.95 # [new] Stage-3 augmentation mixture
 eval_mask_ratio: 0.0                # headline numbers on dense video

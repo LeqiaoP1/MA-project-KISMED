@@ -36,7 +36,7 @@ input_size: 64
 seq_len: 0                         # 0 => 400 samples
 fs: 100
 sig_kernel: 8                      # 8/100 == 2/25 s -> one signal token == one video tubelet
-signal_norm: zscore                # the raw RESP column is volts, not zero-mean
+physio_norm: zscore                # the raw RESP column is volts, not zero-mean
 
 # ---- data (canonical layout from data/prepare_bp4d.py) ----
 data_set: bp4d+

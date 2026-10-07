@@ -20,8 +20,11 @@ All losses operate on 1D waveforms of shape ``[B, T]`` or ``[B, 1, T]``
 (a leading channel axis is squeezed). ``L_time`` is the only SCALE-DEPENDENT term
 (it owns the amplitude); ``L_Pearson`` is scale- and shift-invariant, and
 ``L_MR-STFT`` compares magnitude spectra. With the Stage-3 per-clip
-``signal_norm: zscore`` target the target std is ~1.0 by construction, so
-``L_time`` reduces to ``|std(pred) - 1|``.
+``physio_norm: zscore`` target the target std is ~1.0 by construction, so
+``L_time`` reduces to ``|std(pred) - 1|``. With ``physio_norm: session`` (the
+twin of the Stage-2 ``physio_norm: session`` target space) the target std is NOT
+~1 and the clip mean is non-zero, so ``L_time`` becomes a genuine
+amplitude-matching term ``|std(pred) - std(target)|``.
 """
 from typing import List
 
@@ -70,7 +73,7 @@ def _std(x: torch.Tensor, eps: float = _EPS) -> torch.Tensor:
     ``unbiased=False`` (divide by N) matches the target normalisation used
     upstream: ``data.rgb_roi_dataset.RGBRoiFinetuneDataset._normalize_target``
     and ``data.paired_dataset`` both divide by the numpy population std, so a
-    ``signal_norm: zscore`` target measures std ~ 1.0 here.
+    ``physio_norm: zscore`` target measures std ~ 1.0 here.
     """
     d = x - x.mean(dim=-1, keepdim=True)
     return torch.sqrt((d * d).mean(dim=-1) + eps)
@@ -117,8 +120,9 @@ class StdLoss(nn.Module):
     alone, and Pearson is scale-invariant and cosine-flat near r = 1.
 
     :param reduction: ``'l1'`` (default, ``|d|``) or ``'l2'`` (``d ** 2``). With
-        the per-clip ``signal_norm: zscore`` target (measures std 0.999) both
-        reduce to ``|std(pred) - 1|``.
+        the per-clip ``physio_norm: zscore`` target (measures std 0.999) both
+        reduce to ``|std(pred) - 1|``; with ``physio_norm: session`` the target
+        std is clip-dependent, so they compare ``std(pred)`` against it.
     """
 
     def __init__(self, reduction: str = 'l1'):

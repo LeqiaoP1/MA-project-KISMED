@@ -74,7 +74,7 @@ on the 43 360 clips that survive the rail rule:
   belt that *swings* gives a LARGE artifact — no spread value sees either.
 
 Why it matters beyond removing dead data: under `target_norm: clip` (Stage 2) and
-`signal_norm: zscore` (Stage 3) a 0.06 V ripple is **rescaled to unit variance**,
+`physio_norm: zscore` (Stage 3) a 0.06 V ripple is **rescaled to unit variance**,
 so it would enter training as a full-amplitude label that is pure artifact.
 
 ### 1.3 Geometry: the 8 s window moves with a 1 s hop

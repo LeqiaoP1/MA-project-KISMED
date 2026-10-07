@@ -87,13 +87,14 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `tubelet` | str | `t,ph,pw`: e.g. `2,16,16` |
 | `input_size` | int | Square frame px: 64 (local) / 224 (HPC) |
 | `fps` / `fs` | float | Video fps / signal sample rate Hz |
-| `clip_duration` / `clip_stride` | float | Clip length s / window hop s. The TIR-ROI/RESP study uses **8.0 / 1.0** (an 8 s window with a 1 s hop -> 7/8 overlap, to keep the transient breathing dynamics); the hop decides WHICH windows exist, so it belongs to the corpus contract — keep it equal in Stage 2 and 3 |
+| `clip_duration` / `clip_stride` | float | Clip length s / window hop s. The TIR-ROI/RESP study uses an **8 s window**; the hop is **2.0** in the HPC Stage-2 run (4× redundant per-clip decode instead of 8×, to keep the transient breathing dynamics while roughly halving the epoch) and 1.0 in the remaining configs. `clip_stride` is NOT part of the Stage-2/3 ROI contract (`run_waveform.py` does not enforce it) |
 | `temporal_stride` | int | Frame decimation inside window (1 = every frame) |
 | `seq_len` | int | Signal samples; 0 = `clip_duration * fs` |
 | `pos_init` | str | `sincos3d` or `random` |
 | `mask_ratio_{rgb\|tir\|bp\|resp\|eda}` | float | Per-stream masking ratio |
 | `signal_weight` | float | Loss weight for physio streams (default 0.5) |
-| `target_norm` | str | `token` (per-token z-score) or `clip` (per-clip z-score) |
+| `target_norm` | str | `token` (per-token z-score), `clip` (per-clip z-score) or `none` (IDENTITY). **NON-ROI paths only** (e.g. `bp4d+`): for the RAW-tree ROI lineages (`tir_roi` = TIR-ROI+RESP, `rgb_roi` = RGB+BP) the DATASET owns the normalisation and `run_pretrain.py` pins this to `none` |
+| `physio_norm` (Stage 2) | str | **THE 1-D target-normalisation knob** for `tir_roi` / `rgb_roi`: `none` (raw, debug), `clip` (= `zscore`) per-clip z-score, `session` whole-session z-score. Applied by the dataset; the model never re-normalises |
 | `spectral_weight` | float | MR-STFT loss weight; **0.0 in all current configs** |
 | `spectral_fft_sizes` / `spectral_hop_ratio` | str / float | STFT config |
 | `pretrained_encoder` | str | Stage-1 VideoMAE corpus: `videomae:k400` / `videomae:ssv2` / `videomae` / `base` (= k400) / a local path. Blank/random is **rejected** |
@@ -112,7 +113,7 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `target` | str | `bp` / `resp` / `eda` |
 | `finetune` | str | Path to Stage-2 checkpoint |
 | `sig_kernel` | int | Signal window size per token; must satisfy `sig_kernel/fs == tubelet_t*stride/fps` |
-| `signal_norm` | str | `none` or `zscore` |
+| `physio_norm` | str | `none` / `ac` / `zscore` (per clip) / `session` (whole-session stats). The SAME knob, name and values as the ROI Stage-2 paths, so one clip yields one identical target in both stages |
 | `head_hidden` / `head_style` / `head_init` | int / str | Head architecture + initialisation |
 | `train_ratio` / `split_by` / `val_subject` | float / str | Split policy |
 | `alpha` / `beta` / `gamma` | float | `WaveformJointLoss` term weights |
@@ -164,7 +165,7 @@ Available Slurm batch files (`code/scripts/hpc/`): `submit_inspect.sbatch`, `sub
 | Runner | Stage | Key flags |
 |--------|-------|-----------|
 | `run_pretrain.py` | Stage 2 | `-c`, `--streams`, `--pretrained_encoder`, `--model` |
-| `run_waveform.py` | Stage 3 | `-c`, `--target`, `--finetune`, `--sig_kernel`, `--signal_norm` |
+| `run_waveform.py` | Stage 3 | `-c`, `--target`, `--finetune`, `--sig_kernel`, `--physio_norm` |
 | `run_finetune.py` | Classification | `-c`, `--model`, `--finetune`, `--nb_classes` |
 | `run_au_probe.py` | AU probe | `-c`, `--probe` (linear/ft), `--finetune` |
 | `run_evaluate.py` | Offline eval | `--preds_dir`, `--target`, `--fs` |

@@ -21,7 +21,7 @@ tubelet: 2,16,16
 temporal_stride: 1
 sig_kernel: 8
 input_size: 224
-signal_norm: zscore     # raw BP4D streams are not zero-mean (see bp.yaml)
+physio_norm: zscore     # raw BP4D streams are not zero-mean (see bp.yaml)
 finetune: ../output/pretrain/stage2_multimodal/checkpoints/checkpoint-0799.pth
 
 # Data (canonical layout from data/prepare_bp4d.py)

@@ -754,6 +754,7 @@ class RGBRoiPretrainDataset(Dataset):
                  landmarks: Sequence[int] = FACE_LANDMARKS,
                  decode_scale: int = 1,
                  phys_fs: float = DEFAULT_PHYS_FS,
+                 physio_norm: str = 'none',
                  subjects=None, tasks=None,
                  max_clips_per_session: Optional[int] = None,
                  max_entries: Optional[int] = None,
@@ -772,6 +773,18 @@ class RGBRoiPretrainDataset(Dataset):
         if unknown:
             raise ValueError(f'RGBRoiPretrainDataset: unknown stream(s) {unknown}; '
                              f'expected a subset of {sorted(SIGNAL_FILES)}.')
+
+        # WHERE the 1-D target is normalised -- the SAME single knob (and the
+        # same values) as the tir_roi Stage-2 view and as Stage 3. 'zscore' is
+        # accepted as an ALIAS of 'clip'. The model never normalises a 1-D
+        # stream: run_pretrain.py pins target_norm='none' for every ROI path.
+        self.physio_norm = str(physio_norm or 'none').strip().lower()
+        if self.physio_norm == 'zscore':
+            self.physio_norm = 'clip'
+        if self.physio_norm not in ('none', 'clip', 'session'):
+            raise ValueError(
+                f"RGBRoiPretrainDataset: physio_norm must be 'none', 'clip' "
+                f"('zscore') or 'session'; got {physio_norm!r}")
 
         self.fs = float(fs)
         self.fps = float(fps)
@@ -797,7 +810,7 @@ class RGBRoiPretrainDataset(Dataset):
             phys_fs=self.phys_fs, input_size=self.input_size,
             clip_stride=clip_stride, roi_padding=self.roi_padding,
             roi_quantile=self.roi_quantile, landmarks=landmarks,
-            decode_scale=decode_scale, norm='none',
+            decode_scale=decode_scale, norm=self.physio_norm,
             max_clips_per_session=max_clips_per_session,
             max_entries=max_entries, verbose=verbose)
         self.entries = self.base.entries
@@ -864,7 +877,7 @@ class RGBRoiFinetuneDataset(RGBRoiPretrainDataset):
     Stage-3-specific: a SUBJECT-disjoint split by default (``split_by``), an
     explicit ``val_subject`` override for leave-one-subject-out, and a
     ``(rgb, waveform)`` tuple item; the target is normalised HERE
-    (``signal_norm``) because Stage 3 scores the final waveform against the
+    (``physio_norm``) because Stage 3 scores the final waveform against the
     label, while the base class returns RAW values.
     """
 
@@ -885,7 +898,7 @@ class RGBRoiFinetuneDataset(RGBRoiPretrainDataset):
                  decode_scale: int = 1,
                  phys_fs: float = DEFAULT_PHYS_FS,
                  fps: float = DEFAULT_FPS,
-                 signal_norm: str = 'zscore',
+                 physio_norm: str = 'zscore',
                  subjects: Optional[Sequence[str]] = None,
                  tasks: Optional[Sequence[str]] = None,
                  max_clips_per_session: Optional[int] = None,
@@ -894,9 +907,13 @@ class RGBRoiFinetuneDataset(RGBRoiPretrainDataset):
         if target not in SIGNAL_FILES:
             raise ValueError(f'target must be one of {sorted(SIGNAL_FILES)}, '
                              f'got {target!r}')
-        if signal_norm not in ('none', 'ac', 'zscore'):
-            raise ValueError(f"signal_norm must be 'none', 'ac' or 'zscore'; got "
-                             f'{signal_norm!r}')
+        physio_norm = str(physio_norm or 'zscore').strip().lower()
+        if physio_norm == 'clip':                       # Stage-2 name
+            physio_norm = 'zscore'
+        if physio_norm not in ('none', 'ac', 'zscore', 'session'):
+            raise ValueError(
+                f"physio_norm must be 'none', 'ac', 'zscore' ('clip') or "
+                f"'session'; got {physio_norm!r}")
         if split_by not in ('session', 'subject'):
             raise ValueError(f"split_by must be 'session' or 'subject'; got "
                              f'{split_by!r}')
@@ -904,7 +921,7 @@ class RGBRoiFinetuneDataset(RGBRoiPretrainDataset):
             raise ValueError(f'train_ratio must be in (0, 1]; got {train_ratio!r}')
 
         self.target = target
-        self.signal_norm = signal_norm
+        self.physio_norm = physio_norm
         self.split_by = split_by
         self.is_train = bool(is_train)
         self.train_ratio = float(train_ratio)
@@ -966,9 +983,17 @@ class RGBRoiFinetuneDataset(RGBRoiPretrainDataset):
             input_size=input_size, roi_padding=roi_padding,
             roi_quantile=roi_quantile, landmarks=landmarks,
             decode_scale=decode_scale, phys_fs=phys_fs,
+            # 'session' is implemented by the BASE dataset (whole-session
+            # statistics); this class then leaves the window alone -- see
+            # _normalize_target.
+            physio_norm=('session' if self.physio_norm == 'session' else 'none'),
             subjects=_as_list(keep_subjects), tasks=tasks,
             max_clips_per_session=max_clips_per_session,
             max_entries=max_entries, verbose=verbose)
+
+        # The parent stores ITS canonical dataset norm under the same attribute
+        # name (see the tir_roi twin), so restore this class's STAGE-3 value.
+        self.physio_norm = physio_norm
 
         if self.split_key_kind == 'session':
             keep_set = set(self.split_keys)
@@ -992,21 +1017,29 @@ class RGBRoiFinetuneDataset(RGBRoiPretrainDataset):
         return rgb, torch.from_numpy(self._normalize_target(np.asarray(w)[0]))
 
     def _normalize_target(self, w: np.ndarray) -> np.ndarray:
-        """Per-clip normalisation -- the Stage-3 analogue of the Stage-2 model's
-        internal ``target_norm: clip`` (same population std, same 1e-6 epsilon
-        as ``data.paired_dataset``)."""
+        """Stage-3 target normalisation.
+
+        ``'zscore'`` / ``'ac'`` are per CLIP -- the Stage-3 analogue of the
+        Stage-2 model's internal ``target_norm: clip`` (same population std,
+        same 1e-6 epsilon as ``data.paired_dataset``).
+
+        ``'session'`` is a NO-OP here: the base dataset was constructed with
+        ``physio_norm='session'`` and already z-scored the window with the
+        WHOLE session's statistics -- re-normalising would collapse it back to a
+        per-clip z-score.
+        """
         w = np.asarray(w, dtype=np.float64)
-        if self.signal_norm == 'none':
+        if self.physio_norm in ('none', 'session'):
             return w.astype(np.float32)
         w = w - float(w.mean())
-        if self.signal_norm == 'zscore':
+        if self.physio_norm == 'zscore':
             w = w / (float(w.std()) + 1e-6)
         return w.astype(np.float32)
 
     def describe(self) -> str:
         return (super().describe()
                 + f'\n  Stage-3 view: target={self.target} '
-                  f'signal_norm={self.signal_norm} split={self.split_key_kind} '
+                  f'physio_norm={self.physio_norm} split={self.split_key_kind} '
                   f'({"train" if self.is_train else "val"}) = {self.split_keys}'
                   f'\n  clips {len(self)} over {len(self.split_sessions)} '
                   f'session(s): {self.split_sessions}')
@@ -1041,6 +1074,7 @@ def build_rgb_roi_pretrain_dataset(args) -> RGBRoiPretrainDataset:
             or getattr(args, 'landmarks', None)),
         decode_scale=int(getattr(args, 'decode_scale', 1) or 1),
         phys_fs=float(getattr(args, 'phys_fs', DEFAULT_PHYS_FS)),
+        physio_norm=str(getattr(args, 'physio_norm', 'none') or 'none'),
         subjects=getattr(args, 'subjects', None),
         tasks=getattr(args, 'tasks', None),
         max_clips_per_session=getattr(args, 'max_clips', None),
@@ -1083,7 +1117,7 @@ def build_rgb_roi_finetune_dataset(is_train: bool, test_mode: bool,
         decode_scale=int(getattr(args, 'decode_scale', 1) or 1),
         phys_fs=float(getattr(args, 'phys_fs', DEFAULT_PHYS_FS)),
         fps=float(getattr(args, 'fps', DEFAULT_FPS)),
-        signal_norm=str(getattr(args, 'signal_norm', 'zscore')),
+        physio_norm=str(getattr(args, 'physio_norm', 'zscore')),
         subjects=getattr(args, 'subjects', None),
         tasks=getattr(args, 'tasks', None),
         max_clips_per_session=getattr(args, 'max_clips', None),

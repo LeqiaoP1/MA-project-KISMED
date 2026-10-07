@@ -20,7 +20,7 @@ Usage (from ``code/``)::
     python runners/run_evaluate_session.py --pred_dir ../output/finetune/bp_local \\
         --waveform bp --fs 100 --tier 1,2,3
 
-Note on scale: with ``signal_norm: zscore`` every clip prediction is defined up
+Note on scale: with ``physio_norm: zscore`` every clip prediction is defined up
 to a per-clip affine map, so session MAE/RMSE are reported twice -- raw, and
 after one least-squares per-session calibration (``mae_affine``). Pearson and
 the PSD shape are affine-invariant and need no calibration.

@@ -186,12 +186,11 @@ mask_span_s: {bp: 1.75}            # ignored while physio_mask: random
 
 # ---------------------------------------------------------------------- loss
 signal_weight: 0.5                 # lambda for every physio stream (visual 1.0)
-target_norm: clip                  # per-clip z-score inside the model. The
-                                   # dataset therefore returns RAW mmHg -- do
-                                   # not normalise twice. Also removes the
-                                   # per-token z-score shortcut that would let
-                                   # the decoder reconstruct from position
-                                   # alone.
+physio_norm: clip                  # per-clip z-score, applied by the DATASET
+                                   # (the model is pinned to target_norm='none'
+                                   # for rgb_roi). Same knob as the TIR-ROI
+                                   # pipeline -- set 'session' to move RGB+BP
+                                   # to the session-relative target space too.
 spectral_weight: 0.0               # OFF (decision 2026-09-26: the spectral term
                                    # belongs to Stage-3 fine-tuning)
 

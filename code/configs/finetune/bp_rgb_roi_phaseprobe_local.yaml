@@ -132,7 +132,7 @@ seq_len: 0                         # 0 => 496 samples (4.96 s at fs 100 Hz)
 fs: 100
 sig_kernel: 16                     # 16/100 == 2*2/25 s -> one signal token == one video tubelet
                                    #   (build_waveform_model ENFORCES samples_per_token == sig_kernel)
-signal_norm: zscore                # per clip; mirrors the Stage-2 target_norm: clip. REQUIRED for
+physio_norm: zscore                # per clip; mirrors the Stage-2 target_norm: clip. REQUIRED for
                                    #   BP: the raw BP_mmHg is mmHg with mean ~100, so "none" would
                                    #   make the head fit a ~100 DC offset and dominate the MR-STFT
                                    #   with the 0 Hz bin.

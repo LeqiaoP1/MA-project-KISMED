@@ -108,7 +108,7 @@ seq_len: 0                         # 0 => 800 samples = 8 s at fs 100 Hz
 fs: 100
 sig_kernel: 16                     # 16/100 == 2*2/25 s -> one signal token == one video tubelet
                                    #   (build_waveform_model ENFORCES samples_per_token == sig_kernel)
-signal_norm: zscore                # per clip; mirrors the Stage-2 target_norm: clip
+physio_norm: zscore                # per clip; mirrors the Stage-2 target_norm: clip
 
 # ---- data split (SUBJECT-disjoint; see the LOSO sweep above) ----
 train_ratio: 0.8                   # 4 subjects -> 3 train (F001-F003) / val = F004

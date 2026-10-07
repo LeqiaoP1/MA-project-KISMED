@@ -53,7 +53,7 @@ The session name encodes subject (`'F001_T1'.rsplit('_', 1)[0]` -> `'F001'`), en
 
 **Dev caps** (applied in order): `max_sessions` -> `max_clips` -> `max_entries`.
 
-**Signal normalisation** (`signal_norm`): `'none'` (raw) or `'zscore'` (population std, ddof=0, per clip).
+**Signal normalisation** (`physio_norm`): `'none'` (raw), `'ac'` (remove the clip mean, Stage 3), `'clip'`/`'zscore'` (population std, ddof=0, per clip; the two names are aliases) or `'session'` (population stats over the WHOLE session's `Resp_Volts.txt`). It is THE target-normalisation knob of the pipeline and the DATASET owns it in every ROI lineage (`tir_roi`, `rgb_roi`) in both stages.
 
 **`PairedPretrainDataset.__getitem__` output shapes**:
 

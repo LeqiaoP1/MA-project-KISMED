@@ -108,7 +108,7 @@ comparable.
 | `sig_kernel` | `8` | 2·1/25 == 8/100 |
 | `seq_len` | `0` | → 400 samples |
 | `fs` | `100` | |
-| `signal_norm` | `zscore` | raw mmHg has mean ≈101 / std ≈11 |
+| `physio_norm` | `zscore` | raw mmHg has mean ≈101 / std ≈11 |
 | `data_set` / `data_path` | `bp4d+` / `../data/processed/bp4d_canonical` | |
 | `train_ratio` | `0.8` | subject-disjoint (Phase 1.2) |
 | `split_by` | `subject` | **new key** — inert until Phase 1.2 lands |
@@ -242,7 +242,7 @@ Load the dump, assemble per session, build the reference from that session's
 **session-level post-stitch** Tier-1/2 + Tier-3 on the assembled waveform.
 Write JSON in the same shape as `runners/run_evaluate.py` (:88-90).
 
-Scale handling: with per-clip `signal_norm: zscore`, each prediction is defined only up
+Scale handling: with per-clip `physio_norm: zscore`, each prediction is defined only up
 to a per-clip affine map, so the assembled trace is a patchwork of scales. Report
 affine-invariant quantities session-level (Pearson, PSD shape, RR-interval metrics) as
 primary, and optionally apply one per-session LSQ affine calibration before quoting
@@ -385,7 +385,7 @@ per-fold `--output_dir`. Full record: `TirROI_Resp_plan.md` §10.
 2. **Stitched-waveform scale convention.** Option A *(default)*: report
    affine-invariant session metrics (Pearson / PSD shape / RR) and keep MAE/RMSE
    per-clip. Option B: chain-wise affine calibration between overlapping clips.
-   Option C: switch `signal_norm` to `none` for the final epochs so absolute amplitude
+   Option C: switch `physio_norm` to `none` for the final epochs so absolute amplitude
    is learned — needs a target-scale decision first.
 3. **From-scratch control.** The init A/B ("is Stage 2 necessary" at the downstream
    level) needs a third/fourth run off `stage2_local_scratch/checkpoints/checkpoint-0039.pth`.

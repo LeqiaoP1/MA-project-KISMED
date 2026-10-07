@@ -38,7 +38,11 @@ FPS = 25.0
 RESP_FS = 1000.0
 N_FRAMES = 400                             # 16 s
 CLIP_S = 8.0
-STRIDE_S = 1.0                             # the shipped hop
+STRIDE_S = 1.0                             # the shipped hop (synthetic tests)
+#: per-config window-hop OVERRIDES (s): the HPC Stage-2 run deliberately
+#: samples transients at 2 s (4x redundant decode instead of 8x, ~halves the
+#: epoch); the rest of the TIR-ROI study stays at the 1 s hop.
+EXPECTED_STRIDE_S = {'stage2_hpc_tir_roi_resp.yaml': 2.0}
 N_RESP = int(N_FRAMES / FPS * RESP_FS)     # 16000 samples
 RAIL = trd.RESP_RAIL_V
 
@@ -104,7 +108,7 @@ def _args(root: str, **over) -> argparse.Namespace:
               clip_duration=CLIP_S, clip_stride=STRIDE_S, temporal_stride=1,
               tubelet='2,16,16', input_size=64, roi_padding=0.2,
               roi_quantile=0.0, roi_landmarks='', fps=FPS, resp_fs=RESP_FS,
-              fs=100.0, signal_norm='zscore', target='resp',
+              fs=100.0, physio_norm='zscore', target='resp',
               train_ratio=1.0, split_by='session', val_subject='',
               min_signal_spread=0.0, rail_touch_v=9.90,
               max_clips=None, max_entries=None, verbose=False)
@@ -172,16 +176,19 @@ def test_every_entry_point_exposes_the_flag(runner):
     assert "'--rail_touch_v'" in src, f'{runner} cannot set --rail_touch_v'
 
 
-def test_the_tir_configs_use_the_strict_rule_and_a_1s_hop():
-    """Every TIR-ROI/RESP config: the touch rule ON, and the 1 s window hop."""
+def test_the_tir_configs_use_the_strict_rule_and_a_consistent_hop():
+    """Every TIR-ROI/RESP config: the touch rule ON, an 8 s window, and the
+    DOCUMENTED window hop (the HPC Stage-2 run uses 2 s, the rest 1 s)."""
     assert len(TIR_CONFIGS) == 7
     for path in TIR_CONFIGS:
         with open(path) as fh:
             cfg = yaml.safe_load(fh)
+        name = os.path.basename(path)
         rel = os.path.relpath(path, CODE_DIR)
         assert cfg['rail_touch_v'] == pytest.approx(9.90), rel
         assert cfg['min_signal_spread'] == pytest.approx(0.1), rel
-        assert cfg['clip_stride'] == pytest.approx(STRIDE_S), rel
+        assert cfg['clip_stride'] == pytest.approx(
+            EXPECTED_STRIDE_S.get(name, STRIDE_S)), rel
         assert cfg['clip_duration'] == pytest.approx(CLIP_S), rel
 
 

@@ -283,7 +283,7 @@ thermal-ROI path, all also exposed on `run_inspect_tir_resp.py`:
   that band is at a plausible breathing level. Genuine breathing is >= 0.3 V p-p
   (corpus p10 ~0.75 V), so the guard does not reach even shallow respiration.
   Why it matters more than "noise": under `target_norm: clip` / Stage-3
-  `signal_norm: zscore` such a window is rescaled to UNIT variance, so it would
+  `physio_norm: zscore` such a window is rescaled to UNIT variance, so it would
   enter training as a **full-amplitude label that is pure artifact**. Cost at
   `0.1`: 1434 clips (3.3 % of the kept corpus) and 9 sessions emptied.
   `max - min` is a RANGE, so a single spike inflates it (a pinned channel with
@@ -299,20 +299,52 @@ thermal-ROI path, all also exposed on `run_inspect_tir_resp.py`:
   landmarks the ROI was ACTUALLY built from (`ds.target_idx`) instead of a
   hardcoded 12-point set, so the box and its annotation can no longer disagree.
 
-**Clip geometry: an 8 s window with a 1 s hop (2026-10-06).** `clip_stride` is
-`1.0` in all 7 TIR-ROI/RESP configs (it was `4.0` in Stage 2 and `2.0` in
-Stage 3), so 7 of every 8 consecutive windows OVERLAP. The intent is to sample
-the **transient breathing dynamics** an emotional episode shows — a 4 s hop
-averages them away. Consequences to keep in mind:
+**Clip geometry: an 8 s window; the hop is 2.0 s in the HPC Stage-2 run
+(2026-10-07).** The other 6 TIR-ROI/RESP configs keep the 1 s hop (the
+2026-10-06 value; it was `4.0` in Stage 2 and `2.0` in Stage 3). The intent is
+to sample the **transient breathing dynamics** an emotional episode shows — a
+4 s hop averages them away. At 2.0 s, 3 of every 4 consecutive windows overlap
+(vs 7/8 at 1.0 s): the per-clip decode redundancy halves (4× instead of 8×) and
+the epoch is roughly halved, at the cost of a coarser transient sampling.
+Consequences to keep in mind:
 
-* the clip count rises ~4x. `clip_stride` decides **which windows exist**, so it
-  belongs to the corpus contract: `run_waveform.py` now prints a note when it
-  differs from the Stage-2 checkpoint's value, next to `rail_touch_v`;
-* consecutive clips are ~87 % correlated, so the *effective* sample size is much
-  smaller than the clip count — read a per-clip metric count as a count of
+* `clip_stride` decides **which windows exist**, so it is a corpus choice:
+  `run_waveform.py` prints a note when Stage 3 differs from the Stage-2
+  checkpoint's value, next to `rail_touch_v`. It is NOT part of the ENFORCED ROI
+  contract (`roi_landmarks` / `roi_padding` / `roi_quantile` / `input_size` are);
+* consecutive clips stay strongly correlated, so the *effective* sample size is
+  much smaller than the clip count — read a per-clip metric count as a count of
   WINDOWS, not of independent observations;
-* epoch time and the validation set grow by the same factor; revisit `epochs` /
+* epoch time and the validation set scale with the clip count; revisit `epochs` /
   `eval_freq` instead of assuming the old schedule still fits.
+
+**One normalisation knob: `physio_norm` (2026-10-07).** The TIR-ROI+RESP
+pipeline normalises the 1-D TARGET in the DATASET, in both stages, under the
+SAME flag name and values — so the mechanism carries over unchanged to the
+RGB+BP extension (`data_set: rgb_roi`).
+
+* Stage 2: `configs/pretrain/stage2_hpc_tir_roi_resp.yaml` sets
+  `physio_norm: session`. `--physio_norm {none, clip|zscore, session}` makes
+  `TirRoiRespPretrainDataset` wrap the base as
+  `BP4DPlusTIRRespDataset(norm=...)`: `session` z-scores every clip with the
+  **whole session's** mean/std (population statistics over the entire
+  `Resp_Volts.txt`), so a clip keeps its session-relative amplitude and offset
+  instead of being flattened to unit variance on its own. `clip`/`zscore`
+  (aliases) is the per-clip z-score; `none` is raw (debug only).
+* The model never normalises a 1-D stream: `run_pretrain.pin_roi_target_norm`
+  FORCES `target_norm='none'` for every RAW-tree ROI lineage (`tir_roi` =
+  TIR-ROI+RESP, `rgb_roi` = RGB+BP), so there is no second knob to keep in
+  sync — the ROI configs therefore never set `target_norm` (asserted by
+  `test_roi_configs_never_set_the_model_side_target_norm`). Visual streams are
+  unaffected — they always take their own per-token z-score.
+* Stage 3 uses the same flag and values on `run_waveform.py`; with
+  `configs/finetune/resp_tir_roi_hpc.yaml` set to `physio_norm: session` the
+  SAME clip yields the SAME target in both stages (asserted by
+  `test_stage2_and_stage3_target_spaces_are_identical`). The other Stage-3
+  configs stay `zscore` because they pair with per-clip Stage-2 runs.
+* Caveat: under `session` the target std is no longer ~1, so `alpha` (StdLoss)
+  becomes a genuine amplitude term rather than `|std(pred) - 1|`.
+* Tests: `tests/test_physio_norm.py`.
 
 **Where the rail rule applies (audited 2026-10-06).** `rail_touch_v` and
 `min_signal_spread` are threaded through `args` in every stage that builds the
@@ -335,7 +367,8 @@ Two guards make a silently-off rule impossible:
   (`build_pretraining_dataset` / `build_dataset`) and asserts the value arrives
   at the dataset in both views, that it is off + reported when the key is
   absent, that all five entry points expose the flag, and that all 7 configs
-  ship `rail_touch_v: 9.90` with `min_signal_spread: 0.1` and `clip_stride: 1.0`.
+  ship `rail_touch_v: 9.90` with `min_signal_spread: 0.1` (and a documented
+  `clip_stride`: `2.0` in the HPC Stage-2 run, `1.0` elsewhere).
 
 **The Stage-3 ROI contract is now ENFORCED (2026-10-01).** The ROI keys
 (`roi_landmarks`, `roi_padding`, `roi_quantile`, `input_size`) decide *which

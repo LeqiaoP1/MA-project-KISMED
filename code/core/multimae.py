@@ -339,10 +339,18 @@ class MultiModalMAE(nn.Module):
         #   is what the spectral term below requires: per-token rescaling puts
         #   a step at every token boundary, i.e. broadband energy the STFT loss
         #   would chase instead of the physiological band.
-        if target_norm not in ('token', 'clip'):
+        # 'none' : IDENTITY -- the 1-D target is used EXACTLY as the dataset
+        #   returns it. This is the SESSION-level-normalisation mode: the
+        #   dataset z-scores each clip with its WHOLE SESSION's mean/std
+        #   (``data.tir_resp_dataset.TirRoiRespPretrainDataset(
+        #   physio_norm='session')``), so the model must NOT re-normalise per
+        #   clip -- doing both silently collapses the session-relative
+        #   amplitude back to a per-clip z-score. The VISUAL streams are
+        #   unaffected: they always take their own per-token z-score below.
+        if target_norm not in ('token', 'clip', 'none'):
             raise ValueError(
-                f"MultiModalMAE: target_norm must be 'token' or 'clip'; "
-                f'got {target_norm!r}')
+                f"MultiModalMAE: target_norm must be 'token', 'clip' or "
+                f"'none'; got {target_norm!r}")
         self.target_norm = target_norm
 
         # ---- optional spectral (MR-STFT magnitude) loss on the 1-D streams - #
@@ -822,6 +830,12 @@ class MultiModalMAE(nn.Module):
             var = x.var(dim=-1, unbiased=False, keepdim=True)
             return (x - mean) / torch.sqrt(var + _EPS)
         x = x.reshape(x.shape[0], self.n_signal, self.sig_kernel)
+        if self.target_norm == 'none':
+            # IDENTITY: the dataset already normalised this 1-D stream (e.g.
+            # the session-level z-score); use it verbatim. The reshape is the
+            # exact inverse of the tokenisation, so the assembled target IS the
+            # waveform the dataset produced.
+            return x
         if self.target_norm == 'clip':
             # ONE mean/std per (sample, stream) -- the flattening inverse of
             # this (tokens are consecutive non-overlapping windows) reproduces

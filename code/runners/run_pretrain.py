@@ -212,15 +212,34 @@ def get_args():
                              'does not dominate the gradient; low variance -> '
                              '~1.0 so it is not ignored.')
     parser.add_argument('--target_norm', default='token', type=str,
-                        choices=['token', 'clip'],
+                        choices=['token', 'clip', 'none'],
                         help="normalisation of the 1-D reconstruction target. "
                              "'token' (default) = per-token z-score: every "
                              'sig_kernel window is rescaled by its OWN '
                              "mean/std. 'clip' = per-clip z-score: ONE "
                              'mean/std per (sample, stream), so the token '
                              'windows reassemble into a coherent waveform and '
-                             'the Stage-2 target space matches Stage 3. REQUIRED '
-                             'to be clip when --spectral_weight > 0.')
+                             'the Stage-2 target space matches Stage 3. '
+                             "'none' = IDENTITY: use the 1-D target exactly as "
+                             'the dataset returns it. NOTE this knob applies to '
+                             'the NON-ROI paths only (e.g. bp4d+): for the '
+                             'RAW-tree ROI lineages (tir_roi / rgb_roi) the '
+                             'DATASET owns the normalisation via --physio_norm '
+                             "and run_pretrain pins target_norm='none'. "
+                             'REQUIRED to be clip when --spectral_weight > 0.')
+    parser.add_argument('--physio_norm', default='none', type=str,
+                        choices=['none', 'clip', 'zscore', 'session'],
+                        help="THE 1-D target-normalisation knob of the pipeline "
+                             '(same flag name and values as the Stage-3 '
+                             'runner run_waveform.py). The DATASET applies it, '
+                             'for EVERY ROI lineage (tir_roi = TIR-ROI+RESP '
+                             'and rgb_roi = RGB+BP alike): "none" = raw values '
+                             '(debug), "clip"/"zscore" (aliases) = per-clip '
+                             'z-score, "session" = z-scored with the WHOLE '
+                             "session's mean/std so a clip keeps its "
+                             'session-relative amplitude and offset. The MODEL '
+                             'never normalises a 1-D stream: run_pretrain pins '
+                             "target_norm='none' for the ROI data_sets.")
     parser.add_argument('--spectral_weight', default=0.0, type=float,
                         help='weight of the multi-resolution STFT MAGNITUDE '
                              'loss (see --spectral_fft_sizes) on the ASSEMBLED '
@@ -356,6 +375,31 @@ def get_args():
     return parse_args_with_config(parser)
 
 
+def pin_roi_target_norm(args) -> bool:
+    """Pin the model's 1-D target normalisation to identity for ROI lineages.
+
+    For every RAW-tree ROI lineage (``tir_roi`` = TIR-ROI+RESP, ``rgb_roi`` =
+    RGB+BP) the DATASET returns a fully normalised 1-D target, selected by the
+    single knob ``--physio_norm`` (``none`` | ``clip``/``zscore`` | ``session``)
+    -- the SAME flag name and values as the Stage-3 runner. The model must
+    therefore NOT normalise the 1-D stream again, so ``--target_norm`` is forced
+    to ``'none'`` for these data_sets; any other value is reported as a no-op.
+
+    Returns ``True`` when the pin was applied. No effect on non-ROI paths.
+    """
+    from data import RGB_ROI_DATA_SETS, TIR_ROI_DATA_SETS
+    data_set = str(getattr(args, 'data_set', '') or '').strip().lower()
+    if data_set not in TIR_ROI_DATA_SETS + RGB_ROI_DATA_SETS:
+        return False
+    if str(getattr(args, 'target_norm', 'token')) != 'none':
+        print(f'[data] data_set {data_set!r}: the dataset owns the 1-D target '
+              f'normalisation (--physio_norm '
+              f"{getattr(args, 'physio_norm', 'none')!r}) -> forcing "
+              f"--target_norm 'none' (the model does not re-normalise).")
+    args.target_norm = 'none'
+    return True
+
+
 def main(args):
     from utils import get_world_size, is_main_process
 
@@ -369,6 +413,9 @@ def main(args):
         print(f'LR derived from blr (blr*batch*world/256): {args.lr:.3e}')
     else:
         print(f'LR set explicitly (--lr): {args.lr:.3e}')
+
+    # ----- 1-D target normalisation is owned by the DATASET --------------- #
+    pin_roi_target_norm(args)
 
     # ----- model ---------------------------------------------------------- #
     if args.model.startswith('project_multimae'):

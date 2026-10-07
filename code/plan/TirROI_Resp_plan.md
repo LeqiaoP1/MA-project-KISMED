@@ -656,7 +656,7 @@ Stage-2 weight prints a warning); Stage 3 applies it at FULL weight to the
 FINAL waveform (`WaveformJointLoss`, `gamma = 1.0`). That makes the
 zero-variance-target failure in §7.5 a Stage-3 risk too — the same railed
 respiration windows are z-scored by `data/paired_dataset.py`
-(`signal_norm: 'zscore'`, `(w - mean)/(std + 1e-6)`), so a constant window is
+(`physio_norm: 'zscore'`, `(w - mean)/(std + 1e-6)`), so a constant window is
 also exactly zero there and would divide by ~0 inside a `gamma = 1.0` term (10x
 the Stage-2 weight). `MultiResolutionSTFTLoss` therefore now EXCLUDES samples
 whose `||T||` is (near-)zero and warns once; for an all-valid batch the value is
@@ -691,7 +691,7 @@ returned RGB (or a full-frame rgb+tir channel stack) and never the ROI crop.
   (identical by construction, not by re-implementation), and adds: a
   subject-disjoint `is_train`/`train_ratio`/`split_by` split, a `val_subject`
   leave-one-subject-out override, the `(tir, waveform)` tensor contract, and the
-  per-clip `signal_norm` (the Stage-3 analogue of the Stage-2 `target_norm: clip`).
+  per-clip `physio_norm` (the Stage-3 analogue of the Stage-2 `target_norm: clip`).
 * `data/tir_resp_dataset.py::build_tir_roi_finetune_dataset(is_train, test_mode, args)`
   and the `data/datasets.build_dataset` dispatch on `TIR_ROI_DATA_SETS` — the
   `data_set: tir_roi_resp` value now means "the Stage-3 view" in a FINETUNE
@@ -1025,3 +1025,38 @@ work for visual respiration (side/body view) — not the face.
   is unsupported by these runs.
 
 ---
+
+## Addendum (2026-10-07) — Stage-2 target normalisation is now SESSION-level
+
+The procedure above documents the ORIGINAL Stage-2 setting (`target_norm: clip`,
+i.e. a per-clip z-score inside the model). The HPC full-corpus Stage-2 run has
+since changed, for the reasons and with the guarantees below. The local twin and
+the Stage-3 configs are UNCHANGED.
+
+* **`physio_norm: session`** in
+  `configs/pretrain/stage2_hpc_tir_roi_resp.yaml` — THE normalisation knob of
+  the pipeline, applied by the DATASET. `TirRoiRespPretrainDataset` wraps the
+  base dataset as `BP4DPlusTIRRespDataset(norm='session')`, so every clip is
+  z-scored with the **whole session's** mean/std (population statistics over the
+  entire `Resp_Volts.txt`) — a clip keeps its session-relative amplitude and
+  offset instead of being flattened to unit variance on its own.
+* **The model is pinned to identity.** `run_pretrain.pin_roi_target_norm` FORCES
+  `target_norm='none'` for every RAW-tree ROI lineage (`tir_roi` = TIR-ROI+RESP,
+  `rgb_roi` = RGB+BP), so there is only ONE knob and no pair to keep in sync
+  (the earlier `_resolve_resp_norm` exactly-once guard was removed with it).
+  The VISUAL streams still take their own per-token z-score.
+* **`clip_stride: 2.0`** (was 1.0) with the 8 s window unchanged: 3/4 overlap
+  instead of 7/8 — roughly half the clips and half the epoch, at a coarser
+  transient sampling. `clip_stride` is not part of the enforced Stage-2/3 ROI
+  contract.
+* Stage 3 is ALIGNED: `configs/finetune/resp_tir_roi_hpc.yaml` now uses
+  `physio_norm: session` (the same flag and values as Stage 2, applied by the
+  dataset), so both stages share ONE target space — the same clip yields the same
+  target in Stage 2 and Stage 3. Consequence to keep in mind: the Stage-3 target
+  std is no longer ~1 and the clip mean is non-zero, so `alpha` (StdLoss) becomes
+  a genuine amplitude term instead of `|std(pred) - 1|` (and a constant clip no
+  longer yields a ZERO-norm target for the MR-STFT term).
+* Verified by `tests/test_physio_norm.py` plus a 2-clip local smoke that
+  logs `norm : session`, `clip 8 s = 200 frames @ 25 fps, stride 50 frames`, and
+  the rail `9.9 V` / spread `0.1 V` cleaning line.
+

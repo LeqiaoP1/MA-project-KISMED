@@ -206,12 +206,11 @@ mask_span_s: {resp: 4.0}           # ignored while physio_mask: random
 
 # ---- loss: per-modality masked MSE (masked positions only) ----
 signal_weight: 0.5                 # lambda for every physio stream (visual 1.0)
-target_norm: clip                  # per-clip z-score inside the model. The
-                                   # dataset therefore returns RAW VOLTS -- do
-                                   # not normalize twice. Also required by the
-                                   # spectral term, and it removes the per-token
-                                   # z-score shortcut that lets the decoder
-                                   # reconstruct from position alone.
+physio_norm: clip                  # per-clip z-score, applied by the DATASET
+                                   # (the model is pinned to target_norm='none'
+                                   # for tir_roi). Same flag and values as
+                                   # Stage 3; 'session' is the space the HPC
+                                   # run uses.
 spectral_weight: 0.0               # DECISION 2026-09-26 (user): the spectral
                                    # (MR-STFT periodicity) loss is NOT part of
                                    # Stage-2 pre-training. It belongs to the

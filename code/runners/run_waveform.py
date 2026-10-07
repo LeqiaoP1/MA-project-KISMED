@@ -230,16 +230,25 @@ def get_args():
     parser.add_argument('--fs', default=100.0, type=float,
                         help='waveform sampling rate in Hz')
     parser.add_argument('--input_size', default=224, type=int)
-    parser.add_argument('--signal_norm', default='zscore', type=str,
-                        choices=['none', 'ac', 'zscore'],
-                        help='per-clip target normalisation. The recorded '
-                             'streams are NOT zero-mean (BP4D BP / blood pulse is raw mmHg, '
-                             'mean ~101): with "none" the head must fit a ~100 '
-                             'DC offset and the MR-STFT term is dominated by '
-                             'the 0 Hz bin instead of the pulsatile band. '
-                             '"zscore" (default) = zero-mean/unit-std per '
-                             'window, the standard rPPG convention; "ac" '
-                             'removes the mean only.')
+    parser.add_argument('--physio_norm', default='zscore', type=str,
+                        choices=['none', 'ac', 'zscore', 'session'],
+                        help='target normalisation. The recorded streams are '
+                             'NOT zero-mean (BP4D BP / blood pulse is raw '
+                             'mmHg, mean ~101): with "none" the head must fit '
+                             'a ~100 DC offset and the MR-STFT term is '
+                             'dominated by the 0 Hz bin instead of the '
+                             'pulsatile band. "zscore" (default) = zero-mean/'
+                             'unit-std PER CLIP, the standard rPPG convention; '
+                             '"ac" removes the clip mean only. "session" '
+                             '(tir_roi only) = zero-mean/unit-std with the '
+                             "WHOLE session's statistics -- the twin of the "
+                             'Stage-2 `physio_norm: session` knob (the model '
+                             'is pinned to identity); use it when the '
+                             'checkpoint was '
+                             'pre-trained that way so both stages share ONE '
+                             'target space. NOTE with it the target std is NOT '
+                             '~1, so alpha*StdLoss becomes a genuine '
+                             'amplitude term.')
     # clip geometry -- MUST mirror the Stage-2 Stage-2 run the ckpt comes from
     parser.add_argument('--clip_duration', default=4.0, type=float,
                         help='window length in seconds; mirror Stage 2')
@@ -662,7 +671,7 @@ def main(args):
                 'split_by': args.split_by, 'n_clips': n_pred,
                 'fs': args.fs, 'clip_duration': args.clip_duration,
                 'input_size': args.input_size, 'sig_kernel': args.sig_kernel,
-                'signal_norm': args.signal_norm, 'finetune': args.finetune,
+                'physio_norm': args.physio_norm, 'finetune': args.finetune,
                 'epochs': args.epochs, 'best_pearson': best_pearson,
                 'per_clip_metrics': final})
             # Session labels let the panel SPREAD its clips over different

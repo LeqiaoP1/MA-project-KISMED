@@ -42,7 +42,7 @@ sig_kernel: 8                      # 8/100 == 2/25 s -> one signal token == one 
 # The recorded BP column is RAW blood pressure in mmHg (mean ~101, std ~11), so
 # the target is z-scored per clip: without it the head spends capacity on a
 # ~100 DC offset and the MR-STFT term is dominated by that offset's 0 Hz bin.
-signal_norm: zscore
+physio_norm: zscore
 
 # ---- data (canonical layout from data/prepare_bp4d.py) ----
 data_set: bp4d+

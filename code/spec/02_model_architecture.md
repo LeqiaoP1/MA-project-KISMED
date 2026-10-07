@@ -233,7 +233,7 @@ The codebase supports two structurally different Stage-2 pre-training objectives
 2. Validates `tubelet` divides `input_size` and `num_frames`.
 3. `_check_space_time_alignment()`: enforces `sig_kernel/fs == tubelet_t*temporal_stride/fps` AND `n_signal == Gt`. Raises `ValueError` on mismatch.
 4. `pos_init` in `{'sincos3d', 'random'}`.
-5. `target_norm` in `{'token', 'clip'}`.
+5. `target_norm` in `{'token', 'clip', 'none'}` (`'none'` = IDENTITY: the dataset already normalised the 1-D stream). NON-ROI paths only — `run_pretrain.pin_roi_target_norm` forces `'none'` for `tir_roi`/`rgb_roi`.
 6. `resp_in_encoder` / `signal_decoder` consistency: a `cross_attn` stream must be **outside** the encoder; a `self_attn` stream must be **inside** it. Invalid combinations raise a named `ValueError`.
 
 ### 7.3 Sub-modules

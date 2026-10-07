@@ -163,14 +163,14 @@ class PairedSessionDataset(Dataset):
                  max_entries: Optional[int] = None,
                  tir_channels: int = 3,
                  use_tir: bool = True,
-                 signal_norm: str = 'none'):
+                 physio_norm: str = 'none'):
         assert target in ('bp', 'resp', 'eda'), target
         assert int(tir_channels) in (1, 3), \
             f'tir_channels must be 1 or 3, got {tir_channels}'
-        if signal_norm not in ('none', 'ac', 'zscore'):
+        if physio_norm not in ('none', 'ac', 'zscore'):
             raise ValueError(
-                f"signal_norm must be 'none', 'ac' or 'zscore'; got "
-                f'{signal_norm!r}')
+                f"physio_norm must be 'none', 'ac' or 'zscore'; got "
+                f'{physio_norm!r}')
         if split_by not in ('session', 'subject'):
             raise ValueError(
                 f"split_by must be 'session' or 'subject'; got {split_by!r}")
@@ -186,7 +186,7 @@ class PairedSessionDataset(Dataset):
         #: all reported on the normalised waveform).
         #: 'none' keeps the raw units (default -- the inspection tooling plots
         #: absolute waveforms), 'ac' removes the mean only.
-        self.signal_norm = signal_norm
+        self.physio_norm = physio_norm
         #: False => RGB-only clips (no TIR decode at all). Stage 3 uses this
         #: when the Stage-2 encoder was pre-trained on ``rgb`` (+ physio) only,
         #: so the TIR adapter has no trained weights and TIR would be a domain
@@ -330,10 +330,10 @@ class PairedSessionDataset(Dataset):
         w = align.resample_1d(
             sig_slice, fs_s, float(self.seq_len / self.clip_duration),
             length=self.seq_len)
-        # per-clip waveform normalisation (see signal_norm in __init__)
-        if self.signal_norm != 'none':
+        # per-clip waveform normalisation (see physio_norm in __init__)
+        if self.physio_norm != 'none':
             w = w - float(w.mean())
-            if self.signal_norm == 'zscore':
+            if self.physio_norm == 'zscore':
                 w = w / (float(w.std()) + 1e-6)
         return w
 
@@ -521,4 +521,4 @@ def build_paired_dataset(is_train: bool, test_mode: bool, args):
         max_entries=getattr(args, 'max_entries', None),
         tir_channels=int(getattr(args, 'tir_channels', 3)),
         use_tir=bool(getattr(args, 'use_tir', True)),
-        signal_norm=str(getattr(args, 'signal_norm', 'none')))
+        physio_norm=str(getattr(args, 'physio_norm', 'none')))

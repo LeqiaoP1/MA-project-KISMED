@@ -82,7 +82,20 @@ seq_len: 0                         # 0 => 800 samples = 8 s at fs 100 Hz
 fs: 100
 sig_kernel: 16                     # 16/100 == 2*2/25 s -> one signal token ==
                                    #   one video tubelet
-signal_norm: zscore                # per clip; mirrors Stage-2 target_norm: clip
+physio_norm: session               # WHOLE-session z-score -- the twin of the
+                                   #   Stage-2 knob `physio_norm: session` (the
+                                   #   base dataset does the z-score, and the
+                                   #   Stage-2 model is pinned to identity).
+                                   #   The head therefore
+                                   #   predicts the SESSION-relative waveform
+                                   #   (nonzero mean, clip-relative amplitude),
+                                   #   matching the checkpoint's target space.
+                                   #   NOTE the target std is no longer ~1, so
+                                   #   alpha (StdLoss) is now a real amplitude
+                                   #   term, and a constant clip no longer
+                                   #   gives a ZERO-norm target (no MR-STFT
+                                   #   spike). Use 'zscore' only if you
+                                   #   fine-tune a per-clip Stage-2 run.
 
 # ---- data split (SUBJECT-disjoint) ----
 train_ratio: 0.8                   # full corpus (~140 subjects) -> ~113 / ~27,
