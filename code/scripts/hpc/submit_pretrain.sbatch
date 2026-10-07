@@ -27,16 +27,15 @@
 #   EPOCHS / BATCH_SIZE / INPUT_SIZE / CLIP_STRIDE / NUM_WORKERS
 #   Anything after the script name is forwarded to the runner verbatim.
 #
-# !! NO RESUME: runners/run_pretrain.py accepts --resume (it lives in the shared
-#    arg set) but NEVER CALLS auto_resume_model -- only run_finetune.py and
-#    run_waveform.py do. A killed/timed-out job therefore RESTARTS FROM EPOCH 0.
-#    Consequences for a long Stage-2 run:
-#      * pick a partition whose TIMELIMIT covers the run ('acc' = 1 day,
-#        'acc_long' = 7 days) rather than chaining 1-day jobs;
-#      * checkpoints still land every CONFIG's save_ckpt_freq epochs, so nothing
-#        is lost, but a resumed job cannot continue from them yet.
-#    Wiring resume is a ~3-line addition mirroring run_waveform.py (import
-#    auto_resume_model + one call after the optimizer/scaler are built).
+# !! RESUME IS WIRED: runners/run_pretrain.py calls auto_resume_model right
+#    after the optimizer/scaler are built, so a job killed by the wall clock no
+#    longer loses its progress -- RESUBMIT with the same OUT_DIR and the same
+#    EPOCHS and it continues from OUT_DIR/checkpoints/latest_checkpoint.txt.
+#      * keep EPOCHS IDENTICAL across submits: the LR schedule is rebuilt from
+#        --epochs, NOT restored, so changing it moves the schedule position;
+#      * the run exits with "nothing to do" when the checkpoint epoch is already
+#        >= EPOCHS -- raise EPOCHS to train longer, or use a fresh OUT_DIR;
+#      * checkpoints land every CONFIG's save_ckpt_freq epochs.
 #
 # NOTE ON OUTPUT LOCATION: env_hpc.sh sets OUTPUT_DIR=$PROJ_DIR/output, which is
 # on $HOME's small quota, while a Stage-2 checkpoint is ~1.2 GB and this run
@@ -119,8 +118,8 @@ ARGS=(-c "$CONFIG" --raw_root "$RAW_DATA_PATH" --output_dir "$OUT_DIR")
 [ -n "${INPUT_SIZE:-}" ]  && ARGS+=(--input_size "$INPUT_SIZE")
 [ -n "${CLIP_STRIDE:-}" ] && ARGS+=(--clip_stride "$CLIP_STRIDE")
 [ -n "${NUM_WORKERS:-}" ] && ARGS+=(--num_workers "$NUM_WORKERS")
-# Deliberately NO --resume passthrough: run_pretrain.py does not implement it
-# (see the header note), so passing it would only look like it worked.
+# You normally do NOT need --resume: run_pretrain.py auto-resumes from
+# OUT_DIR/checkpoints. An explicit path can still be appended via "$@" below.
 ARGS+=("$@")
 
 mkdir -p "$OUT_DIR" "$CODE_DIR/logs"

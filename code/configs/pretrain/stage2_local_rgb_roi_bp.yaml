@@ -223,10 +223,11 @@ epochs: 30                         # LOCAL TEST budget (the plan's full run is
                                    # 800 at 224 px). With warmup 5 this gives a
                                    # short warmup + 25 cosine epochs.
 save_ckpt_freq: 10                 # 3 checkpoints over 30 epochs. The runner
-                                   # has NO resume logic: a restart starts fresh
-                                   # and OVERWRITES checkpoint-NNNN, so re-running
-                                   # with a different --epochs REPLACES, it does
-                                   # not continue.
+                                   # AUTO-RESUMES from <output_dir>/checkpoints,
+                                   # so re-running with the SAME --output_dir and
+                                   # the SAME --epochs CONTINUES from the last
+                                   # checkpoint (a different --epochs moves the
+                                   # rebuilt LR schedule).
 lr: 3e-4
 min_lr: 3e-5
 warmup_epochs: 5                   # MUST be < epochs (use 0 for a 1-epoch smoke)

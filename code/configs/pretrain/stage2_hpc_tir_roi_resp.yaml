@@ -143,19 +143,24 @@ sig_kernel: 16                     # 16/100 == 2*2/25 s -> one signal token ==
 pos_init: sincos3d
 
 # ---- training (full corpus: derive the LR from blr, do NOT set an absolute lr) ----
-epochs: 800                        # override with EPOCHS=... . The full-corpus
-                                   #   run is decode-bound and long: pick a
-                                   #   partition whose TIMELIMIT covers it.
-                                   #   NOTE --resume is NOT implemented in
-                                   #   run_pretrain.py (only in run_finetune.py
-                                   #   / run_waveform.py), so a killed job
-                                   #   restarts from epoch 0.
+# FIRST-RUN BUDGET: 150 epochs, not 800. Stage 2 has NO validation split
+# (`pretrain_split: all` is enforced by the dataset builder) and
+# run_pretrain.py has no eval loop, so 800 was a blind commitment with nothing
+# to early-stop on -- and the Stage-2 loss is a MONITOR, not a metric (mse_resp
+# plateaus at ~1.0, the documented constant-predictor collapse, so a patience
+# rule would fire immediately and for the wrong reason). Judge this run by the
+# Stage-3 fine-tune, then raise this number if the fine-tune keeps improving.
+# To extend: re-submit with the SAME --output_dir and the NEW --epochs --
+# run_pretrain.py AUTO-RESUMES from <output_dir>/checkpoints. (The LR schedule
+# is rebuilt from --epochs, NOT restored, so raising it shifts the schedule.)
+epochs: 150
 batch_size: 16                     # per GPU; lr = blr * batch * world / 256
-save_ckpt_freq: 20
+save_ckpt_freq: 20                 # -> 9 checkpoints (~1.2 GB each, $WORK_SCRATCH)
 opt: adamw
 blr: 1.5e-4
 min_lr: 0.0
-warmup_epochs: 40
+warmup_epochs: 10                  # MUST be < epochs. Same ~7% warmup ratio the
+                                   #   40/800 schedule had, at the new budget.
 weight_decay: 0.05
 clip_grad: 5.0                     # ON: this branch produces resp gradient spikes
 num_workers: 8                     # per rank (== cpus-per-task in the sbatch)

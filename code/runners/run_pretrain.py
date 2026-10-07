@@ -483,14 +483,34 @@ def main(args):
         model_without_ddp = model.module
 
     # ----- optimizer / scaler -------------------------------------------- #
-    from utils import NativeScalerWithGradNormCount, create_optimizer
+    from utils import (NativeScalerWithGradNormCount, auto_resume_model,
+                       create_optimizer)
     optimizer = create_optimizer(args, model_without_ddp)
     loss_scaler = NativeScalerWithGradNormCount()
 
+    # ----- resume --------------------------------------------------------- #
+    # auto_resume_model restores the model, optimizer and AMP scaler from
+    # --resume, or from the newest pointer in <output_dir>/checkpoints
+    # (latest_checkpoint.txt, written by save_model), and sets
+    # args.start_epoch = checkpoint epoch + 1. Without this a job killed by the
+    # Slurm wall clock restarted from epoch 0, which makes the 800-epoch
+    # full-corpus schedule impossible on `acc` (24 h).
+    # NOTE the LR schedule is NOT restored: it is rebuilt from
+    # --epochs/steps_per_epoch above, so keep --epochs IDENTICAL across submits.
+    auto_resume_model(args, model_without_ddp, optimizer, loss_scaler)
+    start_epoch = int(getattr(args, 'start_epoch', 0) or 0)
+    if start_epoch >= args.epochs:
+        raise SystemExit(
+            f'nothing to do: the checkpoint in {args.output_dir}/checkpoints '
+            f'is already at epoch {start_epoch} and --epochs is {args.epochs}. '
+            f'Raise --epochs to train longer, or point --output_dir elsewhere '
+            f'/ remove latest_checkpoint.txt to start from scratch.')
+
     # ----- training loop -------------------------------------------------- #
     from utils import save_model
-    print(f'Start training for {args.epochs} epochs')
-    for epoch in range(args.epochs):
+    print(f'Start training for {args.epochs} epochs '
+          f'(resuming at epoch {start_epoch})')
+    for epoch in range(start_epoch, args.epochs):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
 

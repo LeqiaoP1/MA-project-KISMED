@@ -30,9 +30,9 @@
 #       --val_subject $S --output_dir ../output/finetune/bp_rgb_roi_loso/$S
 #   done
 #
-# NOTE Stage 3 DOES auto-resume (utils.checkpoint.auto_resume_model is called by
-# run_waveform): re-running with the same --output_dir CONTINUES from
-# latest_checkpoint.txt. Stage 2 does NOT (run_pretrain never reads --resume).
+# NOTE BOTH stages auto-resume (utils.checkpoint.auto_resume_model is called by
+# run_pretrain and run_waveform): re-running with the same --output_dir (and the
+# same --epochs) CONTINUES from latest_checkpoint.txt.
 # Delete latest_checkpoint.txt to force a restart.
 
 target: bp
