@@ -76,6 +76,15 @@ conclusion, but its exact share is unknown.
 |---|---|---|
 | dominant per-iteration cost | decode 4.25 M frames/epoch | read ~92 GB/epoch (one cache pass) |
 | epoch floor | ~841 s (decode-rate-limited) | `max(compute, read)` = 66-132 s compute vs reads of the same order |
+
+**Update 2026-10-09 (MEASURED, cache built and used):** the epoch floor in the
+right-hand column is now measured, not estimated. `analysis/batch_size_sweep.md`
+gives **1.1-1.4 min/epoch (66-84 s)** for the real runner on 4 x RTX PRO 6000
+across batch 8-128, with the loader share of the iteration at **0.0 %** up to
+batch 32 and 15-26 % at batch 64-128. The `66-132 s` range is therefore correct
+but sits at its **lower** bound for batch <= 32, and the batch size is NOT a
+lever on it (the projection is flat across a 16x batch range). `estimate`
+CLOSED.
 | decode CPU over 150 epochs | ~670 core-hours | ~1.6 core-hours (one-off) |
 
 The loop stops being a decoder and becomes a training loop whose next constraint
@@ -112,13 +121,22 @@ which is exactly the read-path tuning that open question 2 is about.
 
 - **No reduction in optimizer work.** The `estimate` of 5-15 h for 150 epochs
   assumes the compute floor (66-132 s/epoch) and comparable reads; it is an
-  estimate, not a measurement.
+  estimate, not a measurement. **Update 2026-10-09 (MEASURED):** the batch-size
+  sweep (`analysis/batch_size_sweep.md`) puts a real cache-ON epoch at **1.1-1.4
+  min (66-84 s)** on 4 x RTX PRO 6000, i.e. at the BOTTOM of the predicted band,
+  and the `data` share of the iteration at **0.0 %** for batch <= 32. The floor is
+  therefore reached, not approached. See section 1.2's `estimate` -- it is now
+  closed.
 - **The read path becomes the next constraint** and needs its own tuning (shard
   size, prefetch, worker count). Reads and compute are of the same order, so this
   is a real limit, not a formality.
-- **The 1 -> 4 rank scaling cost stays unexplained.** 1 rank = 1.895 s/it,
-  4 ranks = 2.452 s/it: 4 GPUs deliver ~3.1x, not 4x. So the post-cache floor is
-  realistically 0.3-0.6 s/iteration, not a clean 0.20 s.
+- **The 1 -> 4 rank scaling cost stays unexplained** *in the pre-cache regime*.
+  1 rank = 1.895 s/it, 4 ranks = 2.452 s/it: 4 GPUs deliver ~3.1x, not 4x. Those
+  numbers were taken while the loop was **decode-bound**, so the shortfall is
+  most likely loader contention (4 ranks x 8 workers hammering the same files),
+  not a GPU limit. Post-cache the same 4-rank world runs at **0.2055 s/it at
+  batch 16** (section 1.4 above), which is the compute floor -- so there is no
+  residual scaling penalty left to explain for the shipped configuration.
 - **It does not help the inspection tooling** (section 2.6).
 
 ---

@@ -144,8 +144,12 @@ mkdir -p "$OUT_DIR" "$CODE_DIR/logs"
 
 # one task per GPU; utils/dist.py reads the SLURM_* env to init DDP (same wiring
 # as submit_pretrain.sbatch).
+# NOTE the PORT is derived from the job id, not hardcoded: two concurrent jobs on
+# the same node with the same port make the second fail to bind and the first die
+# in barrier() with "NCCL ... Connection refused" (cost the 2026-10-09 batch sweep
+# 2 of its 6 arms, before any training ran).
 export MASTER_ADDR="${MASTER_ADDR:-$(scontrol show hostname "$SLURM_JOB_NODELIST" | head -n1)}"
-export MASTER_PORT="${MASTER_PORT:-29531}"
+export MASTER_PORT="${MASTER_PORT:-$((20000 + (SLURM_JOB_ID * 17) % 20000))}"
 
 # THREADS caps the per-rank compute threads. This is the lever the scaling arm
 # exists to test: torch's intra-op pool defaults to the CPU count, so N ranks on
@@ -157,7 +161,8 @@ if [ -n "${THREADS:-}" ]; then
            OPENBLAS_NUM_THREADS="$THREADS" NUMEXPR_NUM_THREADS="$THREADS"
 fi
 
-GPU_NAME="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || echo unknown)"
+GPU_NAME="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | sed -n '1p')"
+[ -n "$GPU_NAME" ] || GPU_NAME=unknown
 echo "[bench_step] node     : $(hostname)"
 echo "[bench_step] gpu      : ${GPU_NAME:-unknown}"
 echo "[bench_step] gres     : $(scontrol show job -o "$SLURM_JOB_ID" 2>/dev/null | grep -oE 'gres/gpu[a-z0-9/]*=[0-9]+' | tr '\n' ' ')"
