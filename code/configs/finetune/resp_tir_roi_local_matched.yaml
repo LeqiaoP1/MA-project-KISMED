@@ -44,7 +44,7 @@
 #   sig_kernel       16      (RGB 8)   -> L = 800 samples (RGB 400)
 #   clip_stride      2.0     (RGB 1.0)
 # Beyond geometry they also differ in clip_grad (5.0 vs 0.0), the TIR-only ROI
-# keys (roi_padding / roi_landmarks / roi_quantile / min_signal_spread), the
+# keys (roi_padding / roi_landmarks / min_signal_spread), the
 # task selection, and fft_sizes (128,256,512 vs 64,128,256 -- the RGB branch is
 # capped by its 4 s clip). Do NOT call the two "twins": a settings-level diff
 # shows ~20 differing keys. Verify any "identical geometry" claim against the
@@ -59,7 +59,6 @@ roi_padding: 0.2                   # per-side ROI margin -- MUST equal the Stage
 roi_landmarks: ''                  # '' = the historical 12-point nose+mouth set;
                                    #   a preset (nose_tip preferred) or a CSV.
                                    #   MUST equal the Stage-2 run.
-roi_quantile: 0.0                  # MUST equal the Stage-2 run (0.0 = min/max)
 min_signal_spread: 0.1              # VOLTS: DROP a window whose spread
                                    #   (max-min) is below this -- a pinned /
                                    #   unclipped channel. MUST equal the Stage-2

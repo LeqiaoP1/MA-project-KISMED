@@ -60,7 +60,7 @@ model (`core/waveform_model.py`), which whitelists only
 is edited. Both Stage-2 dataset builders (`build_tir_roi_pretrain_dataset`,
 `build_tir_roi_finetune_dataset`) are pure `getattr(args, …)` reads of the same config
 keys, and `TirRoiRespFinetuneDataset` **subclasses** `TirRoiRespPretrainDataset`, so
-the ROI (`resolve_roi_landmarks` + `roi_padding` / `roi_quantile`), the task selection
+the ROI (`resolve_roi_landmarks` + `roi_padding`), the task selection
 (`task_groups` / `task_set`) and `min_signal_spread` are shared by construction. The
 two pre-train configs differ only in four model keys plus `output_dir`; the two
 Stage-3 configs differ only in `finetune:` plus `output_dir:`.

@@ -105,12 +105,6 @@ def get_args():
                         help='tir_roi/rgb_roi only: fraction of the landmark-box '
                              'extent added on EACH side before the crop '
                              '(0.2 = +40%% overall)')
-    parser.add_argument('--roi_quantile', default=0.0, type=float,
-                        help='tir_roi/rgb_roi only: 0.0 = min/max landmark box '
-                             '(historical). A value in (0, 0.5) clips each side '
-                             'to that percentile of the clip landmark cloud, '
-                             'which makes the box robust to head-motion '
-                             'outliers.')
     parser.add_argument('--min_signal_spread', default=0.0, type=float,
                         help='tir_roi only: DROP a clip whose respiration '
                              'window spread (max-min) is below this many VOLTS '

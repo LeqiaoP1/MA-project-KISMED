@@ -107,7 +107,7 @@ def _args(root: str, **over) -> argparse.Namespace:
               subjects=['S001'], tasks=None, task_set=None, task_groups=None,
               clip_duration=CLIP_S, clip_stride=STRIDE_S, temporal_stride=1,
               tubelet='2,16,16', input_size=64, roi_padding=0.2,
-              roi_quantile=0.0, roi_landmarks='', fps=FPS, resp_fs=RESP_FS,
+              roi_landmarks='', fps=FPS, resp_fs=RESP_FS,
               fs=100.0, physio_norm='zscore', target='resp',
               train_ratio=1.0, split_by='session', val_subject='',
               min_signal_spread=0.0, rail_touch_v=9.90,

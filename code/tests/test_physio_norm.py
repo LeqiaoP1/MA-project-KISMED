@@ -131,7 +131,7 @@ def _args(root, **over):
               task_set=None, task_groups=None,
               clip_duration=CLIP_S, clip_stride=None, temporal_stride=1,
               tubelet='2,16,16', input_size=64, roi_padding=0.2,
-              roi_quantile=0.0, roi_landmarks='', fps=FPS, resp_fs=RESP_FS,
+              roi_landmarks='', fps=FPS, resp_fs=RESP_FS,
               fs=100.0, min_signal_spread=0.0, rail_touch_v=0.0,
               physio_norm='none',
               max_clips=None, max_entries=None)
@@ -316,8 +316,7 @@ def test_roi_box_is_computed_per_clip(tmp_path):
     e = ds.entries[1]
     pts = ir[e['frame_start']:e['frame_end']][:, ds.base.target_idx, :]
     expect = trd.roi_box_from_landmarks(pts, W_FRAME, H_FRAME,
-                                        ds.base.roi_padding,
-                                        quantile=ds.base.roi_quantile)
+                                        ds.base.roi_padding)
     assert b1 == expect
 
 

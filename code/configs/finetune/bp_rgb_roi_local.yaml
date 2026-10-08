@@ -44,7 +44,6 @@ data_path: ../data/raw/BP4D       # raw_root equivalent; NOT the canonical tree
 # ---- or the encoder sees a distribution it was never trained on ------------
 roi_landmarks: face               # all 49 landmarks = the whole face ("face" == '')
 roi_padding: 0.2                  # per-side ROI margin (+40% overall)
-roi_quantile: 0.0                 # min/max box (historical)
 decode_scale: 1                   # native JPEG decode
 phys_fs: 1000.0                   # RAW BP_mmHg.txt rate, resampled to --fs
 

@@ -78,10 +78,10 @@ contiguous range `18..28`. Other named presets, including `nostrils`, are
 supported by `resolve_roi_landmarks()`.
 
 The ROI box is static for a clip and is computed from all source frames before
-temporal decimation. The configured `roi_padding` and `roi_quantile` must be
-applied consistently in pre-training and fine-tuning. Missing, invalid, or
-out-of-frame landmarks must fail the sample with an explicit dataset error;
-they must not silently produce an arbitrary crop.
+temporal decimation. The configured `roi_padding` must be applied consistently in
+pre-training and fine-tuning. Missing, invalid, or out-of-frame landmarks must
+fail the sample with an explicit dataset error; they must not silently produce an
+arbitrary crop.
 
 Respiration timestamps must be aligned to the kept video window before
 resampling. Resampling uses the configured source sampling rate and

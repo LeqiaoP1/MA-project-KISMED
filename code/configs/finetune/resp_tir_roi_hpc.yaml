@@ -24,7 +24,7 @@
 #
 # ROI CONTRACT (checked hard by runners/run_waveform.py against the --finetune
 # checkpoint's stored args; run_waveform.py ABORTS on a mismatch):
-#   roi_landmarks / roi_padding / roi_quantile / input_size
+#   roi_landmarks / roi_padding / input_size
 # Keep them identical to stage2_hpc_tir_roi_resp.yaml.
 
 target: resp
@@ -35,7 +35,6 @@ data_set: tir_roi_resp             # -> build_tir_roi_finetune_dataset (Stage-3 
 #            --data_path "$RAW_DATA_PATH" (the RAW tree). See the header note.
 roi_padding: 0.2                   # MUST equal the Stage-2 run
 roi_landmarks: ''                  # '' = the historical 12-point nose+mouth set
-roi_quantile: 0.0                  # MUST equal the Stage-2 run
 min_signal_spread: 0.1              # VOLTS: DROP a window whose spread
                                    #   (max-min) is below this -- a pinned /
                                    #   unclipped channel. MUST equal the Stage-2

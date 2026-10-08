@@ -25,7 +25,7 @@
 # is dropped.
 #
 # !! THE FRONT-END IS A CONTRACT !!  Stage 3 must reuse the identical crop
-# (roi_landmarks / roi_padding / roi_quantile / input_size / decode_scale /
+# (roi_landmarks / roi_padding / input_size / decode_scale /
 # phys_fs), or the Stage-3 encoder sees a distribution it was never trained on.
 #
 # Run from code/ (ALWAYS with `-u`: without it stdout is block-buffered through
@@ -58,9 +58,6 @@ roi_landmarks: face                # 'face' = all 49 landmarks (the whole face).
                                    # nostril_mouth / nose_tip, or a 1-indexed
                                    # CSV such as '32,33,34,35' (mouth only).
 roi_padding: 0.2                   # margin added on EACH side (+40% overall)
-roi_quantile: 0.0                  # 0.0 = min/max box. (0, 0.5) clips each side
-                                   # to that percentile -> robust to a single
-                                   # head-motion outlier stretching the box.
 decode_scale: 1                    # 1 = native JPEG decode (default; the
                                    # faithful front-end). 2/4/8 = DCT downscale
                                    # (much faster, ROI box rescaled). ANY change

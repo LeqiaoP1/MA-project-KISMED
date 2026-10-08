@@ -112,8 +112,7 @@ def _fft_window_advisory(kept, band_lo, output_len, fs=100.0):
 #: IN THE CHECKPOINT -- ``utils.checkpoint.save_model`` stores the whole
 #: namespace -- and a mismatch ABORTS the run unless ``--allow_roi_mismatch``
 #: declares it deliberate.
-ROI_CONTRACT_KEYS = ('roi_landmarks', 'roi_padding', 'roi_quantile',
-                     'input_size')
+ROI_CONTRACT_KEYS = ('roi_landmarks', 'roi_padding', 'input_size')
 
 
 def check_stage2_roi_contract(args, stage2_args, allow_mismatch=False):
@@ -344,16 +343,10 @@ def get_args():
                              "nose+mouth set. For the RGB-ROI path (data_set: "
                              "rgb_roi*): empty or 'face' = ALL 49 landmarks "
                              "(the whole face), or the same presets / CSV.")
-    parser.add_argument('--roi_quantile', default=0.0, type=float,
-                        help='0.0 = ROI box from the min/max over the clip '
-                             '(the historical behaviour). >0 clips each side '
-                             'to that PERCENTILE of the landmark cloud, so '
-                             'head-motion outliers cannot inflate the box '
-                             '(try 0.05).')
     parser.add_argument('--allow_roi_mismatch', action='store_true',
                         default=False,
                         help='run even when the ROI keys (roi_landmarks / '
-                             'roi_padding / roi_quantile / input_size) differ '
+                             'roi_padding / input_size) differ '
                              'from the ones recorded in the --finetune '
                              'checkpoint. Default OFF: a mismatched ROI '
                              'changes the pixels WITHOUT changing any tensor '

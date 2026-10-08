@@ -97,7 +97,6 @@ DEFAULT_PHYS_FS = 1000.0
 DEFAULT_CLIP_SECONDS = 8.0
 DEFAULT_INPUT_SIZE = 224
 DEFAULT_ROI_PADDING = 0.2
-DEFAULT_ROI_QUANTILE = 0.0
 
 #: the "RGB facial" ROI: the bounding box of ALL 49 landmarks.
 FACE_LANDMARKS = tuple(range(1, NUM_LANDMARKS_2D + 1))
@@ -299,9 +298,6 @@ class RGBRoiDataset(Dataset):
     :param clip_stride: clip hop in SECONDS (``None``/``0`` -> non-overlapping).
     :param roi_padding: per-side ROI margin, see :func:`roi_box_from_landmarks`
         (``0.2`` grows the landmark box by 40 % overall).
-    :param roi_quantile: ``0.0`` = min/max box (historical); ``(0, 0.5)`` clips
-        each side to that percentile of the clip's landmark cloud, which makes
-        the box robust to head-motion outliers.
     :param landmarks: 1-indexed landmarks whose bounding box IS the ROI; defaults
         to all 49 (the whole face). See :func:`resolve_face_landmarks`.
     :param decode_scale: JPEG decode scale -- ``1`` = native full decode (most
@@ -327,7 +323,6 @@ class RGBRoiDataset(Dataset):
                  input_size: int = DEFAULT_INPUT_SIZE,
                  clip_stride: Optional[float] = None,
                  roi_padding: float = DEFAULT_ROI_PADDING,
-                 roi_quantile: float = DEFAULT_ROI_QUANTILE,
                  landmarks: Sequence[int] = FACE_LANDMARKS,
                  decode_scale: int = 1,
                  norm: str = 'none',
@@ -362,10 +357,6 @@ class RGBRoiDataset(Dataset):
                               else max(1, int(round(float(clip_stride) * self.fps))))
         self.input_size = int(input_size)
         self.roi_padding = float(roi_padding)
-        self.roi_quantile = float(roi_quantile)
-        if not 0.0 <= self.roi_quantile < 0.5:
-            raise ValueError(f'roi_quantile must be in [0, 0.5), got '
-                             f'{roi_quantile!r}')
         self.landmarks = resolve_face_landmarks(landmarks)
         self.target_idx = np.asarray([l - 1 for l in self.landmarks], dtype=np.int64)
         self.decode_scale = int(decode_scale)
@@ -487,7 +478,6 @@ class RGBRoiDataset(Dataset):
             'phys_len': self.phys_len,
             'input_size': self.input_size,
             'roi_padding': self.roi_padding,
-            'roi_quantile': self.roi_quantile,
             'landmarks': list(self.landmarks),
             'decode_scale': self.decode_scale,
             'norm': self.norm,
@@ -600,8 +590,7 @@ class RGBRoiDataset(Dataset):
         pts = self._feat(entry['session'])[entry['frame_start']:entry['frame_end']]
         pts = pts[:, self.target_idx, :]
         h, w = self._source_size(entry['session'])
-        return roi_box_from_landmarks(pts, w, h, self.roi_padding,
-                                      quantile=self.roi_quantile)
+        return roi_box_from_landmarks(pts, w, h, self.roi_padding)
 
     def clip_landmarks(self, index: int) -> np.ndarray:
         """All 49 landmarks of the clip's frames -> ``[T, 49, 2]`` (source px)."""
@@ -628,8 +617,8 @@ class RGBRoiDataset(Dataset):
         pts = self._feat(session)[entry['frame_start']:entry['frame_end']]
         pts = pts[:, self.target_idx, :]
         src_h, src_w = self._source_size(session)
-        x0, x1, y0, y1 = roi_box_from_landmarks(pts, src_w, src_h, self.roi_padding,
-                                                quantile=self.roi_quantile)
+        x0, x1, y0, y1 = roi_box_from_landmarks(pts, src_w, src_h,
+                                                self.roi_padding)
 
         s = self.input_size
         out: Optional[np.ndarray] = None
@@ -703,8 +692,8 @@ class RGBRoiDataset(Dataset):
             f'frames @ {s["fps"]:g} fps, stride {s["clip_stride_frames"]} frames; '
             f'phys {s["phys_len"]} samples @ {s["phys_fs"]:g} Hz',
             f'roi             : landmarks {len(self.landmarks)} of '
-            f'{NUM_LANDMARKS_2D} padding {s["roi_padding"]:g} quantile '
-            f'{s["roi_quantile"]:g} -> {self.input_size}x{self.input_size} '
+            f'{NUM_LANDMARKS_2D} padding {s["roi_padding"]:g} '
+            f'-> {self.input_size}x{self.input_size} '
             f'(decode_scale {s["decode_scale"]})',
             f'norm            : {s["norm"]}',
             f'signals         : {list(self.signal_names)}',
@@ -750,7 +739,6 @@ class RGBRoiPretrainDataset(Dataset):
                  temporal_stride: int = 1, tubelet_t: int = 2,
                  input_size: int = DEFAULT_INPUT_SIZE,
                  roi_padding: float = DEFAULT_ROI_PADDING,
-                 roi_quantile: float = DEFAULT_ROI_QUANTILE,
                  landmarks: Sequence[int] = FACE_LANDMARKS,
                  decode_scale: int = 1,
                  phys_fs: float = DEFAULT_PHYS_FS,
@@ -794,7 +782,6 @@ class RGBRoiPretrainDataset(Dataset):
         self.phys_fs = float(phys_fs)
         self.input_size = int(input_size)
         self.roi_padding = float(roi_padding)
-        self.roi_quantile = float(roi_quantile)
 
         # ---- geometry, identical to build_pretraining_model ----------------
         n = max(1, int(round(self.clip_duration * self.fps / self.temporal_stride)))
@@ -809,7 +796,7 @@ class RGBRoiPretrainDataset(Dataset):
             signals=sig, clip_seconds=self.clip_duration, fps=self.fps,
             phys_fs=self.phys_fs, input_size=self.input_size,
             clip_stride=clip_stride, roi_padding=self.roi_padding,
-            roi_quantile=self.roi_quantile, landmarks=landmarks,
+            landmarks=landmarks,
             decode_scale=decode_scale, norm=self.physio_norm,
             max_clips_per_session=max_clips_per_session,
             max_entries=max_entries, verbose=verbose)
@@ -893,7 +880,6 @@ class RGBRoiFinetuneDataset(RGBRoiPretrainDataset):
                  temporal_stride: int = 1, tubelet_t: int = 2,
                  input_size: int = DEFAULT_INPUT_SIZE,
                  roi_padding: float = DEFAULT_ROI_PADDING,
-                 roi_quantile: float = DEFAULT_ROI_QUANTILE,
                  landmarks: Sequence[int] = FACE_LANDMARKS,
                  decode_scale: int = 1,
                  phys_fs: float = DEFAULT_PHYS_FS,
@@ -981,7 +967,7 @@ class RGBRoiFinetuneDataset(RGBRoiPretrainDataset):
             clip_duration=clip_duration, clip_stride=clip_stride,
             temporal_stride=temporal_stride, tubelet_t=tubelet_t,
             input_size=input_size, roi_padding=roi_padding,
-            roi_quantile=roi_quantile, landmarks=landmarks,
+            landmarks=landmarks,
             decode_scale=decode_scale, phys_fs=phys_fs,
             # 'session' is implemented by the BASE dataset (whole-session
             # statistics); this class then leaves the window alone -- see
@@ -1068,7 +1054,6 @@ def build_rgb_roi_pretrain_dataset(args) -> RGBRoiPretrainDataset:
         tubelet_t=int(tubelet[0]),
         input_size=int(getattr(args, 'input_size', DEFAULT_INPUT_SIZE)),
         roi_padding=float(getattr(args, 'roi_padding', DEFAULT_ROI_PADDING)),
-        roi_quantile=float(getattr(args, 'roi_quantile', DEFAULT_ROI_QUANTILE)),
         landmarks=resolve_face_landmarks(
             getattr(args, 'roi_landmarks', None)
             or getattr(args, 'landmarks', None)),
@@ -1110,7 +1095,6 @@ def build_rgb_roi_finetune_dataset(is_train: bool, test_mode: bool,
         tubelet_t=int(tubelet[0]),
         input_size=int(getattr(args, 'input_size', DEFAULT_INPUT_SIZE)),
         roi_padding=float(getattr(args, 'roi_padding', DEFAULT_ROI_PADDING)),
-        roi_quantile=float(getattr(args, 'roi_quantile', DEFAULT_ROI_QUANTILE)),
         landmarks=resolve_face_landmarks(
             getattr(args, 'roi_landmarks', None)
             or getattr(args, 'landmarks', None)),
@@ -1232,7 +1216,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument('--clip_stride', type=float, default=None)
     p.add_argument('--input_size', type=int, default=DEFAULT_INPUT_SIZE)
     p.add_argument('--roi_padding', type=float, default=DEFAULT_ROI_PADDING)
-    p.add_argument('--roi_quantile', type=float, default=DEFAULT_ROI_QUANTILE)
     p.add_argument('--landmarks', default='face',
                    help='"face", a ROI_LANDMARKS_2D preset, or 1-indexed CSV')
     p.add_argument('--decode_scale', type=int, default=1, choices=DECODE_FACTORS)
@@ -1263,7 +1246,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         tasks=_as_list(args.task), signals=_as_list(args.signals) or ('resp',),
         clip_seconds=args.clip_seconds, clip_stride=args.clip_stride,
         input_size=args.input_size, roi_padding=args.roi_padding,
-        roi_quantile=args.roi_quantile,
         landmarks=resolve_face_landmarks(args.landmarks),
         decode_scale=args.decode_scale, norm=args.norm,
         max_entries=args.max_entries or None, allow_empty=True)

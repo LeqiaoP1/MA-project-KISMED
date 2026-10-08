@@ -290,11 +290,12 @@ thermal-ROI path, all also exposed on `run_inspect_tir_resp.py`:
   one 0.5 V glitch passes any threshold) and a loose belt that *swings* gives a
   LARGE artifact: neither is visible to this knob. See §5 of
   `analysis/tir_resp/resp_rail_touch_filter_results.md` for the full curve.
-* `--roi_landmarks` / `--roi_quantile`: see the measured preset table in
+* `--roi_landmarks`: see the measured preset table in
   `data/tir_resp_dataset.ROI_LANDMARK_PRESETS` — `nostrils` (2 points) is an
   unstable thin slab (100x81 px on a still session, 91x15 px on a moving one);
   prefer `nose_tip`. Any change is a change of the Stage-2 VISUAL INPUT, so the
   checkpoint must be re-pretrained.
+* `--roi_quantile` was REMOVED (2026-10-08): it was 0.0 in every config and
 * `run_inspect_tir_resp.py` now accepts both, and its figure draws the
   landmarks the ROI was ACTUALLY built from (`ds.target_idx`) instead of a
   hardcoded 12-point set, so the box and its annotation can no longer disagree.
@@ -311,7 +312,7 @@ Consequences to keep in mind:
 * `clip_stride` decides **which windows exist**, so it is a corpus choice:
   `run_waveform.py` prints a note when Stage 3 differs from the Stage-2
   checkpoint's value, next to `rail_touch_v`. It is NOT part of the ENFORCED ROI
-  contract (`roi_landmarks` / `roi_padding` / `roi_quantile` / `input_size` are);
+  contract (`roi_landmarks` / `roi_padding` / `input_size` are);
 * consecutive clips stay strongly correlated, so the *effective* sample size is
   much smaller than the clip count — read a per-clip metric count as a count of
   WINDOWS, not of independent observations;
@@ -371,7 +372,7 @@ Two guards make a silently-off rule impossible:
   `clip_stride`: `2.0` in the HPC Stage-2 run, `1.0` elsewhere).
 
 **The Stage-3 ROI contract is now ENFORCED (2026-10-01).** The ROI keys
-(`roi_landmarks`, `roi_padding`, `roi_quantile`, `input_size`) decide *which
+(`roi_landmarks`, `roi_padding`, `input_size`) decide *which
 pixels* reach the encoder while leaving **every tensor shape unchanged**: a
 Stage-3 run with a different landmark set builds a perfectly shaped input, the
 checkpoint loads with all 150 encoder tensors matching, and the run fine-tunes
@@ -384,7 +385,6 @@ check has no extra config to keep in sync) and **aborts** on a mismatch:
 [stage3] ROI contract (Stage-2 checkpoint vs this run):
     roi_landmarks  (9, 10, 11, 12, 13, 20, 21, 22, 23, 24, 25, 26) != (9, 10, 20, 21)   <== MISMATCH
     roi_padding    0.2 == 0.2
-    roi_quantile   0.0 == 0.0
     input_size     64 == 64
 ```
 

@@ -510,7 +510,6 @@ def _clip_report(ds, index, box, fails, skin=None) -> dict:
             'height_px': int(y1 - y0),
             'padding': float(ds.roi_padding),
             'provider_default_padding': float(rrd.DEFAULT_ROI_PADDING),
-            'quantile': float(ds.roi_quantile),
             'landmarks_1based': list(ds.landmarks),
             'landmarks_0based': [int(i) for i in ds.target_idx],
             'landmark_groups': {n: list(l) for n, l in _group_members(ds.landmarks)},
@@ -629,9 +628,6 @@ def main(argv=None) -> int:
                         f'(default {DEFAULT_ROI_PADDING} = +20%% overall, NOT the '
                         f'provider default {rrd.DEFAULT_ROI_PADDING} = +40%%; pass '
                         f'{rrd.DEFAULT_ROI_PADDING} to mirror a training config)')
-    p.add_argument('--roi_quantile', type=float, default=rrd.DEFAULT_ROI_QUANTILE,
-                   help='0.0 = min/max box; (0, 0.5) clips each side to that '
-                        'percentile of the clip landmark cloud')
     p.add_argument('--landmarks', default='face',
                    help='"face" (all 49), a ROI_LANDMARKS_2D preset, or a '
                         '1-indexed CSV')
@@ -671,7 +667,7 @@ def main(argv=None) -> int:
             tasks=_split(args.task), signals=(args.signal,),
             clip_seconds=args.clip_seconds, clip_stride=args.clip_stride,
             fps=args.fps, phys_fs=args.phys_fs, input_size=args.input_size,
-            roi_padding=args.roi_padding, roi_quantile=args.roi_quantile,
+            roi_padding=args.roi_padding,
             landmarks=rrd.resolve_face_landmarks(args.landmarks),
             decode_scale=args.decode_scale, norm=args.norm,
             max_entries=args.max_entries or None)

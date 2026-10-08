@@ -194,7 +194,6 @@ def _clip_report(ds, index: int, box, fails) -> dict:
             'width_px': int(x1 - x0),
             'height_px': int(y1 - y0),
             'padding': float(ds.roi_padding),
-            'quantile': float(ds.roi_quantile),
             'landmarks_1based': list(ds.target_landmarks),
             'landmarks_0based': [int(i) for i in ds.target_idx],
             'static_over_frames': int(ds.clip_frames),
@@ -308,12 +307,6 @@ def main(argv=None) -> int:
     p.add_argument('--resp_fs', type=float, default=trd.DEFAULT_RESP_FS)
     p.add_argument('--input_size', type=int, default=trd.DEFAULT_INPUT_SIZE)
     p.add_argument('--roi_padding', type=float, default=trd.DEFAULT_ROI_PADDING)
-    p.add_argument('--roi_quantile', type=float,
-                   default=trd.DEFAULT_ROI_QUANTILE,
-                   help='0.0 = min/max landmark box (historical). A value in '
-                        '(0, 0.5) clips each side to that percentile of the '
-                        'clip landmark cloud, so head-motion outliers cannot '
-                        'inflate the box (try 0.05)')
     p.add_argument('--roi_landmarks', default='',
                    help='the landmarks whose bounding box IS the ROI: a preset '
                         'name (nose_mouth | nostrils | nostril_mouth | '
@@ -351,7 +344,6 @@ def main(argv=None) -> int:
         task_set=args.task_set, clip_seconds=args.clip_seconds,
         clip_stride=args.clip_stride, fps=args.fps, resp_fs=args.resp_fs,
         input_size=args.input_size, roi_padding=args.roi_padding,
-        roi_quantile=args.roi_quantile,
         target_landmarks=trd.resolve_roi_landmarks(args.roi_landmarks),
         min_signal_spread=args.min_signal_spread,
         rail_touch_v=args.rail_touch_v,

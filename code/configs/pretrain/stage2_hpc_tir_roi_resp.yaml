@@ -95,7 +95,6 @@ input_size: 112                    # ROI patch side. 112/16 -> a 7x7 grid =
                                    #   required (same roi_* keys).
 roi_padding: 0.2                   # landmark-box margin on EACH side
 roi_landmarks: ''                  # '' = the historical 12-point nose+mouth set
-roi_quantile: 0.0                  # 0.0 = min/max over the clip
 min_signal_spread: 0.1              # VOLTS: DROP a window whose spread
                                    #   (max-min) is below this. 0.1 V catches the
                                    #   DEAD-signal class a rail test cannot see:

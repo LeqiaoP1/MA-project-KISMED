@@ -100,9 +100,6 @@ roi_landmarks: ''                  # '' = the historical 12-point nose+mouth set
                                    #   (100x81 px still vs 91x15 px moving);
                                    #   'nose_tip' is 36-70% smaller area and
                                    #   stable -> prefer it for a ROI experiment.
-roi_quantile: 0.0                  # 0.0 = min/max over the clip (historical);
-                                   #   0.05 = 5th/95th percentile of the clip
-                                   #   landmark cloud (motion-robust box)
 min_signal_spread: 0.1              # VOLTS: DROP a window whose spread
                                    #   (max-min) is below this. 0.1 V catches the
                                    #   DEAD-signal class a rail test cannot see:

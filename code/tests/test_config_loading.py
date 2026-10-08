@@ -115,7 +115,6 @@ def test_stage2_hpc_resolves_the_intended_values(monkeypatch):
     assert a.streams == 'tir,resp'
     assert a.input_size == 112
     assert a.roi_padding == pytest.approx(0.2)
-    assert a.roi_quantile == pytest.approx(0.0)
     assert a.min_signal_spread == pytest.approx(0.1)
     assert a.rail_touch_v == pytest.approx(9.90)
     assert a.clip_duration == pytest.approx(8.0)

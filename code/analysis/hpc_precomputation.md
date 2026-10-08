@@ -115,7 +115,7 @@ is the read path. Total decode CPU falls by ~450x.
 ### 2.1 The two configs, key by key
 
 `run_waveform.py` enforces `ROI_CONTRACT_KEYS = ('roi_landmarks', 'roi_padding',
-'roi_quantile', 'input_size')` against the Stage-2 checkpoint. Everything else is
+'input_size')` against the Stage-2 checkpoint. Everything else is
 free to differ -- and one thing does:
 
 | key | Stage 2 `stage2_hpc_tir_roi_resp` | Stage 3 `resp_tir_roi_hpc` | match |
@@ -123,7 +123,6 @@ free to differ -- and one thing does:
 | `input_size` | 112 | 112 | yes (enforced) |
 | `roi_padding` | 0.2 | 0.2 | yes (enforced) |
 | `roi_landmarks` | `''` (12-point nose+mouth) | `''` | yes (enforced) |
-| `roi_quantile` | 0.0 | 0.0 | yes (enforced) |
 | `clip_duration` | 8.0 | 8.0 | yes |
 | `temporal_stride` | 2 | 2 | yes |
 | `fps` | 25.0 | 25.0 | yes |
@@ -151,7 +150,7 @@ the key that decides cache reuse, because it selects *which windows exist*.
 ### 2.3 Requirement that makes (b) work
 
 The cached box must be the **whole-task union** -- min/max of the task's landmark
-track plus padding -- not a per-clip box. A clip's box is a `roi_quantile: 0.0`
+track plus padding -- not a per-clip box. A clip's box is a
 min/max over *that clip's* frames, which depends on the clip and therefore on the
 hop; the whole-task box is a superset for any hop. That inflates the cache
 (see 3.2) but is what makes it hop-independent.
@@ -343,3 +342,62 @@ this cluster.
    over a sample of subject-tasks would pin down the (b) cache size.
 5. `/work/scratch` retention policy for a ~126 GB artifact that must stay valid
    across a multi-week campaign.
+
+---
+
+## 8. Record: `roi_quantile` REMOVED (2026-10-08)
+
+`roi_quantile` no longer exists. It selected an outlier-robust PERCENTILE box
+instead of the min/max of the clip's landmark cloud, was `0.0` (i.e. min/max, the
+historical box) in every one of the 10 configs, and was therefore doing nothing
+numerically. Removed from `data/tir_resp_dataset.py`, `data/rgb_roi_dataset.py`,
+the four runners, the 10 configs, the tests and the docs -- 19 files, and
+`ROI_CONTRACT_KEYS` is now `('roi_landmarks', 'roi_padding', 'input_size')`.
+
+**Safety of the removal.** Bit-exact: the box was already computed by the
+min/max branch whenever the value was `0.0`, so no pixel of any shipped run
+changes. The repo's unknown-config-key guard is a HARD ERROR, so the removal
+cannot be half-done -- any config or namespace still carrying the key now fails
+loudly (verified).
+
+**What was given up** (measured over all 1380 scannable IRFeatures tracks,
+1,175,070 frames, by `analysis/tir_resp/roi_box_impact.py`; tracker `(0,0)`
+sentinel frames excluded, since a single failed frame inflates a min/max box):
+
+| q | clip box, linear reduction | area |
+|---|---|---|
+| 0.05 | x0.835 | -30 % |
+| 0.10 | x0.713 | -49 % |
+| 0.20 | x0.536 | -71 % |
+
+The leverage is essentially IDENTICAL with tracker failures removed, so the
+extent the knob trimmed is driven by genuine head motion, not corruption. And
+the population it targeted exists: `corr(box side, jitter) = +0.78`, with the
+small-box decile at 86 px / jitter 2.6 against a large-box decile at 153 px /
+jitter 11.3. This reproduces the reasoning recorded (until this removal) in the
+`DEFAULT_ROI_QUANTILE` comment, dated 2026-09-26: *"the min/max union box grows
+with head motion; sessions with a SMALL box + low landmark jitter reconstruct at
+Pearson ~0.7 while large/jerky ones sit at ~0.0 (possible because the inflated
+crop is mostly STATIC BACKGROUND, so the mean-pooled tokens encode pose rather
+than nostril temperature)."*
+
+So the deletion removes the cheapest available mitigation for a defect the
+project had already measured. That was a deliberate call, on the grounds that the
+knob was unused, unvalidated (no test ever exercised `q > 0`) and part of the
+enforced contract. The alternative mitigation, `roi_landmarks: nostrils`
+(also unused, and a coarser instrument -- a 2-point box), remains.
+
+**To re-add it:** restore the `quantile` argument and percentile branch in
+`roi_box_from_landmarks`, the `roi_quantile` parameter on both dataset classes,
+the flag on the four runners, the key in `ROI_CONTRACT_KEYS`, the 10 configs and
+the test assertions -- and ADD A TEST for `q > 0` (containment in the min/max
+box, monotone shrinking with `q`, bit-exactness at `0.0`), which the previous
+implementation never had. The expected magnitudes are in the table above.
+
+**A separate finding from the same measurement, still open:** a min/max box is
+fragile to ONE failed frame -- including sentinel rows inflated the p90 task box
+from 174 px to 385 px, and created a >= x2 resolution-loss class covering 9.9 %
+of subject-tasks against 0.1 % clean. Clip-level boxes are protected because a
+clip overlapping ANY `(0,0)`/missing target landmark is DROPPED
+(`missing_frame_mask`), but a ONE-BOX-PER-TASK rule would be maximally exposed to
+it and must mask sentinel/NaN frames explicitly.

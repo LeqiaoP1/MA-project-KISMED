@@ -946,7 +946,7 @@ which is why γ = 0.01 is worse than γ = 0 on every metric.
 * the per-token **seam ratio**, and the **degenerate-target skip** for a
   dead-sensor plateau that fills the Welch segment (4/75 val clips here).
 * the Stage-2 → Stage-3 **ROI contract check** (`runners/run_waveform.py`):
-  `roi_landmarks` / `roi_padding` / `roi_quantile` / `input_size` change the
+  `roi_landmarks` / `roi_padding` / `input_size` change the
   pixels without changing any tensor shape, so they are compared against the
   values recorded *in the checkpoint* and a mismatch aborts the run.
   `data/tir_resp_dataset.py --check_views` proves the two views cropped
