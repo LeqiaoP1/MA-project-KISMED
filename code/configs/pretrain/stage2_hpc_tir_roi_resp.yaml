@@ -155,7 +155,14 @@ pos_init: sincos3d
 # is rebuilt from --epochs, NOT restored, so raising it shifts the schedule.)
 epochs: 150
 batch_size: 16                     # per GPU; lr = blr * batch * world / 256
-save_ckpt_freq: 20                 # -> 9 checkpoints (~1.2 GB each, $WORK_SCRATCH)
+save_ckpt_freq: 5                  # 30 checkpoints (~1.2 GB each, $WORK_SCRATCH).
+                                   #   Was 20, which lost 7 epochs (~1h40m) when
+                                   #   job 55368106 died at epoch 7 on a stalled
+                                   #   /work/projects video read. At ~14 min /
+                                   #   epoch the 150-epoch budget is ~35 h, so
+                                   #   the run WILL hit the 24 h wall clock and
+                                   #   resume: freq 5 caps a lost window at
+                                   #   ~70 min instead of ~4.7 h.
 opt: adamw
 blr: 1.5e-4
 min_lr: 0.0

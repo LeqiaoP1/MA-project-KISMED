@@ -12,7 +12,12 @@ export CONDA_ENV="${CONDA_ENV:-}"                    # EDIT (leave empty if usin
 export RAW_DATA_PATH="${WORK_PROJ}/test"          # EDIT
 export DATA_PATH="${HOME}/MA-project-KISMED/data/processed/bp4d_canonical"  # EDIT
 export PROJ_DIR="${HOME}/MA-project-KISMED"
-export OUTPUT_DIR="${PROJ_DIR}/output"                       # EDIT
+# Checkpoints are ~1.2 GB EACH (30 of them at save_ckpt_freq 5 ~= 36 GB), and
+# $PROJ_DIR/output sits on $HOME's small quota -- a full Stage-2/3 run fills it
+# and dies mid-save. Prefer the scratch file system when the site provides one.
+# NOTE $WORK_SCRATCH is a SITE variable, not defined by this profile, so the
+# fallback keeps the old behaviour on a cluster that has no scratch.
+export OUTPUT_DIR="${OUTPUT_DIR:-${WORK_SCRATCH:-$PROJ_DIR}/output}"  # EDIT
 export CODE_DIR="${PROJ_DIR}/code"
 
 # Stage-1 initial (downloaded) ViT encoder weights. Must be on a path every
@@ -20,7 +25,15 @@ export CODE_DIR="${PROJ_DIR}/code"
 # LOGIN node (compute nodes have no internet), then reuse the cache.
 export INITIAL_MODELS_DIR="${INITIAL_MODELS_DIR:-$(dirname "$PROJ_DIR")/models/initial}"
 export DATA_SET="${DATA_SET:-bp4d+}"
-export NUM_WORKERS="${NUM_WORKERS:-4}"
+# MEASURED (2026-10-08): the Stage-2 loop is CPU-work-bound, not GPU-bound -- a
+# single Blackwell GPU does the step in 0.20 s while the iteration takes 2.45 s,
+# and forcing OMP_NUM_THREADS to 1 only SHIFTS time between loader and compute
+# (data 1.27->0.65 s, step 1.15->1.72 s, total unchanged). Batch 16 x N workers
+# means ~3200 .wmv frames decoded+resized per iteration PER RANK, so the worker
+# count is limited by the CORES the job actually owns: --cpus-per-task must
+# cover num_workers + the training process. This default matches every tir_roi
+# config's `num_workers: 8`; the old 4 silently overrode them.
+export NUM_WORKERS="${NUM_WORKERS:-8}"
 
 # --- SLURM resource template (overridable per job / on the command line) --- #
 export PARTITION="${PARTITION:-gpu}"        # EDIT: partition to submit to

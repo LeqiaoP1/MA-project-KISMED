@@ -10,7 +10,7 @@ scipy>=1.10
 pandas>=2.0,<3.0  # <3.0 is forced by neurokit2 0.2.13 (Tier-3 evaluation), see the evaluation block at the end
 opencv-python>=4.8
 pillow>=10.0
-# decord>=0.6  # optional ffmpeg decoder for .wmv (OpenCV may lack WMV3/VC-1)
+decord>=0.6  # optional ffmpeg decoder for .wmv (OpenCV may lack WMV3/VC-1)
 
 # Training helpers / logging
 pytest>=8.0

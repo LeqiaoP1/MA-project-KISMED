@@ -73,6 +73,7 @@ split here -- subject-disjoint splitting is the caller's job.
 import math
 import os
 import re
+import time
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -87,6 +88,11 @@ except ImportError:                           # `python data/tir_resp_dataset.py
     _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from data import video_io as vio
     from data import task_groups as tgrp
+
+#: Decode attempts for ONE clip (``_frames``); see the retry note there.
+_DECODE_ATTEMPTS = max(1, int(os.environ.get('VIDEO_DECODE_ATTEMPTS', '3')))
+#: Seconds before a re-try (doubles per attempt).
+_DECODE_BACKOFF_S = float(os.environ.get('VIDEO_DECODE_BACKOFF_S', '1.0'))
 
 __all__ = ['NUM_LANDMARKS', 'TARGET_LANDMARKS', 'TARGET_LANDMARK_IDX',
            'TARGET_LANDMARK_NAMES', 'DEFAULT_CLIP_SECONDS', 'DEFAULT_FPS',
@@ -887,12 +893,36 @@ class BP4DPlusTIRRespDataset(Dataset):
         return ((y - mu) / (sd + 1e-8)).astype(np.float32)
 
     def _frames(self, entry: dict) -> np.ndarray:
-        """Decode the clip's frames as uint8 RGB ``[T, H, W, 3]``."""
-        reader = vio.open_video(entry['video'])
-        try:
-            frames = reader.read_range(entry['frame_start'], self.clip_frames)
-        finally:
-            reader.close()
+        """Decode the clip's frames as uint8 RGB ``[T, H, W, 3]``.
+
+        The whole open+decode is retried (``VIDEO_DECODE_ATTEMPTS``, default 3)
+        because the corpus lives on a parallel file system where a single clip
+        can stall or come back short. Letting one such clip raise is what killed
+        the 4-GPU Stage-2 run: ranks 1/2 died in the DataLoader and the others
+        then hung in ``all_reduce`` until the 600 s NCCL watchdog fired.
+        """
+        last: Optional[BaseException] = None
+        for attempt in range(max(1, _DECODE_ATTEMPTS)):
+            if attempt:
+                time.sleep(_DECODE_BACKOFF_S * (2 ** (attempt - 1)))
+            reader = None
+            try:
+                reader = vio.open_video(entry['video'])
+                frames = np.asarray(reader.read_range(entry['frame_start'],
+                                                      self.clip_frames))
+                break
+            except Exception as exc:              # transient FS / decoder stall
+                last = exc
+                print(f'[data] {entry["session"]} frame '
+                      f'{entry["frame_start"]}: decode failed on attempt '
+                      f'{attempt + 1}/{_DECODE_ATTEMPTS} ({exc!r})', flush=True)
+            finally:
+                if reader is not None:
+                    reader.close()
+        else:
+            raise IOError(f'{entry["session"]} frame {entry["frame_start"]}: '
+                          f'gave up after {_DECODE_ATTEMPTS} decode '
+                          f'attempt(s) on {entry["video"]}') from last
         frames = np.asarray(frames)
         if frames.ndim == 2:                                  # gray fallback
             frames = np.repeat(frames[..., None], 3, axis=2)

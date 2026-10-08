@@ -12,7 +12,15 @@ class NativeScalerWithGradNormCount:
     state_dict_key = 'amp_scaler'
 
     def __init__(self):
-        self._scaler = torch.cuda.amp.GradScaler()
+        # torch.cuda.amp.GradScaler() is deprecated and prints a FutureWarning
+        # on EVERY rank of EVERY job (it polluted the Stage-2 logs). The
+        # torch.amp form needs torch>=2.3 while requirements.txt only asks for
+        # >=2.1, so keep the legacy call as a fallback instead of raising the
+        # floor. Both are the same object; only the constructor moved.
+        try:
+            self._scaler = torch.amp.GradScaler('cuda')
+        except (AttributeError, TypeError):   # torch < 2.3
+            self._scaler = torch.cuda.amp.GradScaler()
 
     def __call__(self, loss, optimizer, clip_grad=None, parameters=None,
                  create_graph=False, update_grad=True):

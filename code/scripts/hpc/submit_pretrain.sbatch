@@ -60,8 +60,14 @@
 #SBATCH --gres=gpu:a100:4             # EDIT: GPUs per node (4 or 8); type pinned
 #SBATCH --ntasks=4                    # EDIT: == number of GPUs
 #SBATCH --ntasks-per-node=4
-#SBATCH --cpus-per-task=8
-#SBATCH --mem-per-cpu=4G              # 4 tasks x 8 cpus x 4G = 128G total
+#SBATCH --cpus-per-task=16             # MUST cover num_workers (8) + the main
+                                      # process, else the decode workers queue
+                                      # behind each other. The loop is CPU-WORK
+                                      # bound (measured): 1 GPU does the step in
+                                      # 0.20 s of a 2.45 s iteration. 4 x 16 = 64
+                                      # of the node's 128 cores; keep
+                                      # ntasks x cpus-per-task <= 128.
+#SBATCH --mem-per-cpu=4G              # 4 tasks x 16 cpus x 4G = 256G total
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/st2_pretrain_%j.out
 #SBATCH --error=logs/st2_pretrain_%j.err

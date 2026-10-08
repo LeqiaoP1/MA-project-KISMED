@@ -25,6 +25,26 @@ from runners._common import (add_common_args, check_loader_not_empty, env_or,
                              parse_args_with_config)
 
 
+def str2bool(value) -> bool:
+    """argparse ``type`` that accepts a real bool, ``1/0`` or ``true/false``.
+
+    Needed because the default is True: a bare ``store_true`` cannot express
+    that, and ``--find_unused_parameters false`` has to be spellable on the
+    command line. A YAML ``false`` reaches the variable as a genuine bool (the
+    config loader applies it via ``set_defaults``, which skips ``type``), hence
+    the isinstance short-circuit.
+    """
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in ('1', 'true', 'yes', 'y', 'on'):
+        return True
+    if text in ('0', 'false', 'no', 'n', 'off'):
+        return False
+    raise argparse.ArgumentTypeError(
+        f'expects a boolean (true/false/1/0), got {value!r}')
+
+
 def get_args():
     parser = argparse.ArgumentParser('Project MAE pre-training', add_help=True)
     add_common_args(parser)
@@ -356,6 +376,19 @@ def get_args():
     parser.add_argument('--epochs', default=800, type=int)
     parser.add_argument('--save_ckpt_freq', default=20, type=int)
     parser.add_argument('--update_freq', default=1, type=int)
+    parser.add_argument('--find_unused_parameters', default=True,
+                        type=str2bool, nargs='?', const=True,
+                        help='DDP find_unused_parameters. Default True keeps '
+                             'the historical behaviour, but DDP warns when the '
+                             'forward pass turns out to use every parameter '
+                             'and the flag costs an extra autograd traversal '
+                             'per step -- pure CPU with no benefit, on a loop '
+                             'that is already CPU-bound. Pass '
+                             '"--find_unused_parameters false" only for a run '
+                             'whose logs actually show that warning; a config '
+                             'with genuinely unused parameters fails LOUDLY in '
+                             'DDP ("Expected to have finished reduction") '
+                             'rather than silently training wrongly.')
     # optimizer / lr  (official-MAE semantics)
     parser.add_argument('--opt', default='adamw', type=str)
     parser.add_argument('--lr', default=None, type=float,
@@ -478,8 +511,12 @@ def main(args):
 
     model_without_ddp = model
     if args.distributed:
+        # False only when the user asked for it (see --find_unused_parameters):
+        # the flag costs an extra autograd traversal per step and this loop is
+        # CPU-bound, so it is pure overhead whenever nothing is unused.
         model = torch.nn.parallel.DistributedDataParallel(
-            model, device_ids=[args.gpu], find_unused_parameters=True)
+            model, device_ids=[args.gpu],
+            find_unused_parameters=bool(args.find_unused_parameters))
         model_without_ddp = model.module
 
     # ----- optimizer / scaler -------------------------------------------- #

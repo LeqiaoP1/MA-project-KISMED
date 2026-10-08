@@ -19,6 +19,7 @@ then cropping to 224 discards ~97% of the libjpeg work, and measurement shows
 decode CPU -- not I/O (0.6 ms/frame) -- dominates the cost of a clip.
 """
 import os
+import time
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -26,6 +27,7 @@ import numpy as np
 __all__ = [
     'IMAGE_EXTS', 'list_image_files', 'read_image', 'read_image_range',
     'resize_center_crop', 'open_video', 'CV2ClipReader', 'DecordClipReader',
+    'OpenPolicy', 'resolve_open_policy',
 ]
 
 IMAGE_EXTS = ('.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff')
@@ -183,20 +185,134 @@ def read_image_range(image_dir: str, start: int = 0, n: Optional[int] = None,
 # --------------------------------------------------------------------------- #
 # TIR video (.wmv)
 # --------------------------------------------------------------------------- #
+#: Attempts (per backend) before ``open_video`` gives up on a container.
+DEFAULT_OPEN_ATTEMPTS = 3
+#: Seconds to wait before re-trying a failed open (doubles per attempt).
+DEFAULT_OPEN_BACKOFF_S = 1.0
+#: Upper bound OpenCV may spend inside a single ffmpeg open(), milliseconds.
+DEFAULT_OPEN_TIMEOUT_MS = 15000
+#: Upper bound OpenCV may spend inside a single ffmpeg read(), milliseconds.
+DEFAULT_READ_TIMEOUT_MS = 15000
+
+
+class OpenPolicy:
+    """Retry / timeout policy for :func:`open_video` (env-overridable).
+
+    Rationale -- the TIR ``.wmv`` corpus sits on a parallel file system that
+    occasionally stalls a single read for minutes. Without an explicit ffmpeg
+    timeout, OpenCV blocks inside ``open()``/``read()`` for ~4.5 min before its
+    own interrupt callback fires (five workers logged
+    ``cap_ffmpeg_impl.hpp ... Stream timeout triggered after 265852 ms`` on
+    Lichtenberg). In a DDP run that stall is long enough for the other ranks to
+    trip the 600 s NCCL watchdog, so ONE slow container killed the whole
+    4-GPU job instead of one clip. Capping the wait at a few seconds and
+    re-trying turns the same event into a short hiccup.
+
+    Environment overrides: ``VIDEO_OPEN_TIMEOUT_MS``, ``VIDEO_READ_TIMEOUT_MS``
+    (0 or negative disables the cap), ``VIDEO_OPEN_ATTEMPTS``,
+    ``VIDEO_OPEN_BACKOFF_S`` (seconds, doubles per attempt), ``VIDEO_BACKEND``
+    (``auto`` | ``cv2`` | ``decord``).
+    """
+
+    __slots__ = ('attempts', 'backoff_s', 'open_timeout_ms', 'read_timeout_ms',
+                 'backends')
+
+    def __init__(self, attempts: int = DEFAULT_OPEN_ATTEMPTS,
+                 backoff_s: float = DEFAULT_OPEN_BACKOFF_S,
+                 open_timeout_ms: int = DEFAULT_OPEN_TIMEOUT_MS,
+                 read_timeout_ms: int = DEFAULT_READ_TIMEOUT_MS,
+                 backends: Tuple[str, ...] = ('cv2', 'decord')):
+        self.attempts = max(1, int(attempts))
+        self.backoff_s = float(backoff_s)
+        self.open_timeout_ms = int(open_timeout_ms)
+        self.read_timeout_ms = int(read_timeout_ms)
+        self.backends = tuple(backends)
+
+    def sleep_before(self, attempt: int) -> None:
+        """Back off before retry ``attempt`` (0-based); 0 sleeps nothing."""
+        if attempt > 0 and self.backoff_s > 0:
+            time.sleep(self.backoff_s * (2 ** (attempt - 1)))
+
+
+def resolve_open_policy(backend: Optional[str] = None,
+                        policy: Optional[OpenPolicy] = None) -> OpenPolicy:
+    """Build the effective :class:`OpenPolicy` from ``backend`` + the env.
+
+    Precedence: an explicit ``policy`` argument wins outright; otherwise a
+    ``backend`` argument picks the order, else ``$VIDEO_BACKEND``; the numbers
+    always come from the environment so a job script can widen the timeouts
+    without touching the call site.
+    """
+    if policy is not None:
+        return policy
+    name = (backend or os.environ.get('VIDEO_BACKEND') or 'auto').strip().lower()
+    if name in ('auto', ''):
+        backends: Tuple[str, ...] = ('cv2', 'decord')
+    elif name in _BACKEND_FACTORIES:
+        backends = (name,)
+    else:
+        raise ValueError(f'unknown VIDEO_BACKEND {name!r}: expected one of '
+                         f"{', '.join(sorted(_BACKEND_FACTORIES))} or 'auto'")
+    return OpenPolicy(
+        attempts=int(os.environ.get('VIDEO_OPEN_ATTEMPTS',
+                                    DEFAULT_OPEN_ATTEMPTS)),
+        backoff_s=float(os.environ.get('VIDEO_OPEN_BACKOFF_S',
+                                       DEFAULT_OPEN_BACKOFF_S)),
+        open_timeout_ms=int(os.environ.get('VIDEO_OPEN_TIMEOUT_MS',
+                                           DEFAULT_OPEN_TIMEOUT_MS)),
+        read_timeout_ms=int(os.environ.get('VIDEO_READ_TIMEOUT_MS',
+                                           DEFAULT_READ_TIMEOUT_MS)),
+        backends=backends)
+
+
 class CV2ClipReader:
     """OpenCV (VideoCapture) based reader for a single video file."""
 
-    def __init__(self, path: str):
+    backend = 'cv2'
+
+    def __init__(self, path: str, open_timeout_ms: int = DEFAULT_OPEN_TIMEOUT_MS,
+                 read_timeout_ms: int = DEFAULT_READ_TIMEOUT_MS):
         import cv2
+        if not os.path.exists(path):     # retrying cannot help; fail fast
+            raise FileNotFoundError(f'No such video file: {path}')
         self.cv2 = cv2
         self.path = path
-        self._cap = cv2.VideoCapture(path)
+        self._cap = self._open(cv2, path, open_timeout_ms, read_timeout_ms)
         if not self._cap.isOpened():
+            self._cap.release()
             raise IOError(f'OpenCV could not open {path}')
         self.fps = float(self._cap.get(cv2.CAP_PROP_FPS) or 0.0)
         self.num_frames = int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         if self.fps <= 0:
+            self._cap.release()
             raise IOError(f'Could not determine fps of {path}')
+
+    @staticmethod
+    def _open(cv2, path: str, open_timeout_ms: int, read_timeout_ms: int):
+        """``VideoCapture`` with the ffmpeg wait caps applied when supported.
+
+        OpenCV only honours ``CAP_PROP_OPEN_TIMEOUT_MSEC`` /
+        ``CAP_PROP_READ_TIMEOUT_MSEC`` when they are passed to the FFMPEG
+        backend at construction time (values must be ints; floats raise).
+        Builds without those properties fall back to the plain constructor.
+        """
+        params = []
+        for prop, value in ((getattr(cv2, 'CAP_PROP_OPEN_TIMEOUT_MSEC', None),
+                             open_timeout_ms),
+                            (getattr(cv2, 'CAP_PROP_READ_TIMEOUT_MSEC', None),
+                             read_timeout_ms)):
+            if prop is not None and value and value > 0:
+                params += [int(prop), int(value)]
+        if params:
+            try:
+                cap = cv2.VideoCapture(path, int(cv2.CAP_FFMPEG), params)
+            except Exception:                 # no FFMPEG preference in this build
+                cap = None
+            if cap is not None and cap.isOpened():
+                return cap
+            if cap is not None:
+                cap.release()
+        return cv2.VideoCapture(path)
 
     @property
     def duration(self) -> float:
@@ -285,8 +401,12 @@ class CV2ClipReader:
 class DecordClipReader:
     """decord (ffmpeg) fallback reader for containers OpenCV cannot decode."""
 
+    backend = 'decord'
+
     def __init__(self, path: str):
         import decord
+        if not os.path.exists(path):     # retrying cannot help; fail fast
+            raise FileNotFoundError(f'No such video file: {path}')
         self.decord = decord
         self.path = path
         self._vr = decord.VideoReader(path)
@@ -351,18 +471,50 @@ class DecordClipReader:
         pass
 
 
-def open_video(path: str):
-    """Open ``path`` preferring OpenCV, falling back to decord.
+#: Backend name -> reader factory (filled in once both classes exist).
+_BACKEND_FACTORIES = {'cv2': CV2ClipReader, 'decord': DecordClipReader}
 
-    :returns: a reader with ``.fps``, ``.num_frames``, ``.duration`` and
-        ``.read_all(gray, target_size)``.
+
+def open_video(path: str, policy: Optional[OpenPolicy] = None,
+               backend: Optional[str] = None):
+    """Open ``path``, trying the configured decoder backends in order.
+
+    Default order (``VIDEO_BACKEND=auto``) is OpenCV -> decord: OpenCV is the
+    fast path for the corpus (measured against both decoders -- see the module
+    docstring) and decord is the ffmpeg fallback for builds without a WMV3/
+    VC-1 decoder. A failed open is retried per :class:`OpenPolicy` so a
+    transient stall or a brief file-system blip does not abort the run; every
+    attempt is bounded by the ffmpeg open/read timeouts.
+
+    :param policy: explicit :class:`OpenPolicy`; defaults to the env-derived one.
+    :param backend: ``'cv2'`` | ``'decord'`` | ``'auto'``, overriding
+        ``$VIDEO_BACKEND`` for this call.
+    :returns: a reader with ``.fps``, ``.num_frames``, ``.duration``,
+        ``.read_all(gray, target_size)`` and ``.read_range(start, n, gray)``.
     """
-    try:
-        return CV2ClipReader(path)
-    except Exception:
-        try:
-            return DecordClipReader(path)
-        except Exception:
-            raise IOError(
-                f'No usable video decoder for {path}. Install ffmpeg-based '
-                f'decord (`pip install decord`) or a WMV-capable OpenCV/ffmpeg.')
+    pol = resolve_open_policy(backend=backend, policy=policy)
+    errors: List[str] = []
+    for attempt in range(pol.attempts):
+        pol.sleep_before(attempt)
+        missing = False
+        for name in pol.backends:
+            try:
+                if name == 'cv2':
+                    return CV2ClipReader(path, pol.open_timeout_ms,
+                                         pol.read_timeout_ms)
+                return DecordClipReader(path)
+            except FileNotFoundError as exc:  # nothing to retry
+                errors.append(f'{name}: {exc}')
+                missing = True
+            except ImportError as exc:       # backend simply not installed
+                errors.append(f'{name}: not installed ({exc})')
+            except Exception as exc:         # unopenable / timed out
+                errors.append(f'{name}: {type(exc).__name__}: {exc}')
+        if missing:
+            break
+    detail = ' | '.join(errors[-len(pol.backends):]) or 'no backend tried'
+    raise IOError(
+        f'No usable video decoder for {path} after {pol.attempts} attempt(s) '
+        f'[{detail}]. Install ffmpeg-based decord (`pip install decord`) or a '
+        f'WMV-capable OpenCV/ffmpeg; on a slow parallel file system raise '
+        f'VIDEO_OPEN_TIMEOUT_MS / VIDEO_READ_TIMEOUT_MS.')
