@@ -343,6 +343,16 @@ def get_args():
                              "nose+mouth set. For the RGB-ROI path (data_set: "
                              "rgb_roi*): empty or 'face' = ALL 49 landmarks "
                              "(the whole face), or the same presets / CSV.")
+    parser.add_argument('--roi_cache', default=env_or('ROI_CACHE', ''), type=str,
+                        help='tir_roi_resp only: OUT_ROOT of an offline TIR-ROI '
+                             'cache (data/roi_cache.py), i.e. the parent of the '
+                             "<CACHE_KEY>/ directories. Empty (default, or "
+                             '$ROI_CACHE) = decode .wmv as before. Matched by KEY '
+                             "against this run's roi_landmarks / roi_padding / "
+                             'corpus, and the run ABORTS on a mismatch rather than '
+                             'reading slightly wrong pixels. Shares ONE artifact '
+                             'with the Stage-2 run it fine-tunes from (2 s vs 1 s '
+                             'hop is irrelevant: the cache is hop-independent).')
     parser.add_argument('--allow_roi_mismatch', action='store_true',
                         default=False,
                         help='run even when the ROI keys (roi_landmarks / '

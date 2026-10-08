@@ -142,6 +142,17 @@ def get_args():
                              'moving one); prefer "nose_tip". This changes the '
                              'VISUAL INPUT, so a Stage-2 checkpoint trained with a '
                              'different value must be re-pretrained.')
+    parser.add_argument('--roi_cache', default=env_or('ROI_CACHE', ''), type=str,
+                        help='tir_roi* only: OUT_ROOT of an offline TIR-ROI cache '
+                             '(data/roi_cache.py), i.e. the parent of the '
+                             'CACHE_KEY directories. Empty (the default, or '
+                             'ROI_CACHE) = decode .wmv as before. The cache is '
+                             'matched by KEY against this run of roi_landmarks / '
+                             'roi_padding / corpus, and the run ABORTS on a '
+                             'mismatch rather than reading slightly wrong '
+                             'pixels. It stores NATIVE union crops, so ONE cache '
+                             'serves the 2 s and 1 s hops and both the 112 px '
+                             'and 64 px lineages.')
     parser.add_argument('--decode_scale', default=1, type=int,
                         choices=[1, 2, 4, 8],
                         help='rgb_roi only: JPEG decode scale. 1 = native full '

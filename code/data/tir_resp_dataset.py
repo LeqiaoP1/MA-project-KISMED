@@ -70,6 +70,7 @@ Clips are non-overlapping by default (``clip_stride=None`` -> one clip per
 ``clip_seconds``); pass ``clip_stride`` (seconds) for a hop. Sessions are never
 split here -- subject-disjoint splitting is the caller's job.
 """
+import collections
 import math
 import os
 import re
@@ -560,6 +561,8 @@ class BP4DPlusTIRRespDataset(Dataset):
                  max_entries: Optional[int] = None,
                  preload: bool = False,
                  allow_empty: bool = False,
+                 roi_cache: Optional[str] = None,
+                 roi_cache_lru: int = 2,
                  verbose: bool = False):
         if norm not in ('clip', 'session', 'none'):
             raise ValueError(f"norm must be 'clip', 'session' or 'none', got {norm!r}")
@@ -598,6 +601,19 @@ class BP4DPlusTIRRespDataset(Dataset):
         self._resp_offsets = np.arange(self.resp_len)
         self.preload = bool(preload)
         self.verbose = bool(verbose)
+
+        # ---- optional offline ROI cache (see data/roi_cache.py) ----------- #
+        # The cache holds NATIVE-resolution union crops; the per-clip box is still
+        # recomputed HERE, from this clip's own landmarks, and sub-cropped out of
+        # the stored crop. Nothing about the pipeline changes except where the
+        # pixels come from.
+        self.roi_cache_root: Optional[str] = None
+        self._cache_params: Dict[str, object] = {}
+        self._cache_src_hw: Tuple[int, int] = (0, 0)
+        self._shard_lru = max(1, int(roi_cache_lru))
+        self._shards: 'collections.OrderedDict[str, dict]' = collections.OrderedDict()
+        if roi_cache:
+            self._attach_cache(str(roi_cache))
 
         # Named task GROUPS ("distortion levels") -> explicit task labels. The
         # DEFINITIONS come from the YAML config (nothing is hardcoded); the
@@ -796,6 +812,7 @@ class BP4DPlusTIRRespDataset(Dataset):
             'resp_len': self.resp_len,
             'input_size': self.input_size,
             'roi_padding': self.roi_padding,
+            'roi_cache': self.roi_cache_root,
             'target_landmarks': list(self.target_landmarks),
             'norm': self.norm,
             'tasks': (list(self.task_selection.tasks)
@@ -873,6 +890,107 @@ class BP4DPlusTIRRespDataset(Dataset):
             mu, sd = float(np.nanmean(y)), float(np.nanstd(y))
         return ((y - mu) / (sd + 1e-8)).astype(np.float32)
 
+    def _attach_cache(self, out_root: str) -> None:
+        """Point this dataset at an offline ROI cache.
+
+        The cache KEY is the verification. The run's own ``roi_landmarks`` /
+        ``roi_padding`` / corpus are turned into the loader's half of the key and
+        matched against every ``params.json`` under ``out_root``; a mismatch
+        RAISES with a field-by-field diff instead of silently reading slightly
+        wrong pixels (spec section 9.2 -- silent data drift is the one failure
+        mode that looks healthy while invalidating every downstream number).
+
+        The corpus digest uses the UNFILTERED discovery, because the key is a
+        property of the CORPUS, not of the subset a given run trains on.
+        """
+        try:
+            from . import roi_cache as rc
+        except ImportError:                 # `python data/tir_resp_dataset.py`
+            from data import roi_cache as rc
+        corpus = discover_sessions(self.raw_root)
+        want = rc.loader_params(self.raw_root, corpus, self.target_landmarks,
+                                self.roi_padding)
+        root = rc.find_cache(out_root, want)
+        params = rc.read_params(root)
+        self.roi_cache_root = str(root)
+        self._cache_params = params
+        self._cache_src_hw = (int(params['src_h']), int(params['src_w']))
+        if min(self._cache_src_hw) <= 0:
+            raise ValueError(
+                f'roi_cache: {root} records a non-positive source frame size '
+                f'{self._cache_src_hw}; the cache is corrupt.')
+        print(f'[data] roi_cache: {root}')
+        print(f'[data]   src {self._cache_src_hw[1]}x{self._cache_src_hw[0]}, '
+              f'landmarks {params["roi_landmarks_name"]} '
+              f'({len(params["roi_landmarks"])} pts), padding '
+              f'{params["roi_padding"]}, format v{params["format_version"]}')
+
+    def _shard(self, session: str) -> Optional[dict]:
+        """One cached shard, LRU-cached.
+
+        The LRU is not an optimisation detail: without it every clip of a task
+        would re-decompress the whole union crop -- ~17 overlapping windows x
+        66 MB, against a single 3.2 s decode -- which is the difference between
+        the cache being clearly worth it and merely breaking even.
+
+        A MISSING shard is an ERROR, never a fallback: a partially built cache
+        must fail loudly rather than silently decode (defeating the point) or
+        skip the session (silently shrinking the corpus).
+        """
+        if self.roi_cache_root is None:
+            return None
+        if session in self._shards:
+            self._shards.move_to_end(session)
+            return self._shards[session]
+        try:
+            from . import roi_cache as rc
+        except ImportError:
+            from data import roi_cache as rc
+        path = rc.shard_path(self.roi_cache_root, session)
+        if not path.is_file():
+            raise FileNotFoundError(
+                f'{session}: no shard in {self.roi_cache_root} -- the cache is '
+                f'INCOMPLETE. Run `runners/run_build_roi_cache.py --status` '
+                f'then --build (or --index to see the reasons), or unset '
+                f'roi_cache to fall back to decoding.')
+        sh = rc.read_shard(path)
+        self._shards[session] = sh
+        while len(self._shards) > self._shard_lru:
+            self._shards.popitem(last=False)
+        return sh
+
+    def _source_hw(self, entry: dict) -> Tuple[int, int]:
+        """Source frame size ``(h, w)`` the ROI box must be clamped to.
+
+        With a cache this comes from ``params.json`` and costs NO decode -- which
+        is what makes a per-clip box affordable at load time again.
+        """
+        if self.roi_cache_root is not None:
+            return self._cache_src_hw
+        frames = self._frames(entry)
+        return int(frames.shape[1]), int(frames.shape[2])
+
+    def _clip_frames(self, entry: dict) -> Tuple[np.ndarray, Tuple[int, int]]:
+        """``(frames, origin_xy)`` for one clip, from the cache when attached.
+
+        ``origin_xy`` is the source-pixel position of ``frames[0, 0]``: ``(0, 0)``
+        for a decoded clip, or the union box's corner for a cached one. The
+        caller subtracts it from the source-pixel box before slicing, which is
+        exactly what keeps ONE cache serving every hop and every ``input_size``.
+        """
+        sh = self._shard(entry['session'])
+        if sh is None:
+            return self._frames(entry), (0, 0)
+        f0, f1 = int(entry['frame_start']), int(entry['frame_end'])
+        n = int(sh['n_frames'])
+        if f1 > n:
+            raise IndexError(
+                f'{entry["session"]}: clip frames {f0}..{f1} exceed the {n} '
+                f'cached frames -- the shard came from a shorter track than '
+                f'this run expects.')
+        bx0, _, by0, _ = (int(v) for v in sh['box'])
+        return sh['frames'][f0:f1], (bx0, by0)
+
     def _frames(self, entry: dict) -> np.ndarray:
         """Decode the clip's frames as uint8 RGB ``[T, H, W, 3]``.
 
@@ -915,12 +1033,17 @@ class BP4DPlusTIRRespDataset(Dataset):
 
     # ------------------------------------------------------------------ roi
     def clip_roi_box(self, index: int) -> Tuple[int, int, int, int]:
-        """The static ROI box of entry ``index``, in SOURCE pixels."""
+        """The static ROI box of entry ``index``, in SOURCE pixels.
+
+        With a ROI cache attached this needs NO decode: the source frame size is
+        a cache parameter (``src_h``/``src_w``), so the box is cheap enough to
+        recompute per clip at load time -- which is the whole reason the cache
+        can store a hop-independent crop and still serve every hop.
+        """
         entry = self.entries[index]
         ir = self._landmarks(entry['session'])
         pts = ir[entry['frame_start']:entry['frame_end']][:, self.target_idx, :]
-        frames = self._frames(entry)
-        h, w = frames.shape[1], frames.shape[2]
+        h, w = self._source_hw(entry)
         return roi_box_from_landmarks(pts, w, h, self.roi_padding)
 
     def clip_landmarks(self, index: int) -> np.ndarray:
@@ -937,9 +1060,29 @@ class BP4DPlusTIRRespDataset(Dataset):
         return self._normalize(y, entry['session']) if normalized else y
 
     def _roi_patches(self, entry: dict, frames: np.ndarray,
-                     box: Tuple[int, int, int, int]) -> np.ndarray:
+                     box: Tuple[int, int, int, int],
+                     origin: Tuple[int, int] = (0, 0)) -> np.ndarray:
+        """Crop ``box`` (SOURCE pixels) out of ``frames`` and resize to S.
+
+        ``origin`` is the source position of ``frames[0, 0]``: ``(0, 0)`` for a
+        decoded clip, the union-box corner when ``frames`` came from the ROI
+        cache. Reading a clip box out of a NATIVE-resolution union crop is an
+        exact integer translation of the original pixels -- and the
+        interpolation choice below depends only on the box EXTENT, which the
+        translation preserves. (Measured: 10/10 clips byte-identical, and
+        8000/8000 frames identical between the sequential and seeking decodes.)
+        """
         cv2 = _cv2()
-        x0, x1, y0, y1 = box
+        ox, oy = int(origin[0]), int(origin[1])
+        x0, x1, y0, y1 = (int(box[0]) - ox, int(box[1]) - ox,
+                          int(box[2]) - oy, int(box[3]) - oy)
+        if min(x0, y0) < 0 or x1 > frames.shape[2] or y1 > frames.shape[1]:
+            raise IndexError(
+                f'{entry["session"]} frames {entry.get("frame_start")}..'
+                f'{entry.get("frame_end")}: box {tuple(box)} is not inside the '
+                f'{frames.shape[1]}x{frames.shape[2]} source at origin '
+                f'{origin} (local {x0, x1, y0, y1}). The cached union box does '
+                f'NOT contain this clip box -- refusing to wrap the index.')
         s = self.input_size
         interp = (cv2.INTER_AREA if s <= min(x1 - x0, y1 - y0)
                   else cv2.INTER_LINEAR)
@@ -956,10 +1099,10 @@ class BP4DPlusTIRRespDataset(Dataset):
         ir = self._landmarks(session)
         pts = ir[entry['frame_start']:entry['frame_end']][:, self.target_idx, :]
 
-        frames = self._frames(entry)
-        h, w = frames.shape[1], frames.shape[2]
+        frames, origin = self._clip_frames(entry)
+        h, w = self._source_hw(entry)
         box = roi_box_from_landmarks(pts, w, h, self.roi_padding)
-        patches = self._roi_patches(entry, frames, box)          # [T, s, s, 3]
+        patches = self._roi_patches(entry, frames, box, origin)  # [T, s, s, 3]
 
         # [T, H, W, C] uint8 RGB -> [C, T, H, W] float in [0, 1]
         tir = torch.from_numpy(np.ascontiguousarray(patches.transpose(3, 0, 1, 2)))
@@ -1012,6 +1155,7 @@ class BP4DPlusTIRRespDataset(Dataset):
             f'frames; resp {s["resp_len"]} samples @ {s["resp_fs"]:g} Hz',
             f'roi             : landmarks {list(self.target_landmarks)} '
             f'padding {s["roi_padding"]:g} -> {self.input_size}x{self.input_size}',
+            f'roi_cache       : {s["roi_cache"] or "off (decoding .wmv)"}',
             f'norm            : {s["norm"]}',
             f'task selection  : {self.task_selection.describe()}',
         ]
@@ -1101,6 +1245,8 @@ class TirRoiRespPretrainDataset(Dataset):
                  task_groups=None, task_set=None,
                  max_clips_per_session: Optional[int] = None,
                  max_entries: Optional[int] = None,
+                 roi_cache: Optional[str] = None,
+                 roi_cache_lru: int = 2,
                  verbose: bool = False):
         self.streams = tuple(str(s).strip() for s in streams if str(s).strip())
         if not self.streams:
@@ -1155,7 +1301,9 @@ class TirRoiRespPretrainDataset(Dataset):
             min_signal_spread=min_signal_spread,
             rail_touch_v=rail_touch_v,
             max_clips_per_session=max_clips_per_session,
-            max_entries=max_entries, verbose=verbose)
+            max_entries=max_entries,
+            roi_cache=roi_cache, roi_cache_lru=roi_cache_lru,
+            verbose=verbose)
         self.entries = self.base.entries
         self.stats = self.base.stats
         self.task_selection = self.base.task_selection
@@ -1274,6 +1422,8 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
                  task_groups=None, task_set=None,
                  max_clips_per_session: Optional[int] = None,
                  max_entries: Optional[int] = None,
+                 roi_cache: Optional[str] = None,
+                 roi_cache_lru: int = 2,
                  verbose: bool = False):
         if target != 'resp':
             raise ValueError(
@@ -1373,7 +1523,9 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
             subjects=_as_list(keep_subjects), tasks=self.task_selection.tasks,
             task_groups=task_groups, task_set=task_set,
             max_clips_per_session=max_clips_per_session,
-            max_entries=max_entries, verbose=verbose)
+            max_entries=max_entries,
+            roi_cache=roi_cache, roi_cache_lru=roi_cache_lru,
+            verbose=verbose)
 
         # The parent stores ITS canonical dataset norm under the same attribute
         # name (it is the knob driving the base dataset's ``norm``), so restore
@@ -1504,6 +1656,7 @@ def build_tir_roi_finetune_dataset(is_train: bool, test_mode: bool,
         task_set=getattr(args, 'task_set', None),
         max_clips_per_session=getattr(args, 'max_clips', None),
         max_entries=getattr(args, 'max_entries', None),
+        roi_cache=(str(getattr(args, 'roi_cache', '') or '').strip() or None),
         verbose=bool(getattr(args, 'verbose', False)))
     _log_corpus_cleaning(ds.stats, 'stage3')
     return ds
@@ -1543,7 +1696,8 @@ def build_tir_roi_pretrain_dataset(args) -> TirRoiRespPretrainDataset:
         task_groups=getattr(args, 'task_groups', None),
         task_set=getattr(args, 'task_set', None),
         max_clips_per_session=getattr(args, 'max_clips', None),
-        max_entries=getattr(args, 'max_entries', None))
+        max_entries=getattr(args, 'max_entries', None),
+        roi_cache=(str(getattr(args, 'roi_cache', '') or '').strip() or None))
     _log_corpus_cleaning(ds.stats, 'stage2')
     return ds
 
@@ -1807,6 +1961,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         'grid and assert the ROI crop, the ROI box and the '
                         'target agree (the Stage-3 ROI contract)')
     p.add_argument('--norm', default='clip', choices=('clip', 'session', 'none'))
+    p.add_argument('--roi_cache', default=os.environ.get('ROI_CACHE', ''),
+                   help='offline TIR-ROI cache OUT_ROOT (see data/roi_cache.py). '
+                        'When set, the ROI crop is READ FROM THE CACHE while '
+                        'the clip checks still decode LIVE -- so every check '
+                        'below becomes the cached-vs-live parity test (spec '
+                        '9.7 item 2) and a mismatch FAILS here.',
+                        )
     p.add_argument('--max_entries', type=int, default=0, help='0 = no cap')
     p.add_argument('--n_check', type=int, default=3, help='clips to verify')
     args = p.parse_args(argv)
@@ -1823,7 +1984,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                   target_landmarks=resolve_roi_landmarks(args.roi_landmarks),
                   min_signal_spread=args.min_signal_spread,
                   rail_touch_v=args.rail_touch_v, norm=args.norm,
-                  max_entries=args.max_entries or None, allow_empty=True)
+                  max_entries=args.max_entries or None, allow_empty=True,
+                  roi_cache=args.roi_cache or None)
         kw.update(over)
         return BP4DPlusTIRRespDataset(**kw)
 
@@ -1848,7 +2010,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         if s['reason'] == 'missing_ir_features'})
     if untracked:
         probe = build(subjects=[untracked[0]], tasks=None,
-                      task_set=None, task_groups=None)
+                      task_set=None, task_groups=None, roi_cache=None)
         if len(probe) == 0 and any(s['reason'] == 'missing_ir_features'
                                    for s in probe.skipped):
             print(f'[ok] {untracked[0]} (no IRFeatures) -> skipped gracefully, '
@@ -1875,7 +2037,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     if not os.path.isfile(dst):
                         raise RuntimeError(f'probe symlink is dangling: {dst}')
                 os.makedirs(os.path.join(tmp, IR_TREE), exist_ok=True)  # empty!
-                probe = build(raw_root=tmp)
+                # roi_cache=None: this probe is a synthetic 1-session tree, so
+                # its corpus cannot match a real cache -- and it tests the
+                # DROP RULES, never a pixel.
+                probe = build(raw_root=tmp, roi_cache=None)
                 if len(probe) == 0 and any(
                         s['reason'] == 'missing_ir_features' for s in probe.skipped):
                     print(f'[ok] synthetic {src["session"]} without '
@@ -1903,7 +2068,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # the sentinel probes are about the DROP RULES, not the selection ->
         # build them with the group filter switched off
         probe = build(subjects=[subj], tasks=[task], task_set=None,
-                      task_groups=None)
+                      task_groups=None, roi_cache=None)
         dropped = int(probe.stats['clips_dropped_sentinel'])
         overlap = [e for e in probe.entries
                    if e['session'] == sentinel_sess
