@@ -41,6 +41,7 @@ Usage (from ``code/``; CPU-only, no Slurm needed for a sample):
     python analysis/tir_resp/roi_box_impact.py --workers 16
 """
 import argparse
+import math
 import os
 import sys
 from typing import Dict, List, Optional, Tuple
@@ -58,14 +59,46 @@ SRC_W, SRC_H = 726, 480
 TGT = trd.TARGET_LANDMARK_IDX
 
 
-def _box(pts: np.ndarray, padding: float, quantile: float
+def _box(pts: np.ndarray, padding: float
          ) -> Optional[Tuple[int, int, int, int]]:
-    """Box of one window, or ``None`` when the window has no usable landmarks."""
+    """Min/max box of one window, or ``None`` when it has no usable landmarks.
+
+    This is the PRODUCTION path: the box is a pure function of the landmark
+    track (``roi_box_from_landmarks``), so no video has to be decoded.
+    """
     try:
         return trd.roi_box_from_landmarks(pts.reshape(-1, 2), SRC_W, SRC_H,
-                                          padding, quantile=quantile)
+                                          padding)
     except ValueError:
         return None
+
+
+def _percentile_box(pts: np.ndarray, padding: float, q: float
+                    ) -> Optional[Tuple[int, int, int, int]]:
+    """PERCENTILE box -- LOCAL re-implementation of the REMOVED ``roi_quantile``.
+
+    Production no longer has this branch (``roi_quantile`` was removed on
+    2026-10-08; see ``analysis/hpc_precomputation.md`` section 8), so it lives
+    here ONLY to keep the "what the knob bought" table reproducible. Padding,
+    rounding and clamping go through the same helpers as the min/max path
+    (``trd._clamp_box``), so the two boxes differ only in their bounds.
+    Validated by reproducing the recorded magnitudes: q=0.05 -> x0.835,
+    q=0.10 -> x0.713, q=0.20 -> x0.536.
+    """
+    p = np.asarray(pts, dtype=np.float64).reshape(-1, 2)
+    p = p[np.isfinite(p).all(axis=1)]
+    if p.size == 0:
+        raise ValueError('no finite landmark coordinates in this window')
+    lo = np.percentile(p, 100.0 * q, axis=0)
+    hi = np.percentile(p, 100.0 * (1.0 - q), axis=0)
+    x0, x1 = float(lo[0]), float(hi[0])
+    y0, y1 = float(lo[1]), float(hi[1])
+    w, h = x1 - x0, y1 - y0
+    ix0, ix1 = trd._clamp_box(math.floor(x0 - padding * w),
+                              math.ceil(x1 + padding * w) + 1, SRC_W)
+    iy0, iy1 = trd._clamp_box(math.floor(y0 - padding * h),
+                              math.ceil(y1 + padding * h) + 1, SRC_H)
+    return ix0, ix1, iy0, iy1
 
 
 def _linear(box: Tuple[int, int, int, int]) -> float:
@@ -108,7 +141,7 @@ def _stats(task: dict, window: int, hops: List[int], padding: float,
     }
 
     # task box: min/max over the WHOLE task (the one-box-per-task proposal)
-    tb = _box(pts_all.reshape(-1, 2), padding, 0.0)
+    tb = _box(pts_all.reshape(-1, 2), padding)
     if tb is None:
         return None
     out['task_lin'] = _linear(tb)
@@ -117,7 +150,7 @@ def _stats(task: dict, window: int, hops: List[int], padding: float,
     for hop in hops:
         boxes = []
         for start in range(0, n - window + 1, hop):
-            b = _box(pts_all[start:start + window], padding, 0.0)
+            b = _box(pts_all[start:start + window], padding)
             if b is not None:
                 boxes.append(b)
         if not boxes:
@@ -131,13 +164,17 @@ def _stats(task: dict, window: int, hops: List[int], padding: float,
         # the resolution a task box would cost, in linear terms
         out[f'infl_{hop}'] = out['task_lin'] / max(float(np.median(lin)), 1.0)
 
-    # what roi_quantile buys on the SHIPPED hop
+    # what roi_quantile WOULD buy on the SHIPPED hop (removed knob, local impl.)
     med_main = out.get(f'clip_lin_{hops[0]}')
     for q in quantiles:
         red = []
         for start in range(0, n - window + 1, hops[0]):
-            b0 = _box(pts_all[start:start + window], padding, 0.0)
-            bq = _box(pts_all[start:start + window], padding, q)
+            w_pts = pts_all[start:start + window]
+            b0 = _box(w_pts, padding)
+            try:
+                bq = _percentile_box(w_pts, padding, q)
+            except ValueError:
+                bq = None
             if b0 is not None and bq is not None:
                 red.append(_linear(bq) / max(_linear(b0), 1.0))
         if red and med_main:
@@ -257,7 +294,9 @@ def main() -> int:
               f'   p90 x{np.nanpercentile(v, 90):.2f}   max x{np.nanmax(v):.2f}')
     print()
 
-    print('--- what roi_quantile would buy (clip box, linear reduction) ---')
+    print('--- what the REMOVED roi_quantile would buy (clip box, linear) ---')
+    print('    (local re-implementation; expected q=0.05 x0.835, q=0.10 x0.713,'
+          ' q=0.20 x0.536)')
     for q in args.quantiles:
         k = f'q{int(q * 100)}_ratio'
         if k in agg:
