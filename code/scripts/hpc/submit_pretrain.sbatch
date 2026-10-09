@@ -25,6 +25,15 @@
 #   WEIGHTS_DIR Stage-1 cache (default: $PROJ_DIR/models/initial)
 #   SUBJECTS / TASKS / TASK_SET   corpus filters (''=all)
 #   EPOCHS / BATCH_SIZE / INPUT_SIZE / CLIP_STRIDE / NUM_WORKERS
+#   ROI_CACHE   offline TIR-ROI cache OUT_ROOT (default: $WORK_SCRATCH/tir_roi_cache).
+#               The cache is NOT just a speedup: the pre-cache data path decodes
+#               .wmv from /work/projects inside the DataLoader, and job 55368106
+#               died at epoch 7 when one of those reads stalled 266 s and OpenCV
+#               returned 'could not open .../F040/T9.wmv' (OSError in a worker).
+#               The cache moves every pixel read to /work/scratch. ROI_CACHE=''
+#               disables it (decode as before).
+#   FRESH=1      start from scratch: move OUT_DIR/checkpoints aside to
+#               checkpoints.precache_<timestamp> instead of auto-resuming.
 #   Anything after the script name is forwarded to the runner verbatim.
 #
 # !! RESUME IS WIRED: runners/run_pretrain.py calls auto_resume_model right
@@ -114,6 +123,15 @@ if [ -z "$(ls -A "$INITIAL_MODELS_DIR" 2>/dev/null)" ]; then
     exit 1
 fi
 
+# ---- ROI cache (see the header note: this is a RELIABILITY fix, not a nicety) --
+ROI_CACHE="${ROI_CACHE-${WORK_SCRATCH:-$OUTPUT_DIR}/tir_roi_cache}"
+if [ -n "$ROI_CACHE" ] && [ ! -d "$ROI_CACHE" ]; then
+    echo "ERROR: ROI_CACHE=$ROI_CACHE does not exist." >&2
+    echo "       Build it with:  python runners/run_build_roi_cache.py --init --build" >&2
+    echo "       Or set ROI_CACHE='' to decode .wmv as before." >&2
+    exit 1
+fi
+
 # ---- runner args (config -> defaults; explicit flags override) ------------ #
 ARGS=(-c "$CONFIG" --raw_root "$RAW_DATA_PATH" --output_dir "$OUT_DIR")
 [ -n "${SUBJECTS:-}" ]    && ARGS+=(--subjects "$SUBJECTS")
@@ -124,19 +142,38 @@ ARGS=(-c "$CONFIG" --raw_root "$RAW_DATA_PATH" --output_dir "$OUT_DIR")
 [ -n "${INPUT_SIZE:-}" ]  && ARGS+=(--input_size "$INPUT_SIZE")
 [ -n "${CLIP_STRIDE:-}" ] && ARGS+=(--clip_stride "$CLIP_STRIDE")
 [ -n "${NUM_WORKERS:-}" ] && ARGS+=(--num_workers "$NUM_WORKERS")
+[ -n "$ROI_CACHE" ]      && ARGS+=(--roi_cache "$ROI_CACHE")
 # You normally do NOT need --resume: run_pretrain.py auto-resumes from
 # OUT_DIR/checkpoints. An explicit path can still be appended via "$@" below.
 ARGS+=("$@")
 
 mkdir -p "$OUT_DIR" "$CODE_DIR/logs"
 
-export MASTER_ADDR="${MASTER_ADDR:-$(scontrol show hostname "$SLURM_JOB_NODELIST" | head -n1)}"
-export MASTER_PORT="${MASTER_PORT:-29500}"
+# ---- FRESH=1: force a clean start ----------------------------------------- #
+# auto_resume_model() keys off OUT_DIR/checkpoints/latest_checkpoint.txt. Moving
+# the whole directory aside (rather than deleting the pointer) makes the start
+# unambiguous AND keeps the old weights, which a bare `rm latest_checkpoint.txt`
+# would silently overwrite at the first save_ckpt_freq epoch.
+if [ -n "${FRESH:-}" ] && [ -d "$OUT_DIR/checkpoints" ]; then
+    ARCHIVE="$OUT_DIR/checkpoints.precache_$(date +%Y%m%d_%H%M%S)"
+    mv "$OUT_DIR/checkpoints" "$ARCHIVE"
+    echo "[submit_pretrain] FRESH=1: archived old checkpoints -> $ARCHIVE"
+fi
+
+export MASTER_ADDR="${MASTER_ADDR:-$(scontrol show hostname "$SLURM_JOB_NODELIST" | sed -n '1p')}"
+# Derive the port from the job id -- a hardcoded 29500 collides whenever two jobs
+# land on the same node (Lichtenberg packs 4-GPU jobs 2-per-node), and the loser
+# dies in barrier() with "NCCL ... Connection refused" (this cost the 2026-10-09
+# batch sweep 2 of its 6 arms before any training ran). The modulus keeps the
+# range at 20000-29999, i.e. BELOW the Linux ephemeral range (32768-60999), so
+# the kernel can never hand this port to an outbound connection.
+export MASTER_PORT="${MASTER_PORT:-$((20000 + (SLURM_JOB_ID * 17) % 10000))}"
 
 echo "[submit_pretrain] config   : $CONFIG"
 echo "[submit_pretrain] raw_root : $RAW_DATA_PATH"
 echo "[submit_pretrain] weights  : $INITIAL_MODELS_DIR"
 echo "[submit_pretrain] output   : $OUT_DIR"
+echo "[submit_pretrain] roi_cache: ${ROI_CACHE:-<disabled: decode .wmv>}"
 echo "[submit_pretrain] world    : ${SLURM_NTASKS} task(s) on $(hostname)"
 echo "[submit_pretrain] gres     : $(scontrol show job -o "$SLURM_JOB_ID" 2>/dev/null | grep -oE 'gres/gpu[a-z0-9/]*=[0-9]+' | tr '\n' ' ')"
 echo "[submit_pretrain] command  : python -u runners/run_pretrain.py ${ARGS[*]}"

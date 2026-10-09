@@ -57,15 +57,26 @@ task_set: ''                       # '' = all tasks -- SAME as the Stage-2 run.
 model: project_multimae_base
 streams: tir                       # the ROI crop alone; the 1-D input is the
                                    #   simulated sensor failure
-finetune: /work/scratch/ne95ocyg/pretrain/stage2_hpc_tir_roi_resp/checkpoints/checkpoint-0799.pth
+finetune: /work/scratch/ne95ocyg/pretrain/stage2_hpc_tir_roi_resp/checkpoints/checkpoint-0149.pth
                                    # Stage-2 HPC checkpoint. This is the output
                                    #   of scripts/hpc/submit_pretrain.sbatch at
-                                   #   its default OUT_ROOT ($WORK_SCRATCH) and
-                                   #   800 epochs (final save = epoch 799).
-                                   #   submit_waveform_tir_roi.sbatch OVERRIDES it:
-                                   #   FINETUNE=<path>, or, if unset, it picks the
-                                   #   newest checkpoint-*.pth from that run dir
-                                   #   and logs which one it chose.
+                                   #   its default OUT_ROOT ($WORK_SCRATCH).
+                                   #   NOTE: the Stage-2 config ships `epochs:
+                                   #   150` (NOT the 800 this file used to
+                                   #   name), so the final save is epoch 149.
+                                   #   submit_waveform_tir_roi.sbatch OVERRIDES
+                                   #   this key: FINETUNE=<path>, or, if unset,
+                                   #   it takes the NEWEST checkpoint-*.pth from
+                                   #   that run dir and logs which one it chose
+                                   #   -- so a longer Stage-2 run needs no edit
+                                   #   here, only when invoking the runner
+                                   #   directly.
+                                   #   Verified 2026-10-09 with
+                                   #   analysis/tir_resp/stage3_compat_probe.py:
+                                   #   encoder 150/150 tensors, 0 shape
+                                   #   mismatches, and heads.resp ->
+                                   #   waveform_head transfers VERBATIM
+                                   #   (samples_per_token 16 == sig_kernel 16).
 head_hidden: 0                     # 0 = single Linear -> the Stage-2 heads.resp
                                    #   transfers VERBATIM
 
@@ -103,10 +114,19 @@ train_ratio: 0.8                   # full corpus (~140 subjects) -> ~113 / ~27,
                                    #   LOSO sweep via --val_subject was required)
 split_by: subject
 val_subject: ''                    # e.g. F001 = a LOSO fold (overrides the above)
-clip_stride: 1.0                   # window hop in SECONDS (overlapping): 7/8 of
-                                   #   consecutive windows overlap -> the
-                                   #   TRANSIENT breathing dynamics are sampled
-                                   #   at 1 s resolution (~2x a 2 s hop)
+clip_stride: 2.0                   # window hop in SECONDS. MUST equal the Stage-2
+                                   #   value (stage2_hpc_tir_roi_resp.yaml): the
+                                   #   windows then ARE the pre-training corpus,
+                                   #   so Stage 3 is scored on data the encoder
+                                   #   actually saw. run_waveform.py warns when
+                                   #   this differs from the checkpoint's args.
+                                   #   Was 1.0 until 2026-10-09 (7/8 overlap, 2x
+                                   #   the windows, better transient sampling --
+                                   #   but it made the fine-tune corpus differ
+                                   #   from the pre-train one). NOTE: stride 2.0
+                                   #   HALVES the windows/epoch vs 1.0, so an
+                                   #   epoch is ~2x shorter and a given --epochs
+                                   #   sees ~half the optimiser steps.
 max_clips: 0                       # 0 = no per-session cap
 
 # ---- joint spatio-temporal-spectral loss (the MR-STFT term lives in Stage 3) ----
@@ -121,9 +141,19 @@ eval_band: '0.1,0.6'               # RESP band widened for metric resolution at
                                    #   fs 100 (an 8 s clip allows 0.125 Hz bins)
 
 # ---- training ----
-epochs: 50                         # the full corpus gives many more steps/epoch
-                                   #   than the 4-subject local run, so fewer
-                                   #   epochs are needed; tune via EPOCHS=...
+epochs: 200                        # starting budget (raise via EPOCHS=... to
+                                   #   extend: run_waveform.py AUTO-RESUMES from
+                                   #   <output_dir>/checkpoints, so a longer run
+                                   #   continues instead of restarting).
+                                   #   At the `clip_stride: 2.0` window count that
+                                   #   is ~331 steps/epoch (batch 16 x 4 ranks),
+                                   #   i.e. ~10-13 h on 4 x rtx6000 including the
+                                   #   per-epoch VALIDATION pass -- which is why
+                                   #   the SBATCH --time is 24 h, not 12 h.
+                                   #   NOTE warmup_epochs 5 is now 2.5 % of the
+                                   #   schedule (it was 10 % of the original
+                                   #   50-epoch budget); raise it if the early
+                                   #   loss is unstable.
 batch_size: 16
 update_freq: 1
 save_ckpt_freq: 10

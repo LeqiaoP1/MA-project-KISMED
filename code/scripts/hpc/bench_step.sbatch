@@ -147,9 +147,11 @@ mkdir -p "$OUT_DIR" "$CODE_DIR/logs"
 # NOTE the PORT is derived from the job id, not hardcoded: two concurrent jobs on
 # the same node with the same port make the second fail to bind and the first die
 # in barrier() with "NCCL ... Connection refused" (cost the 2026-10-09 batch sweep
-# 2 of its 6 arms, before any training ran).
-export MASTER_ADDR="${MASTER_ADDR:-$(scontrol show hostname "$SLURM_JOB_NODELIST" | head -n1)}"
-export MASTER_PORT="${MASTER_PORT:-$((20000 + (SLURM_JOB_ID * 17) % 20000))}"
+# 2 of its 6 arms, before any training ran). The modulus keeps the range at
+# 20000-29999, BELOW the ephemeral range (32768-60999), so the kernel never hands
+# this port to an outbound connection.
+export MASTER_ADDR="${MASTER_ADDR:-$(scontrol show hostname "$SLURM_JOB_NODELIST" | sed -n '1p')}"
+export MASTER_PORT="${MASTER_PORT:-$((20000 + (SLURM_JOB_ID * 17) % 10000))}"
 
 # THREADS caps the per-rank compute threads. This is the lever the scaling arm
 # exists to test: torch's intra-op pool defaults to the CPU count, so N ranks on

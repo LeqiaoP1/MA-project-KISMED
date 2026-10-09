@@ -110,7 +110,10 @@ export MASTER_ADDR="${MASTER_ADDR:-$(scontrol show hostname "$SLURM_JOB_NODELIST
 #   ncclOsSocketPollConnect: connect to <ip> returned Connection refused
 # That killed arms 2 and 4 of the 2026-10-09 sweep BEFORE any training ran, so
 # their peak-memory readings (795 MiB) were meaningless. Derive it per element.
-export MASTER_PORT="${MASTER_PORT:-$((20000 + (SLURM_JOB_ID * 17 + ${SLURM_ARRAY_TASK_ID:-0}) % 20000))}"
+# The modulus keeps the range at 20000-29999, i.e. BELOW the Linux ephemeral
+# range (32768-60999), so the kernel can never hand this port to an outbound
+# connection while the job holds it.
+export MASTER_PORT="${MASTER_PORT:-$((20000 + (SLURM_JOB_ID * 17 + ${SLURM_ARRAY_TASK_ID:-0}) % 10000))}"
 
 if [ -n "${THREADS:-}" ]; then
     export OMP_NUM_THREADS="$THREADS" MKL_NUM_THREADS="$THREADS" \

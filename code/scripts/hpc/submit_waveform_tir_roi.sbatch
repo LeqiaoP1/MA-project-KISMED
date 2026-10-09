@@ -24,6 +24,10 @@
 #               matching Stage-2 run dir (logged so it is never a silent pick).
 #   STAGE2_DIR  Stage-2 run dir to auto-resolve FINETUNE from
 #               (default: $OUT_ROOT/pretrain/stage2_hpc_tir_roi_resp)
+#   ROI_CACHE   offline TIR-ROI cache OUT_ROOT (default: $WORK_SCRATCH/tir_roi_cache).
+#               The cache is SHARED with Stage 2 (same key: it is the PIXELS that
+#               are cached, so the 2 s -> 1 s clip_stride change needs no rebuild).
+#               ROI_CACHE='' disables it. See the note above ARGS below.
 #   RUN_NAME / OUT_ROOT   output dir controls (default: $WORK_SCRATCH)
 #   VAL_SUBJECT / TASK_SET / EPOCHS / BATCH_SIZE
 #   Anything after the script name is forwarded to the runner verbatim.
@@ -43,7 +47,12 @@
 #SBATCH --ntasks-per-node=4
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=4G              # 4 tasks x 8 cpus x 4G = 128G total
-#SBATCH --time=12:00:00
+# --time is 24 h, not 12 h: the config ships `epochs: 150`, and Stage 3 runs a
+# VALIDATION pass every epoch (unlike Stage-2 pre-training), so ~150 epochs costs
+# roughly 7-9 h. At a 12 h limit a slower-than-expected epoch would be killed
+# mid-run, and a requeue costs another multi-day scheduling wait -- far more than
+# the margin is worth. Stage 2 used 4.5 h of its 24 h for reference.
+#SBATCH --time=24:00:00
 #SBATCH --output=logs/st3_resp_tir_%j.out
 #SBATCH --error=logs/st3_resp_tir_%j.err
 
@@ -109,6 +118,23 @@ fi
 # ---- runner args (config -> defaults; explicit flags override) ------------- #
 # --data_path MUST be the RAW tree for data_set: tir_roi_resp (the canonical
 # tree has no Thermal/ or IRFeatures/ next to the session dirs).
+#
+# ROI CACHE: Stage 3 reads the SAME raw-tree thermal ROI as Stage 2, so it uses
+# the SAME offline cache. The cache stores PIXELS, keyed on roi_landmarks /
+# roi_padding / input_size / the corpus -- NEVER on clip_stride, so changing the
+# window hop (1 s <-> 2 s) never needs a cache rebuild.
+# This is not only speed: the pre-cache path decodes .wmv from /work/projects
+# inside the DataLoader, and job 55368106 died at epoch 7 when one such read
+# stalled 266 s and OpenCV raised 'could not open .../F040/T9.wmv'.
+# ROI_CACHE='' disables the cache (decode as before).
+ROI_CACHE="${ROI_CACHE-${WORK_SCRATCH:-$OUTPUT_DIR}/tir_roi_cache}"
+if [ -n "$ROI_CACHE" ] && [ ! -d "$ROI_CACHE" ]; then
+    echo "ERROR: ROI_CACHE=$ROI_CACHE does not exist." >&2
+    echo "       Build it with:  python runners/run_build_roi_cache.py --init --build" >&2
+    echo "       Or set ROI_CACHE='' to decode .wmv as before." >&2
+    exit 1
+fi
+
 ARGS=(-c "$CONFIG"
       --data_path "$RAW_DATA_PATH"
       --finetune "$FINETUNE"
@@ -119,16 +145,24 @@ ARGS=(-c "$CONFIG"
 [ -n "${EPOCHS:-}" ]      && ARGS+=(--epochs "$EPOCHS")
 [ -n "${BATCH_SIZE:-}" ]  && ARGS+=(--batch_size "$BATCH_SIZE")
 [ -n "${NUM_WORKERS:-}" ] && ARGS+=(--num_workers "$NUM_WORKERS")
+[ -n "$ROI_CACHE" ]      && ARGS+=(--roi_cache "$ROI_CACHE")
 ARGS+=("$@")
 
 mkdir -p "$OUT_DIR" "$CODE_DIR/logs"
 
-export MASTER_ADDR="${MASTER_ADDR:-$(scontrol show hostname "$SLURM_JOB_NODELIST" | head -n1)}"
-export MASTER_PORT="${MASTER_PORT:-29501}"
+# Port derived from the job id: a hardcoded 29501 collides whenever two jobs land
+# on the same node (Lichtenberg packs 4-GPU jobs 2-per-node) and the loser dies
+# in barrier() with "NCCL ... Connection refused" (this cost the 2026-10-09
+# batch sweep 2 of its 6 arms before any training ran). The modulus keeps the
+# range at 20000-29999, i.e. BELOW the Linux ephemeral range (32768-60999), so
+# the kernel can never hand this port to an outbound connection.
+export MASTER_ADDR="${MASTER_ADDR:-$(scontrol show hostname "$SLURM_JOB_NODELIST" | sed -n '1p')}"
+export MASTER_PORT="${MASTER_PORT:-$((20000 + (SLURM_JOB_ID * 17) % 10000))}"
 
 echo "[submit_waveform_tir_roi] config   : $CONFIG"
 echo "[submit_waveform_tir_roi] raw_root : $RAW_DATA_PATH"
 echo "[submit_waveform_tir_roi] finetune : $FINETUNE"
+echo "[submit_waveform_tir_roi] roi_cache: ${ROI_CACHE:-<disabled: decode .wmv>}"
 echo "[submit_waveform_tir_roi] output   : $OUT_DIR"
 echo "[submit_waveform_tir_roi] world    : ${SLURM_NTASKS} task(s) on $(hostname)"
 echo "[submit_waveform_tir_roi] gres     : $(scontrol show job -o "$SLURM_JOB_ID" 2>/dev/null | grep -oE 'gres/gpu[a-z0-9/]*=[0-9]+' | tr '\n' ' ')"
