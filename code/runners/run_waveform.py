@@ -422,7 +422,32 @@ def get_args():
                              'entries.json into --output_dir; required by '
                              'runners/run_evaluate_session.py for the '
                              'session-level assembly metrics')
+    parser.add_argument('--eval_only', action='store_true', default=False,
+                        help='load the checkpoint in --output_dir/checkpoints '
+                             'and run ONLY the final validation pass + the '
+                             'artefact dump (metrics_final.json, preds.npy, '
+                             'entries.json, ...), then exit. No training, no '
+                             'LR schedule. MUST be run SINGLE-PROCESS (1 GPU): '
+                             'under DDP each rank only sees 1/world_size of the '
+                             'val split, so the dump would be incomplete.')
     return parse_args_with_config(parser)
+
+
+def _recorded_best_pearson(args):
+    """Best val pearson already on disk, or -inf when there is none yet.
+
+    ``--eval_only`` re-runs the final validation pass on a COMPLETED run, so
+    there is no training loop to produce ``best_pearson``. Re-reading the
+    value keeps ``metrics_final.json`` truthful instead of resetting it to
+    ``-inf``.
+    """
+    import json
+    path = os.path.join(args.output_dir, 'metrics_final.json')
+    try:
+        with open(path) as fh:
+            return float(json.load(fh).get('best_pearson', -float('inf')))
+    except Exception:
+        return -float('inf')
 
 
 def main(args):
@@ -536,13 +561,19 @@ def main(args):
 
     # ----- data (implement bp4d+ first) ----------------------------------- #
     from data import build_dataset
-    dataset_train = build_dataset(is_train=True, test_mode=False, args=args)
     dataset_val = build_dataset(is_train=False, test_mode=False, args=args)
-    data_loader_train = make_data_loader(args, dataset_train, shuffle=True)
     data_loader_val = make_data_loader(args, dataset_val, shuffle=False,
                                        drop_last=False)
-    # fail fast + name the cause instead of crashing later in the logger
-    check_loader_not_empty(data_loader_train, 'train', args)
+    if args.eval_only:
+        # No training split: --eval_only never steps an optimiser, and walking
+        # the train entries would only give an evaluation-only job a new way
+        # to fail.
+        dataset_train, data_loader_train = None, None
+    else:
+        dataset_train = build_dataset(is_train=True, test_mode=False, args=args)
+        data_loader_train = make_data_loader(args, dataset_train, shuffle=True)
+        # fail fast + name the cause instead of crashing later in the logger
+        check_loader_not_empty(data_loader_train, 'train', args)
     check_loader_not_empty(data_loader_val, 'val', args,
                            extra='an empty val split means the run has nothing '
                                  'to score (see the split keys printed above)')
@@ -579,34 +610,61 @@ def main(args):
     # --resume was dead, so an interrupted 100-epoch run could not continue.
     from utils import (auto_resume_model, cosine_scheduler, get_world_size,
                        save_model)
-    if args.warmup_epochs >= args.epochs:
-        raise SystemExit(
-            f'--warmup_epochs ({args.warmup_epochs}) must be < --epochs '
-            f'({args.epochs}); use --warmup_epochs 0 for a 1-epoch smoke run.')
-    steps_per_epoch = max(
-        1, (len(dataset_train) // (args.batch_size * get_world_size()))
-        // max(1, args.update_freq))
-    lr_schedule_values = cosine_scheduler(
-        args.lr, args.min_lr, args.epochs, steps_per_epoch,
-        warmup_epochs=args.warmup_epochs)
+    if args.eval_only:
+        # Nothing will be optimised, so there is no step schedule to build (and
+        # no train split to measure it against).
+        steps_per_epoch, lr_schedule_values = 0, None
+    else:
+        if args.warmup_epochs >= args.epochs:
+            raise SystemExit(
+                f'--warmup_epochs ({args.warmup_epochs}) must be < --epochs '
+                f'({args.epochs}); use --warmup_epochs 0 for a 1-epoch smoke run.')
+        steps_per_epoch = max(
+            1, (len(dataset_train) // (args.batch_size * get_world_size()))
+            // max(1, args.update_freq))
+        lr_schedule_values = cosine_scheduler(
+            args.lr, args.min_lr, args.epochs, steps_per_epoch,
+            warmup_epochs=args.warmup_epochs)
     auto_resume_model(args, model_without_ddp, optimizer, loss_scaler)
     start_epoch = int(getattr(args, 'start_epoch', 0) or 0)
-    if start_epoch >= args.epochs:
+    if args.eval_only:
+        # Evaluate the checkpoint already sitting in --output_dir/checkpoints
+        # and stop. Starting the loop at --epochs makes it an empty
+        # ``range(args.epochs, args.epochs)``, so control falls straight
+        # through to the final validation + artefact dump at the end of main().
+        # NOTE the guard is on WORLD SIZE, not args.distributed: Slurm exports
+        # SLURM_PROCID even for a 1-task batch step, so a legitimate single-GPU
+        # eval is 'distributed' with world_size 1 and still sees the whole val
+        # set (DistributedSampler with num_replicas=1 is the identity).
+        if get_world_size() > 1:
+            raise SystemExit(
+                '--eval_only must run SINGLE-PROCESS (one GPU, no '
+                'torchrun/srun launcher): each rank would only see '
+                f'1/{get_world_size()} of the val split, so preds.npy / '
+                'entries.json (and the metrics computed from them) would cover '
+                'a shard, not the whole val set. Submit with GPUS=1.')
+        print(f'[stage3] --eval_only: training skipped; evaluating the '
+              f'checkpoint in {args.output_dir}/checkpoints (world size '
+              f'{get_world_size()}).')
+        start_epoch = args.epochs
+    elif start_epoch >= args.epochs:
         raise SystemExit(
             f'nothing to do: the checkpoint in {args.output_dir}/checkpoints is '
             f'already at epoch {start_epoch} and --epochs is {args.epochs}. '
             f'Raise --epochs to train longer, or point --output_dir elsewhere '
             f'/ remove latest_checkpoint.txt to start from scratch.')
-    print(f'LR schedule: {args.lr:g} -> {args.min_lr:g} over {args.epochs} '
-          f'epoch(s), warmup {args.warmup_epochs} epoch(s), '
-          f'{steps_per_epoch} steps/epoch; start_epoch={start_epoch}')
+    if not args.eval_only:
+        print(f'LR schedule: {args.lr:g} -> {args.min_lr:g} over {args.epochs} '
+              f'epoch(s), warmup {args.warmup_epochs} epoch(s), '
+              f'{steps_per_epoch} steps/epoch; start_epoch={start_epoch}')
 
     # ----- training loop -------------------------------------------------- #
     # artefact helpers are needed INSIDE the loop (metrics.jsonl + the refreshed
     # training_curves.png), so import them before it starts
     from evaluation.report import (append_jsonl, plot_training_curves,
                                    plot_waveform_panel, save_json)
-    best_pearson = -float('inf')
+    best_pearson = (_recorded_best_pearson(args) if args.eval_only
+                    else -float('inf'))
     history = []                    # one dict per evaluated epoch (see below)
     for epoch in range(start_epoch, args.epochs):
         if args.distributed:
@@ -675,7 +733,13 @@ def main(args):
                 'fs': args.fs, 'clip_duration': args.clip_duration,
                 'input_size': args.input_size, 'sig_kernel': args.sig_kernel,
                 'physio_norm': args.physio_norm, 'finetune': args.finetune,
-                'epochs': args.epochs, 'best_pearson': best_pearson,
+                'epochs': args.epochs,
+                # --eval_only has no training run to take a best from, so it
+                # falls back to the pearson just measured rather than ever
+                # writing -inf/NaN into this field.
+                'best_pearson': (best_pearson if np.isfinite(best_pearson)
+                                 else float(final.get('pearson',
+                                                      float('nan')))),
                 'per_clip_metrics': final})
             # Session labels let the panel SPREAD its clips over different
             # sessions. Without them it plotted rows 0..max_clips-1, i.e. always
