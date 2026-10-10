@@ -13,6 +13,12 @@ Implements the unified loss from the implementation plan
                      NOT change the gradient balance (both terms measure
                      ``1/sqrt(N)``) and it is blind to shape and polarity -- read
                      the measured caveats in :class:`StdLoss` before relying on it.
+                     SELECTABLE (2026-10-10): ``time_loss='smoothl1'`` swaps it for
+                     a Huber loss on the POINT-WISE error ``pred - target``, which
+                     is shape-, polarity- AND lag-sensitive (and no longer
+                     mean-invariant) -- i.e. it buys back exactly what the L1 -> std
+                     swap gave up, at the cost of charging a constant phase offset.
+                     Default stays ``'std'`` so no existing run changes value.
 * ``L_Pearson``   -- negative Pearson correlation (temporal phase-locking)
 * ``L_MR-STFT``   -- multi-resolution spectral error (FFT windows 64 / 128 / 256)
 
@@ -232,18 +238,47 @@ class MultiResolutionSTFTLoss(nn.Module):
 class WaveformJointLoss(nn.Module):
     """Combined standard-deviation + Pearson + multi-resolution STFT loss.
 
-    :param alpha: weight of the standard-deviation (amplitude) time loss
+    :param alpha: weight of the amplitude/time loss (see ``time_loss``)
     :param beta: weight of the negative Pearson correlation
     :param gamma: weight of the multi-resolution STFT loss
+    :param time_loss: which ``L_time`` to use -- ``'std'`` (default) is
+        :class:`StdLoss`, ``|std(pred) - std(target)|``, which is amplitude-only
+        and blind to SHAPE, POLARITY and phase lag. ``'smoothl1'`` (alias
+        ``'huber'``) is ``torch.nn.SmoothL1Loss`` on the point-wise error, which
+        sees all three. The two are NOT comparable in magnitude, so ``alpha``
+        may need retuning when switching.
+    :param huber_beta: the ``SmoothL1Loss`` transition point, in TARGET-STD
+        units. Only read when ``time_loss='smoothl1'``. Under the Stage-3
+        ``physio_norm: session`` target the target std is ~0.85, so the default
+        1.0 is ~1 std: quadratic for the bulk of the error, linear for outliers.
     """
 
     def __init__(self, alpha: float = 1.0, beta: float = 1.0,
-                 gamma: float = 1.0, fft_sizes=(64, 128, 256)):
+                 gamma: float = 1.0, fft_sizes=(64, 128, 256),
+                 time_loss: str = 'std', huber_beta: float = 1.0):
         super().__init__()
         self.register_buffer('_std_w', torch.tensor(alpha))
         self.register_buffer('_pearson_w', torch.tensor(beta))
         self.register_buffer('_stft_w', torch.tensor(gamma))
-        self.std = StdLoss()
+        self.time_loss = str(time_loss or 'std').strip().lower()
+        if self.time_loss == 'huber':          # the same function
+            self.time_loss = 'smoothl1'
+        if self.time_loss not in ('std', 'smoothl1'):
+            raise ValueError(
+                "WaveformJointLoss: time_loss must be 'std' ("
+                '|std(pred) - std(target)|, amplitude-only) or '
+                "'smoothl1' (Huber on the point-wise error); got "
+                f'{time_loss!r}')
+        self.huber_beta = float(huber_beta)
+        if self.time_loss == 'smoothl1':
+            if self.huber_beta <= 0:
+                raise ValueError(
+                    'WaveformJointLoss: huber_beta must be > 0, got '
+                    f'{self.huber_beta}')
+            self.time = nn.SmoothL1Loss(beta=self.huber_beta,
+                                        reduction='mean')
+        else:
+            self.time = StdLoss()
         self.pearson = PearsonLoss()
         self.stft = MultiResolutionSTFTLoss(fft_sizes=fft_sizes)
 
@@ -252,11 +287,14 @@ class WaveformJointLoss(nn.Module):
         # ``mask`` accepted for API parity with core.criterion losses (unused).
         p = _to_1d(pred)
         t = _to_1d(target)
-        loss = (self._std_w * self.std(p, t)
+        loss = (self._std_w * self.time(p, t)
                 + self._pearson_w * self.pearson(p, t)
                 + self._stft_w * self.stft(p, t))
         return loss
 
     def extra_repr(self):
-        return (f'alpha={float(self._std_w)}, beta={float(self._pearson_w)}, '
-                f'gamma={float(self._stft_w)}')
+        bits = (f'alpha={float(self._std_w)}, beta={float(self._pearson_w)}, '
+                f'gamma={float(self._stft_w)}, time_loss={self.time_loss!r}')
+        if self.time_loss == 'smoothl1':
+            bits += f' (huber_beta={self.huber_beta})'
+        return bits
