@@ -17,7 +17,14 @@ export PROJ_DIR="${HOME}/MA-project-KISMED"
 # and dies mid-save. Prefer the scratch file system when the site provides one.
 # NOTE $WORK_SCRATCH is a SITE variable, not defined by this profile, so the
 # fallback keeps the old behaviour on a cluster that has no scratch.
-export OUTPUT_DIR="${OUTPUT_DIR:-${WORK_SCRATCH:-$PROJ_DIR}/output}"  # EDIT
+# OUTPUT_DIR is the ROOT that runs are written under: every sbatch resolves
+#   OUT_ROOT="${OUT_ROOT:-${WORK_SCRATCH:-$OUTPUT_DIR}}"  then  $OUT_ROOT/{finetune,pretrain}/<run>
+# so runs land at $WORK_SCRATCH/{finetune,pretrain}/... -- NOT in a scratch
+# "output" subdir. Defining OUTPUT_DIR as "$WORK_SCRATCH/output" disagreed with
+# that and left a stray empty dir behind, so it now mirrors OUT_ROOT exactly.
+# ($PROJ_DIR/output is itself a symlink to the scratch, so the no-scratch
+# fallback lands on the same file system.)
+export OUTPUT_DIR="${OUTPUT_DIR:-${WORK_SCRATCH:-$PROJ_DIR/output}}"  # EDIT
 export CODE_DIR="${PROJ_DIR}/code"
 
 # Stage-1 initial (downloaded) ViT encoder weights. Must be on a path every

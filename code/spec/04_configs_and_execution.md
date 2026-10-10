@@ -70,7 +70,7 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `model` | str | Registered model name, e.g. `project_multimae_base` |
 | `device` | str | `'cuda'` (default; falls back to CPU silently if unavailable) |
 | `seed` | int | Base random seed; each DDP rank gets `seed + rank` |
-| `output_dir` | str | Root for checkpoints + logs; default `$OUTPUT_DIR` or `<repo>/output` |
+| `output_dir` | str | Root for checkpoints + logs; default `$OUTPUT_DIR` (`$WORK_SCRATCH` on HPC; else `<repo>/output`, which is a symlink to the scratch) |
 | `resume` | str | Checkpoint path to resume from (`$RESUME` or `''`) |
 | `num_workers` | int | DataLoader workers; default `$NUM_WORKERS` or 8 |
 | `pin_mem` | bool | DataLoader pin_memory; default True |
@@ -148,6 +148,11 @@ bash scripts/local/pretrain_rgb_roi_bp.sh
 ### 4.2 HPC Cluster (Lichtenberg / Slurm, multi-GPU) — `code/scripts/env_hpc.sh`
 
 Must edit: `VENV`, `RAW_DATA_PATH`, `DATA_PATH`, `PROJ_DIR`, `OUTPUT_DIR`, `PARTITION`, `GPU_TYPE`, `GPUS_PER_NODE`.
+`OUTPUT_DIR` needs no edit by default: it derives to `$WORK_SCRATCH` (the site
+variable), matching the `OUT_ROOT` the `scripts/hpc/*.sbatch` files use, so runs
+land at `$WORK_SCRATCH/{pretrain,finetune}/<run>`. With no `WORK_SCRATCH` it
+falls back to `<repo>/output` — a symlink to the scratch — so checkpoints never
+fill `$HOME`'s small quota either way.
 
 Available Slurm batch files (`code/scripts/hpc/`): `submit_inspect.sbatch`, `submit_inspect_physio.sbatch`, `submit_prepare.sbatch`, `submit_waveform.sbatch`.
 

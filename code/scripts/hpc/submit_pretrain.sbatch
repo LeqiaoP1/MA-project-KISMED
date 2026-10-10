@@ -46,9 +46,11 @@
 #        >= EPOCHS -- raise EPOCHS to train longer, or use a fresh OUT_DIR;
 #      * checkpoints land every CONFIG's save_ckpt_freq epochs.
 #
-# NOTE ON OUTPUT LOCATION: env_hpc.sh sets OUTPUT_DIR=$PROJ_DIR/output, which is
-# on $HOME's small quota, while a Stage-2 checkpoint is ~1.2 GB and this run
-# writes dozens of them. OUT_ROOT therefore defaults to $WORK_SCRATCH.
+# NOTE ON OUTPUT LOCATION: a Stage-2 checkpoint is ~1.2 GB and this run writes
+# dozens of them, so the output must not sit on $HOME's small quota. env_hpc.sh
+# defines OUTPUT_DIR as $WORK_SCRATCH (mirroring OUT_ROOT below), and
+# $PROJ_DIR/output is itself a symlink to the scratch, so both branches land on
+# the scratch file system. OUT_ROOT still defaults to $WORK_SCRATCH explicitly.
 #SBATCH --job-name=st2_pretrain
 #SBATCH --partition=acc               # GPU; 1 day max ('acc_long' = 7 days)
 # NB: the LUA plugin rejects --mem, so memory is --mem-per-cpu * cpus-per-task.
