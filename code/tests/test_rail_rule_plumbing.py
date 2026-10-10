@@ -39,10 +39,12 @@ RESP_FS = 1000.0
 N_FRAMES = 400                             # 16 s
 CLIP_S = 8.0
 STRIDE_S = 1.0                             # the shipped hop (synthetic tests)
-#: per-config window-hop OVERRIDES (s): the HPC Stage-2 run deliberately
-#: samples transients at 2 s (4x redundant decode instead of 8x, ~halves the
-#: epoch); the rest of the TIR-ROI study stays at the 1 s hop.
-EXPECTED_STRIDE_S = {'stage2_hpc_tir_roi_resp.yaml': 2.0}
+#: per-config window-hop OVERRIDES (s): the HPC runs deliberately sample
+#: transients at 2 s (4x redundant decode instead of 8x, ~halves the epoch).
+#: Stage 3 must MATCH its Stage-2 encoder's hop (the config says so), and the
+#: rest of the TIR-ROI study stays at the 1 s hop.
+EXPECTED_STRIDE_S = {'stage2_hpc_tir_roi_resp.yaml': 2.0,
+                     'resp_tir_roi_hpc.yaml': 2.0}
 N_RESP = int(N_FRAMES / FPS * RESP_FS)     # 16000 samples
 RAIL = trd.RESP_RAIL_V
 
