@@ -5,7 +5,10 @@ Operate on 1D waveforms given as numpy arrays of shape ``[T]`` or ``[N, T]``
 """
 import numpy as np
 
-__all__ = ['time_domain_metrics', 'spectral_metrics', 'to_numpy']
+__all__ = ['time_domain_metrics', 'spectral_metrics', 'to_numpy',
+           'aggregate_metrics', 'breakdown_by_label', 'bandpass_fft',
+           'band_limited_pearson', 'single_tone_template', 'bootstrap_ci',
+           'estimate_rate_bpm', 'rate_metrics', 'rate_summary']
 
 try:
     from scipy import signal as _sp_signal
@@ -28,6 +31,21 @@ def _flatten(x):
     return x
 
 
+def _pearson_1d(a, b):
+    """Pearson r of two 1-D arrays; 0.0 when either is (near-)constant."""
+    a = a - a.mean()
+    b = b - b.mean()
+    denom = np.linalg.norm(a) * np.linalg.norm(b)
+    if denom < 1e-12:
+        return 0.0
+    return float(np.dot(a, b) / denom)
+
+
+def _mean_pearson(p, t):
+    """Macro Pearson over the rows of two ``[N, T]`` arrays."""
+    return float(np.mean([_pearson_1d(pi, ti) for pi, ti in zip(p, t)]))
+
+
 def time_domain_metrics(pred, target):
     """Tier 1: per-sample MAE, RMSE and Pearson r; returns macro averages.
 
@@ -41,16 +59,7 @@ def time_domain_metrics(pred, target):
 
     mae = np.mean(np.abs(p - t), axis=1)
     rmse = np.sqrt(np.mean((p - t) ** 2, axis=1))
-
-    def _pearson(a, b):
-        a = a - a.mean()
-        b = b - b.mean()
-        denom = np.linalg.norm(a) * np.linalg.norm(b)
-        if denom < 1e-12:
-            return 0.0
-        return float(np.dot(a, b) / denom)
-
-    pearson = np.mean([_pearson(pi, ti) for pi, ti in zip(p, t)])
+    pearson = _mean_pearson(p, t)
 
     return {
         'mae': float(np.mean(mae)),
@@ -247,6 +256,261 @@ def spectral_metrics(pred, target, fs=100.0, band=None,
         'target_hf_power_rel': float(np.mean(hf_ref)),
         'hf_lo_hz': hf_lo,
     }
+
+
+# --------------------------------------------------------------------------- #
+# grouped aggregation (per task / per distortion group)
+# --------------------------------------------------------------------------- #
+def aggregate_metrics(records, keys, with_mean=True):
+    """Median / IQR (and mean) of each metric over a list of metric dicts.
+
+    The per-SESSION counterpart of the per-clip macro average: sessions differ
+    in length and quality, so a median + IQR is reported alongside the mean.
+    NaNs are dropped PER KEY (a session that could not produce a metric -- e.g.
+    Tier-2 on a degenerate target -- must not erase that key for the group).
+
+    :param records: iterable of ``{metric_key: float}`` dicts.
+    :param keys: metric keys to aggregate.
+    :param with_mean: also emit ``<key>_mean`` (default True).
+    :returns: ``{'n': n, '<key>_median': .., '<key>_iqr': .., '<key>_mean': ..}``
+        with NaN where a key had no finite value across ``records``.
+    """
+    recs = list(records)
+    out = {'n': len(recs)}
+    for k in keys:
+        vals = np.array([r.get(k, np.nan) for r in recs], dtype=float)
+        vals = vals[np.isfinite(vals)]
+        if vals.size:
+            out[f'{k}_median'] = float(np.median(vals))
+            out[f'{k}_iqr'] = float(np.percentile(vals, 75)
+                                    - np.percentile(vals, 25))
+            if with_mean:
+                out[f'{k}_mean'] = float(np.mean(vals))
+        else:
+            out[f'{k}_median'] = float('nan')
+            out[f'{k}_iqr'] = float('nan')
+            if with_mean:
+                out[f'{k}_mean'] = float('nan')
+    return out
+
+
+def breakdown_by_label(records_by_name, label_of, keys, with_mean=True):
+    """Group per-session metric dicts by a label and aggregate each group.
+
+    :param records_by_name: ``{session_name: {metric_key: float}}``. Sessions
+        with no metrics (e.g. a missing reference) should simply be omitted.
+    :param label_of: ``{session_name: label}`` or
+        ``{session_name: [label, ...]}`` -- a session may belong to SEVERAL
+        groups (an overlapping group definition).
+    :param keys: metric keys to aggregate within each group.
+    :returns: ``{label: aggregate_metrics(...)}`` with the labels sorted;
+        sessions whose label is missing or empty are skipped.
+    """
+    buckets = {}
+    for name, rec in records_by_name.items():
+        labels = label_of.get(name)
+        if not labels:
+            continue
+        if isinstance(labels, str):
+            labels = [labels]
+        for lab in labels:
+            if lab:
+                buckets.setdefault(str(lab), []).append(rec)
+    return {lab: aggregate_metrics(recs, keys, with_mean=with_mean)
+            for lab, recs in sorted(buckets.items())}
+
+
+# --------------------------------------------------------------------------- #
+# band-limited correlation, trivial baselines, and uncertainty
+# --------------------------------------------------------------------------- #
+def bandpass_fft(x, fs=100.0, band=(0.1, 0.6)):
+    """Zero-phase brick-wall FFT band-pass along the LAST axis.
+
+    The band-limited counterpart of ``run_evaluate_session.smooth_band`` (a
+    Butterworth IIR, ill-conditioned for a narrow low band). A brick-wall FFT
+    filter is exactly zero outside ``band`` and exactly linear-phase, so a
+    band-limited correlation is reproducible with no filter-transient
+    ambiguity -- the reason the TIR-ROI investigation used it for the "does the
+    rhythm survive drift removal" test (median session Pearson 0.437 -> 0.593).
+
+    :param x: ``[T]`` or ``[N, T]`` array.
+    :param fs: sampling rate (Hz).
+    :param band: ``(lo, hi)`` in Hz; ``None`` = no-op.
+    :returns: the band-passed array, same shape as ``x``.
+    """
+    x = np.asarray(x, dtype=float)
+    n = x.shape[-1]
+    if band is None or n < 4:
+        return x.copy()
+    freqs = np.fft.rfftfreq(n, d=1.0 / float(fs))
+    keep = (freqs >= float(band[0])) & (freqs <= float(band[1]))
+    if not keep.any():
+        return np.zeros_like(x)
+    shape = (1,) * (x.ndim - 1) + keep.shape
+    spec = np.fft.rfft(x, axis=-1) * keep.reshape(shape)
+    return np.fft.irfft(spec, n=n, axis=-1)
+
+
+def band_limited_pearson(pred, target, fs=100.0, band=(0.1, 0.6)):
+    """Pearson after band-passing BOTH series -- the DRIFT-ROBUST correlation.
+
+    The headline metric for a respiration reconstruction: band-limiting removes
+    the slow baseline drift that dominates a long window and inflates a raw
+    Pearson, leaving the correlation of the breathing rhythm itself. Returns
+    the macro (mean) Pearson over rows.
+    """
+    p = _flatten(pred)
+    t = _flatten(target)
+    if p.shape != t.shape:
+        raise ValueError(f'Shape mismatch pred {p.shape} vs target {t.shape}')
+    return _mean_pearson(bandpass_fft(p, fs, band), bandpass_fft(t, fs, band))
+
+
+def single_tone_template(target, fs=100.0, band=(0.1, 0.6)):
+    """Least-squares single-tone fit -> the ``beat-the-template`` baseline.
+
+    A model that knows ONLY the breathing rate can do no better than a pure
+    tone at the true dominant frequency. The fit is handed the TARGET's own
+    peak frequency for free (three numbers read off the reference), so its
+    band-limited Pearson is the bar a reconstruction must clear to be more than
+    "rate tracked" (measured 2026-10-10: the Stage-3 model's 0.593 median tied
+    this baseline's 0.600, winning only 49.1 % of sessions).
+
+    :returns: ``(template[N, T], median_peak_freq_hz)``.
+    """
+    t = _flatten(target)
+    tb = bandpass_fft(t, fs, band)
+    rows, freqs = [], []
+    for row in tb:
+        n = row.size
+        if n < 4:
+            rows.append(np.zeros(n))
+            freqs.append(np.nan)
+            continue
+        f = np.fft.rfftfreq(n, d=1.0 / float(fs))
+        spec = np.abs(np.fft.rfft(row))
+        if band is not None:
+            m = (f >= float(band[0])) & (f <= float(band[1]))
+        else:
+            m = np.ones(f.size, dtype=bool)
+        fpeak = (float(f[m][np.argmax(spec[m])]) if m.any()
+                 else float(f[np.argmax(spec)]))
+        tt = np.arange(n) / float(fs)
+        w = 2.0 * np.pi * fpeak
+        design = np.stack([np.ones(n), np.cos(w * tt), np.sin(w * tt)], axis=1)
+        coef, *_ = np.linalg.lstsq(design, row, rcond=None)
+        rows.append(design @ coef)
+        freqs.append(fpeak)
+    return np.stack(rows, 0), float(np.nanmedian(freqs))
+
+
+def bootstrap_ci(values, statistic=np.median, n_boot=2000, ci=95.0, seed=0):
+    """Percentile bootstrap CI of ``statistic`` over ``values`` (NaNs dropped).
+
+    The across-subject uncertainty: each TESTED SUBJECT is one observation, so
+    the CI is over subjects, NOT over clips (clips within a subject are not
+    independent). ``statistic`` defaults to the median (robust to the
+    heavy-tailed per-subject distribution).
+
+    :returns: ``{'point': .., 'lo': .., 'hi': .., 'n': n_subjects}``; all-NaN
+        (``n`` 0) when no finite value is available.
+    """
+    vals = np.asarray([v for v in values if np.isfinite(v)], dtype=float)
+    if vals.size == 0:
+        return {'point': float('nan'), 'lo': float('nan'),
+                'hi': float('nan'), 'n': 0}
+    point = float(statistic(vals))
+    if vals.size == 1:
+        return {'point': point, 'lo': point, 'hi': point, 'n': 1}
+    rng = np.random.default_rng(seed)
+    boots = np.array([statistic(rng.choice(vals, size=vals.size, replace=True))
+                      for _ in range(int(n_boot))], dtype=float)
+    lo = float(np.percentile(boots, (100.0 - float(ci)) / 2.0))
+    hi = float(np.percentile(boots, 100.0 - (100.0 - float(ci)) / 2.0))
+    return {'point': point, 'lo': lo, 'hi': hi, 'n': int(vals.size)}
+
+
+# --------------------------------------------------------------------------- #
+# derived vital sign: respiration RATE (breaths/min, BPM)
+# --------------------------------------------------------------------------- #
+def estimate_rate_bpm(x, fs=100.0, band=(0.1, 0.6)):
+    """Dominant respiratory frequency per row -> breaths/min (BPM).
+
+    The band-limited FFT peak with parabolic (sub-bin) interpolation, so a rate
+    that falls between FFT bins is still recovered. Rows with no spectrum in the
+    band return NaN. This is the READOUT for the derived-vital-sign target (a
+    single averaged rate per window), independent of any waveform head.
+
+    :param x: ``[T]`` or ``[N, T]`` waveform(s).
+    :param fs: sampling rate (Hz).
+    :param band: ``(lo, hi)`` respiration band in Hz (default 0.1-0.6 Hz =
+        6-36 BPM).
+    :returns: ``[N]`` array of rates in breaths/min (NaN where undefined).
+    """
+    x = _flatten(x)
+    out = np.full(x.shape[0], np.nan, dtype=float)
+    for i, row in enumerate(x):
+        n = row.size
+        if n < 4:
+            continue
+        f = np.fft.rfftfreq(n, d=1.0 / float(fs))
+        spec = np.abs(np.fft.rfft(row - row.mean()))
+        if band is not None:
+            m = (f >= float(band[0])) & (f <= float(band[1]))
+            if not m.any():
+                continue
+            k = int(np.where(m)[0][np.argmax(spec[m])])
+        else:
+            k = int(np.argmax(spec))
+        fpeak = float(f[k])
+        if 0 < k < spec.size - 1:                       # parabolic sub-bin
+            a, b, c = spec[k - 1], spec[k], spec[k + 1]
+            denom = a - 2.0 * b + c
+            if abs(denom) > 1e-18:
+                delta = float(np.clip(0.5 * (a - c) / denom, -0.5, 0.5))
+                fpeak += delta * float(f[1] - f[0])
+        out[i] = fpeak * 60.0
+    return out
+
+
+def rate_summary(pred_bpm, target_bpm, tol=0.10, min_bpm=1.0):
+    """MAE (BPM) + percentage-within-``tol`` from paired per-window rates.
+
+    The two literature-standard headline numbers for a summarized rate:
+
+    * ``mae_bpm`` -- mean absolute error in breaths/min (physical units, the
+      universal reporting standard);
+    * ``within_10pct`` -- fraction of windows whose error is within ``tol`` of
+      the TRUE (contact-sensor) rate, the ICMI-2023 style acceptance margin.
+
+    Also returns ``rmse_bpm`` / ``bias_bpm`` (signed) for completeness. Windows
+    with a non-finite or near-zero reference rate are dropped (a rate error is
+    meaningless when the reference has no rate).
+    """
+    p = np.asarray(pred_bpm, dtype=float).reshape(-1)
+    t = np.asarray(target_bpm, dtype=float).reshape(-1)
+    if p.shape != t.shape:
+        raise ValueError(f'Shape mismatch pred {p.shape} vs target {t.shape}')
+    key = f'within_{int(round(float(tol) * 100))}pct'
+    ok = np.isfinite(p) & np.isfinite(t) & (np.abs(t) >= float(min_bpm))
+    p, t = p[ok], t[ok]
+    if t.size == 0:
+        return {'n': 0, 'mae_bpm': float('nan'), 'rmse_bpm': float('nan'),
+                'bias_bpm': float('nan'), key: float('nan')}
+    err = p - t
+    return {
+        'n': int(t.size),
+        'mae_bpm': float(np.mean(np.abs(err))),
+        'rmse_bpm': float(np.sqrt(np.mean(err ** 2))),
+        'bias_bpm': float(np.mean(err)),
+        key: float(np.mean(np.abs(err) <= float(tol) * np.abs(t))),
+    }
+
+
+def rate_metrics(pred, target, fs=100.0, band=(0.1, 0.6), tol=0.10):
+    """Estimate + compare per-window rates: ``rate_summary`` on ``pred``/``target``."""
+    return rate_summary(estimate_rate_bpm(pred, fs, band),
+                        estimate_rate_bpm(target, fs, band), tol=tol)
 
 
 # --------------------------------------------------------------------------- #

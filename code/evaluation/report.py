@@ -281,6 +281,13 @@ def plot_session_waveform(t, target, pred, out_png, title='', fs=100.0,
 
     Top panel = whole session with the per-clip windows marked; bottom = a
     ``zoom_s`` second zoom so the morphology is readable.
+
+    Both curves are z-scored for DISPLAY, so the overlay looks amplitude-matched
+    even when the two series are in different spaces. ``metrics`` must therefore
+    be a caller-curated, SPACE-CONSISTENT dict -- for the raw-volts reference vs
+    a session-z-scored prediction that means ``pearson`` (affine-invariant) and
+    the volts-calibrated ``mae``/``rmse``, NOT the cross-space ones (the suffix
+    rendered under the plot is the only honest number in the title).
     """
     plt = _plt()
     t = np.asarray(t, float)

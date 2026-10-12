@@ -41,6 +41,7 @@ shrinking the prediction, which is not the same as predicting better.
 import argparse
 import json
 import os
+import re
 import sys
 
 import numpy as np
@@ -101,10 +102,20 @@ def smooth_band(x, fs, band, order=4):
     """Zero-phase Butterworth filter applied to ``x`` along the last axis.
 
     ``band`` is ``(lo, hi)`` for a band-pass, ``(fc,)`` / ``(fc, None)`` for a
-    low-pass, or ``None`` for a no-op. ``filtfilt`` is used so the filtered
-    waveform stays time-aligned with the reference -- a causal filter would
-    delay it by ~``order`` samples and that delay would show up as a phase
-    error in Tier-1, which is exactly the quantity under test here.
+    low-pass, or ``None`` for a no-op. A ZERO-PHASE SOS filter
+    (``sosfiltfilt``) is used so the filtered waveform stays time-aligned with
+    the reference -- a causal filter would delay it by ~``order`` samples and
+    that delay would show up as a phase error in Tier-1, which is exactly the
+    quantity under test here.
+
+    The SOS (second-order-sections) form is used deliberately: for a NARROW,
+    LOW band relative to Nyquist the transfer-function ``(b, a)`` recursion is
+    catastrophically ill-conditioned (measured 2026-10-10: a unit-amplitude
+    0.3 Hz tone at ``fs=100`` with the resp band ``(0.16, 0.4)`` returned
+    ``max|x| = 5.5e8`` in the ``b, a`` form, versus ~1.2 for SOS / an FFT
+    band-pass). ``freqz`` on those same coefficients looks fine, so the bug is
+    roundoff amplification in the recursion, not a wrong response -- easy to
+    miss and silently catastrophic for anyone who smooths with the eval band.
 
     This is POST-PROCESSING for presentation. It removes the token-seam jitter
     that the 16-samples-per-token head emits (``TirROI_Resp_plan.md`` §12), but
@@ -119,18 +130,20 @@ def smooth_band(x, fs, band, order=4):
     if x.shape[-1] < 3:
         return x
     try:
-        from scipy.signal import butter, filtfilt
+        from scipy.signal import butter, sosfiltfilt
     except ImportError as exc:                       # pragma: no cover
         raise SystemExit(f'--smooth needs scipy: {exc}')
     nyq = float(fs) / 2.0
     band = tuple(band)
     if len(band) < 2 or band[1] is None:
-        b, a = butter(order, float(band[0]) / nyq, btype='low')
+        sos = butter(order, float(band[0]) / nyq, btype='low', output='sos')
     else:
-        b, a = butter(order, [float(band[0]) / nyq, float(band[1]) / nyq],
-                      btype='band')
-    padlen = min(3 * (max(len(a), len(b)) - 1), x.shape[-1] - 1)
-    return filtfilt(b, a, x, axis=-1, padlen=padlen)
+        sos = butter(order, [float(band[0]) / nyq, float(band[1]) / nyq],
+                     btype='band', output='sos')
+    # scipy's own default padding is 3 * (2 * n_sections + 1); cap it to the
+    # signal length so a short clip cannot trip the ``len(x) > padlen`` guard.
+    padlen = min(3 * (2 * sos.shape[0] + 1), x.shape[-1] - 1)
+    return sosfiltfilt(sos, x, axis=-1, padlen=padlen)
 
 
 def _agg(dicts, keys):
@@ -146,6 +159,66 @@ def _agg(dicts, keys):
         else:
             out[f'{k}_median'] = float('nan')
             out[f'{k}_iqr'] = float('nan')
+    return out
+
+
+#: task label embedded in a ``<SUBJECT>_<TASK>`` session name -- a FALLBACK for
+#: when ``entries.json`` does not carry an explicit ``task`` field.
+_TASK_IN_NAME = re.compile(r'_([Tt]\d+)$')
+
+#: session metrics that are comparable across the prediction / reference spaces.
+#: ``pearson`` is affine-invariant, ``psd_mae`` is band-normalised, and the
+#: ``*_affine`` terms are the volts-calibrated MAE/RMSE. The RAW session
+#: mae/rmse are deliberately EXCLUDED -- with a session-z-scored prediction and
+#: a raw-volts reference they measure the reference DC offset, not error.
+_BREAKDOWN_KEYS = ('pearson', 'psd_mae', 'dominant_freq_error_hz',
+                   'mae_affine', 'rmse_affine')
+
+
+def _task_of_name(session_name):
+    """``'F001_T7'`` -> ``'T7'``; ``''`` when there is no trailing ``_T<digit>``."""
+    m = _TASK_IN_NAME.search(str(session_name))
+    return m.group(1).upper() if m else ''
+
+
+def _session_quality(rec):
+    """Flatten a session record to the space-consistent metrics for grouping."""
+    out = {}
+    t1 = rec.get('session_tier1') or {}
+    if np.isfinite(t1.get('pearson', np.nan)):
+        out['pearson'] = float(t1['pearson'])
+    aff = rec.get('session_tier1_affine') or {}
+    for k in ('mae', 'rmse'):
+        if np.isfinite(aff.get(k, np.nan)):
+            out[f'{k}_affine'] = float(aff[k])
+    t2 = rec.get('session_tier2') or {}
+    for k in ('psd_mae', 'dominant_freq_error_hz'):
+        if np.isfinite(t2.get(k, np.nan)):
+            out[k] = float(t2[k])
+    return out
+
+
+def _figure_metrics(rec):
+    """Space-consistent numbers for a session figure's title.
+
+    The assembled prediction is session-z-scored while the reference is raw
+    volts, so the raw ``session_tier1`` mae/rmse are NOT amplitude errors --
+    they track the reference DC offset and can RANK sessions wrongly (measured
+    2026-10-10: M055_T4 printed mae 2.335 at pearson -0.634 vs M038_T3's 4.578
+    at pearson +0.947). Print only the affine-invariant ``pearson`` /
+    ``psd_mae`` plus the volts-calibrated ``*_aff_V`` terms.
+    """
+    out = {}
+    t1 = rec.get('session_tier1') or {}
+    if np.isfinite(t1.get('pearson', np.nan)):
+        out['pearson'] = t1['pearson']
+    aff = rec.get('session_tier1_affine') or {}
+    for k, label in (('mae', 'mae_aff_V'), ('rmse', 'rmse_aff_V')):
+        if np.isfinite(aff.get(k, np.nan)):
+            out[label] = aff[k]
+    t2 = rec.get('session_tier2') or {}
+    if np.isfinite(t2.get('psd_mae', np.nan)):
+        out['psd_mae'] = t2['psd_mae']
     return out
 
 
@@ -290,14 +363,44 @@ def main(args):
                 title=(f'{name} | {args.waveform} reconstruction | '
                        f'{len(rows)} clips'),
                 fs=args.fs, zoom_s=args.zoom_s,
-                metrics=rec.get('session_tier1', {}))
+                metrics=_figure_metrics(rec))
         sessions[name] = rec
         print(f'[session-eval] {name}: {rec.get("session_tier1", {})}')
+
+    # ---- per-task / per-group breakdown ---------------------------------- #
+    # Every session is one <SUBJECT>_<TASK>; entries.json records the task
+    # label and the distortion GROUPS ("levels") that contain it, so the
+    # breakdown needs neither a config nor name parsing (the name is only a
+    # fallback). Only SPACE-CONSISTENT metrics are aggregated (see
+    # _BREAKDOWN_KEYS): the assembled prediction is session-z-scored while the
+    # reference is raw volts, so the raw session mae/rmse are not amplitude
+    # errors and would mislead a group ranking.
+    quality, task_of, levels_of = {}, {}, {}
+    for name, rec in sessions.items():
+        if 'error' in rec:
+            continue
+        quality[name] = _session_quality(rec)
+        meta = entries[groups[name][0][0]] if groups.get(name) else {}
+        meta = meta if isinstance(meta, dict) else {}
+        task_of[name] = meta.get('task') or _task_of_name(name)
+        levels_of[name] = list(meta.get('task_level') or ())
+    per_task = _metrics.breakdown_by_label(quality, task_of, _BREAKDOWN_KEYS)
+    per_group = _metrics.breakdown_by_label(quality, levels_of, _BREAKDOWN_KEYS)
+    for label, table in (('per-task', per_task), ('per-group', per_group)):
+        if not table:
+            continue
+        bits = ', '.join(
+            f'{k}={v["pearson_median"]:+.3f} (n={v["n"]})'
+            for k, v in table.items()
+            if np.isfinite(v.get('pearson_median', np.nan)))
+        if bits:
+            print(f'[session-eval] {label} Pearson median: {bits}')
 
     doc = {'waveform': args.waveform, 'fs': args.fs, 'band': list(band),
            'smooth': (list(smooth) if smooth is not None else None),
            'tiers': sorted(tiers), 'n_clips': int(preds.shape[0]),
            'n_sessions': len(sessions), 'per_clip_macro': per_clip,
+           'per_task': per_task, 'per_group': per_group,
            'sessions': sessions}
     if tier3_all:
         doc['tier3_aggregate'] = _agg(tier3_all, [
