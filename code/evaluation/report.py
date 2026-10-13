@@ -279,8 +279,8 @@ def plot_session_waveform(t, target, pred, out_png, title='', fs=100.0,
                           zoom_s=20.0, metrics=None):
     """Session-level assembled prediction vs the reference (both z-scored).
 
-    Top panel = whole session with the per-clip windows marked; bottom = a
-    ``zoom_s`` second zoom so the morphology is readable.
+    A single panel shows the whole session with the per-clip windows marked.
+    (The former bottom ``zoom_s``-second zoom panel was removed on request.)
 
     Both curves are z-scored for DISPLAY, so the overlay looks amplitude-matched
     even when the two series are in different spaces. ``metrics`` must therefore
@@ -305,22 +305,12 @@ def plot_session_waveform(t, target, pred, out_png, title='', fs=100.0,
         return (a - np.nanmean(a)) / (s if s > 1e-12 else 1.0)
 
     y, yh = z(y), z(yh)
-    fig, axes = plt.subplots(2, 1, figsize=(12, 5.2), constrained_layout=True)
-    axes[0].plot(t, y, color='0.55', lw=0.9, label='reference (z)')
-    axes[0].plot(t, yh, color='tab:blue', lw=0.9, label='assembled pred (z)')
-    axes[0].set_title('session assembly'); axes[0].grid(alpha=.3)
-    axes[0].legend(fontsize=8)
-    axes[0].set_xlabel('time (s)')
-
-    dur = float(t[-1] - t[0]) if t.size > 1 else 0.0
-    t0 = max(0.0, (dur - min(zoom_s, dur)) / 2.0)
-    m = (t >= t0) & (t <= t0 + min(zoom_s, dur))
-    axes[1].plot(t[m], y[m], color='0.55', lw=1.2, label='reference (z)')
-    axes[1].plot(t[m], yh[m], color='tab:blue', lw=1.2,
-                 label='assembled pred (z)')
-    axes[1].set_xlim(t0, t0 + min(zoom_s, dur))
-    axes[1].set_title(f'zoom ({min(zoom_s, dur):.0f} s)')
-    axes[1].grid(alpha=.3); axes[1].set_xlabel('time (s)'); axes[1].legend(fontsize=8)
+    fig, ax = plt.subplots(1, 1, figsize=(12, 3.2), constrained_layout=True)
+    ax.plot(t, y, color='0.55', lw=0.9, label='reference (z)')
+    ax.plot(t, yh, color='tab:blue', lw=0.9, label='assembled pred (z)')
+    ax.set_title('session assembly'); ax.grid(alpha=.3)
+    ax.legend(fontsize=8)
+    ax.set_xlabel('time (s)')
 
     sub = title or 'session waveform'
     if metrics:
