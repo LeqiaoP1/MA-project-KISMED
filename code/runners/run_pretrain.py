@@ -439,9 +439,11 @@ def pin_roi_target_norm(args) -> bool:
 
 
 def main(args):
-    from utils import get_world_size, is_main_process
+    from utils import get_world_size, is_main_process, resolve_amp
 
     device = init_env(args)
+    amp_config = resolve_amp(getattr(args, 'amp_dtype', 'none'), device)
+    print(f'[amp] {amp_config.describe()}')
 
     # MAE linear-scaling rule: only derive the absolute LR from --blr when the
     # user did not pass --lr explicitly. Otherwise blr*batch/256 on a batch-1/2
@@ -561,7 +563,8 @@ def main(args):
             device=device, epoch=epoch, loss_scaler=loss_scaler,
             max_norm=args.clip_grad, update_freq=args.update_freq,
             lr_schedule_values=lr_schedule_values,
-            start_steps=epoch * steps_per_epoch)
+            start_steps=epoch * steps_per_epoch,
+            amp_config=amp_config)
         print(f'Epoch {epoch} stats: {stats}')
 
         if is_main_process() and (epoch % args.save_ckpt_freq == 0

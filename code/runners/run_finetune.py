@@ -75,9 +75,11 @@ def get_args():
 
 
 def main(args):
-    from utils import is_main_process
+    from utils import is_main_process, resolve_amp
 
     device = init_env(args)
+    amp_config = resolve_amp(getattr(args, 'amp_dtype', 'none'), device)
+    print(f'[amp] {amp_config.describe()}')
 
     # A variant spec ('base', 'mae:large', 'timm:...') is downloaded into
     # <project_root>/models/initial; '' / 'none' and existing paths pass through.
@@ -138,7 +140,7 @@ def main(args):
             model=model, criterion=criterion, data_loader=data_loader_train,
             optimizer=optimizer, device=device, epoch=epoch,
             loss_scaler=loss_scaler, max_norm=args.clip_grad,
-            update_freq=args.update_freq)
+            update_freq=args.update_freq, amp_config=amp_config)
 
         if epoch % args.eval_freq == 0 or epoch + 1 == args.epochs:
             test_stats = evaluate(data_loader_val, model, device)

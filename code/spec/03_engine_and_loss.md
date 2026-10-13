@@ -184,27 +184,45 @@ Gradient norm balance (measured 2026-09-28, N=496 @ 100 Hz):
 
 ---
 
-## 7. AMP — `utils/native_scaler.py::NativeScalerWithGradNormCount`
+## 7. AMP — `utils/native_scaler.py`
+
+One switch, ``--amp_dtype {none,fp16,bf16}`` (default ``none``), resolved once
+per run by ``resolve_amp`` into an ``AmpConfig``. Engines wrap the forward/loss
+in ``autocast_context(amp_config)``; the model is never ``.half()``-ed.
+
+| Mode | Autocast | Loss scaling |
+|---|---|---|
+| `none` | OFF | OFF (scaler bypassed) |
+| `fp16` | `torch.float16` | ON (`GradScaler`) |
+| `bf16` | `torch.bfloat16` | OFF |
 
 ```python
-self._scaler = torch.cuda.amp.GradScaler()  # deprecated PyTorch >= 2.4
-
-def __call__(self, loss, optimizer, clip_grad=None, ...):
+# utils/native_scaler.py (core)
+if scaler_enabled:                      # False for none/bf16
     self._scaler.scale(loss).backward()
-    if update_grad:
-        if clip_grad is not None and clip_grad > 0:  # GUARD: 0.0 = OFF
-            self._scaler.unscale_(optimizer)
-            norm = torch.nn.utils.clip_grad_norm_(parameters, clip_grad)
-        else:
-            self._scaler.unscale_(optimizer)
-            norm = get_grad_norm_(parameters)
+else:
+    loss.backward()
+if update_grad:
+    if scaler_enabled:
+        self._scaler.unscale_(optimizer)
+    if clip_grad is not None and clip_grad > 0:   # GUARD: 0.0 = OFF
+        norm = torch.nn.utils.clip_grad_norm_(parameters, clip_grad)
+    else:
+        norm = get_grad_norm_(parameters)
+    if scaler_enabled:
         self._scaler.step(optimizer); self._scaler.update()
-    return norm
+    else:
+        optimizer.step()                     # same path, no scaling
+return norm
 ```
 
 > **Critical fix (2026-09-23)**: Before this fix, `clip_grad=0.0` (the default in many configs) entered the `clip_grad_norm_` branch with `max_norm=0.0`, which scales every gradient to zero (`clip_coef = 0 / (norm + eps)`). Learning was silently disabled. The guard `clip_grad > 0` now routes 0.0 to the no-clip path.
 
-> **No `torch.amp.autocast`** anywhere in the codebase. Forward passes run in full precision; only the backward is scaled.
+> **AMP (2026-10-13)**: autocast is now available but OPT-IN. `none` bypasses the
+> scaler entirely, so existing FP32 runs are bit-identical. `bf16` autocasts
+> without loss scaling; `fp16` autocasts and scales. The numerically sensitive
+> waveform criteria run in FP32 (`loss_in_fp32=True` in `run_waveform.py`). See
+> `analysis/hpc_AMP.md`.
 
 ---
 

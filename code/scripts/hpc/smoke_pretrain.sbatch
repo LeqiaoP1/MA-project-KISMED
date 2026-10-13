@@ -19,7 +19,7 @@
 #   ENTRIES=8 sbatch scripts/hpc/smoke_pretrain.sbatch
 #   CONFIG=configs/pretrain/stage2_multimodal.yaml sbatch scripts/hpc/smoke_pretrain.sbatch
 #
-# Env overrides: CONFIG, ENTRIES, SESSIONS, BATCH_SIZE, WEIGHTS_DIR
+# Env overrides: CONFIG, ENTRIES, SESSIONS, BATCH_SIZE, WEIGHTS_DIR, AMP_DTYPE
 #SBATCH --job-name=st2_smoke
 #SBATCH --partition=acc_short         # GPU; 30 min max ('acc' = 1 day)
 # NB: the LUA plugin rejects --mem, so memory is --mem-per-cpu * cpus-per-task.
@@ -60,6 +60,9 @@ CONFIG="${CONFIG:-configs/pretrain/stage2_hpc_tir_roi_resp.yaml}"
 ENTRIES="${ENTRIES:-4}"
 SESSIONS="${SESSIONS:-2}"
 BATCH_SIZE="${BATCH_SIZE:-2}"
+# AMP arm for the one-GPU none/fp16/bf16 comparison (see analysis/hpc_AMP.md):
+#   AMP_DTYPE=bf16 sbatch scripts/hpc/smoke_pretrain.sbatch
+AMP_DTYPE="${AMP_DTYPE:-none}"
 OUT_DIR="${OUT_DIR:-${WORK_SCRATCH:-/tmp}/kismed_smoke/$(basename "${CONFIG%.yaml}")_${SLURM_JOB_ID:-manual}}"
 
 if [ ! -f "$CONFIG" ]; then
@@ -84,6 +87,7 @@ ARGS=(-c "$CONFIG"
       --save_ckpt_freq 1
       --max_sessions "$SESSIONS" --max_entries "$ENTRIES"
       --batch_size "$BATCH_SIZE"
+      --amp_dtype "$AMP_DTYPE"
       --num_workers 0)
 ARGS+=("$@")
 
@@ -95,6 +99,7 @@ echo "[smoke_pretrain] config   : $CONFIG"
 echo "[smoke_pretrain] raw_root : $RAW_DATA_PATH"
 echo "[smoke_pretrain] weights  : $INITIAL_MODELS_DIR"
 echo "[smoke_pretrain] output   : $OUT_DIR"
+echo "[smoke_pretrain] amp_dtype: $AMP_DTYPE"
 echo "[smoke_pretrain] command  : python -u runners/run_pretrain.py ${ARGS[*]}"
 echo
 

@@ -13,7 +13,8 @@ import numpy as np
 import torch
 import yaml
 
-from utils import get_rank, get_world_size, init_distributed_mode
+from utils import (add_amp_args, get_rank, get_world_size,
+                   init_distributed_mode)
 
 # ``code/runners/_common.py`` -> [0]=runners, [1]=code, [2]=project root
 _CODE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -65,6 +66,8 @@ def add_common_args(parser: argparse.ArgumentParser):
                              '(smoke tests)')
     parser.add_argument('--max_entries', default=None, type=int,
                         help='limit number of clips per split (smoke tests)')
+    # mixed precision (AMP): see utils/native_scaler.py + analysis/hpc_AMP.md
+    add_amp_args(parser)
 
 
 def _check_config_keys(parser: argparse.ArgumentParser, cfg: dict, path: str):

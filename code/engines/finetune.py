@@ -7,11 +7,13 @@ Batch contract (override in your dataset):
     ``samples, targets``    -> classification (this loop)
 For masked pre-training see ``engines/pretrain.py``.
 """
+import contextlib
 from typing import Iterable, Optional
 
 import torch
 
-from utils import MetricLogger, SmoothedValue
+from utils import (MetricLogger, SmoothedValue, autocast_context,
+                   scaler_enabled)
 from utils.metrics import accuracy
 
 
@@ -21,12 +23,15 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     loss_scaler=None, max_norm: float = 0.0,
                     model_ema=None, mixup_fn=None, log_writer=None,
                     lr_schedule_values=None, wd_schedule_values=None,
-                    update_freq: int = 1, start_steps: int = None):
+                    update_freq: int = 1, start_steps: int = None,
+                    amp_config=None, loss_in_fp32: bool = False):
     model.train(True)
     metric_logger = MetricLogger(delimiter='  ')
     metric_logger.add_meter('lr', SmoothedValue(window_size=1, fmt='{value:.6f}'))
     metric_logger.add_meter('min_lr', SmoothedValue(window_size=1, fmt='{value:.6f}'))
     header = 'Epoch: [{}]'.format(epoch)
+
+    use_scaler = scaler_enabled(amp_config)   # False for --amp_dtype none/bf16
 
     optimizer.zero_grad()
     for data_iter_step, batch in enumerate(
@@ -58,26 +63,43 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         if mixup_fn is not None:
             samples, targets = mixup_fn(samples, targets)
 
-        outputs = model(samples)
-        loss = criterion(outputs, targets)
-        loss = loss / update_freq
+        final_step = (data_iter_step + 1) % update_freq == 0
+        with contextlib.ExitStack() as stack:
+            # DDP: skip the gradient all-reduce on accumulation micro-steps
+            # (a no-op for update_freq == 1, i.e. every existing config)
+            if not final_step and hasattr(model, 'no_sync'):
+                stack.enter_context(model.no_sync())
 
-        if loss_scaler is None:
-            loss.backward()
-            if max_norm is not None and max_norm > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
-            if (data_iter_step + 1) % update_freq == 0:
-                optimizer.step()
-                optimizer.zero_grad()
-            grad_norm = None
-        else:
-            # AMP path (loss_scaler = NativeScalerWithGradNormCount)
-            grad_norm = loss_scaler(
-                loss, optimizer, clip_grad=max_norm,
-                parameters=model.parameters(),
-                update_grad=(data_iter_step + 1) % update_freq == 0)
-            if (data_iter_step + 1) % update_freq == 0:
-                optimizer.zero_grad()
+            with autocast_context(amp_config):
+                outputs = model(samples)
+
+            if loss_in_fp32:
+                # Waveform criteria (MR-STFT / Pearson / Std) are numerically
+                # sensitive: cast the autocast output back and evaluate the loss
+                # OUTSIDE the autocast context (FP32).
+                loss = criterion(outputs.float(), targets.float())
+            else:
+                with autocast_context(amp_config):
+                    loss = criterion(outputs, targets)
+            loss = loss / update_freq
+
+            if loss_scaler is None:
+                loss.backward()
+                if max_norm is not None and max_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+                if final_step:
+                    optimizer.step()
+                    optimizer.zero_grad()
+                grad_norm = None
+            else:
+                # AMP path (loss_scaler = NativeScalerWithGradNormCount)
+                grad_norm = loss_scaler(
+                    loss, optimizer, clip_grad=max_norm,
+                    parameters=model.parameters(),
+                    update_grad=final_step,
+                    scaler_enabled=use_scaler)
+                if final_step:
+                    optimizer.zero_grad()
 
         if model_ema is not None:
             model_ema.update(model)

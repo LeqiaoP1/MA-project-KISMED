@@ -467,9 +467,11 @@ def _recorded_best_pearson(args):
 
 
 def main(args):
-    from utils import is_main_process
+    from utils import is_main_process, resolve_amp
 
     device = init_env(args)
+    amp_config = resolve_amp(getattr(args, 'amp_dtype', 'none'), device)
+    print(f'[amp] {amp_config.describe()}')
     args.fft_sizes = _parse_fft_sizes(args.fft_sizes)
     args.eval_band = (tuple(float(x) for x in args.eval_band.split(','))
                       if args.eval_band else None)
@@ -704,7 +706,8 @@ def main(args):
             loss_scaler=loss_scaler, max_norm=args.clip_grad,
             update_freq=args.update_freq,
             lr_schedule_values=lr_schedule_values,
-            start_steps=epoch * steps_per_epoch)
+            start_steps=epoch * steps_per_epoch,
+            amp_config=amp_config, loss_in_fp32=True)
 
         if epoch % args.eval_freq == 0 or epoch + 1 == args.epochs:
             stats = evaluate_waveforms(data_loader_val, model, device,

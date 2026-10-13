@@ -119,7 +119,7 @@ def _print_au_table(au_list, f1_per_au):
 
 
 def main(args):
-    from utils import get_world_size, is_main_process
+    from utils import get_world_size, is_main_process, resolve_amp
 
     from data.au_dataset import resolve_au_list
     au_list = resolve_au_list(args)
@@ -129,6 +129,8 @@ def main(args):
     n_aus = len(au_list)
 
     device = init_env(args)
+    amp_config = resolve_amp(getattr(args, 'amp_dtype', 'none'), device)
+    print(f'[amp] {amp_config.describe()}')
 
     # ---- model ---------------------------------------------------------- #
     from core.au_probe import build_au_probe_model, load_au_probe_weights
@@ -192,7 +194,7 @@ def main(args):
             device=device, epoch=epoch, criterion=criterion,
             loss_scaler=loss_scaler, max_norm=args.clip_grad,
             update_freq=args.update_freq, lr_schedule_values=lr_schedule,
-            start_steps=epoch * steps_per_epoch)
+            start_steps=epoch * steps_per_epoch, amp_config=amp_config)
 
         if epoch % args.eval_freq == 0 or epoch + 1 == args.epochs:
             stats = evaluate_au(data_loader_val, model, device)
