@@ -1,0 +1,72 @@
+# AU-occurrence probe over the Stage-2 TIR-ROI + Resp encoder -- HPC (112 px).
+#
+# PROTOCOL OF RECORD: analysis/tir_resp/AU_OccurenceProbe.md (highest priority
+# for AU-probing). Implementation: AU_OccurenceProbe_implementation.md.
+#
+# 112 px twin of configs/finetune/au_tir_roi.yaml (which is the 64 px LOCAL
+# lineage). The geometry here MUST equal the probed Stage-2 checkpoint
+# configs/pretrain/stage2_hpc_tir_roi_resp.yaml: input_size 112, clip 8 s,
+# temporal_stride 2 -> num_frames 100 -> 2450 video tokens (50 x 7 x 7). The two
+# lineages are NOT interchangeable (positions.tir.pos_embed differs in shape).
+#
+# Paths (raw tree + AU coding) are supplied by the submission wrapper
+# (scripts/hpc/submit_au_probe.sbatch -> --raw_root / --au_root) because the raw
+# tree is site-specific; nothing here hardcodes a cluster path.
+#
+# Submit from code/:
+#   sbatch scripts/hpc/submit_au_probe.sbatch
+
+# ---- data source (thermal ROI crop, raw tree) ----
+data_set: tir_roi
+streams: tir                           # thermal ROI only (no resp: would leak)
+tir_channels: 3                        # thermal is a false-colour render
+
+# ---- ROI contract (MUST equal the probed checkpoint) ----
+roi_landmarks: ''                      # '' = the 12-point nose+mouth box
+roi_padding: 0.2
+input_size: 112                        # the HPC lineage (local = 64)
+
+# ---- AU set: ROI-valid Tier-A headline (NOT the default BP4D 12-AU set) ----
+au_list: 10,12,14,15,17,23,24
+
+# ---- probe geometry (MUST equal the checkpoint geometry) ----
+tubelet: 2,16,16
+fps: 25.0
+clip_duration: 8.0                     # 200 source frames -> 100 after stride 2
+temporal_stride: 2                     # REQUIRED: num_frames 100, not 200
+num_frames: 0                          # 0 => round(clip_duration*fps/stride)
+enc_embed_dim: 768
+enc_depth: 12
+enc_num_heads: 12
+mlp_ratio: 4.0
+
+# ---- probe mode / init ----
+probe: linear                          # frozen encoder + head (formal diagnostic)
+pool: mean
+# finetune is supplied by the sbatch (newest checkpoint under STAGE2_DIR), or
+# pass --finetune explicitly. Left unset here so a bare run is a HARD ERROR.
+
+# ---- subject-disjoint split (same split as the Stage-3 evaluation) ----
+train_ratio: 0.8
+# or explicit: train_subjects: F001,F002,F003   val_subjects: F004
+# optional third split for leakage-free threshold tuning (protocol §10.1):
+# test_subjects: F004
+
+# ---- training ----
+epochs: 30
+batch_size: 16
+update_freq: 1
+eval_freq: 1
+save_ckpt_freq: 10
+opt: adamw
+lr: 1.0e-3
+min_lr: 1.0e-4
+warmup_epochs: 3
+weight_decay: 0.05
+clip_grad: 0.0
+tune_threshold: false                  # report a per-AU tuned UPPER BOUND too
+num_workers: 8
+
+# ---- dev caps (override on the command line for a smoke run) ----
+# max_entries: 256
+# max_sessions: 4

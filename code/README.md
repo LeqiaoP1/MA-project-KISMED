@@ -800,6 +800,10 @@ verified by reproducing the recorded Solution C smoke (`mse_tir 2.0890 / mse_res
 
 ### AU-occurrence probe — Semantic Representation Quality (ADD-ON)
 
+> The passages below describe the **RGB** probe. For the **TIR-ROI + resp**
+> encoder the protocol of record is `analysis/tir_resp/AU_OccurenceProbe.md`
+> (different modality, ROI-valid AU set) — it takes precedence on any conflict.
+
 A **diagnostic control, not a Stage-1/2/3 step**. Its claim: Stage-2
 unsupervised masked pre-training should make FACS facial-action semantics
 linearly decodable from the (frozen) shared encoder. It is implemented as an

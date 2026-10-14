@@ -64,6 +64,39 @@ def get_args():
                         help='explicit train subject ids, comma list')
     parser.add_argument('--val_subjects', default='', type=str,
                         help='explicit val subject ids, comma list')
+    parser.add_argument('--test_subjects', default='', type=str,
+                        help='optional held-out subject ids for reporting '
+                             '(TIR-ROI: thresholds may be tuned on val and '
+                             'applied to test without leakage)')
+
+    # --- TIR-ROI data source (protocol of record -- analysis/tir_resp/ -
+    #     AU_OccurenceProbe.md). data_set: tir_roi feeds the THERMAL ROI crop
+    #     to the encoder; 'rgb' keeps the canonical full-frame RGB probe. ----
+    parser.add_argument('--data_set', default='rgb', type=str,
+                        help="'rgb' (canonical RGB frames; default) or 'tir_roi' "
+                             '(thermal nose+mouth ROI crop, the TIR-ROI+RESP '
+                             'encoder).')
+    parser.add_argument('--raw_root', default=env_or('RAW_DATA_PATH'), type=str,
+                        help='raw BP4D root (Thermal/ + IRFeatures/) for '
+                             'data_set: tir_roi')
+    parser.add_argument('--roi_landmarks', default='', type=str,
+                        help='ROI landmark set for tir_roi (preset name or '
+                             "CSV); '' = the 12-point nose+mouth box "
+                             '(MUST equal the probed checkpoint)')
+    parser.add_argument('--roi_padding', default=0.2, type=float,
+                        help='per-side ROI margin (MUST equal the checkpoint)')
+    parser.add_argument('--temporal_stride', default=1, type=int,
+                        help='decimation INSIDE the window; MUST equal the '
+                             'probed checkpoint (TIR-ROI: 2 -> num_frames 100 '
+                             'from an 8 s / 25 fps clip). A mismatch silently '
+                             'mis-centres the AU label.')
+    parser.add_argument('--roi_cache', default=env_or('ROI_CACHE'), type=str,
+                        help='optional offline ROI cache root (data/roi_cache.py) '
+                             'for tir_roi')
+    parser.add_argument('--roi_cache_lru', default=2, type=int)
+    parser.add_argument('--strict_au_gate', action='store_true', default=False,
+                        help='tir_roi: treat an AU outside the nose+mouth ROI '
+                             '(brow/eyelid) as a HARD ERROR instead of a warning')
 
     # --- probe geometry (MUST reproduce the Stage-2 checkpoint) ---------- #
     parser.add_argument('--tubelet', default='2,16,16', type=str,
@@ -108,14 +141,25 @@ def get_args():
     parser.add_argument('--warmup_epochs', default=5, type=int)
     parser.add_argument('--weight_decay', default=0.05, type=float)
     parser.add_argument('--clip_grad', default=0.0, type=float)
+    parser.add_argument('--tune_threshold', action='store_true', default=False,
+                        help='also report a per-AU threshold-tuned macro-F1 '
+                             '(an UPPER BOUND; never the headline -- protocol '
+                             '§10.1)')
     return parse_args_with_config(parser)
 
 
-def _print_au_table(au_list, f1_per_au):
-    print('\nPer-AU F1 @0.5:')
-    for au, f1 in zip(au_list, f1_per_au):
-        print(f'  AU{au:>2}: {f1 * 100:6.2f}')
-    print(f'  ----\n  macro: {sum(f1_per_au) / len(f1_per_au) * 100:6.2f}')
+def _print_au_table(au_list, f1_per_au, trivial_per_au=None):
+    print('\nPer-AU F1 @0.5 (trivial = always-positive baseline):')
+    for i, au in enumerate(au_list):
+        line = f'  AU{au:>2}: {f1_per_au[i] * 100:6.2f}'
+        if trivial_per_au is not None:
+            line += f'   (trivial {trivial_per_au[i] * 100:6.2f})'
+        print(line)
+    macro = sum(f1_per_au) / len(f1_per_au) * 100
+    print(f'  ----\n  macro: {macro:6.2f}')
+    if trivial_per_au is not None:
+        t = sum(trivial_per_au) / len(trivial_per_au) * 100
+        print(f'  trivial macro: {t:6.2f}   delta: {macro - t:+.2f}')
 
 
 def main(args):
@@ -123,10 +167,20 @@ def main(args):
 
     from data.au_dataset import resolve_au_list
     au_list = resolve_au_list(args)
-    # pin the resolved set so build_au_datasets reuses it (no duplicate scan)
+    # pin the resolved set so the builders reuse it (no duplicate scan)
     args.au_list = ','.join(str(a) for a in au_list)
     args.au_freq_topk = 0
     n_aus = len(au_list)
+
+    # TIR-ROI probe (protocol of record: analysis/tir_resp/AU_OccurenceProbe.md)
+    from data.au_tir_roi_dataset import TIR_ROI_DATA_SETS
+    tir_roi = str(getattr(args, 'data_set', 'rgb')).lower() in TIR_ROI_DATA_SETS
+    if tir_roi:
+        # anatomical gate: refuse/warn on AUs the nose+mouth ROI cannot show
+        from data.au_tir_roi_dataset import check_au_gate
+        warn = check_au_gate(au_list, strict=args.strict_au_gate)
+        if warn:
+            print('[au_probe] WARNING: ' + warn)
 
     device = init_env(args)
     amp_config = resolve_amp(getattr(args, 'amp_dtype', 'none'), device)
@@ -153,14 +207,26 @@ def main(args):
               f'({n_train:,} / {n_head:,})')
 
     # ---- data (subject-disjoint split) ---------------------------------- #
-    from data.au_dataset import build_au_datasets
-    dataset_train, dataset_val = build_au_datasets(args)
+    if tir_roi:
+        from data.au_tir_roi_dataset import build_au_tir_roi_datasets
+        dataset_train, dataset_val, dataset_test = build_au_tir_roi_datasets(
+            args, with_test=bool(getattr(args, 'test_subjects', '')))
+    else:
+        from data.au_dataset import build_au_datasets
+        dataset_train, dataset_val = build_au_datasets(args)
+        dataset_test = None
     print(f'Train subjects {sorted(dataset_train.subjects)} -> '
           f'{len(dataset_train)} samples | Val subjects '
           f'{sorted(dataset_val.subjects)} -> {len(dataset_val)} samples')
+    if dataset_test is not None:
+        print(f'Test subjects {sorted(dataset_test.subjects)} -> '
+              f'{len(dataset_test)} samples')
     data_loader_train = make_data_loader(args, dataset_train, shuffle=True)
     data_loader_val = make_data_loader(args, dataset_val, shuffle=False,
                                        drop_last=False)
+    data_loader_test = (make_data_loader(args, dataset_test, shuffle=False,
+                                         drop_last=False)
+                        if dataset_test is not None else None)
 
     model_without_ddp = model
     if args.distributed:
@@ -199,7 +265,9 @@ def main(args):
         if epoch % args.eval_freq == 0 or epoch + 1 == args.epochs:
             stats = evaluate_au(data_loader_val, model, device)
             f1 = stats['f1']
-            print(f'[epoch {epoch}] val macro-F1 {f1:.2f}  loss '
+            print(f'[epoch {epoch}] val macro-F1 {f1:.2f} '
+                  f'(trivial {stats["trivial_f1"]:.2f}, '
+                  f'delta {stats["f1_minus_trivial"]:+.2f})  loss '
                   f'{stats["loss"]:.4f}')
             if is_main_process() and f1 > best_f1:
                 best_f1 = f1
@@ -217,9 +285,26 @@ def main(args):
                                     f'au_checkpoint-{epoch:04d}.pth'))
 
     print(f'\nBest val macro-F1: {best_f1:.2f}')
-    # final per-AU breakdown on the val split
-    stats = evaluate_au(data_loader_val, model, device)
-    _print_au_table(au_list, stats['f1_per_au'])
+    # final per-AU breakdown. With a test split the thresholds are tuned on val
+    # and applied to test (leakage-free, protocol §10.1); otherwise the report
+    # is on val with the @0.5 headline (+ an optional val-tuned upper bound).
+    report_loader = data_loader_test if data_loader_test is not None \
+        else data_loader_val
+    report_name = 'test' if data_loader_test is not None else 'val'
+    if args.tune_threshold and data_loader_test is not None:
+        val_stats = evaluate_au(data_loader_val, model, device,
+                                tune_thresholds=True)
+        stats = evaluate_au(report_loader, model, device,
+                            thresholds=val_stats['oracle_thresholds'])
+        print(f'[report] {report_name}: thresholds tuned on val '
+              f'(val @0.5 {val_stats["f1"]:.2f}, val tuned upper bound '
+              f'{val_stats["oracle_f1"]:.2f})')
+    else:
+        stats = evaluate_au(report_loader, model, device,
+                            tune_thresholds=args.tune_threshold)
+    print(f'[report] split = {report_name}')
+    _print_au_table(au_list, stats['f1_per_au'],
+                    stats.get('trivial_f1_per_au'))
 
 
 if __name__ == '__main__':

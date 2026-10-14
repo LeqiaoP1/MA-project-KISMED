@@ -196,6 +196,10 @@ Two ROI probes that turn the §1.2 table from an argument into a measurement:
 
 ### **5. Downstream Probe — AU Occurrence Detection (Semantic Representation Quality)**
 
+> **Superseded for the TIR-ROI encoder** by `analysis/tir_resp/AU_OccurenceProbe.md`
+> (protocol of record: thermal-ROI input, ROI-valid AU set, current controls).
+> The text below is the RGB variant and is stale on C0/ImageNet/`videomae:base`.
+
 An **ADD-ON / diagnostic** module (separate from Stages 1-3; it re-uses the Stage-2 encoder but changes nothing in the Stage code paths). A regression-only read-out is a weak witness of representation quality, so this probe tests whether the frozen Stage-2 features **linearly separate FACS facial-action semantics**: a linear (or fine-tuned) head on top of the Stage-2 shared encoder predicts AU *occurrence*.
 
 * **Probe = multi-label binary relevance, per-AU F1.** BCE loss; per-AU F1 @0.5, macro-averaged over the standard BP4D 12-AU subset `{1,2,4,6,7,10,12,14,15,17,23,24}`. AU rows/values `9` (unknown) are dropped (never treated as negative). Prediction is **clip-level but centre-frame anchored**: one label vector per `num_frames` clip, supervised by the centre frame only.

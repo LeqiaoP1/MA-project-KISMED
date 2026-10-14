@@ -1,0 +1,75 @@
+# AU-occurrence probe over the Stage-2 TIR-ROI + Resp encoder.
+#
+# PROTOCOL OF RECORD: analysis/tir_resp/AU_OccurenceProbe.md (highest priority
+# for AU-probing; supersedes the RGB AU-probe passages in README /
+# ImplementationPlan §5 / simplifiedPlan for this encoder).
+#
+# Scope: does the thermal nose+mouth ROI encoder linearly separate the FACS AUs
+# whose evidence lies INSIDE that ROI? Diagnostic only.
+#
+# GEOMETRY IS A CONTRACT. roi_landmarks / roi_padding / input_size /
+# clip_duration / temporal_stride / tubelet / enc_* MUST reproduce the probed
+# Stage-2 checkpoint (configs/pretrain/stage2_local_tir_roi_resp.yaml): a
+# mismatch silently mis-centres the AU label or leaves the encoder random.
+# The 112 px HPC lineage is a SEPARATE config (input_size 112 + the HPC ckpt).
+#
+# Run from code/:  python runners/run_au_probe.py -c configs/finetune/au_tir_roi.yaml
+
+# ---- data source (thermal ROI crop, raw tree) ----
+data_set: tir_roi
+raw_root: ../data/raw/BP4D              # Thermal/ + IRFeatures/ (+ Physiology/)
+au_root: ../data/raw/BP4D/AUCoding/AU_OCC
+streams: tir                            # thermal ROI only (no resp: would leak)
+tir_channels: 3                         # thermal is a false-colour render
+
+# ---- ROI contract (MUST equal the probed checkpoint) ----
+roi_landmarks: ''                       # '' = the 12-point nose+mouth box
+roi_padding: 0.2
+input_size: 64                          # 112 for the HPC lineage
+
+# ---- AU set: ROI-valid Tier-A headline (NOT the default BP4D 12-AU set) ----
+# Brows/eyelids {1,2,4,5,7} are OUTSIDE the nose+mouth crop -> chance level.
+# Widen only with Tier-D AUs that pass the presence gate (protocol §3.4), e.g.
+#   9,11,16,18,20,25,26
+au_list: 10,12,14,15,17,23,24
+
+# ---- probe geometry (MUST equal the checkpoint geometry) ----
+tubelet: 2,16,16
+fps: 25.0
+clip_duration: 8.0                      # 200 source frames -> 100 after stride 2
+temporal_stride: 2                      # REQUIRED: num_frames 100, not 200
+num_frames: 0                           # 0 => round(clip_duration*fps/stride)
+enc_embed_dim: 768
+enc_depth: 12
+enc_num_heads: 12
+mlp_ratio: 4.0
+
+# ---- probe mode / init ----
+probe: linear                           # linear = frozen encoder + head (formal)
+pool: mean
+finetune: ../output/pretrain/stage2_local_tir_roi_resp/checkpoints/checkpoint-0039.pth
+
+# ---- subject-disjoint split (same split as the Stage-3 evaluation) ----
+train_ratio: 0.8
+# or explicit: train_subjects: F001,F002,F003   val_subjects: F004
+# optional third split for leakage-free threshold tuning (protocol §10.1):
+# test_subjects: F004
+
+# ---- training ----
+epochs: 30
+batch_size: 4
+update_freq: 1
+eval_freq: 1
+save_ckpt_freq: 10
+opt: adamw
+lr: 1.0e-3
+min_lr: 1.0e-4
+warmup_epochs: 3
+weight_decay: 0.05
+clip_grad: 0.0
+tune_threshold: false                   # report a per-AU tuned UPPER BOUND too
+num_workers: 4
+
+# ---- dev caps (uncomment for a local smoke run) ----
+# max_entries: 64
+# max_sessions: 4
