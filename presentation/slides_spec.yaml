@@ -46,14 +46,25 @@ slides:
       path: "experiments/figures/architecture_overview.png"
       label: "Three stages: initialization -> pre-training -> fine-tuning"
 
+  # Current experimental focus
+  - type: "split"
+    title: "Current Experimental Focus"
+    section: "II. Method"
+    bullets:
+      - "**Primary path:** Thermal infrared region of interest (TIR-ROI) -> respiration waveform."
+      - "**Compute platform:** Model training and testing are carried out on the HPC system."
+      - "**Current scope:** This is the main experiment investigated for the mid-term presentation."
+    image:
+      path: "experiments/figures/tir_roi_resp_pipeline.png"
+      label: "TIR-ROI video -> respiration waveform"
 
   # Current status
   - type: "full_image"
-    title: "Current Status: Pipeline Validated, Evaluation Ongoing"
+    title: "Current Status: TIR-ROI -> Respiration on HPC"
     section: "III. Results"
     image:
       path: "experiments/figures/pipeline_status.png"
-      label: "Implementation, local validation, and ongoing evaluation"
+      label: "HPC training/testing pipeline and current validation status"
       left_in: 1.0
       top_in: 1.6
       width_in: 11.33
@@ -65,8 +76,9 @@ slides:
     section: "III. Results"
     bullets:
       - "**Split:** Training, validation, and test subjects are strictly disjoint."
+      - "**Evaluation design:** One fixed test split is evaluated once; no k-fold cross-validation is performed."
       - "**Headline metric:** Band-limited Pearson correlation of the reconstructed waveform."
-      - "**Baselines:** The model must outperform a constant line and a single-tone reference."
+      - "**Baselines:** The model is compared with a constant line and a single-tone reference."
     image:
       path: "experiments/figures/evaluation_protocol.png"
       label: "Subject-disjoint split and baseline comparison"
@@ -88,9 +100,9 @@ slides:
     title: "Interim Conclusions & Next Steps"
     section: "IV. Outlook"
     bullets:
-      - "**Established:** A complete pipeline for multimodal pre-training and waveform fine-tuning is implemented."
-      - "**Still open:** Generalization to unseen subjects and a fair comparison with trivial baselines."
-      - "**Next step:** Subject-disjoint evaluation and ablations of each modality's contribution."
+      - "**Established:** The current focus is the TIR-ROI -> respiration path trained and tested on HPC."
+      - "**Evaluation protocol:** A single fixed test split is used; k-fold cross-validation is outside the current scope."
+      - "**Next step:** Complete the analysis of the held-out test result and document the limitations of the single split."
 
   # Appendix: References
   - type: "text_only"
@@ -111,4 +123,5 @@ slides:
         - ["Input size", "64 x 64 pixels", "112 x 112 pixels"]
         - ["Dataset scope", "11 local sessions", "Full BP4D+ dataset"]
         - ["Batch size", "2", "HPC configuration"]
-        - ["Purpose", "Engineering validation", "Scientific evaluation"]
+        - ["Current focus", "Pipeline checks", "TIR-ROI -> respiration"]
+        - ["Evaluation", "Single test split", "Single test split; no k-fold CV"]
