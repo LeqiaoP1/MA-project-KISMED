@@ -17,6 +17,11 @@ models/*
 __pycache__/
 .pytest_cache/
 
+# Coverage artifacts (pytest-cov)
+.coverage
+.coverage.*
+htmlcov/
+
 # ignore output files
 output/*
 

@@ -305,7 +305,7 @@ def main(args):
         pairs = groups[name]
         rows = [i for i, _ in pairs]
         offs = [o for _, o in pairs]
-        t, y = assemble_session(preds[rows], offs, args.fs)
+        t, y, cov = assemble_session(preds[rows], offs, args.fs)
         sig_file = entries[rows[0]].get('signals_file') or ''
         rec = {'n_clips': len(rows), 'duration_s': float(t[-1]) if t.size else 0.0,
                'signals_file': sig_file}
@@ -315,9 +315,22 @@ def main(args):
             continue
         ref_full = read_reference(sig_file, args.waveform,
                                   fs=args.fs, raw_fs=args.raw_fs)
+        # Score ONLY the samples a clip actually covers (see
+        # evaluation.assemble): uncovered samples are ``nan``, and letting them
+        # run through as zeros corrupts every metric for the sessions whose
+        # first surviving clip starts after t=0.
         n = min(y.size, ref_full.size)
-        ref = ref_full[:n]
-        yh = y[:n]
+        cov = cov[:n]
+        rec['coverage'] = float(cov.mean()) if cov.size else 0.0
+        rec['scored_samples'] = int(cov.sum())
+        if not cov.any():
+            rec['error'] = 'no covered samples (every clip starts past the end '
+            sessions[name] = rec
+            continue
+        ref = ref_full[:n][cov]
+        yh = y[:n][cov]
+        t = t[:n][cov]
+        rec['t_scored'] = [float(t[0]), float(t[-1])] if t.size else []
         if smooth is not None:
             ref = smooth_band(ref, args.fs, smooth)
             yh = smooth_band(yh, args.fs, smooth)

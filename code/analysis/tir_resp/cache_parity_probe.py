@@ -51,6 +51,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))))
 
+from data import roi_cache as rc                                # noqa: E402
 from data import tir_resp_dataset as trd                        # noqa: E402
 from data import video_io as vio                                # noqa: E402
 
@@ -71,18 +72,14 @@ def _union_box(ir: np.ndarray, padding: float, w: int, h: int
                ) -> Optional[Box]:
     """The box the cache WRITER would store for one subject-task.
 
-    Min/max over the task's **valid** rows only: non-finite rows dropped and
-    ``(0, 0)`` tracker-sentinel rows excluded (spec section 2.3). Safe because a
-    clip overlapping any sentinel/missing target landmark is dropped entirely by
-    ``missing_frame_mask``, so no KEPT clip's frames are removed here.
+    DELEGATES to ``roi_cache.union_box`` -- the writer's OWN helper -- so this
+    probe cannot agree with a bug in a re-implementation. It used to carry a
+    verbatim copy of the writer's valid-row predicate, which made the T1
+    containment check vacuous with respect to that predicate: both sides were
+    wrong together. (The copy also used ``.all()`` where the dataset uses
+    ``.any()``; see ``roi_cache.valid_rows``.)
     """
-    pts = np.asarray(ir)[:, TGT, :]
-    finite = np.isfinite(pts).all(axis=2)
-    sentinel = (np.abs(pts) < 1e-9).all(axis=2)
-    keep = finite.all(axis=1) & ~sentinel.all(axis=1)
-    if not keep.any():
-        return None
-    return trd.roi_box_from_landmarks(pts[keep], w, h, padding)
+    return rc.union_box(ir, trd.TARGET_LANDMARKS, padding, w, h)
 
 
 def _clip_box(ir: np.ndarray, start: int, end: int, padding: float,

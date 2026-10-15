@@ -149,13 +149,19 @@ def _evaluate_session(name, groups, entries, preds, fs, band, smooth, raw_fs,
     pairs = groups[name]
     rows = [i for i, _ in pairs]
     offs = [o for _, o in pairs]
-    t, y = assemble_session(preds[rows], offs, fs)
+    t, y, cov = assemble_session(preds[rows], offs, fs)
     sig = entries[rows[0]].get('signals_file') or ''
     if not sig or not os.path.isfile(sig):
         return None
     ref_full = read_reference(sig, waveform, fs=fs, raw_fs=raw_fs)
+    # Score ONLY the samples a clip actually covers (see evaluation.assemble).
     n = min(y.size, ref_full.size)
-    ref, yh = ref_full[:n].copy(), y[:n].copy()
+    cov = cov[:n]
+    duration_s = float(t[-1]) if t.size else 0.0
+    if not cov.any():
+        return None
+    ref, yh = ref_full[:n][cov].copy(), y[:n][cov].copy()
+    t = t[:n][cov]
     if smooth is not None:
         ref = smooth_band(ref, fs, smooth)
         yh = smooth_band(yh, fs, smooth)
@@ -163,7 +169,8 @@ def _evaluate_session(name, groups, entries, preds, fs, band, smooth, raw_fs,
     rec['subject'] = subject_of(name)
     rec['task'] = entries[rows[0]].get('task') or _task_of_name(name)
     rec['n_clips'] = len(rows)
-    rec['duration_s'] = float(t[-1]) if t.size else 0.0
+    rec['coverage'] = float(cov.mean())
+    rec['duration_s'] = duration_s
     if rate_window_s and float(rate_window_s) > 0:
         pw, tw = _window_rates(yh, ref, fs, band, rate_window_s)
         rec['rate'] = _metrics.rate_summary(pw, tw, tol=rate_tol)

@@ -76,6 +76,17 @@ BOX_RULE = 'minmax'
 #: a clip overlapping any sentinel/missing target landmark is dropped entirely by
 #: ``missing_frame_mask``, so no kept clip's frames are removed here. Materially
 #: cheaper too: including them inflates the p90 task box from 174 px to 385 px.
+#:
+#: 2026-10-15: the exclusion now CALLS ``missing_frame_mask`` (see
+#: :func:`valid_rows`) instead of re-implementing it. The old hand-rolled copy
+#: excluded a row only when ALL target landmarks were ``(0,0)`` (``.all()``)
+#: while the dataset drops a frame when ANY is (``.any()``). The string is
+#: unchanged because it is part of the cache key, and CACHE_FORMAT_VERSION is
+#: deliberately NOT bumped: the change is provably a NO-OP on the shipped
+#: corpus -- all 5760 sentinel frames across its 1385 tasks are WHOLE-ROW
+#: sentinels (0 partial-sentinel, 0 all-NaN rows), so both rules agree on every
+#: single frame and a rebuild would reproduce the existing shards byte for byte.
+#: Bumping would invalidate ~91 GB for nothing.
 VALID_FRAME_RULE = 'sentinel-excluded'
 
 PIXEL_FORMAT = 'rgb8'
@@ -351,22 +362,34 @@ def check_params_compatible(root: Path, params: Dict) -> None:
 # geometry
 # --------------------------------------------------------------------------- #
 def valid_rows(landmarks: np.ndarray, target_labels: Sequence[int]) -> np.ndarray:
-    """Target-landmark rows with non-finite and ``(0,0)`` sentinel rows removed.
+    """Target-landmark rows of the frames the DATASET would keep for a clip.
 
     ``target_labels`` are **1-INDEXED landmark labels**, exactly as
     ``tir_resp_dataset.resolve_roi_landmarks`` returns them; the conversion to
-    numpy indices happens here. Passing labels directly to numpy would be off by
-    one and silently select a DIFFERENT set of points.
+    numpy indices happens in :func:`landmark_indices`. Passing labels directly
+    to numpy would be off by one and silently select a DIFFERENT set of points.
 
-    Mirrors ``missing_frame_mask``'s notion of unusable, which is what makes
-    excluding these rows from the union box SAFE: a clip is dropped entirely if
-    it overlaps any such frame, so every KEPT clip's landmarks survive here.
+    The keep predicate IS ``~tir_resp_dataset.missing_frame_mask`` -- the
+    DATASET'S OWN function, CALLED rather than re-implemented, so "the frames
+    the cache unions over" and "the frames the dataset keeps" cannot drift
+    apart. That is what makes excluding them from the union box SAFE: a clip
+    overlapping any such frame is dropped entirely, so every KEPT clip's
+    landmarks survive here.
+
+    NOT equivalent to what this function used to do. The hand-rolled version
+    excluded a frame only when ALL target landmarks were ``(0,0)``
+    (``.all()``), while ``missing_frame_mask`` marks a frame bad when ANY target
+    landmark is (``.any()``). The corpus never exposed it -- every one of its
+    5760 sentinel frames (1385 tasks) is a WHOLE-ROW sentinel, 0 partial -- but
+    ONE partial frame would have stretched the union box toward the image
+    corner (measured: box area x6.4), which is exactly the failure
+    :func:`tir_resp_dataset.roi_box_from_landmarks` documents as prevented
+    "upstream rather than here".
     """
-    pts = np.asarray(landmarks)[:, list(landmark_indices(target_labels)), :]
-    finite = np.isfinite(pts).all(axis=2)
-    sentinel = (np.abs(pts) < 1e-9).all(axis=2)
-    keep = finite.all(axis=1) & ~sentinel.all(axis=1)
-    return pts[keep]
+    pts = np.asarray(landmarks)
+    idx = np.asarray(landmark_indices(target_labels), dtype=np.int64)
+    keep = ~trd.missing_frame_mask(pts, idx)
+    return pts[keep][:, idx, :]
 
 
 def union_box(landmarks: np.ndarray, target_labels: Sequence[int],
@@ -566,11 +589,20 @@ def write_skip(root: Path, session: str, reason: str) -> Path:
 
     Without the reason a resumed run cannot tell "geometry-fatal" from "not
     written yet", and would either redo work forever or leave a silent hole.
+
+    Creates ``.tmp`` itself, like :func:`write_shard`: it must NOT depend on an
+    earlier successful shard having created the staging directory. The first
+    task of the first array element can legitimately be a SKIP (e.g.
+    ``missing_ir_features``, 15 of the real corpus), and the old version raised
+    ``FileNotFoundError`` in exactly that case -- it only worked when another
+    task had already written a shard into the same root.
     """
     d = Path(root) / SUBDIR_SKIPPED
+    tmp_dir = Path(root) / SUBDIR_TMP
     d.mkdir(parents=True, exist_ok=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
     path = d / f'{session}.json'
-    tmp = Path(root) / SUBDIR_TMP / f'{session}.{os.getpid()}.json'
+    tmp = tmp_dir / f'{session}.{os.getpid()}.json'
     with open(tmp, 'w') as fh:
         json.dump({'session': session, 'reason': reason}, fh, indent=2)
     os.replace(tmp, path)

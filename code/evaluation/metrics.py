@@ -401,7 +401,13 @@ def single_tone_template(target, fs=100.0, band=(0.1, 0.6)):
         coef, *_ = np.linalg.lstsq(design, row, rcond=None)
         rows.append(design @ coef)
         freqs.append(fpeak)
-    return np.stack(rows, 0), float(np.nanmedian(freqs))
+    finite = np.asarray(freqs, dtype=float)
+    # guard the all-NaN case: ``np.nanmedian`` emits a RuntimeWarning on an
+    # empty/all-NaN slice (a batch of rows shorter than 4 samples), which would
+    # otherwise surface as noise in every caller's log.
+    return (np.stack(rows, 0),
+            float(np.nanmedian(finite)) if np.isfinite(finite).any()
+            else float('nan'))
 
 
 def bootstrap_ci(values, statistic=np.median, n_boot=2000, ci=95.0, seed=0):
@@ -458,6 +464,12 @@ def estimate_rate_bpm(x, fs=100.0, band=(0.1, 0.6)):
         if band is not None:
             m = (f >= float(band[0])) & (f <= float(band[1]))
             if not m.any():
+                continue
+            # No IN-BAND energy -> the rate is undefined, not "the first bin".
+            # Without this the argmax of an all-zero spectrum is 0, so a flat /
+            # dead / railed row reported a confident 7.5 BPM (band[0]) instead
+            # of NaN -- contradicting this function's own contract.
+            if float(spec[m].max()) <= _PSD_REL_TOL * float(spec.max()):
                 continue
             k = int(np.where(m)[0][np.argmax(spec[m])])
         else:

@@ -19,7 +19,9 @@ Two details that matter:
 
 Hann windows with weight-sum normalisation are used instead of cropping
 ``D - stride`` per clip, so overlapping windows cross-fade and no sample is
-dropped at the session edges.
+dropped at the session edges. Samples NO clip covers are returned as ``nan``
+alongside a coverage mask (:func:`assemble_session`) -- callers MUST slice to
+the covered span before scoring, or the padding enters the metric as data.
 """
 import numpy as np
 
@@ -48,14 +50,33 @@ def group_entries(entries, fs):
     return out
 
 
-def assemble_session(preds, offsets, fs, window=('hann', 'ones'), eps=1e-8):
+def assemble_session(preds, offsets, fs, window=('hann', 'ones')):
     """Overlap-add per-clip windows onto one session timeline.
 
     :param preds: ``[N, L]`` waveforms (one row per clip, same L)
     :param offsets: ``[N]`` sample offsets (see :func:`clip_offsets`)
     :param fs: sampling rate of the waveforms (Hz)
     :param window: ``'hann'`` (default) or ``'ones'``
-    :returns: ``(t, y)`` with ``t`` in seconds and ``y`` the assembled waveform
+    :returns: ``(t, y, covered)`` -- ``t`` in seconds, ``y`` the assembled
+        waveform (``nan`` where no clip covers the sample) and ``covered`` the
+        boolean coverage mask (``True`` where at least one clip covers it).
+
+    COVERAGE -- CALLERS MUST SLICE TO IT. A session's clips need not start at
+    ``t = 0`` (the earlier windows may have been dropped as sentinel/rail/flat),
+    so the assembled timeline can begin with samples nothing covers. Those are
+    ``nan``, NOT zero: a zero-fill is indistinguishable from a genuinely
+    constant prediction and silently enters every metric. Measured on the
+    2026-10-15 Stage-3 run, padding moved one session's Pearson by **0.18**,
+    and **33 of 273** val sessions had a late start (the worst padded 82.6 % of
+    its own timeline). Score ``y[covered]`` against ``ref[covered]``.
+
+    The Hann taper is only meaningful where windows OVERLAP. At the outermost
+    sample of a LONE window its weight is exactly ``0``, so a plain
+    ``acc / wsum`` would punch a ``nan`` into the first and last sample of every
+    single-clip session -- they are covered, so they fall back to the
+    UNWEIGHTED mean of the windows covering them. That is also why a
+    single-clip session needs no special case here (``window='ones'`` is only
+    an alternative weighting).
     """
     preds = np.atleast_2d(np.asarray(preds, dtype=float))
     offsets = np.asarray(offsets, dtype=int)
@@ -63,19 +84,29 @@ def assemble_session(preds, offsets, fs, window=('hann', 'ones'), eps=1e-8):
         raise ValueError(f'assemble_session: {preds.shape[0]} predictions but '
                          f'{offsets.size} offsets')
     if preds.shape[0] == 0:
-        return np.zeros(0), np.zeros(0)
+        return np.zeros(0), np.zeros(0), np.zeros(0, dtype=bool)
     L = preds.shape[1]
     n = int(offsets.max()) + L
     if isinstance(window, (tuple, list)):
         window = window[0]
     w = np.hanning(L) if str(window).lower().startswith('hann') else np.ones(L)
-    acc = np.zeros(n, dtype=float)
-    wsum = np.zeros(n, dtype=float)
+    acc = np.zeros(n, dtype=float)      # window-weighted sum
+    wsum = np.zeros(n, dtype=float)     # sum of the window weights
+    raw = np.zeros(n, dtype=float)      # unweighted sum (taper-edge fallback)
+    cnt = np.zeros(n, dtype=int)        # how many windows cover the sample
     for p, o in zip(preds, offsets):
         acc[o:o + L] += w * p
         wsum[o:o + L] += w
-    y = acc / np.maximum(wsum, eps)
-    return np.arange(n) / float(fs), y
+        raw[o:o + L] += p
+        cnt[o:o + L] += 1
+    covered = cnt > 0
+    y = np.full(n, np.nan)
+    weighted = covered & (wsum > 0)
+    y[weighted] = acc[weighted] / wsum[weighted]
+    edge = covered & ~(wsum > 0)        # covered, but every weight is 0
+    if edge.any():
+        y[edge] = raw[edge] / cnt[edge]
+    return np.arange(n) / float(fs), y, covered
 
 
 def affine_calibrate(pred, ref):
