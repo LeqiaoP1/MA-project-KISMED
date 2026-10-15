@@ -1,0 +1,114 @@
+metadata:
+  output: "presentation/output/research_midterm_clean.pptx"
+  title: "Multimodal Representation Learning with Masked Autoencoders"
+  presentation_type: "Zwischenvortrag Masterarbeit"
+  author: "Leqiao Peng"
+  supervisor: "Tizian Dege"
+  date: "Oktober 2026"
+
+slides:
+  # Slide 1: Preserved Title Slide
+  - type: "title"
+
+  # Motivation
+  - type: "split"
+    title: "Motivation & Research Problem"
+    section: "I. Motivation"
+    bullets:
+      - "**Clinical motivation:** Physiological waveforms are usually measured with contact sensors."
+      - "**Research problem:** RGB and TIR videos contain weak, heterogeneous physiological signals."
+      - "**Research question:** Can multimodal masked pre-training improve reconstruction for unseen subjects?"
+    image:
+      path: "experiments/figures/motivation_diagram.png"
+      label: "RGB/TIR video -> representation -> BP/RESP waveform"
+
+  # Data and physiological targets
+  - type: "split"
+    title: "Data & Physiological Targets"
+    section: "I. Motivation"
+    bullets:
+      - "**Inputs:** 2D RGB video and false-colour thermal infrared video."
+      - "**Targets:** Blood-pressure and respiration waveforms as continuous 1D signals."
+      - "**Evaluation setting:** Contactless reconstruction for strictly unseen subjects."
+    image:
+      path: "experiments/figures/data_targets_overview.png"
+      label: "2D video and physiological reference signals"
+
+  # Method
+  - type: "split"
+    title: "Architecture: Multi-Task Masked Autoencoder"
+    section: "II. Method"
+    bullets:
+      - "**Stage 1:** Initialize the visual encoder with VideoMAE."
+      - "**Stage 2:** Mask and jointly reconstruct heterogeneous modalities."
+      - "**Stage 3:** Fine-tune the encoder for direct waveform reconstruction."
+    image:
+      path: "experiments/figures/architecture_overview.png"
+      label: "Three stages: initialization -> pre-training -> fine-tuning"
+
+
+  # Current status
+  - type: "full_image"
+    title: "Current Status: Pipeline Validated, Evaluation Ongoing"
+    section: "III. Results"
+    image:
+      path: "experiments/figures/pipeline_status.png"
+      label: "Implementation, local validation, and ongoing evaluation"
+      left_in: 1.0
+      top_in: 1.6
+      width_in: 11.33
+      height_in: 5.0
+
+  # Evaluation protocol
+  - type: "split"
+    title: "Evaluation: Reconstruction for Unseen Subjects"
+    section: "III. Results"
+    bullets:
+      - "**Split:** Training, validation, and test subjects are strictly disjoint."
+      - "**Headline metric:** Band-limited Pearson correlation of the reconstructed waveform."
+      - "**Baselines:** The model must outperform a constant line and a single-tone reference."
+    image:
+      path: "experiments/figures/evaluation_protocol.png"
+      label: "Subject-disjoint split and baseline comparison"
+
+  # Roadmap
+  - type: "full_image"
+    title: "Roadmap & Milestones"
+    section: "IV. Outlook"
+    image:
+      path: "experiments/figures/timeline_gantt.png"
+      label: "Completed -> ongoing -> planned"
+      left_in: 1.0
+      top_in: 1.6
+      width_in: 11.33
+      height_in: 5.0
+
+  # Conclusion
+  - type: "text_only"
+    title: "Interim Conclusions & Next Steps"
+    section: "IV. Outlook"
+    bullets:
+      - "**Established:** A complete pipeline for multimodal pre-training and waveform fine-tuning is implemented."
+      - "**Still open:** Generalization to unseen subjects and a fair comparison with trivial baselines."
+      - "**Next step:** Subject-disjoint evaluation and ablations of each modality's contribution."
+
+  # Appendix: References
+  - type: "text_only"
+    title: "References"
+    section: "APPENDIX"
+    bullets:
+      - "[1] K. He, X. Chen, S. Xie, Y. Li, P. Dollár, and R. Girshick, 'Masked Autoencoders Are Scalable Vision Learners,' CVPR, 2022."
+      - "[2] R. Bachmann, D. Mizrahi, A. Atanov, and A. Zamir, 'MultiMAE: Multi-modal Multi-task Masked Autoencoders,' ECCV, 2022."
+      - "[3] Z. Zhang et al., 'Multimodal Spontaneous Emotion Corpus (BP4D+),' IEEE FG, 2016."
+
+  # Appendix: Executed versus planned configuration
+  - type: "table"
+    title: "Appendix: Current and Planned Configuration"
+    section: "APPENDIX"
+    table_data:
+      headers: ["Aspect", "Local Validation", "Thesis-Scale Experiment"]
+      rows:
+        - ["Input size", "64 x 64 pixels", "112 x 112 pixels"]
+        - ["Dataset scope", "11 local sessions", "Full BP4D+ dataset"]
+        - ["Batch size", "2", "HPC configuration"]
+        - ["Purpose", "Engineering validation", "Scientific evaluation"]
