@@ -27,12 +27,13 @@ slides:
     title: "Data & Physiological Targets"
     section: "I. Motivation"
     bullets:
-      - "**Inputs:** 2D RGB video and false-colour thermal infrared video."
-      - "**Targets:** Blood-pressure and respiration waveforms as continuous 1D signals."
-      - "**Evaluation setting:** Contactless reconstruction for strictly unseen subjects."
+      - "**Current input:** False-colour thermal infrared video cropped to a facial TIR-ROI."
+      - "**Representation caveat:** The render is an 8-bit palette (~0.04 degC per level, lossy WMV3), not radiometric temperature."
+      - "**Current target:** Continuous respiration waveform from the contact sensor."
+      - "**Evaluation setting:** Contactless reconstruction for strictly unseen subjects; RGB/BP remain comparison paths."
     image:
       path: "experiments/figures/data_targets_overview.png"
-      label: "2D video and physiological reference signals"
+      label: "TIR-ROI video and respiration reference signal"
 
   # Method
   - type: "split"
@@ -40,8 +41,8 @@ slides:
     section: "II. Method"
     bullets:
       - "**Stage 1:** Initialize the visual encoder with VideoMAE."
-      - "**Stage 2:** Mask and jointly reconstruct heterogeneous modalities."
-      - "**Stage 3:** Fine-tune the encoder for direct waveform reconstruction."
+      - "**Stage 2:** Masked multi-modal pre-training: visual masking 90 %, physiological stream 50 %, with span masking for the 1-D signal."
+      - "**Stage 3:** Reconstruct the respiration waveform from the TIR-ROI alone, simulating total contact-sensor failure."
     image:
       path: "experiments/figures/architecture_overview.png"
       label: "Three stages: initialization -> pre-training -> fine-tuning"
@@ -52,36 +53,114 @@ slides:
     section: "II. Method"
     bullets:
       - "**Primary path:** Thermal infrared region of interest (TIR-ROI) -> respiration waveform."
-      - "**Compute platform:** Model training and testing are carried out on the HPC system."
-      - "**Current scope:** This is the main experiment investigated for the mid-term presentation."
+      - "**HPC full run:** Stage-2 pre-training and Stage-3 fine-tuning completed on the full corpus (~1,400 sessions discovered; ~97 % usable)."
+      - "**Matched setup:** 8-second clips, 112 x 112 ROI input, 100 Hz target, and subject-disjoint splitting."
+      - "**Infrastructure:** An offline 112 x 112 ROI cache (1,385 shards, 91 GB) removes the decode bottleneck, so full-corpus training is compute-bound (loader share 84.5 % -> 0.0 %)."
     image:
       path: "experiments/figures/tir_roi_resp_pipeline.png"
-      label: "TIR-ROI video -> respiration waveform"
+      label: "Completed HPC pipeline: TIR-ROI video -> respiration waveform"
 
   # Current status
   - type: "full_image"
-    title: "Current Status: TIR-ROI -> Respiration on HPC"
+    title: "First Full HPC Run Completed: TIR-ROI -> Respiration"
     section: "III. Results"
     image:
       path: "experiments/figures/pipeline_status.png"
-      label: "HPC training/testing pipeline and current validation status"
+      label: "Completed HPC run and preliminary subject-level evaluation"
       left_in: 1.0
       top_in: 1.6
       width_in: 11.33
       height_in: 5.0
 
-  # Evaluation protocol
-  - type: "split"
-    title: "Evaluation: Reconstruction for Unseen Subjects"
+  # Preliminary results
+  - type: "table"
+    title: "Preliminary HPC Results"
+    section: "III. Results"
+    table_data:
+      headers: ["Measure", "Result", "Interpretation"]
+      rows:
+        - ["Evaluation volume", "28 subjects / 273 sessions / 5,143 clips", "Held-out subject split"]
+        - ["Band-limited Pearson", "0.569", "Median per subject; 95% CI [0.451, 0.624]"]
+        - ["Single-tone baseline", "0.535", "Rate-only reference; 95% CI [0.499, 0.545]"]
+        - ["Subjects beating baseline", "53.6%", "Essentially at chance (50%)"]
+        - ["Respiration-rate MAE", "4.66 BPM", "30 s windows; 46% within 10%"]
+        - ["Task-group ordering", "+0.738 / +0.524 / +0.515", "Low / moderate / high distortion; expected order"]
+
+  # Result interpretation
+  - type: "text_only"
+    title: "How to Interpret the First Run"
     section: "III. Results"
     bullets:
-      - "**Split:** Training, validation, and test subjects are strictly disjoint."
-      - "**Evaluation design:** One fixed test split is evaluated once; no k-fold cross-validation is performed."
-      - "**Headline metric:** Band-limited Pearson correlation of the reconstructed waveform."
-      - "**Baselines:** The model is compared with a constant line and a single-tone reference."
+      - "**Marginal edge:** The median band-limited Pearson (0.569) edges the single-tone template (0.535), but the model CI [0.451, 0.624] overlaps the baseline CI [0.499, 0.545]."
+      - "**At chance level:** Only 53.6 % of held-out subjects beat the rate-only baseline - essentially a coin flip."
+      - "**Practical reading:** The model recovers a breathing-rate-related pattern for part of the cohort, but does not establish reliable facial respiration reconstruction."
+      - "**Status:** An initial full-run result for debugging and scientific diagnosis, not a final generalisation claim."
+
+  # Why the negative happens
+  - type: "text_only"
+    title: "Why the Thermal Face ROI Does Not Carry Respiration"
+    section: "III. Results"
+    bullets:
+      - "**Off-face winners:** The strongest respiration-correlated pixel in the frame sits on the chest, the hair, or a fixed background/rig band - never on the face."
+      - "**Wrong reference on the face:** On the face the strongest correlation is with head motion, not with the respiration belt."
+      - "**Not the difficulty label:** Detection is near-uniform across tasks and non-monotonic across distortion groups, so the task label is not the lever."
+      - "**Representation-limited input:** 8-bit palettised false colour, face near the saturated end, frontal view - the exhaled-air plume has almost no thermal contrast against equally warm skin."
+      - "**Verdict:** A controlled negative for facial thermal respiration at this geometry; the limiting factor is the input, not the architecture."
+
+  # Scientific limitation
+  - type: "comparison"
+    title: "Critical Limitation: Whole-Frame Correlations Are Not Facial Evidence"
+    section: "III. Results"
+    images:
+      - path: "code/analysis/tir_resp/frame_argmax_F001_T3.png"
+        label: "F001_T3: strongest |r| is off-face at the chest/shoulder (max over pixels x lags vs a scrambled null)"
+      - path: "code/analysis/tir_resp/frame_argmax_F002_T1.png"
+        label: "F002_T1: strongest |r| lies outside the facial ROI"
+
+  - type: "text_only"
+    title: "Scientific Qualification of the Result"
+    section: "III. Results"
+    bullets:
+      - "**Implication:** A respiration-correlated prediction can reflect motion or the recording setup rather than a robust facial thermal signal."
+      - "**Evaluation caveat:** The reported checkpoint was selected using validation Pearson on the same subject-disjoint split used for the reported evaluation."
+      - "**Amplitude caveat:** The prediction is session-z-scored against a raw-volts reference, so only scale-invariant metrics are valid; amplitude errors need an oracle calibration."
+      - "**Claim boundary:** Present the run as a useful baseline, ablation and failure analysis; do not claim clinical validity or reliable whole-cohort reconstruction."
+
+  # Why the negative is credible
+  - type: "text_only"
+    title: "Why the Negative Is a Measurement, Not a Failure to Measure"
+    section: "III. Results"
+    bullets:
+      - "**Positive control (thermal):** The same statistic detects head motion in 8/8 sessions at p<0.005 (|r| up to 0.98), while respiration is not detected in any session."
+      - "**Palette is not the limit:** In-band thermal modulation spans 2.9-36.2 palette levels (far above 1 level), so the render does carry variation."
+      - "**Resolution is not the limit:** Native-resolution and 64 x 64 probes reach the same verdict; downsampling is harmless for a spatially coherent signal."
+      - "**Positive control (RGB):** On the same corpus facial RGB carries a genuine skin-borne cardiac signal (CHROM/POS detected in 35/40 sessions, background control at chance)."
+      - "**Scope:** Controls were run on a 4-subject / 8-session subset; the corpus-scale verdict is the subject-level report."
+
+  # Ruled out
+  - type: "text_only"
+    title: "Ruled Out: Negative Ablations (Local 4-Subject Probes)"
+    section: "III. Results"
+    bullets:
+      - "**Resolution:** 64 x 64 vs native ROI changes the gate verdict by at most 0.04 - not the bottleneck."
+      - "**Colour encoding:** Inverting the palette to ordinal temperature buys ~0.01 of peak sharpness; RGB, grey and LUT agree."
+      - "**ROI variant:** Nostril-only boxes are unstable (height set by landmark jitter); nose-tip is the usable small ROI."
+      - "**Loss weighting:** gamma arms (0 / 0.01 / 10) all score worse than a constant predictor on the held-out subject."
+      - "**Masking design:** Scattered masking is solved by linear interpolation without any video; span masking removes that shortcut by construction."
+
+  # Evaluation protocol
+  - type: "split"
+    title: "Evaluation: Preliminary Single-Split Test"
+    section: "III. Results"
+    bullets:
+      - "**Split:** Training, validation and test subjects are strictly disjoint (split_by subject)."
+      - "**Unit of evaluation:** A subject; all clips of a session are assembled into one continuous waveform (Hann overlap-add)."
+      - "**Headline metric:** Band-limited Pearson (0.1-0.6 Hz), median per subject, against a single-tone template and a constant line."
+      - "**Known gap:** Checkpoint selection and reporting use the same validation split (selection leakage)."
+      - "**Next eval step:** Separate selection from reporting (--test_subjects) and run the leave-one-subject-out sweep; k-fold is the follow-up."
     image:
       path: "experiments/figures/evaluation_protocol.png"
-      label: "Subject-disjoint split and baseline comparison"
+      label: "Single subject-disjoint test split and baseline comparison"
 
   # Roadmap
   - type: "full_image"
@@ -100,9 +179,12 @@ slides:
     title: "Interim Conclusions & Next Steps"
     section: "IV. Outlook"
     bullets:
-      - "**Established:** The current focus is the TIR-ROI -> respiration path trained and tested on HPC."
-      - "**Evaluation protocol:** A single fixed test split is used; k-fold cross-validation is outside the current scope."
-      - "**Next step:** Complete the analysis of the held-out test result and document the limitations of the single split."
+      - "**Achieved:** The first complete full-corpus HPC run for TIR-ROI -> respiration (Stage 2 + Stage 3)."
+      - "**Finding:** The median rhythm score edges the single-tone baseline only marginally (0.569 vs. 0.535) and half the cohort does not beat it."
+      - "**Mechanism:** Whole-frame wins are off-face (chest / hair / rig); on the face the dominant reference is head motion, not the belt."
+      - "**Ongoing A/B:** Point-wise SmoothL1 instead of the amplitude-only StdLoss (same encoder, geometry and schedule) - tests whether the near-single-tone collapse is a loss artefact or an input limit."
+      - "**Infrastructure:** The offline TIR-ROI cache makes the full-corpus run compute-bound rather than decode-bound."
+      - "**Next step:** Separate checkpoint selection from reporting and run the LOSO sweep; k-fold cross-validation is the follow-up."
 
   # Appendix: References
   - type: "text_only"
@@ -118,10 +200,15 @@ slides:
     title: "Appendix: Current and Planned Configuration"
     section: "APPENDIX"
     table_data:
-      headers: ["Aspect", "Local Validation", "Thesis-Scale Experiment"]
+      headers: ["Aspect", "HPC Full Run", "Evaluation Status"]
       rows:
-        - ["Input size", "64 x 64 pixels", "112 x 112 pixels"]
-        - ["Dataset scope", "11 local sessions", "Full BP4D+ dataset"]
-        - ["Batch size", "2", "HPC configuration"]
-        - ["Current focus", "Pipeline checks", "TIR-ROI -> respiration"]
-        - ["Evaluation", "Single test split", "Single test split; no k-fold CV"]
+        - ["Input size", "112 x 112 pixels", "Matched Stage-2/Stage-3 geometry"]
+        - ["Clip geometry", "8 s, 100 Hz target", "Time-aligned waveform output"]
+        - ["Stage-2 checkpoint", "checkpoint-0149.pth", "Used for Stage-3 fine-tuning"]
+        - ["Test set", "28 held-out subjects", "Evaluated once"]
+        - ["Cross-validation", "Not performed", "LOSO sweep is the next step"]
+        - ["Signal normalisation", "physio_norm: session", "Whole-session z-score"]
+        - ["Clip hygiene", "rail_touch 9.90 V; spread 0.1 V", "Drops railed / pinned windows"]
+        - ["Task groups", "low / moderate / high", "T2-T3 / T4,T7,T8,T10 / T1,T5,T6,T9"]
+        - ["L_time term", "StdLoss (reported run)", "SmoothL1 A/B arm in progress"]
+        - ["ROI cache", "1,385 shards / 91 GB", "Decode-bound -> compute-bound; serves Stage 2 and 3"]
