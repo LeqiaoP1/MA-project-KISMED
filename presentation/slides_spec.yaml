@@ -83,8 +83,7 @@ slides:
         - ["Band-limited Pearson", "0.569", "Median per subject; 95% CI [0.451, 0.624]"]
         - ["Single-tone baseline", "0.535", "Rate-only reference; 95% CI [0.499, 0.545]"]
         - ["Subjects beating baseline", "53.6%", "Essentially at chance (50%)"]
-        - ["Respiration-rate MAE", "4.66 BPM", "30 s windows; 46% within 10%"]
-        - ["Task-group ordering", "+0.738 / +0.524 / +0.515", "Low / moderate / high distortion; expected order"]
+        - ["Task-group ordering", "+0.738 / +0.524 / +0.515", "Low clearly ahead; moderate = high"]
 
   # Result interpretation
   - type: "text_only"
@@ -95,6 +94,29 @@ slides:
       - "**At chance level:** Only 53.6 % of held-out subjects beat the rate-only baseline - essentially a coin flip."
       - "**Practical reading:** The model recovers a breathing-rate-related pattern for part of the cohort, but does not establish reliable facial respiration reconstruction."
       - "**Status:** An initial full-run result for debugging and scientific diagnosis, not a final generalisation claim."
+
+  # Task difficulty ordering
+  - type: "table"
+    title: "Low-Distortion Tasks Score Clearly Better"
+    section: "III. Results"
+    table_data:
+      headers: ["Distortion group", "Tasks", "Median band-limited Pearson"]
+      rows:
+        - ["Low", "T2, T3", "+0.738"]
+        - ["Moderate", "T4, T7, T8, T10", "+0.524"]
+        - ["High", "T1, T5, T6, T9", "+0.515"]
+        - ["Low - moderate / low - high", "+0.214 / +0.223", "Clear, consistent gap"]
+
+  # Why the low tasks win
+  - type: "text_only"
+    title: "Why Low-Distortion Tasks Score Better"
+    section: "III. Results"
+    bullets:
+      - "**What the grouping is:** A project-defined convention (config `task_groups`), not a BP4D+ annotation - shipped levels: low T2/T3, moderate T4/T7/T8/T10, high T1/T5/T6/T9."
+      - "**Not a data-cleanliness effect:** Rail/clipping prevalence is level-independent (mean file rail share 3.31 % / 3.02 % / 3.65 %), and clip supply only tracks recording length (T3 and T9 dominate)."
+      - "**Not an input-signal effect:** The thermal-ROI detection gate is near-uniform across tasks and non-monotonic across groups - the low tasks do not carry more respiration in the pixels either."
+      - "**Mechanism (hypothesis):** The ROI is one static box unioned over the whole clip, so more head motion inflates it and the spatial mean pools pose/background instead of nostril temperature."
+      - "**Local support:** In a 4-subject session-split run only the two low tasks carried signal (T2 +0.69, T3 +0.23; T4-T9 at 0 or negative), and ROI area / landmark jitter track the failure (r ~ -0.5, n = 8 - suggestive, not established)."
 
   # Why the negative happens
   - type: "text_only"
@@ -107,15 +129,6 @@ slides:
       - "**Representation-limited input:** 8-bit palettised false colour, face near the saturated end, frontal view - the exhaled-air plume has almost no thermal contrast against equally warm skin."
       - "**Verdict:** A controlled negative for facial thermal respiration at this geometry; the limiting factor is the input, not the architecture."
 
-  # Scientific limitation
-  - type: "comparison"
-    title: "Critical Limitation: Whole-Frame Correlations Are Not Facial Evidence"
-    section: "III. Results"
-    images:
-      - path: "code/analysis/tir_resp/frame_argmax_F001_T3.png"
-        label: "F001_T3: strongest |r| is off-face at the chest/shoulder (max over pixels x lags vs a scrambled null)"
-      - path: "code/analysis/tir_resp/frame_argmax_F002_T1.png"
-        label: "F002_T1: strongest |r| lies outside the facial ROI"
 
   - type: "text_only"
     title: "Scientific Qualification of the Result"
@@ -136,17 +149,6 @@ slides:
       - "**Resolution is not the limit:** Native-resolution and 64 x 64 probes reach the same verdict; downsampling is harmless for a spatially coherent signal."
       - "**Positive control (RGB):** On the same corpus facial RGB carries a genuine skin-borne cardiac signal (CHROM/POS detected in 35/40 sessions, background control at chance)."
       - "**Scope:** Controls were run on a 4-subject / 8-session subset; the corpus-scale verdict is the subject-level report."
-
-  # Ruled out
-  - type: "text_only"
-    title: "Ruled Out: Negative Ablations (Local 4-Subject Probes)"
-    section: "III. Results"
-    bullets:
-      - "**Resolution:** 64 x 64 vs native ROI changes the gate verdict by at most 0.04 - not the bottleneck."
-      - "**Colour encoding:** Inverting the palette to ordinal temperature buys ~0.01 of peak sharpness; RGB, grey and LUT agree."
-      - "**ROI variant:** Nostril-only boxes are unstable (height set by landmark jitter); nose-tip is the usable small ROI."
-      - "**Loss weighting:** gamma arms (0 / 0.01 / 10) all score worse than a constant predictor on the held-out subject."
-      - "**Masking design:** Scattered masking is solved by linear interpolation without any video; span masking removes that shortcut by construction."
 
   # Evaluation protocol
   - type: "split"
