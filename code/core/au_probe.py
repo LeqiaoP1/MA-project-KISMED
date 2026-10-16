@@ -159,9 +159,19 @@ class MultiModalMAEProbe(nn.Module):
             self.train(mode)
 
     def forward(self, x):
-        """``x``: dict {stream: [B, C, T, H, W]} or a single rgb [B, 3, T, H, W]."""
+        """``x``: dict ``{stream: [B, C, T, H, W]}`` or a bare
+        ``[B, C, T, H, W]`` tensor (mapped to the ``rgb`` stream when present,
+        else to the single configured stream -- e.g. a TIR-only probe)."""
         if torch.is_tensor(x):
-            x = {'rgb': x}
+            if 'rgb' in self.streams:
+                x = {'rgb': x}
+            elif len(self.streams) == 1:
+                x = {self.streams[0]: x}
+            else:
+                raise ValueError(
+                    f'MultiModalMAEProbe: a bare tensor is ambiguous for '
+                    f'streams={self.streams}; pass a dict '
+                    f'{{stream: [B, C, T, H, W]}} instead.')
         for s in self.streams:
             if s not in x:
                 raise ValueError(

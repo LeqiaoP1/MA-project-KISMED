@@ -225,3 +225,78 @@ def test_au_tir_roi_config_resolves_the_protocol(monkeypatch):
     assert args.probe == 'linear'
     # the Tier-A headline set (NOT the default BP4D 12-AU subset)
     assert args.au_list.replace(' ', '') == '10,12,14,15,17,23,24'
+
+
+def test_au_tir_roi_hpc_config_resolves_the_protocol(monkeypatch):
+    cfg = os.path.join(CODE_DIR, 'configs', 'finetune', 'au_tir_roi_hpc.yaml')
+    monkeypatch.setattr(sys, 'argv', ['prog', '-c', cfg])
+    args = importlib.import_module('runners.run_au_probe').get_args()
+    assert args.data_set == 'tir_roi'
+    assert args.streams == 'tir'
+    assert args.input_size == 112          # the HPC lineage
+    assert args.temporal_stride == 2
+
+
+# =========================================================================== #
+# Feature: builder arity contract (regression: job 55427926, 2026-10-14)
+# The runner unpacks 3 values; build_au_tir_roi_datasets used to return 2 when
+# no test split was requested -> "not enough values to unpack (3, got 2)".
+# =========================================================================== #
+class _FakeDataset:
+    def __init__(self, subjects=None, **kw):
+        self.subjects = sorted(subjects or [])
+
+    def __len__(self):
+        return len(self.subjects)
+
+
+def _builder_args(**over):
+    base = dict(au_root='ignored', au_list='10,12', raw_root='ignored',
+                input_size=64, clip_duration=8.0, fps=25.0, temporal_stride=2,
+                tubelet='2,16,16', roi_padding=0.2, max_sessions=None,
+                max_clips=None, max_entries=None, roi_cache='',
+                roi_cache_lru=2, train_ratio=0.5, train_subjects='',
+                val_subjects='', test_subjects='')
+    base.update(over)
+    return argparse.Namespace(**base)
+
+
+def _patch_builder(monkeypatch):
+    import data.au_tir_roi_dataset as m
+    sessions = [{'session': f'{s}_T1', 'subject': s, 'task': 'T1', 'path': 'x'}
+                for s in ('F001', 'F002', 'F003')]
+    monkeypatch.setattr(m, 'discover_au_sessions', lambda root: sessions)
+    monkeypatch.setattr(m, 'AuTirRoiDataset', _FakeDataset)
+    return m
+
+
+def test_builder_always_returns_a_three_tuple(monkeypatch):
+    m = _patch_builder(monkeypatch)
+    train, val, test = m.build_au_tir_roi_datasets(_builder_args())
+    assert test is None                     # no --test_subjects
+    assert train.subjects == ['F001', 'F002'] and val.subjects == ['F003']
+
+
+def test_builder_returns_a_test_dataset_when_requested(monkeypatch):
+    m = _patch_builder(monkeypatch)
+    train, val, test = m.build_au_tir_roi_datasets(
+        _builder_args(train_subjects='F001', val_subjects='F002',
+                      test_subjects='F003'), with_test=True)
+    assert train.subjects == ['F001'] and val.subjects == ['F002']
+    assert test is not None and test.subjects == ['F003']
+
+
+# =========================================================================== #
+# Feature: bare-tensor input maps to the configured stream (regression: job
+# 55450025, 2026-10-15 -> 'stream "tir" missing from input; got keys ["rgb"]')
+# =========================================================================== #
+def test_probe_maps_a_bare_tensor_to_the_single_stream():
+    m = build_au_probe_model(_probe_args(temporal_stride=2), num_classes=7)
+    assert m.streams == ['tir']
+    out = m(torch.zeros(2, 3, 100, 64, 64))          # bare tensor
+    assert out.shape == (2, 7)
+
+
+def test_probe_maps_a_bare_tensor_to_rgb_when_rgb_streamed():
+    m = build_au_probe_model(_probe_args(streams='rgb'), num_classes=3)
+    assert m(torch.zeros(2, 3, 100, 64, 64)).shape == (2, 3)

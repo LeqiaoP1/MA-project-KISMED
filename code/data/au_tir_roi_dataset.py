@@ -375,10 +375,14 @@ def _split_subjects(args, all_subjects: List[str]
 
 
 def build_au_tir_roi_datasets(args, with_test: bool = False):
-    """Build the ``(train, val[, test])`` TIR-ROI AU datasets from ``args``.
+    """Build the TIR-ROI AU datasets from ``args``.
 
-    The AU set comes from :func:`data.au_dataset.resolve_au_list` (``--au_list``
-    or ``--au_freq_topk``); the split is subject-disjoint, mirroring
+    ALWAYS returns ``(train, val, test)``; ``test`` is ``None`` unless
+    ``with_test`` is set AND ``--test_subjects`` names subjects. The fixed
+    3-tuple arity is a contract the runner relies on (regression: job 55427926
+    crashed on ``expected 3, got 2``). The AU set comes from
+    :func:`data.au_dataset.resolve_au_list` (``--au_list`` or
+    ``--au_freq_topk``); the split is subject-disjoint, mirroring
     :func:`data.au_dataset.build_au_datasets`.
     """
     au_root = getattr(args, 'au_root', '') or default_au_root()
@@ -416,8 +420,6 @@ def build_au_tir_roi_datasets(args, with_test: bool = False):
     )
     train = AuTirRoiDataset(subjects=train_subs, **common)
     val = AuTirRoiDataset(subjects=val_subs, **common)
-    if not with_test:
-        return train, val
     test = (AuTirRoiDataset(subjects=test_subs, **common)
-            if test_subs else None)
+            if (with_test and test_subs) else None)
     return train, val, test
