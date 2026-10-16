@@ -44,7 +44,7 @@ def get_args():
     # corpus cleaning -- the SAME knobs as run_pretrain.py / run_waveform.py, so
     # a tir_roi / tir_roi_resp run through THIS entry point cannot silently
     # train or evaluate on rail-valued respiration targets (see
-    # analysis/tir_resp/resp_rail_touch_filter_results.md)
+    # notes/eval/tir_resp/resp_rail_touch_filter_results.md)
     parser.add_argument('--min_signal_spread', default=0.0, type=float,
                         help='TIR-ROI only: DROP a clip whose respiration '
                              'window spread (max-min) is below this many VOLTS '

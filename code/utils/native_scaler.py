@@ -6,7 +6,7 @@ VideoMAE), extended with the repository's shared mixed-precision policy.
 This module is the single source of truth for ``--amp_dtype {none,fp16,bf16}``:
 :func:`resolve_amp` turns the flag into an :class:`AmpConfig` (autocast on/off +
 loss-scaling on/off) and :func:`autocast_context` is the context manager every
-training engine wraps its forward/loss in. See ``analysis/hpc_AMP.md``.
+training engine wraps its forward/loss in. See ``notes/design/hpc_AMP.md``.
 
 Invariants
 ----------

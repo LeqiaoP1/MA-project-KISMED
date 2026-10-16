@@ -1,6 +1,6 @@
 """Stage-3 downstream waveform fine-tuning (BP or RESP branch).
 
-Implements docs/ImplementationPlan.md Stage 3: simulated full sensor failure
+Implements code/notes/plan/ImplementationPlan.md Stage 3: simulated full sensor failure
 (no contact 1D streams are fed) -- only visual streams drive the prediction.
 Two independent task-specialised runs share the Stage-2 encoder checkpoint
 (``--finetune``) but use separate regression heads and a unified
@@ -407,7 +407,7 @@ def get_args():
     parser.add_argument('--weight_decay', default=0.05, type=float)
     parser.add_argument('--clip_grad', default=0.0, type=float)
 
-    # joint loss weights (docs/ImplementationPlan.md)
+    # joint loss weights (code/notes/plan/ImplementationPlan.md)
     parser.add_argument('--alpha', default=1.0, type=float, help='L_time weight')
     parser.add_argument('--beta', default=1.0, type=float, help='L_Pearson weight')
     parser.add_argument('--gamma', default=1.0, type=float, help='L_MR-STFT weight')

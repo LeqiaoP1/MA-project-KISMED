@@ -66,7 +66,7 @@ def add_common_args(parser: argparse.ArgumentParser):
                              '(smoke tests)')
     parser.add_argument('--max_entries', default=None, type=int,
                         help='limit number of clips per split (smoke tests)')
-    # mixed precision (AMP): see utils/native_scaler.py + analysis/hpc_AMP.md
+    # mixed precision (AMP): see utils/native_scaler.py + notes/design/hpc_AMP.md
     add_amp_args(parser)
 
 

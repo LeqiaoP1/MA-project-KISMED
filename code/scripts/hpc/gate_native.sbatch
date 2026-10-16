@@ -23,7 +23,7 @@
 # nperm 20, which is why it runs here on a compute node rather than on a login
 # node.
 #
-# The header of analysis/tir_resp/native_resolution_gate.py documents the
+# The header of notes/eval/tir_resp/native_resolution_gate.py documents the
 # statistic, the reconstructed-palette caveat, and the synthetic `inject`
 # control that quantifies how much a localised signal loses in the resize.
 #
@@ -69,7 +69,7 @@ fi
 SESSIONS="${SESSIONS:-F001_T1,F001_T3,F002_T1,F003_T2,F004_T2,F004_T3,F004_T9,F004_T8}"
 SIZES="${SIZES:-native,112,64}"
 NPERM="${NPERM:-200}"
-OUT="${OUT:-analysis/tir_resp/gate_native_112.json}"
+OUT="${OUT:-notes/eval/tir_resp/gate_native_112.json}"
 
 # Cap the thread pool: the permutation loop is BLAS-bound and would otherwise
 # claim every core on the node.
@@ -87,7 +87,7 @@ echo "[gate] out      : $OUT"
 echo
 
 set +e
-python -u analysis/tir_resp/native_resolution_gate.py \
+python -u notes/eval/tir_resp/native_resolution_gate.py \
     --raw_root "$RAW_ROOT" \
     --sessions "$SESSIONS" \
     --sizes "$SIZES" \

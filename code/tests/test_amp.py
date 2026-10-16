@@ -1,4 +1,4 @@
-"""BDD acceptance criteria for the AMP switch (analysis/hpc_AMP.md).
+"""BDD acceptance criteria for the AMP switch (notes/design/hpc_AMP.md).
 
 CPU-only: no CUDA is required. Cases that need a CUDA *decision* monkeypatch
 ``torch.cuda.is_available`` and pass a ``cuda`` device, so only the POLICY is

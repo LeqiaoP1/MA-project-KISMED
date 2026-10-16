@@ -17,6 +17,11 @@ models/*
 __pycache__/
 .pytest_cache/
 
+# Probe artifacts under code/notes/eval/ -- regenerate, never commit
+code/notes/eval/**/*.npz
+code/notes/eval/**/*.log
+code/notes/eval/**/*.pyc
+
 # Coverage artifacts (pytest-cov)
 .coverage
 .coverage.*

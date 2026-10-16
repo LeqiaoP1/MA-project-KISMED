@@ -1,7 +1,7 @@
 """Build / inspect the offline TIR-ROI pixel cache.
 
-Spec: ``analysis/tir_resp/hpc_precomputation.md`` section 9. Design validated by
-``analysis/tir_resp/cache_parity_probe.py`` (section 10).
+Spec: ``notes/eval/tir_resp/hpc_precomputation.md`` section 9. Design validated by
+``notes/eval/tir_resp/cache_parity_probe.py`` (section 10).
 
 The cache is a pure derived artifact: it stores NATIVE-resolution union crops of
 each subject-task so the training loader never has to decode a ``.wmv``. It

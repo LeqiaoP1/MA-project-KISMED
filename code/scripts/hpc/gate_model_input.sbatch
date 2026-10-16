@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Lichtenberg HPC: respiration gate measured in THE MODEL'S OWN INPUT SPACE.
 #
-# Runs analysis/tir_resp/gate_model_input.py, which reads the OFFLINE ROI CACHE
+# Runs notes/eval/tir_resp/gate_model_input.py, which reads the OFFLINE ROI CACHE
 # -- the exact pixels the encoder consumes -- instead of re-deriving a scalar
 # proxy from the raw .wmv. That matters because the recorded gate's pixel
 # coordinate (HSV hue) had a palette LUT that was LOST with its /tmp scripts, so
@@ -60,7 +60,7 @@ NPERM="${NPERM:-200}"
 # `112` is the model's input_size; `box` is the cached native box with NO resize,
 # so the pair separates "the resize destroyed it" from "the representation did".
 SIZES="${SIZES:-112,box}"
-OUT="${OUT:-analysis/tir_resp/gate_model_input.json}"
+OUT="${OUT:-notes/eval/tir_resp/gate_model_input.json}"
 
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-32}"
 export MKL_NUM_THREADS="$OMP_NUM_THREADS"
@@ -83,7 +83,7 @@ echo "[gate] threads  : $OMP_NUM_THREADS"
 echo
 
 set +e
-python -u analysis/tir_resp/gate_model_input.py \
+python -u notes/eval/tir_resp/gate_model_input.py \
     --raw_root "$RAW_ROOT" \
     --cache_root "$CACHE_ROOT" \
     "${SEL[@]}" \

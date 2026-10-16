@@ -1,7 +1,7 @@
 """Unit tests for YAML-config resolution and the unknown-key guard.
 
 ``runners/_common.py::parse_args_with_config`` implements the contract
-documented in ``code/spec/04_configs_and_execution.md``:
+documented in ``code/notes/spec/04_configs_and_execution.md``:
 
     explicit CLI flag  >  YAML value  >  argparse hardcoded default
 

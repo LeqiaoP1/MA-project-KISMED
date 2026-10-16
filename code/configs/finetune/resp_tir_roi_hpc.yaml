@@ -72,7 +72,7 @@ finetune: /work/scratch/ne95ocyg/pretrain/stage2_hpc_tir_roi_resp/checkpoints/ch
                                    #   here, only when invoking the runner
                                    #   directly.
                                    #   Verified 2026-10-09 with
-                                   #   analysis/tir_resp/stage3_compat_probe.py:
+                                   #   notes/eval/tir_resp/stage3_compat_probe.py:
                                    #   encoder 150/150 tensors, 0 shape
                                    #   mismatches, and heads.resp ->
                                    #   waveform_head transfers VERBATIM

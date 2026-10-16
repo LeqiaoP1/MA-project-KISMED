@@ -60,7 +60,7 @@ CONFIG="${CONFIG:-configs/pretrain/stage2_hpc_tir_roi_resp.yaml}"
 ENTRIES="${ENTRIES:-4}"
 SESSIONS="${SESSIONS:-2}"
 BATCH_SIZE="${BATCH_SIZE:-2}"
-# AMP arm for the one-GPU none/fp16/bf16 comparison (see analysis/hpc_AMP.md):
+# AMP arm for the one-GPU none/fp16/bf16 comparison (see notes/design/hpc_AMP.md):
 #   AMP_DTYPE=bf16 sbatch scripts/hpc/smoke_pretrain.sbatch
 AMP_DTYPE="${AMP_DTYPE:-none}"
 OUT_DIR="${OUT_DIR:-${WORK_SCRATCH:-/tmp}/kismed_smoke/$(basename "${CONFIG%.yaml}")_${SLURM_JOB_ID:-manual}}"

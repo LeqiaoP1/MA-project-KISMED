@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Lichtenberg HPC TEMPLATE: Stage-3 waveform fine-tuning (multi-GPU, single node).
 # NOTE: only usable once the spatio-temporal video model front-end + a Stage-2
-# checkpoint exist (see docs/ImplementationPlan.md / code/README.md).
+# checkpoint exist (see code/notes/plan/ImplementationPlan.md / code/README.md).
 # 1) edit scripts/env_hpc.sh   2) mkdir -p logs
 # 3) TARGET=bp sbatch scripts/hpc/submit_waveform.sbatch
 #SBATCH --job-name=waveform

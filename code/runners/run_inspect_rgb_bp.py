@@ -22,7 +22,7 @@ checks that it is what the ROI strategy promises:
   the per-frame retained fraction + the retained/dropped mean RGB go into the
   JSON. The mask is REPORTED ONLY here -- it is not applied to the tensor (wiring
   it into the provider is a separate, deliberate step). Reference implementation:
-  ``code/analysis/rgb_bp/rppg_skin_chrom.py``; measured there: 34.4 % of the box
+  ``code/notes/eval/rgb_bp/rppg_skin_chrom.py``; measured there: 34.4 % of the box
   retained on average (13.4-51.2 %), retained pixels brighter (R ~145 vs ~119),
   and CHROM detection rising 83 % -> 90 % against the calibrated control.
 * **1-D target (raw)** -- the ``BP_mmHg.txt`` window over the clip's own time
@@ -218,7 +218,7 @@ def _group_members(labels):
 
 
 # --------------------------------------------------------------------------- #
-# skin mask (mirrors analysis/rgb_bp/rppg_skin_chrom.py)
+# skin mask (mirrors notes/eval/rgb_bp/rppg_skin_chrom.py)
 # --------------------------------------------------------------------------- #
 def _skin_exclude_groups():
     """``[(name, labels, pad), ...]`` -- the mask's landmark-exclusion stage.
@@ -333,7 +333,7 @@ def _skin_pass(ds, index: int) -> dict:
     stats = {
         'enabled': True,
         'method': 'per-frame landmark exclusion (brows/eyes/mouth) + YCrCb gate',
-        'reference': 'code/analysis/rgb_bp/rppg_skin_chrom.py',
+        'reference': 'code/notes/eval/rgb_bp/rppg_skin_chrom.py',
         'exclude_groups': {n: list(l) for n, l, _p in _skin_exclude_groups()},
         'exclude_pad': {n: float(p) for n, _l, p in _skin_exclude_groups()},
         'gate': {'colorspace': 'RGB2YCrCb', 'cr': list(SKIN_CR),

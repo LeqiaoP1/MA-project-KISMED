@@ -14,7 +14,7 @@
 #    a checkpoint from this run. Fine-tune it with the matching twin
 #    configs/finetune/resp_tir_roi_hpc.yaml (job: submit_waveform_tir_roi.sbatch).
 #
-# Procedure of record: code/plan/TirROI_Resp_plan.md
+# Procedure of record: code/notes/plan/TirROI_Resp_plan.md
 # Data source: the RAW tree (Thermal/, IRFeatures/, Physiology/Resp_Volts.txt),
 #   i.e. $RAW_DATA_PATH. On Lichtenberg that is $WORK_PROJ/test
 #   (/work/projects/l0003511/test). NOT data/processed/bp4d_canonical.
@@ -118,7 +118,7 @@ mask_ratio_resp: 0.50              # a physio stream's only gradient path is its
 mask_ratio_rgb: 0.90               # unused while streams=tir,resp
 mask_ratio_bp: 0.50                # unused
 mask_ratio_eda: 0.50               # unused
-# ---- 1-D masking PATTERN (see code/design/SpanMask_PhysioSignals.md) ----
+# ---- 1-D masking PATTERN (see code/notes/design/SpanMask_PhysioSignals.md) ----
 physio_mask: random                # 'span' = contiguous blocks (E1-E3 ablation)
 mask_span_s: {resp: 4.0}           # ignored while physio_mask: random
 

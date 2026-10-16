@@ -1,0 +1,300 @@
+Implementation Plan
+-------------------
+
+> **Revision note (2026-09-15).** Scope reduced to the physically grounded cells (**BP + RESP**; EDA and TIR -> BP are out, see §1.3). Stage 1 reframed as *space-time initialization* with an explicit account of what transfers and what does not. Stage-2 geometry, masking policy, decoder and loss re-specified for 224 px on the full BP4D+ corpus. Added: a physical-basis evidence table (§1.2), two week-one validation probes (§4.5), the data/cluster/compute plan (§4.6) and a blocker list (§4.7).
+
+### **1. Core Content & Biophysical Grounding**
+
+Your work establishes a contactless **Photometric-to-Physiological (2D-to-1D) generative recovery pipeline** under simulated sensor failure.
+
+#### 1.1 Scope
+
+* **Scope:** Only **2D** modalities are considered. Surviving visual inputs are the **2D RGB video** (capturing sub-visual facial skin-color variations via rPPG) and the **2D Thermal Infrared (TIR) video** (detecting respiratory thermal fluctuations around the nostrils). **No 3D/depth** data is used, and the pipeline has **no face-ROI dependency** — full-frame input with a global resize/crop.
+* **TIR encoding — verified 2026-09, do NOT assume "gray".** The BP4D thermal `.wmv` is a **false-colour (rainbow) thermal *rendering*** with the camera's °C legend burned into the right edge, not a gray thermal image. Two independent decoders agree (OpenCV 5.0 and PyAV 18.1): `wmv3`/`yuv420p`, **3 planes** decoded, mean `|U-128| ≈ 23-27`, `|V-128| ≈ 16-20` on **all 11** local sessions, with the chroma plane tracking the scene (not noise, not a flat cast). Raw `Thermal/<S>/<T>.wmv` vs canonical `tir.wmv` are byte-identical (md5 `ae2d0247c921662a4b322e62f040143f`) ⇒ source data, not a preprocessing artefact. The pipeline therefore treats TIR as **3-channel** (`tir_channels: 3`, default): the Stage-2 TIR adapter is `Conv3d(3→D)` (`core/multimae.STREAM_CHANNELS`, mirrored in `core/au_probe.py`) and the Stage-3 input is `3+3 = 6` channels (`in_chans: 6` in `configs/finetune/{bp,resp}.yaml`; the EDA config is retired with the EDA scope, §1.3). `--tir_channels 1` restores the legacy luma-only surrogate and is needed only to match Stage-2 checkpoints trained before 2026-09 (it changes the TIR adapter geometry). **Thesis caveat:** this makes the "thermal" branch a *rendered* proxy whose palette depends on the camera's per-frame auto-range, not radiometric temperature — state it wherever TIR is claimed to carry temperature. The legend is cropped away by `resize_center_crop` at 64 px and 224 px.
+#### 1.2 Target Waveforms (1D Outputs) and their physical basis
+
+**In scope: BP and RESP.** Both are, at least for one surviving modality, *directly* carried by a physical process at a bandwidth and amplitude a 25 fps camera can resolve. Reconstructing the complete waveform (not scalar BPM / breaths-per-minute averages) preserves clinically meaningful morphology: cardiac pulse shape (BP) and respiratory rhythm (RESP).
+
+| # | Cell | Physical mechanism | Amplitude / detectability | Named confounds | Verdict |
+|---|---|---|---|---|---|
+| 1 | **RGB -> BP** | Optical blood-volume pulsatility in the dermal microvasculature. PPG DC = bulk tissue absorption; **AC = cardiac blood-volume variation, proportional to pulse pressure** — which is what makes *morphology* (systolic peak, dicrotic notch, venous secondary peak) clinically meaningful. Remote PPG from ambient-light face video is established (Verkruysse et al. 2008; reviews: Allen 2007, 2023 wearable-PPG roadmap). | AC/DC ~1 % or less (lower remotely) vs 8-bit quantisation 0.4 %/code ⇒ **hardest cell**; depends on the acquisition chain (compression, exposure, white balance) more than on the model | Motion (documented as the limiting factor for PPG, a fortiori remotely); subject/site-dependent waveform shape; BP4D tasks include speech/pain ⇒ **stratify by task** | **keep — primary** |
+| 2 | **RGB -> RESP** | Two independent channels: (a) chest/shoulder + nasal-airflow pixel motion; (b) respiration-induced variation *inside* the PPG (intrapleural pressure swings up to ~4 mmHg alter venous return and stroke volume ⇒ amplitude/baseline/inter-beat-interval modulation). PPG-based respiratory-rate estimation is a field of its own (Charlton et al. 2018). | Large (motion) to moderate (RIAV/RIIV/baseline) | Pose/view change for (a); motion + lighting for (b) | **keep** |
+| 3 | **TIR -> RESP** | Exhaled air is warmer than ambient, so the nostril/upper-lip temperature field oscillates with the breathing cycle. Established technique; passive thermography is used clinically for physiological monitoring. | **Tenths of a kelvin** vs ≈0.043 K palette quantisation and 0.02-0.08 K NETD (microbolometer 20 mK, ferroelectric 70-80 mK) ⇒ comfortably detectable; 25 fps ≫ the tens-of-ms detector response time | Per-frame **auto-range** (the dominant risk — a property of the rendering, not the physics); glasses are opaque in LWIR; emissivity (~0.98 skin); reflected ambient; measures **surface** temperature only (conflates perfusion, sweating, ambient) ⇒ see Ioannou/Merla 2014 on thermal-IR psychophysiology limits | **keep, conditional on §4.5** |
+
+* **Difficulty ordering — report it as a finding:** TIR -> RESP (largest modulation) > RGB -> RESP (two channels) > RGB -> BP (sub-visual). The thesis result can be stated as *"recovery accuracy tracks the strength of the physical coupling between the surviving modality and the target waveform."*
+* **Fusion cells RGB+TIR -> {BP, RESP}** are the headline; the single-visual cells are exactly the sensor-failure conditions the pipeline simulates.
+
+#### 1.3 Explicitly OUT of scope (with reasons)
+
+* **TIR -> BP.** The pulsatile *surface-temperature* component is far below both the NETD floor and the ≈0.043 K palette quantisation: tissue thermal time constants are seconds while the cardiac cycle is a fraction of a second. Any fit would recover sensor noise and ambient drift, not pulsatility. If kept at all, it is a **negative-control cell** with a stated null expectation — not a thesis claim.
+* **EDA (any input).** Categorically indirect: EDA is the *electrical* conductance of skin (<5 µS) driven by sympathetic sudomotor activity, so no visual sensor observes it directly and every remote estimate is a surrogate. It is also intrinsically **site-dependent** (sweat-gland density is orders of magnitude higher on hands/feet; the Multiple Arousal literature shows different body sites are driven by partly different sources), changed by temperature/humidity/medication/hydration, and delayed by ~1-3 s (Boucsein, *Electrodermal Activity*; SPR Ad Hoc Committee 2012). Most decisive: the BP4D+ label is a **finger/palm contact** measurement, so the task would require a mechanism linking facial observables to *palmar* sudomotor activity. *Option:* keep it as an appendix probe with a null-result framing, not as a claim.
+
+---
+
+### **2. The Progressive Pipeline**
+
+The architecture progresses through three increasingly specialized phases. Note that **Stage 1 is an initialization, not a training run: it costs zero GPU-hours**, so its value must be *measured* (§4.5, §5) rather than assumed.
+
+#### 2.1 Stage 1 — Space-Time Initialization
+
+* *Mechanism:* initialize the Stage-2 ViT-Base encoder from a visual checkpoint via `--pretrained_encoder` (`''` = random init, the current default).
+* *What actually transfers* (`core/multimae.py::load_pretrained_encoder()`; verified: 148 tensors loaded, 0 shape-mismatched):
+
+  | checkpoint key | destination | note |
+  |---|---|---|
+  | `blocks.{i}.*` (12 blocks) | `enc_blocks.{i}.*` | 1:1, identical shapes |
+  | `norm.*` | `enc_norm.*` | 1:1 |
+  | `patch_embed.proj.*` | `adapters.rgb.patch_embed.*` | 2-D `Conv2d` **inflated with a boxcar** over the tubelet time axis (`unsqueeze(2).expand(...)/t`) |
+  | `cls_token`, `pos_embed`, `head`, the non-RGB adapters, all `positions.*`, `mask_token`, the decoder and all `heads.*` | — | left at random initialization |
+
+* *There is no architecture mismatch.* The Stage-2 encoder is a stack of plain ViT blocks (`core.blocks.Block`: fused-qkv self-attention + MLP) applied to the **single concatenated** tubelet + signal token sequence — i.e. "joint space-time attention" *is* self-attention over that sequence. Attention/MLP weights are modality-agnostic linear maps, so a ViT-B block transfers exactly; **time is carried by the patch embedding and the positional embedding, not by the block**.
+* *Honest limitations (state these in the thesis).*
+  1. **Time is inherited only from a video source.** With the default **VideoMAE-B** source the tubelet conv's temporal kernel *is* transferred (`patch_embed.proj = Conv3d(3,768,(2,16,16))` copied verbatim -- implemented, see §4.3), so the tokenizer is not motion-blind at init. With a 2-D source (`mae:base`, timm) the temporal filter can only be approximated by a boxcar mean over `tubelet_t` frames, i.e. the model *is* motion-blind at init. The time axis is additionally carried by `pos_init: sincos3d` (a 3-D `(t,h,w)` sincos for video and the same 1-D temporal sincos for the physio streams) in both cases.
+  2. **The learned spatial prior is discarded.** `pos_embed` is dropped. At `input_size 224 / patch 16` the model's grid is *also* 14x14, so the spatial half of the checkpoint's `pos_embed` could be transferred per frame (reshape -> tile over `G_t` -> add a temporal term) instead of thrown away; with a coarser patch (§2.2) the patch-embed transfer is skipped anyway.
+  3. **The prior is asymmetric between the visual streams.** Only `adapters.rgb.*` is populated; TIR starts random — a defect for a *cross-modal* claim. Fix either by initializing TIR from the same inflated filter (shapes match: 3->D, `(2,.,.)`) or by **sharing one visual adapter** between rgb and tir, distinguished by a modality embedding, so both streams live in one feature space and reinforce each other (already a repo `TODO(extend): visual-stream weight sharing`).
+  4. **Objective mismatch.** ImageNet/MAE pre-training (with its colour-jitter/grayscale augmentation) induces *invariance* to colour and illumination — the axis that carries BP. Measure it; do not assume it away.
+* *Source options, ranked.* (i) **VideoMAE-B (Kinetics-400) — IMPLEMENTED and DEFAULT** (2026-09-17): tubelet `(2,16,16)` = this repo's default, so `patch_embed.proj` is *already* `Conv3d` (**no boxcar approximation**; the tokenizer transfers verbatim, temporal kernel included) and the pre-training objective (tube-masked *video* MAE) is the same family as Stage 2. Wired as `--pretrained_encoder base` / `videomae:base` (Hub download, `DEFAULT_SOURCE`), with the HF `transformers` key layout mapped and the 3-D/2-D decision made by `core.multimae.fit_visual_patch_embed`; (ii) MAE/ImageNet ViT-B (`mae:base`, the previous default) remains fully supported as the 2-D control — it transfers the same 148 tensors but its patch filter is boxcar-inflated; (iii) a **video-only "Stage 0.5"** on our own corpus with no colour augmentation — fixes both the domain gap and the invariance mismatch, and needs only a small relaxation of the Stage-2 `>=1 physio` contract for visual-only runs; (iv) from scratch (§4.6); (v) an rPPG-domain backbone — the only prior that contains the photometric micro-signal, at the cost of architecture conversion, licensing and a novelty question.
+#### 2.2 Stage 2 — Multimodal Pre-Training (Unsupervised Representation Learning)
+
+* *Streams (4):* `rgb`, `tir` (visual) x `bp`, `resp` (physio). The modality contract is unchanged: **>=1 video AND >=1 1-D physio** (the physio streams are the Stage-3 regression targets).
+* *Geometry.* `G_t = D*fps/tubelet_t` and `n_signal = D*fs/sig_kernel` are both linear in `D` and **equal for any `D`** provided `sig_kernel = tubelet_t*temporal_stride*fs/fps` (`seq_len: 0` auto-derives), so `_check_space_time_alignment()` holds across clip lengths; `D` need only be a multiple of 0.08 s.
+
+  | parameter | value | rationale |
+  |---|---|---|
+  | `clip_duration` | **8.0 s** | >=2 respiratory cycles at 15 bpm (period ~4 s) and ~8 cardiac cycles; matches the ~10 s convention in rPPG training. "2 completed *cardiac* cycles" (~2 s) is rejected: 2 beats per sample is a weak target, cannot express RSA/RIAV/RIIV, and is far shorter than the >=30 s windows the Tier 1-3 metrics use. |
+  | `fps`, `temporal_stride` | **25.0**, **1** | 80 ms tokens preserve BP morphology. Do **not** buy cost by coarsening time — BP is the highest-bandwidth target; stride 2 (`sig_kernel 16`, 12.5 fps) stays only as a fallback. |
+  | `input_size`, `tubelet` | **224**, **(2,32,32)** | 7x7 = **49 patches/frame** instead of 196. Encoder attention is *quadratic in visual tokens*, while JPEG decode cost is **flat in target size** (~9.3 ms/frame at both 64 and 224 px) — so patches-per-frame is the only free lever. |
+  | `fs`, `sig_kernel` | **100.0**, **8** | 80 ms per 1-D token; `n_signal = G_t = 100`. |
+  | `num_frames` | 200 | 8 s x 25 fps. |
+  | `pos_init` | `sincos3d` | the only source of temporal structure at initialization. |
+
+* *Cost* (2 visual streams, ~39k clips/epoch over BP4D+ ~= 12-13 h of video):
+
+  | option | encoder tokens | TFLOP/sample | 800 epochs on 8x A100 |
+  |---|---|---|---|
+  | **224 px, patch 32, video mask 0.75 (recommended)** | **~2600** | **~1.2** | **~10 h** |
+  | 224 px, patch 16, 0.75 | 9800 | 12.3 | ~107 h |
+  | 224 px, patch 16, 0.75, 1 visual (bottom-line rgb+bp path) | 4900 | 3.5 | ~31 h |
+
+* *Masking.*
+  * **Video: tube masking at 0.75.** One random spatial subset per clip-sample, replicated across all `G_t` steps (`_tube_mask`) — deliberately leak-free: a masked tube is unseen at *every* time step, so the "copy from the neighbouring frame" solution is impossible. 0.75 rather than 0.90 because 49 patches are coarse and the mask must leave skin visible.
+  * **Physio: contiguous span masking, not scattered dropout.** `_random_mask` places independent random tokens along time; at 90 % with only a handful left visible, the target stays partly recoverable from the signal's own low-dimensional dynamics (global phase/frequency fitting; near-linear interpolation for RESP). Use contiguous spans of >=1.5-2 s (`n_spans` 1-2) and **ramp the ratio 0.9 -> 1.0**, since the downstream task is the fully-masked case.
+  * **Visual-stream dropout per step:** with some probability fully mask one visual stream, so the encoder experiences the single-modality token sequence it will meet at Stage-3 inference.
+  * *Two code constraints must be honoured* (both currently violated by the mask helpers): (1) `max(1, min(N-1, int(ratio*N)))` forbids ratio 1.0 — relax the clamp (`forward` handles `k=0`: `enc_s` becomes an empty slice and `MaskedMSELoss` still has a valid all-ones mask); (2) `k = int((mask_s == 0).sum(dim=1).max())` is a **batch max**, so a *per-sample* visible count would leak masked tokens into the encoder — draw the ratio **once per step/batch** (or make `forward` per-sample aware). Mask *counts* are otherwise deterministic, which is what makes the gather exact today.
+* *Loss.* Keep the per-modality masked MSE + weighted sum (**λ_RGB = λ_TIR = 1.0**, `signal_weight` / `--loss_weights` per physio stream). Two changes: (a) replace the **per-token** normalization in `MultiModalMAE._targets()` with a **per-clip z-score** for the 1-D streams (`target_norm: clip` in the model; the Stage-3 data-side equivalent is `physio_norm: zscore`), so the Stage-2 target space matches Stage 3 — per-token normalization divides out exactly the amplitude/phase the spectral metrics measure, and amplifies flat windows to unit variance; (b) with the physio stream fully masked the head emits the whole clip waveform, so **add the Stage-3 waveform terms** on the assembled `[B, G_t*sig_kernel]` prediction (valid only after (a)) — **IMPLEMENTED 2026-09-18, MR-STFT magnitude half only** (`spectral_weight`, §4.4); the L1/Pearson halves of `WaveformJointLoss` remain Stage-3-only (the masked MSE already supplies the amplitude term and the physio targets are z-scored).
+* *Model.* (a) **Cross-attention (query-based) decoder — required, not optional.** The current decoder runs per stream over the *full* token grid with a materialised `q @ k^T`: at `n_visual` 4900-9800 that is 24-96 M score entries per head per layer per stream per sample (~1-5 GB retained for backward), i.e. ~O(10^2) more expensive than the encoder. Replace it with queries = tokens to reconstruct and keys/values = encoder output (the MultiMAE output-adapter pattern that `core/blocks.py`'s docstring already points to); this also deletes the `mask_token`/`ids_shuffle`/`ids_restore` machinery and makes the 1-D head structurally identical to the Stage-3 head. Interim mitigation: `F.scaled_dot_product_attention` (torch >= 2.1 is already pinned). (b) **Zero-initialized modality embeddings** (broadcast `[1,1,D]` per stream, added in the encoder *and* decoder paths, plus a `no_weight_decay()` over `positions.*` and `modality_embeds.*`): `bp`/`resp` are shape-identical, token-count-identical and bit-identically position-initialized, and a shared visual adapter would erase the rgb/tir distinction — so modality identity would otherwise rest on token statistics alone. Zero-init keeps existing checkpoints behaviourally identical at step 0. (c) `MultiModalMAE._init_weights` covers only `nn.Linear`/`nn.LayerNorm`, so the tubelet/signal convs keep PyTorch's defaults — papered over when a checkpoint is loaded, but **not** from scratch.
+
+* *Is Stage 2 necessary? (options A/B/C).* This is a deliberate question, not an assumption. Note first that the 1-D signals **are** model inputs in Stage 2 (always the reconstruction target, and visible decoder-side tokens while the ratio ramps); it is the **encoder** that is video-only. Consequences:
+  * With the physio ratio ramped to 1.0 **and** the Stage-3 waveform loss adopted, Stage 2 and Stage 3 differ only in (a) 75 % video masking and (b) the subject split — which is not two stages' worth of difference.
+  * In this corpus the **contact waveform is the label and exists for every session**, so Stage 2 buys **no labels** — unlike MAE/VideoMAE, whose entire value proposition is access to unlabeled data. Stage 2's remaining justifications are: (i) a **representation prior/regulariser** (masked reconstruction forces fine spatio-temporal modelling, whereas a waveform-regression loss can be satisfied by low-frequency, phase-only features); (ii) **subject diversity** — pretrain-on-all adds the ~30 subjects held out of Stage 3's train split (+27 % over a 110-subject split), real but modest and leakage-adjacent (hence the train-subjects-only ablation, §4.6); (iii) **multi-task gradient** — four reconstruction tasks per sample vs one regression target. None of the three is self-evident: the field's standard rPPG models are trained directly supervised with an ImageNet-initialised backbone.
+* *Irreducible Stage-3 content* (why Stage 3 survives under every option): the **metric-aligned objective** (L1 + negative Pearson + MR-STFT on the assembled waveform — a per-token masked MSE cannot express phase locking or multi-scale spectrum); the **assembled-waveform head**; **per-band branching** (BP 1.0-2.5 Hz vs RESP 0.16-0.4 Hz); the **subject-disjoint protocol** with checkpoint selection on val. In addition the encoder is trained on 75 %-masked video and used unmasked, so a short adaptation is needed regardless (MAE reports a ~14 % linear-probing drop when the encoder sees mask tokens: the visible-token *distribution* matches inference, the *set* does not).
+* *Options.*
+  * **A (current assumption):** SSL feature prior (Stage 2) -> metric-aligned, per-band supervised recovery (Stage 3). Most standard; supports the "masked pre-training helps" claim and the AU-probe ladder; costs one long run of unknown value.
+  * **B (collapse 2+3):** one supervised stage, tube-masked video used as *augmentation*, joint spectral loss, per-band branches. Directly optimises the reported metric, cheapest, one hyper-parameter set; loses the "pretrained encoder" framing and the representation-quality story (the AU probe would then characterise a supervised model).
+  * **C (keep both, shorten Stage 2):** a few hundred epochs as a warm start/curriculum rather than a representation-learning epic. Keeps the two-stage narrative at a fraction of the cost.
+* *Decisive experiment* (equal **total** wall-clock, judged on subject-disjoint Stage-3 Tier 1-3 metrics + the §4.5 video-dependence probe):
+  1. `S3` only (no Stage 2) — option B's baseline.
+  2. short `S2` (~200 epochs) -> `S3` — option C.
+  3. long `S2` (~800 epochs) -> `S3` — option A.
+
+  Give runs 1 and 3 the same total wall-clock. **If run 1 matches runs 2/3 within the metric's noise, Stage 2 does not earn its place** -> adopt option B and reframe the contribution as the cross-modal matrix + the physical-basis audit. Report per-modality `losses_mse` during Stage 2 as a secondary diagnostic, but decide on the Stage-3 metrics — not on reconstruction loss, and not on AU F1 (see §5).
+
+#### 2.3 Stage 3 — Downstream Supervised Recovery (Task Adaptation)
+
+* *Mechanism:* simulate complete contact-sensor failure (100 % masking of the 1-D streams). The Stage-2 encoder is duplicated into **two task-specialized runs** — BP and RESP — each capped with a modality-restricted lightweight head.
+* *The matrix is the experiment:* **3 physically grounded cells x 3 input configurations** (`rgb`, `tir`, `rgb,tir`) = 9 runs sharing one Stage-2 encoder. `MultiModalWaveformRegressor` already takes `streams`, and `load_stage2_encoder()` loads whichever visual streams the checkpoint contains (it raises only if *zero* tensors match), so the sweep costs no retraining.
+* *Optimization:* the unified **Spatio-Temporal-Spectral Joint Loss**
+
+  $$
+  \mathcal{L}_{\text{joint}} = \alpha \mathcal{L}_{\text{time}} + \beta \mathcal{L}_{\text{Pearson}} + \gamma \mathcal{L}_{\text{MR-STFT}}
+  $$
+
+  constraining amplitude (L1), temporal phase-locking (negative Pearson) and multi-scale frequency dynamics (MR-STFT over FFT windows 64/128/256 at fs = 100 Hz, resolving down to ~1.6/0.78/0.39 Hz). Branching BP (1.0-2.5 Hz) from RESP (0.16-0.4 Hz) prevents gradient interference between the two bands.
+* *Head transfer:* `heads.<signal>` is `Linear(D, sig_kernel)` and `waveform_head` is `Linear(D, output_len // G_t)`, and `output_len // G_t == tubelet_t*stride*fs/fps == sig_kernel` under the aligned geometry — the two heads have **identical shape**. Extend `load_stage2_encoder()` (which currently skips `heads.*`) to map `heads.<signal> -> waveform_head`, so Stage 3 starts from a pre-trained reconstruction head instead of a random one.
+
+---
+
+### **3. Post-Processing Evaluation (Quantifying Information Loss)**
+
+Your testing phase evaluates the generative quality of your waves using a systematic, multi-tiered framework:
+
+* **Tier 1 (Temporal Alignment):** Global MAE, RMSE, and Pearson's \\(r\\). *Academic Nuance:* These are basic gatekeepers.
+* **Tier 2 (Spectral Fidelity):** Welch PSD consistency and MR-STFT tracking to verify correct rhythmic frequencies.
+* **Tier 3 (Clinical Fidelity & The Non-Differentiable Bottleneck):** HRV parameters depend on discrete peak-finding, which has zero or undefined gradients and cannot be used during training. You resolve this bottleneck by evaluating the predicted continuous waves completely **offline** through **NeuroKit2**, extracting clinically valid **RMSSD, pNN50, MedianNN, and Shannon Entropy (ShanEn)**. RESP uses its own offline spectral/rate measures.
+* **Report per task (T1-T8) and per cell.** BP4D tasks differ hugely in head motion; pooling hides the motion-driven failure mode that limits the RGB cells.
+* **Video-dependence probe (required).** Re-evaluate with the visual input replaced by noise. If the waveform metrics barely degrade, the model is not using the modality the thesis claims — this is the direct falsification test of the cross-modal claim.
+
+---
+
+### **4. Clarifications & Implementation Status (code/, 2026-09)**
+
+#### 4.1 Clip reconstruction vs. target-signal reconstruction (important distinction)
+
+* **Stage 2 reconstructs *inside a clip* (self-supervised masked autoencoding).** A clip is a self-contained multimodal sample (RGB + TIR + 1-D signals all *present*). A random subset of its tokens is masked per forward pass and the network reconstructs the masked tokens from the visible ones. Per §2.2 the video uses **tube** masking (one spatial subset replicated across all time steps) while the 1-D streams use **contiguous spans ramping to 100 %**, so the visual streams must genuinely explain the physiology; but nothing is "missing" in the physical world — it is all already in the clip.
+* **Stage 3 reconstructs the *target 1-D signal* of a clip (supervised regression / generative recovery).** Simulating full contact-sensor failure, only the visual streams are fed and the network must **generate the physiological waveform that is truly absent** (BP / RESP; EDA is out of scope, §1.3). Training is per clip — `(video window -> waveform window [seq_len])` — optimised end-to-end with the joint time + Pearson + MR-STFT loss. The model never sees a whole session as a single training sample.
+
+#### 4.2 Whole-session waveform = offline inference (not a training stage)
+
+* A session (subject/task) is longer than one window, so the continuous whole-session waveform is produced **after training** by sliding the window over the session (`clip_duration` + `clip_stride`) and **overlap-adding (stitching)** the per-window predictions. This step trains **no** parameters — it is an inference/assembly step.
+* STATUS: per-clip Stage-3 training + Tier-1/2/3 metric code exist (`runners/run_waveform.py`, `engines/waveform.py`, `runners/run_evaluate.py`, `evaluation/`). The **session-level reconstruction/stitching module is NOT yet implemented** (planned next).
+* The restored whole-session waveform is then evaluated **offline** with all tiers: **Tier 1** (MAE/RMSE/Pearson), **Tier 2** (Welch / MR-STFT), and **Tier 3** (NeuroKit2 HRV — BP-specific; RESP uses its own offline spectral/rate measures).
+* *Session-level assembly protocol (the missing module).* Stage 3 emits **per-clip** waveforms (`[B, output_len]` = one window) and the current Tier-1/2 path macro-averages over clips (`np.concatenate` on the **batch** axis in `engines/waveform.py`; `time_domain_metrics` averages per row), while Tier-3 already expects **one continuous 1-D signal** (`extract_hrv_metrics`). Requirements:
+  * **Scale consistency is the real issue, not the seams.** With a per-clip z-score target each clip's prediction is defined only up to a *per-clip* affine map. Naive concatenation injects a step at every boundary (broadband energy at the clip rate — corrupts the session-level Welch/MR-STFT comparison) and destroys all **between-clip** amplitude information (RIAV, baseline wander, tonic trend). Preferred fix: train with a **per-session** z-score (a constant per training session, known from the label) so every clip shares one convention. Fallback: solve a per-clip affine calibration over the overlap, `min_{a,b} ||a*y_k - y_{k+1}||^2`, before cross-fading. Only *consistency* across clips matters — Pearson r, PSD shape and RR intervals are affine-invariant within a session.
+  * **Hann overlap-add with window-sum normalisation.** Do **not** crop `D - stride` per clip; with `D = 8 s` / `clip_stride = 1 s` each sample is covered by ~8 windows, so the window weighting already handles the low-context edges.
+  * **Stitch on the dataset's common grid** (`min(fps_rgb, fps_tir)`, decimated by `temporal_stride`), so `t_start` from `PairedSessionDataset.entries` maps to `offset = round(t_start * fs / temporal_stride)`.
+  * **Plumbing — session identity must reach the evaluator.** `entries[idx]` is `(session_meta, t_start)`, but the loader yields only `(samples, target)` and `evaluate_waveforms` reads `batch[:2]`. Either walk `ds.entries` directly (the pattern `run_inspect_data` uses for its figure) or extend the collate to return the dataset index. Build the session **reference** from `_sig_all[session][name]` on the same grid (`align.slice_1d` / `resample_1d`) and normalise prediction *and* reference with **one** per-session affine map.
+  * **Two-level reporting, explicitly labelled.** (i) *per-clip* — Tier-1/2 macro-averaged, the training/validation signal; (ii) *session-level post-stitch* — Tier-1/2 on the stitched waveform plus Tier-3. Only (ii) supports the "restore the complete waveform" claim; keeping both makes the assembly step auditable.
+  * **Tier-3 validity guards.** `extract_hrv_metrics`'s `len >= 2*fs` is far too loose: RMSSD/pNN50/MedianNN are interval statistics, and an 8 s clip yields only 7-9 RR intervals (dominated by which beats fell inside the window). Require **>=30 s** (NaN + warn below), compute on fixed **30-60 s sub-windows** then aggregate (median/IQR), and always report the number of detected RR intervals plus the **fraction of windows where peak detection succeeded** (the code already NaN-fills on failure). **Corpus limit to state:** BP4D+ sessions are 21.9-64.6 s, so most sessions yield a single such window and none yield clinical-grade HRV — frame Tier-3 as short-term HRV **proxies** on the longest sessions, and pair RESP with its own offline spectral/rate measures rather than HRV language.
+
+#### 4.3 Code status snapshot
+
+* **Stage 1 — encoder weight inheritance (implemented; VideoMAE by default).** `core/multimae.py::load_pretrained_encoder()` maps a source checkpoint to `enc_blocks.*` / `enc_norm.*` / `adapters.rgb.patch_embed.*`, accepting **two on-disk layouts** through `canonicalise_vit_state_dict()`: the official MAE/VideoMAE keys (`blocks.*`, `norm.*`, `patch_embed.proj.*`) and the HF `transformers` VideoMAEForPreTraining bundle (`videomae.encoder.layer.N.layernorm_before.*` …, Q/K/V re-fused into one `attn.qkv` with MAE's zero-key-bias convention, decoder/`mask_token` dropped). `fit_visual_patch_embed()` copies a **3-D `Conv3d`** tubelet filter **verbatim** and only boxcar-inflates a 2-D one, raising if a 5-D source kernel does not equal the model's `tubelet` (previously such a source was silently counted as a shape mismatch). Verified on the real checkpoints: **148 encoder tensors loaded, 0 shape-mismatched** for both `videomae:base` (102 pre-training keys dropped, patch embed bit-identical to the checkpoint's `Conv3d`, temporal slices differ) and `mae:base` (boxcar: temporal slices identical); a 2-layer/768-d synthetic pair proves the HF→MAE key mapping is value-exact. `DEFAULT_SOURCE` now resolves `base`/`large` to `videomae`; `--inflate_rgb_patch 0` skips the tokenizer transfer (ablation). Enabled by `--pretrained_encoder` / `configs/pretrain/stage2_local_pretrained.yaml`. An official ImageNet-1K (timm) classifier converter remains optional.
+  **Remaining limitations (see §2.1):** `pos_embed` is discarded (VideoMAE's is fixed sin-cos and ours is `sincos3d`, token counts differ anyway); only the RGB adapter is populated, so the TIR stream still starts random (a defect for a *cross-modal* claim — mitigate by initialising TIR from the same inflated filter or sharing one visual adapter).
+* **Stage 2 — multimodal MAE local milestone (implemented & run).** `core/multimae.py` (`MultiModalMAE`: rgb+tir tubelets + bp/resp/eda signal windows — any **≥1 video + ≥1 physio** subset is accepted, five-stream default; per-stream asymmetric masks, shared encoder+decoder, per-stream linear heads, normalized-patch **masked MSE + weighted sum** — plus the optional weighted **MR-STFT magnitude term** on the assembled 1-D waveform (`--spectral_weight`, OFF at 0.0) — see §4.4); `data/paired_dataset.py::PairedPretrainDataset` (serves *exactly* the configured streams) + `build_pretraining_dataset`; `runners/run_pretrain.py` multimodal branch; configs `configs/pretrain/stage2_local_scratch.yaml` (from scratch) = `stage2_local_pretrained.yaml` (Stage-1-inherited) with ONLY the init block and `output_dir` differing. The Stage-2 modality contract (≥2 streams: ≥1 video `rgb`/`tir` **and** ≥1 1-D physio, the Stage-3 regression target) is enforced in `MultiModalMAE.__init__` + `build_pretraining_model` and in the dataset builders.
+  Verified behaviour: joint space-time attention is already correct (one plain block stack over the concatenated tokens); `_check_space_time_alignment()` enforces tubelet↔token equality at construction; `_fit_time` refuses to pad (padding would re-warp the time axis); `pos_init='sincos3d'` supplies the time basis; `target_norm='clip'` (per-clip z-score targets, required by the spectral term) and the MR-STFT term itself are wired and smoke-run.
+  Remaining: the 224 px / `tubelet (2,32,32)` geometry; cross-attention decoder; span masking with a per-step ratio (including the ratio-1.0 clamp); modality embeddings; the full-data HPC run.
+* **Stage 3 — scaffold (implemented, needs a Stage-2 ckpt).** `core/waveform_losses.py::WaveformJointLoss` (α·L1 + β·(−Pearson) + γ·MR-STFT; per-branch FFT sizes), `runners/run_waveform.py`, `engines/waveform.py::evaluate_waveforms`, `runners/run_evaluate.py`, configs `configs/finetune/{bp,resp}.yaml` (the EDA config is retired with the EDA scope, §1.3). Finer temporal decoder + session stitching are to-do, as is the `heads.<signal> -> waveform_head` transfer (§2.3).
+* **Evaluation (implemented, offline).** `evaluation/metrics.py` (Tier 1 time, Tier 2 Welch PSD), `evaluation/clinical.py` (Tier 3 NeuroKit2: RMSSD/pNN50/MedianNN/ShanEn).
+
+#### 4.4 Training knobs & fixes (reproducibility notes)
+
+* **LR semantics (`runners/run_pretrain.py`, official-MAE).** An explicit `--lr` is the absolute peak LR. The `blr` linear-scaling rule (`lr = blr*batch*world/256`) applies **only** when `--lr` is omitted (large-batch HPC). For small-batch local runs always set `--lr`; otherwise LR collapses to ~1e-6 and training stalls (this was the cause of an earlier perfectly-flat Stage-2 loss; the per-epoch masked-recon loss — L1 at the time — was constant across 40 epochs with rel. weight change ~1e-6).
+* **LR schedule.** A step-level warmup + cosine schedule is applied (`utils/lr_sched.py::cosine_scheduler`); `warmup_epochs` and `min_lr` are now honoured.
+* **Stage-2 loss & per-modality weighting (`core/multimae.py`).** The Stage-2 objective is a **masked MSE**, evaluated **independently per modality over its masked positions only** (`mask == 1` ⇒ to reconstruct; `core/criterion.py::MaskedMSELoss`), then combined as a **weighted sum** `L = Σ_s λ_s·MSE_s`. Default policy: **λ_RGB = λ_TIR = 1.0**, and every physio (1-D) stream uses **λ = `--signal_weight`** (default **0.5**). Choose the physio weight in **~[0.5, 1.0]** from the **normalized variance of the physio stream's masked target tokens** so the 1-D signals do not dominate the gradient (high variance ⇒ lean 0.5) nor get ignored (low variance ⇒ lean 1.0). `--loss_weights` is a full per-stream override (one comma value per `--streams` modality, in order; empty ⇒ policy above). `MultiModalMAE.forward` returns `losses_mse` (raw per-modality masked MSE) and `losses` (weighted contributions); `loss = Σ losses`. NOTE: the older L1-sum baselines are not comparable to the current MSE scale.
+* **Stage-2 spectral (periodicity) term (`core/multimae.py`; implemented 2026-09-18; **RETIRED FROM STAGE 2 on 2026-09-26**: the spectral loss belongs to Stage-3 finetuning of the targeted 1-D signal, and every shipped Stage-2 config now sets `spectral_weight: 0.0` — see `TirROI_Resp_plan.md` §7.5 for the measured reason).** The physio streams can additionally carry a **multi-resolution STFT magnitude loss** (`core/waveform_losses.MultiResolutionSTFTLoss`, FFT windows `--spectral_fft_sizes`, default 64/128/256 ⇒ 1.56/0.78/0.39 Hz at fs = 100 Hz) on the **assembled** clip waveform, weighted by **`--spectral_weight`** (per-physio-stream lambda; default **0.0 = OFF**, which reproduces the masked-MSE-only objective *and* its per-token target norm exactly) or per stream by **`--spectral_weights`** (comma list, one value per `--streams` modality, same convention as `--loss_weights`; a positive value on a video stream is rejected). The assembled waveform is `[B, n_signal*sig_kernel]` — the concatenated per-token windows, since `SignalEmbed` uses kernel == stride — with **both sides in the same normalized space**, which is why the term **requires `--target_norm clip`**: under per-token normalization each token is independently rescaled, so the assembled target's spectrum carries token-boundary artefacts instead of the physiological band, and the model **raises** rather than silently training on that. Motivation: a per-token MSE constrains **amplitude** only and a low-frequency surrogate can satisfy it without modelling the cardiac/respiratory cycle, whereas the STFT term places a direct gradient on periodicity. `forward` returns `losses_spectral` (raw MR-STFT per stream) alongside `losses_mse`, and `engines/pretrain.py` logs `mse_<stream>` / `spec_<stream>`, so `loss = Σ_s (λ_s·MSE_s + w_s·STFT_s)`. Verified: 1 epoch, `rgb,bp,resp`, `batch 2` logs `spec_bp`/`spec_resp` and the printed total matches the sum exactly (2.0643 + 0.5·2.2181 + 0.5·5.7749 + 0.1·3.3632 + 0.1·7.7929 = 7.1764); with the MSE weights zeroed the term alone still produces a non-zero encoder gradient. The FFT windows are resolved **PER PHYSIO STREAM** (`core.multimae.parse_fft_sizes` + `SPECTRAL_FFT_DEFAULTS`; implemented 2026-09-26): `--spectral_fft_sizes '64,128,256'` = the SAME windows for every physio stream (the pre-2026-09 behaviour, which every shipped config still uses), `'resp=128/256/512,bp=64/128/256'` (comma separates STREAMS, `/` the windows of one stream) or a YAML mapping `{resp: [128, 256, 512]}` = per stream, and `''`/`auto` = the per-modality defaults (`bp`/`resp` 64,128,256, `eda` 256,512,1024) which mirror `configs/finetune/*.yaml --fft_sizes` one for one, so a stream gets the same spectral objective in Stage 2 and Stage 3; the Stage-3 spelling `--fft_sizes` is accepted as an alias (CLI and YAML). Rationale: one window set cannot police both BP (1.0-2.5 Hz) and RESP (0.16-0.4 Hz) — a window should span at least one period of the band it polices. Every stream still shares `--spectral_hop_ratio` (0.25). Windows longer than the clip are **dropped** and the resolved set is PRINTED per stream at build time (`[spectral] <stream>: weight ..., windows ... [DROPPED ...]`), which turns the previously silent drop into a visible one; the model reuses ONE module for streams whose windows coincide, so a uniform spec is byte-identical to the previous single-`self.spectral_fn` version (`self.spectral_fft_sizes` is now `{stream: [windows]}` and `self.spectral_fns` is `{stream: fn}`). NOTE: enabling it changes the MSE scale (per-clip rather than per-token targets), so losses are not comparable with earlier runs.
+* **Window sampling.** `clip_stride` (`data/paired_dataset.py`) enables overlapping windows to scale clip count per session (`0`/`None` = non-overlapping default). Keep `clip_stride >= clip_duration/2` to limit redundancy; real diversity comes from covering all sessions/subjects/tasks, not from overlap or from more epochs. Random per-forward masking remains the primary augmentation.
+* **RGB decode cost, measured (`data/video_io.py`, 2026-09).** ~90 % of the per-frame loader cost is libjpeg **decode CPU**, not I/O: reading the jpg bytes costs 0.6 ms/frame, reading + full decode 11.6 ms/frame, and decoding bytes already in RAM with no filesystem at all still costs 9.2 ms/frame (a 1.4 MP source downsampled 97 % for a 224 px target). `read_image` therefore selects a DCT-scaled decode (`IMREAD_REDUCED_{COLOR,GRAYSCALE}_{8,4,2}`) from the source size parsed out of the JPEG SOF header (`_jpeg_size`, no decode), keeping the coarsest scale that still covers `target_size` and never upscaling (`target_size=None`, non-JPEG inputs and small sources keep the full decode). Measured: 224 px -> `_4`, 13.7 -> 9.9 ms/frame (1.38x, mean |diff| 0.69/255); 64 px -> `_8`, 1.34x; 512 px -> `_2`, 1.15x; a 10 s / 250-frame clip at 224 px 3450 -> 2630 ms. Shapes are unchanged for every `target_size` x `gray` combination. The stream that repeats is RGB: TIR is decoded **once per session** into `_tir_cache` at dataset construction, while RGB re-reads 250 jpgs per 10 s window, so one worker sustains only ~0.35 clips/s and `num_workers` sizes the loader throughput. A materialised uint8 `.npy` store (4.5 ms/clip measured, ~770x) would remove the remaining decode and is NOT implemented.
+
+#### 4.5 Physical-basis validation on our own corpus (week one, before any large run)
+
+Two ROI probes that turn the §1.2 table from an argument into a measurement:
+
+* **RGB — does the sub-visual signal survive acquisition?** Skin ROI, band-pass 0.7-4 Hz, SNR at the heart-rate peak (against a chrominance-based baseline), **per task**. BP4D+ 2D video is JPEG-compressed; if compression / auto-exposure has already destroyed the modulation, no architecture recovers it.
+* **TIR — does the rendering preserve respiration?** Project nostril-ROI pixels through the palette to a scalar, band-pass 0.1-0.5 Hz, and correlate against the contact RESP column of `signals.csv`; additionally scan for **auto-range step changes** in the global histogram across frames. A clean correlation makes the TIR -> RESP cell solid and lets the residual limitation be stated precisely; a failure is itself a reportable finding about rendered thermal corpora.
+
+#### 4.6 Data, cluster & compute plan (full BP4D+)
+
+* **Corpus:** full BP4D+ (~140 subjects x 8 tasks ~= 1120 sessions). The local manifest shows 21.9-64.6 s per session (mean ~42 s) => **~12-13 h** of video => **~39k clips** at `D = 8 s`, `clip_stride 1 s` (unique coverage ~5-6k windows). Per-session clip counts vary ~4x — audit before trusting any per-session weighting.
+* **Manifest audit** (columns already present): `duration_s`; `fs`/`fps_rgb`/`fps_tir` constant (100.0/25.0/25.0 locally — the uniform-rate assumption is enforced at *prep* time by `resample_antialiased`, not at train time); `abs(n_rgb - n_tir)` (locally ±2 frames: `plan_clip` uses `min(fps_rgb, fps_tir)` so the index grids agree and the tail mismatch is absorbed by index clamping + `_pad_time` edge-replication); missing modalities.
+* **The loader, not the GPU, is the bottleneck.** Epoch decode ≈ `total_duration x fps x (D / clip_stride)` frame-decodes ≈ **9.4 M ≈ 24 h single-core** at `D = 8 s / stride 1 s` (~18 min at 64 workers), versus ~1-8 min of GPU time per epoch. **Prerequisite: a materialised uint8 `.npy` RGB store at 224 px — ~178 GB at 25 fps / ~89 GB at 12.5 fps** — which fits a 512 GB node's page cache; page-cache residency is what makes the reads memcpy-cheap, and it is shared across all workers and ranks. This is a **CPU (libjpeg)** fix, not an I/O fix.
+* **DDP:** each rank decodes independently today (`N_ranks x N_workers`), so the frame store is what makes multi-GPU training worthwhile. With a real batch the `blr` rule applies (`lr = blr*batch*world/256`); an explicit `--lr` is the absolute-peak override used for small local runs.
+* **Splits:** Stage 2 = pre-train-on-all; Stage 3 = **subject-disjoint and frozen now** (e.g. 110/15/15 subjects). Report a **train-subjects-only Stage-2 ablation** so no gain can be attributed to test-subject familiarity. Stage-2 checkpoint selection stays on Stage-3 val.
+* **Augmentation must preserve colour** (spatial crop/flip, temporal shift); no colour jitter — rPPG lives in the chromatic change.
+* **From scratch is feasible** (~1.2 TFLOP/sample => ~10 h per 800 epochs on 8x A100; cross-check: ≈ the FLOPs of MAE-B's ImageNet-1600-epoch run), and 4 streams give more supervision per sample than single-stream MAE. But Stage 1 is free, so decide it by the §5 ladder, not by feasibility.
+
+#### 4.7 Known bugs & blockers (fix before the real run)
+
+1. `data/datasets.py::build_pretraining_dataset()` **never forwards `tir_channels`** while `build_pretraining_model()` reads `args.tir_channels` => a `--tir_channels` run silently mismatches. Blocks every TIR cell.
+2. `PairedSessionDataset.__init__` eagerly decodes **every** session's TIR into RAM (`_tir_cache`): ~150 MB/session at 224 px => **~170 GB per rank** for 1120 sessions. Must become lazy (per-epoch LRU) or memmapped. (`use_tir=False` correctly skips it, so the rgb-only bottom-line path is unaffected.)
+3. The full-grid self-attention decoder (§2.2) — required for 224 px.
+4. The mask helpers forbid ratio 1.0 and assume a batch-constant visible count (§2.2).
+5. `positions.*.pos_embed` sits **inside the weight-decay group**: `MultiModalMAE` has no `no_weight_decay()` (unlike the MultiMAE reference).
+6. ~~`load_pretrained_encoder()` assumes a 2-D `patch_embed` and is not CLI-wired for 3-D sources (§2.1).~~ **RESOLVED 2026-09-17:** 3-D (`Conv3d`) sources are accepted and copied verbatim, the HF `transformers` VideoMAE layout is mapped to MAE keys, a tubelet-geometry mismatch raises instead of being skipped, and `--inflate_rgb_patch {0,1}` is wired into `run_pretrain.py` and `run_au_probe.py`. `videomae:base`/`videomae:large` are the `DEFAULT_SOURCE` for those variants (§2.1, §4.3).
+7. Small-batch runs must set an explicit `--lr`; `blr` scaling is only for real batches. `run_pretrain --epochs N` with `N < warmup_epochs` trips a `cosine_scheduler` assertion.
+
+---
+
+### **5. Downstream Probe — AU Occurrence Detection (Semantic Representation Quality)**
+
+An **ADD-ON / diagnostic** module (separate from Stages 1-3; it re-uses the Stage-2 encoder but changes nothing in the Stage code paths). A regression-only read-out is a weak witness of representation quality, so this probe tests whether the frozen Stage-2 features **linearly separate FACS facial-action semantics**: a linear (or fine-tuned) head on top of the Stage-2 shared encoder predicts AU *occurrence*.
+
+* **Probe = multi-label binary relevance, per-AU F1.** BCE loss; per-AU F1 @0.5, macro-averaged over the standard BP4D 12-AU subset `{1,2,4,6,7,10,12,14,15,17,23,24}`. AU rows/values `9` (unknown) are dropped (never treated as negative). Prediction is **clip-level but centre-frame anchored**: one label vector per `num_frames` clip, supervised by the centre frame only.
+* **Data facts (verified).** AU coding exists for tasks **T1/T6/T7/T8 only** — 560 files = 140 subjects (82F/58M) × 4 tasks, each subject exactly `{T1,T6,T7,T8}`. Files are `AUCoding/AU_OCC/<Session>.csv` with a header row of AU ids and a 1-based global frame column; cell `0/1/9`. AU frame `f` ⇔ RGB jpg number `f-1` (canonical `rgb/` keeps the raw names). Locally only subjects `F001..F004` (tasks T1,T2) are downloaded ⇒ only `F00X_T1` sessions are AU-usable — local = smoke only.
+* **Configurable AU set.** `--au_list` (explicit, string `"6,7,10,12,14"` or YAML list) **or** `--au_freq_topk N` (auto top-N AUs by presence rate over the full AU corpus, independent of which media is downloaded; `N=5` ⇒ the most frequent `AU7/10/14/12/6` = `{6,7,10,12,14}`). Default = the BP4D 12-AU subset. The head width, dataset label columns and per-AU table all follow this list, so the probe can be restricted to any AU subset (e.g. the frequent, near-constant ones — note those are also the *least* discriminative targets, so report alongside a trivial baseline).
+* **Local configs = one probe variant per locally-trained encoder.** `configs/finetune/au_local.yaml` probes `stage2_local` (768-d/12-layer from-scratch; clip 4.0 s → num_frames 100, batch 2) with the default full 12-AU subset; `configs/finetune/au_local_pretrained.yaml` probes `stage2_local_pretrained` (Stage-1-videoMAE-inherited 768-d/12-layer; clip 4.0 s → num_frames 100, batch 2) and deliberately uses the 5 most-frequent near-constant AUs `{6,7,10,12,14}`. Each config's geometry MUST mirror its probed checkpoint (Code bullet). Both now use the SAME geometry, window length and batch, so the two are a clean init A/B within this geometry — the ONLY difference to keep in mind is the AU set (fix one AU set for a strict encoder comparison).
+* **Controls (identical probe protocol, only `--finetune` changes).** C0 random init (lower bound) → C1 Stage-1 MAE/ImageNet (`--finetune base`, auto-downloaded into `models/initial/`) → **C2 Stage-2** (BP4D multimodal masked pre-training, the headline). Expect `C2 ≥ C1 ≫ C0` ⇒ masked pre-training causes linear AU decodability. `--probe linear` freezes the encoder; `--probe ft` fine-tunes.
+* **STAGE-1 WARNING — this probe is a *biased witness* for the value of Stage 1 in this pipeline.** AU decoding rewards object-semantic facial features, precisely the axis an ImageNet initialization helps with, so `C1 >> C0` on AU F1 does **not** imply the init helps waveform recovery (and may mislead, given the colour-invariance argument in §2.1). Judge Stage 1 on the Stage-3 ladder below and report the AU probe as a secondary diagnostic of general feature quality.
+* **Splits: subject-disjoint (mandatory).** AU sessions are split by subject prefix (`F00X`), never frame/session; full runs use leave-N-subjects-out over the 140 subjects; explicit `--train_subjects/--val_subjects` or `--train_ratio`.
+* **Caveats for the thesis.** (i) Stage-2 protocol is pre-train-on-all, so the probe measures representational fidelity on the training distribution, not OOD generalisation — state this. (ii) Coding covers the *most expressive* ~15-28 s per task, so base rates of some AUs are very high (e.g. AU7/AU10/AU14 ≈ 60-66%) — report per-AU F1 **and a trivial baseline** (always-positive per AU), since macro-F1 alone overstates a degenerate all-positive head on near-constant AUs.
+* **Code (all ADD-ON files).** `data/au_dataset.py` (`AuOccurrenceDataset`, `build_au_datasets` subject split), `core/au_probe.py` (`MultiModalMAEProbe` = Stage-2 encoder reuse + mean-pool + head; `load_au_probe_weights` loads Stage-2 or MAE checkpoints with a geometry guard; `weights_only=False`), `engines/au_probe.py` (`train_one_epoch_au`, `evaluate_au`), `runners/run_au_probe.py`, configs `configs/finetune/au_local{,_pretrained}.yaml` (geometry MUST reproduce the probed Stage-2 checkpoint: `tubelet/input_size/clip_duration→num_frames/enc_embed_dim/enc_depth/enc_num_heads`), `scripts/local/au_smoke.sh`. Visual-stream-only input (no physio leakage).
+* **Status.** End-to-end local smoke passes on `F001..F004_T1` (subject split, Stage-2 ckpt load: 78 encoder tensors, forward `[B,12]`, BCE+per-AU F1, best-ckpt saved). Real numbers need full media on HPC; the loader cost is RGB *decode* CPU rather than the disk (see §4.4, §4.6 and the README's *Data-loading throughput*), so `num_workers` is the effective knob.
+* **Stage-1 decision ladder (run it in the Stage-3 metric space, not on AU F1).** (1) random init -> S3; (2) pretrained init -> S3; (3) random init -> S2 (from scratch) -> S3; (4) pretrained init -> S2 -> S3; (5) optional: no Stage 2 at all (direct supervised). If (3)/(4) match or beat (1)/(2) on subject-disjoint Stage-3 metrics, Stage 1 is dead weight and can be dropped **with evidence** — which is itself a reportable result.
+
+---
+
+### **6. Thermal -> Respiration Dataset (ADD-ON)**
+
+A second ADD-ON beside §5, again with **no Stage-1/2/3 code touched**: it turns
+the thermal stream into a supervised *clip -> waveform* dataset, i.e. the
+`resp` branch of the thesis taken from thermal-only input at 1000 Hz. One
+sample is `'tir_video' [3, T, H, W]` + `'resp_signal' [L]` + `'subject_task'`
+(`T = clip_seconds*25`, `L = clip_seconds*1000`; 8 s -> 200 frames / 8000
+samples). It reads the RAW tree (`Thermal/<S>/<T>.wmv`,
+`IRFeatures/<S>_<T>.txt`, `Physiology/<S>/<T>/Resp_Volts.txt`), so no
+`prepare_bp4d.py` conversion is involved and the respiration target stays at
+its original 1000 Hz instead of the canonical 100 Hz grid. With a
+`temporal_stride N` the clip holds `T = clip_seconds*fps/N` frames (rounded down
+to a tubelet multiple) and `L = T*N/fps*fs` samples, and `sig_kernel` MUST be
+rescaled to `tubelet_t*N/fps*fs` (stride 2 -> 16) or the model refuses to build.
+
+* **Data facts (verified 2026-09-24, see also §5's + the README's).**
+  `IRFeatures/<S>_<T>.txt` is one line per thermal frame, 56 floats = 28
+  `(x, y)` PIXEL pairs in the 726x480 frame, and **line `n` == frame `n`**
+  (F001_T1: 1612 lines = 1612 decoded frames @ 25.0000 fps). `(0, 0)` is the
+  undocumented missing-data sentinel, all-or-nothing per frame (F001_T8:
+  112/227 lines), caused by a strongly turned head rather than a decode fault.
+  `Resp_Volts.txt` = 64597 samples over 64.48 s = 1001.8 Hz (nominal 1000) and
+  rails at exactly -10.0000 V in some sessions. **The local corpus was expanded
+  on 2026-09-26 to 40 sessions** (4 subjects x T1..T10, 45 858 frames =
+  30.6 min, `IRFeatures` for every video, `lines == frames` on all 40); three
+  sessions carry `(0,0)` sentinel lines (F001_T8 112/227, F002_T7 2/1111,
+  F003_T3 70/1852) and none is untracked, so the "skip untracked sequence" path
+  is verified against a synthetic tree instead.
+* **Specs.** Clip window 200 frames (8 s, non-overlapping by default,
+  `clip_stride` in seconds for overlap). ROI = the 12 mouth+nose landmarks
+  (1-indexed labels `[9,10,11,12,13,20,21,22,23,24,25,26]`), reduced to ONE box
+  per clip: global min/max over all 200 frames, each side extended by
+  `roi_padding * extent` (0.2 -> +40 % total), clamped to the frame, and all
+  200 frames cropped with that identical box and resized (`cv2.resize`) to
+  `input_size`. A clip touching ANY `(0,0)` line is dropped whole. Frames ->
+  `[0, 1]` by `/255`; respiration z-scored per clip
+  (`(y - mu) / (sigma + 1e-8)`), with `session`/`none` alternatives. Alignment
+  is by time (`resp[f*fps_ratio : ...]`), which at 25 fps / 1000 Hz is the exact
+  integer slice `f*40`.
+* **Design note to state in the thesis.** The box is clip-static on purpose
+  (no per-frame jitter, no spatial warping), and the measured consequence is
+  that the box is only as tight as the head movement of that 8 s window allows
+  (F001_T1 calm clip 85x103 px vs mobile clip 103x160 px of 726x480). Tighter
+  alternatives are `roi_padding: 0` (the tight union) or shorter windows; do not
+  fix it by cropping per frame.
+* **Verification (all checks pass locally).** `python data/tir_resp_dataset.py`
+  (its `main`) checks the key set, `[3, T, S, S]` / `[L]` shapes and dtypes,
+  the `[0, 1]` range, the per-clip z-score (mean 0, std 1), ROI containment of
+  every target landmark, the box against an independent min/max+padding
+  recomputation, `tir_video[:, 0]` against the actual `cv2.resize` of the crop
+  (so the tensor really is that box's crop, not a centred re-crop), the seek
+  against a full sequential decode, and the respiration window against a
+  brute-force slice of the raw file. The two negative paths are asserted too
+  (`F001_T8` -> 0 clips; an untracked subject -> 0 clips, reason recorded).
+  431 clips from 40 sessions at 4 s (9 windows dropped) / 843 at a 2 s hop /
+  1663 at 1 s; 224 px, 8 s and overlapping configurations also verified.
+* **Stage-2 TIR-ROI run (2026-09-26): stable recipe found, physio collapse
+  reproduced.** The first real run (`streams: tir,resp`, 8 s clips, batch 4,
+  `lr 1e-3`, `clip_grad 0.0`, `spectral_weight 0.1`) DIVERGED: at
+  `checkpoint-0010` `mse_tir 11.96`, `mse_resp 556 017`, `max|pred_resp| 1371`.
+  Parameter norms stayed within 2x of init -- it was an ACTIVATION runaway (the
+  residual stream, not the weights), and the trigger was the **MR-STFT term**
+  (`spec_resp` up to 3.7e8, `grad_norm ~5e8` pre-clip in single steps).
+  `spectral_weight: 0.0` + `clip_grad: 5.0` + `lr: 3e-4` removes the spikes
+  (epoch average tracks the last step: `loss 0.901` vs `0.857`, `grad_norm`
+  2.9): `mse_tir 0.376` (visual stream learns, far below the 1.0 constant-
+  predictor floor) but `mse_resp 1.052` = exactly that floor, i.e. the same
+  Stage-2 physio collapse as the `rgb,bp` runs, now in the thermal-only setting.
+  Also verified here: `loss = mse_tir + 0.5*mse_resp + 0.1*spec_resp` exactly,
+  and under `target_norm: clip` the target is ALWAYS bounded (`|z| <= 1`), so a
+  huge masked MSE can only mean the prediction exploded. Turning the STFT off
+  also UNBLOCKS `target_norm: token` (the next lever against the collapse).
+  Full record: `code/notes/plan/TirROI_Resp_plan.md` §7.
+* **Files.** `data/tir_resp_dataset.py` (`parse_ir_features`,
+  `missing_frame_mask`, `roi_box_from_landmarks`, `discover_sessions`,
+  `BP4DPlusTIRRespDataset`, `main`), `data/video_io.py` gained
+  `read_range()` on both readers (additive; frame-exact seek),
+  `runners/run_inspect_tir_resp.py` (per-clip 4-panel figure + JSON report +
+  index), `scripts/local/inspect_tir_resp.sh`, README section.
+* **Not implemented / open.** No train/val split (the subject-disjoint protocol
+  is the caller's job and is deliberately not duplicated here -- never split by
+  clip). No caching strategy beyond `preload` (2.5 MB per 64 px clip); the
+  0.7-2.4 s per-clip decode is the same CPU-bound JPEG/WMV decode cost
+  documented in §4.4. The dataset returns ONE session's stream without
+  cross-session resampling, so a future Stage-3 "thermal -> resp" run must add
+  the split and the head geometry mapping (T*W*H -> L) itself.

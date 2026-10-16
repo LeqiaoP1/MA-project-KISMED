@@ -1,4 +1,4 @@
-# Stage 3 -- RESP regression branch (docs/ImplementationPlan.md)
+# Stage 3 -- RESP regression branch (code/notes/plan/ImplementationPlan.md)
 #
 # NOTE (2026-09): the Stage-2 configs currently pre-train on streams `rgb,bp`
 # only, so there is NO Stage-2 encoder for the RESP target. Either add `resp`

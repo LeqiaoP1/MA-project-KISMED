@@ -1,0 +1,1062 @@
+# Stage 2 with **TIR-ROI** (visual) + **RESP** (1-D) — procedure plan
+
+Status: **implementation + local verification DONE 2026-09-26** (see §7 for the
+recorded results). This file is the procedure of record for this experiment: it
+states what is fed to Stage 2, how the geometry is kept consistent with the
+existing runs, what was changed, what was deliberately left untouched, and which
+checks a run has to pass.
+
+---
+
+## 1. Goal and scope
+
+Run **Stage-2 multimodal masked pre-training** with exactly two streams:
+
+| stream | role | tensor per sample | source |
+| ------ | ---- | ----------------- | ------ |
+| `tir`  | visual (2-D) | `float32 [3, T, H, W]`, `[0, 1]` | thermal `.wmv` **cropped to the mouth+nose ROI** |
+| `resp` | 1-D waveform (the future Stage-3 target) | `float32 [1, L]`, raw volts | `Resp_Volts.txt` |
+
+This is the **thermal-only** counterpart of the `rgb,bp[,resp]` runs: the same
+encoder, the same masked-MAE objective, the same loss — but the only visual
+information is the thermal rendering of the respiration region (nostrils, nose
+bridge, lips), and the only waveform is respiration.
+
+**Non-goals.** No model change beyond the Stage-1 init routing in §5.3. No
+change to Stage 3, no session-level assembly, no RGB/TIR fusion in this run (that
+stays the `rgb,tir,...` variant), no landmark-prediction head.
+
+**Why "ROI only" is the interesting variant.** The full thermal frame is 726x480
+with a burned-in degC legend and a large background; the respiration signal
+lives in a ~100x100 px region. Cropping to the landmark-derived box removes the
+legend/background and makes the thermal patch comparable in size to the Stage-2
+`input_size`, so the tube-masking budget is spent on the face rather than on the
+scene.
+
+---
+
+## 2. Where the data comes from — and why not the canonical layout
+
+This run reads the **raw tree** (`$RAW_DATA_PATH`, in-repo `data/raw/BP4D`):
+
+```
+<Thermal>/<S>/<T>.wmv                25 fps, 726x480, false-colour rendering
+IRFeatures/<S>_<T>.txt               28 (x, y) landmark pairs per frame
+Physiology/<S>/<T>/Resp_Volts.txt    1000 Hz, one value per line
+```
+
+The canonical (`data/processed/bp4d_canonical/<S>_<T>/`) layout used by every
+other Stage-2/3 run **cannot** serve this variant, for one concrete reason:
+
+* `PairedSessionDataset` decodes each session's TIR **once** into
+  `_tir_cache` at `input_size` (`resize_center_crop` → e.g. 64x64). A
+  clip-dependent ROI crop cannot be taken out of an already center-cropped
+  64x64 frame, and caching the native 726x480 frames instead costs
+  **1.05 MB/frame = 1.7 GB for F001_T1 alone** per dataset instance.
+* The ROI is defined by `IRFeatures`, which lives only in the raw tree
+  (`<S>_<T>.txt`), not next to the canonical session directories.
+
+So the TIR stream is decoded **per clip** at native resolution and cropped
+(`data/video_io.py::read_range`, seek-verified frame-exact against a full
+sequential decode). The 1-D stream is resampled from the raw 1000 Hz file to the
+model's `fs` (100 Hz default). Everything else — the geometry contract, the
+model, the loss, the masking — is shared with the existing runs.
+
+> The canonical `tir.wmv` is byte-identical to the raw `.wmv` (md5-verified
+> 2026-09, §4.5 of `ImplementationPlan.md`), so this is a *source* choice, not a
+> data-quality choice.
+
+---
+
+## 3. Clip → ROI → tensor procedure
+
+Reused verbatim from `data/tir_resp_dataset.py` (already verified, see
+`data/tir_resp_dataset.py::main`):
+
+1. **Enumerate clips.** Sessions = thermal videos joined with an `IRFeatures`
+   file and `Resp_Volts.txt`. Windows: `start = 0, stride, 2*stride, ...` while
+   `start + T <= n_frames`, over `n_common = min(video_frames, IR_lines)` and
+   limited by the respiration length.
+2. **Drop invalid windows.** Any `(0, 0)` landmark line inside the window
+   (the corpus' undocumented missing-data sentinel: whole frames where the
+   tracker lost the face) drops the **whole clip**; the window hop moves on to
+   the next one. Untracked sequences without `IRFeatures` are skipped.
+3. **ROI box (one per clip, static).** For the 1-indexed labels
+   `[9, 10, 11, 12, 13, 20, 21, 22, 23, 24, 25, 26]` (nose bridge, nostrils,
+   mouth corners, lips, lip centres) take `x_min/x_max/y_min/y_max` over **all
+   frames of the clip**, extend each side by `roi_padding * extent`
+   (`roi_padding: 0.2` → +40 % overall) and clamp to the frame. All `T` frames
+   are cropped with that **identical** box → no per-frame spatial jitter.
+4. **Resize** each crop to `input_size x input_size` (`cv2.INTER_AREA` when
+   downscaling) and scale to `[0, 1]` (`/255`). Result: `[3, T, H, W]`.
+5. **Respiration.** From the clip's raw window, sample the model grid by TIME:
+   `idx = arange(L)/fs * resp_fs`, `np.interp` → `[L]` raw **volts**. The
+   dataset deliberately returns **raw** values: the model's `target_norm: clip`
+   z-scores per clip inside the forward pass, exactly as for `bp`/`rgb` runs. Do
+   not z-score twice.
+6. **Decimation (optional).** `temporal_stride N > 1` keeps every N-th ROI frame
+   (12.5/6.25/3.125 fps) and shortens the respiration window to the kept
+   duration, mirroring `build_pretraining_model`'s own arithmetic.
+   **It REQUIRES `sig_kernel = tubelet_t * N / fps * fs`** (2*2/25*100 = 16 for
+   N=2): the identity below is a hard model check, and forgetting this rescale
+   is the one way to break the config (the model refuses to build and says
+   which sig_kernel to use). A stride change is also a NEW geometry -- the video
+   token count changes (8 s: 1600 tokens at N=1 vs 800 at N=2), so the pos-embed
+   shape differs and checkpoints are not interchangeable across strides. Note
+   the sentinel rule is applied to ALL source frames of the window, not only to
+   the decimated ones (the ROI box uses every frame), which is the conservative
+   choice.
+
+### Geometry contract (identical to the existing runs)
+
+```
+T        = round(clip_duration * fps / temporal_stride), rounded DOWN to a multiple of tubelet_t
+kept     = T * temporal_stride / fps                  (dropped tail shortens the window)
+L        = round(kept * fs)                           (per-clip, not clip_duration*fs)
+grid_t   = T / tubelet_t                              must equal n_signal = L / sig_kernel
+```
+
+With the shipping local geometry (`clip_duration 8.0`, `clip_stride 4.0`,
+`fs 100`, `tubelet 2,16,16`, `input_size 64`) at the two decimations:
+
+```
+temporal_stride 1: sig_kernel 8   T=200  grid_t=100  n_visual=1600  L=800  n_signal=100  80 ms/token
+temporal_stride 2: sig_kernel 16  T=100  grid_t= 50  n_visual= 800  L=800  n_signal= 50 160 ms/token
+```
+
+(The SHIPPED config uses stride 2 -- half the visual tokens, i.e. ~4x cheaper
+attention at 8 s, which is ample for respiration: 12.5 fps vs a <1 Hz signal.
+`ImplementationPlan.md` §4.7's Nyquist rule bounds stride 2 for bvp and stride 8
+for resp/eda, so 2 is safe here and 4 would also be safe for a resp-only run.)
+
+`MultiModalMAE._check_space_time_alignment()` enforces this as a hard
+`ValueError`, so a mismatch fails at model build rather than silently training on
+desynchronised streams.
+
+---
+
+## 4. Compatibility with the previous experiments (RGB, BVP)
+
+The requirement is that `rgb,bp` / `rgb,bp,resp` / `rgb,tir,...` runs behave
+**exactly** as before. What that means concretely:
+
+| component | change | backward compatibility |
+| --------- | ------ | ---------------------- |
+| `data/paired_dataset.py` | **none** | untouched |
+| `data/datasets.py::build_pretraining_dataset` | dispatch added on `args.data_set`; default branch unchanged | `bp4d+`/`paired`/absent → `PairedPretrainDataset` exactly as before |
+| `core/multimae.py::build_pretraining_model` | **none** | geometry/loss/masking code untouched |
+| `core/multimae.py::load_pretrained_encoder` | patch-embed destination is now *resolved* instead of hardcoded `adapters.rgb` | with `rgb` in the stream set the resolved destination **is** `adapters.rgb` → identical result (verified: 148 tensors loaded, as before) |
+| `runners/run_pretrain.py` | new optional flags (`--data_set`, `--raw_root`, `--roi_padding`) | existing configs never set them → same defaults; `data_set` defaults to `bp4d+` |
+| existing configs (`stage2_local_scratch/_pretrained`) | **none** | untouched; the new experiment is a NEW config file |
+| `configs/pretrain/stage2_local_*.yaml` twin invariant | **none** | still differ in exactly `pretrained_encoder`/`inflate_rgb_patch`/`output_dir` |
+
+The new run is therefore **additive**: a new dataset class, a new config, and one
+resolution step in the Stage-1 init path.
+
+---
+
+## 5. Procedures
+
+### P1 — dataset
+
+`data/tir_resp_dataset.py::TirRoiRespPretrainDataset` (new class, same module as
+the ROI primitives) wraps `BP4DPlusTIRRespDataset(norm='none')` and returns
+
+```python
+{'tir': float32 [3, T, S, S], 'resp': float32 [1, L]}
+```
+
+i.e. exactly the stream keys/ranks `MultiModalMAE` expects. `data_set: tir_roi`
+(alias `tir_roi_resp`) selects it through
+`data/datasets.py::build_pretraining_dataset`.
+
+### P2 — model
+
+No change: `streams: tir,resp` satisfies the Stage-2 modality contract (≥1 video
++ ≥1 1-D physio). `STREAM_CHANNELS['tir'] = 3` is already correct (the thermal
+stream is a false-colour rendering, not gray).
+
+### P3 — Stage-1 init routing
+
+`--pretrained_encoder videomae:base` with a TIR-only stream set used to leave
+`adapters.tir` **random** (the checkpoint's `patch_embed.proj` was routed to the
+non-existent `adapters.rgb` and counted as "skipped"). `load_pretrained_encoder`
+now resolves the destination to the first visual adapter that EXISTS
+(`rgb` → `tir` → …), so the VideoMAE `Conv3d(3, 768, (2,16,16))` tubelet is
+copied **verbatim** into `adapters.tir` — the same 3-channel, same-tubelet
+geometry, i.e. this run inherits the temporal kernel as well as the 12 encoder
+blocks.
+
+```bash
+# local config ships the VideoMAE init; the from-scratch A/B twin is a CLI override:
+python runners/run_pretrain.py -c configs/pretrain/stage2_local_tir_roi_resp.yaml
+python runners/run_pretrain.py -c configs/pretrain/stage2_local_tir_roi_resp.yaml \
+    --pretrained_encoder '' --output_dir ../output/pretrain/stage2_local_tir_roi_resp_scratch
+```
+
+### P4 — masking and loss policy for this stream set
+
+**The objective as shipped** (verified numerically: `0.343 + 0.5*1.048 = 0.867`
+= the logged loss, and `losses_spectral == {}`):
+
+```
+loss = 1.0 * mse_tir + 0.5 * mse_resp          # per-modality MASKED MSE, masked positions only
+```
+
+The **STFT term is NOT in this objective**: `spectral_weight: 0.0` makes
+`_spectral_streams == []` and `spectral_fn is None`, so `MultiResolutionSTFTLoss`
+is never even constructed — no extra compute and no extra gradient. It is an
+OPT-IN term, folded into the physio stream's contribution as
+`contrib = lambda_s·MSE_s + w_s·MR-STFT_s` (so a positive weight gives
+`loss = mse_tir + 0.5·mse_resp + w·spec_resp`), computed on the ASSEMBLED clip
+waveform (`pred.reshape(B, -1)`; legal because `SignalEmbed` uses
+kernel == stride, so the concatenated tokens ARE the clip in order). It is
+defined on 1-D waveforms only (a positive weight on a video stream raises) and
+requires `target_norm: clip` (it raises with token norm).
+
+**DECISION 2026-09-26 (user): the spectral loss is NOT part of Stage 2.** It
+belongs to the **Stage-3 finetuning** of the targeted 1-D signal, where it is a
+FULL-weight term on the FINAL waveform: `WaveformJointLoss` `gamma = 1.0` in
+every `configs/finetune/*.yaml` (unchanged, and per-branch `fft_sizes`). The
+Stage-2 term is therefore **0.0 in every shipped `configs/pretrain/*.yaml`**, a
+positive Stage-2 weight now prints a warning, and the shared loss gained a
+degenerate-target guard. Why (both measured, §7.5 and §9): as a masked-
+reconstruction term it is satisfied by within-modality interpolation — a linear
+interpolator of the visible resp BEATS the trained model on the very spectral
+metric (`spec_resp 0.98` vs `~5.0`) — and it is the spike trigger
+(`spec_resp` up to `4.3e10` from a railed target whose z-score is exactly zero).
+**Consequence for the collapse:** Stage 2 now has NO spectral lever, so the
+`mse_resp ~ 1.05` floor must be attacked by MASKING (§9.4 levers 1-3: span
+masking, near-complete masking, `target_norm: token`) — the E1-E3 span ladder is
+the path, not a spectral prior.
+
+* `mask_ratio_tir: 0.90` (as shipped) — the thermal stream is now the *primary*
+  visual stream, so it gets the visual budget. NOTE `0.90` on a 4x4 patch grid
+  leaves only 2 of 16 patches visible per frame; `0.75` is the safer choice at
+  64 px and costs nothing to try.
+* `mask_ratio_resp: 0.50` — NOT 0.90. A physio stream's gradient path to the
+  encoder is its **visible** tokens only (`dec = cat([z_visible, mask_tokens])`),
+  so 0.90 leaves ~5 of 50 tokens and 1.0 would zero the encoder path entirely.
+* `signal_weight: 0.5` per-modality masked-MSE weight for `resp`; the visual
+  stream stays at 1.0. `target_norm: clip` (mandatory if the spectral term is
+  ever re-enabled, and it removes the per-token z-score shortcut that lets
+  the decoder solve reconstruction from position alone — the standing
+  collapse hypothesis, §7).
+
+### P5 — local smoke run
+
+```bash
+cd code
+python runners/run_pretrain.py -c configs/pretrain/stage2_local_tir_roi_resp.yaml \
+    --epochs 1 --warmup_epochs 0 --max_entries 2 --num_workers 0 \
+    --output_dir /tmp/tir_roi_probe
+```
+
+`--warmup_epochs 0` is **required** for a smoke: the config's `warmup_epochs: 5`
+with `--epochs 1` trips the pre-existing `cosine_scheduler` assertion
+(`utils/lr_sched.py`, "5 != 1") before any training happens.
+
+Expected: `Model = project_multimae_base`, the geometry block prints
+`num_frames 100 / seq_len 800 / n_visual 800 / n_signal 50` (stride 2 as
+shipped; stride 1 would print `200 / 800 / 1600 / 100`), the init prints the
+resolved patch-embed stream (`adapters.tir`), and the epoch logs both `mse_tir`
+and `mse_resp`.
+
+### P6 — real local run
+
+```bash
+cd code && source scripts/env_local.sh
+python -u runners/run_pretrain.py -c configs/pretrain/stage2_local_tir_roi_resp.yaml \
+    2>&1 | tee ../output/pretrain/stage2_local_tir_roi_resp/train.log
+```
+
+`mkdir -p` the output dir first: piping into `tee` for a directory that does not
+exist kills the run with SIGPIPE and no traceback. **`-u` is not optional**: piped
+stdout is block-buffered, so a Ctrl-C'd run leaves a `train.log` with the config
+dump and `Start training for 40 epochs` but ZERO epoch lines (this happened on
+2026-09-26 and hid a divergence for 11 epochs). `PYTHONUNBUFFERED=1` works too.
+
+### P7 — read the result before trusting it
+
+Stage-2 loss is a **monitor, not a metric** (pretrain-on-all, no validation
+split). Because `target_norm: clip` z-scores each stream per clip, a trivial
+constant predictor scores ≈ **1.0 per stream**; and `clip_grad: 0.0` is a real
+"off" (after the 2026-09-23 `native_scaler` fix) — do not read a flat loss as
+convergence, and remember that AdamW's decoupled weight decay moves weights with
+**zero** gradients.
+
+Check, in this order:
+
+1. `mse_tir` must fall clearly below ~1.0 (a visual stream that cannot beat a
+   constant is not learning appearance);
+2. `mse_resp` vs ~1.0 — this is where the previous runs failed (bp/resp ended at
+   or above the trivial baseline, see `ImplementationPlan.md` §4);
+3. the **encoder gate**: pooled features of the unmasked encoder must not
+   collapse to an input-independent constant (the `/tmp/eval_new_run.py`
+   procedure: pooled-`h` variation across clips, with the VideoMAE-init value as
+   the reference);
+4. only then is a Stage-3 thermal→resp fine-tune meaningful.
+
+**Read the LAST STEP of an epoch, not the epoch average** - a single spike can
+dominate an average. §7 shows what a spike looks like and what caused one.
+
+### P8 — HPC scaling
+
+The recipe scales by data, not by code: `max_sessions`/`max_entries: 0`,
+`clip_stride: 1.0-2.0`, and `input_size: 224` — but 224 px is **not** free with
+this encoder: `input_size` 224 with `tubelet 2,16,16` gives 196 patches/frame →
+`n_visual = 9800` tokens, and the MAE-style attention in `core/blocks.py`
+materialises the full `N*N` matrix (12 heads x 9800^2 x 2 B = 2.3 GB per batch
+item). Raise resolution only together with a geometry change that still
+satisfies the alignment identity (e.g. `temporal_stride 2` + `sig_kernel 16`).
+
+---
+
+## 6. Verification gates (all pass locally)
+
+| # | check | how | result |
+| - | ----- | --- | ------ |
+| 1 | dataset contract | `TirRoiRespPretrainDataset(...)[0]` | keys `{tir, resp}`, `[3,100,64,64]` + `[1,400]`, `float32`, TIR in `[0,1]`, resp in raw volts (-4.81..0.33), DataLoader collate `[2,3,100,64,64]` + `[2,1,400]` |
+| 2 | geometry identity | dataset `T`/`L` vs `build_pretraining_model` | both `T=100`, `L=800`, `n_visual=800`, `n_signal=50` at the shipped stride 2 (`sig_kernel 16`), and `T=100/L=400/n_signal=50` at stride 1 (`sig_kernel 8`); `_check_space_time_alignment` passes in both |
+| 3 | forward + loss | 1-epoch smoke (`--max_entries 2`) | `loss 5.07`, `mse_tir 2.189`, `mse_resp 4.273`, `spec_resp 7.478`, `grad_norm 79.6` |
+| 4 | init routing (tir) | `load_pretrained_encoder` on a `tir,resp` model | `loaded 148, skipped 0, patch_stream='tir'`; `adapters.tir.patch_embed.weight` **bit-equal** to the checkpoint `Conv3d`, and its two tubelet time-slices DIFFER (a real temporal kernel, not boxcar) |
+| 5 | **no RGB regression** | same call on an `rgb,bp,resp` model | `loaded 148, skipped 0, patch_stream='rgb'`, `adapters.rgb` bit-equal — identical to before the change |
+| 6 | **no RGB/BVP run regression** | `stage2_local_pretrained.yaml`, 1 epoch, 2 entries | runs as before: `mse_rgb 2.082 / mse_bp 2.683 / mse_resp 4.514 / spec_bp 3.777`, 148 tensors -> `adapters.rgb` |
+| 7 | ROI + data rules | `python data/tir_resp_dataset.py --clip_seconds 4 --n_check 3` | PASS: 431 clips / 40 sessions / 0 skipped / 9 dropped; box containment, tensor==crop, resp==raw slice; synthetic untracked session skipped with 0 clips |
+
+---
+
+## 7. Failure modes seen in the first real run (2026-09-26)
+
+The first real run (`clip_duration 8.0`, `clip_stride 4.0`, `batch_size 4`,
+`mask_ratio_tir 0.90`, `lr 1e-3`, `clip_grad 0.0`, `spectral_weight 0.1`)
+**diverged**, which the user read as "loss is high and reduces slowly".
+Diagnosis, in order of discovery:
+
+1. **The loss SCALE is expected and is not comparable to 0.** The loss
+   decomposition was verified exactly: `loss = mse_tir + 0.5*mse_resp +
+   0.1*spec_resp` (init: `2.152 + 0.5*3.406 + 0.1*8.595 = 4.715`). Under
+   `target_norm: clip` a CONSTANT predictor scores exactly **1.0 per stream**,
+   so the realistic envelope is `4.7 -> ~1.4`, not `-> 0`. 54 % of the initial
+   loss is the two respiration terms, whose floor is where the documented
+   `physio` collapse sits.
+2. **The run really did blow up.** `checkpoint-0010` evaluated on 24 fixed
+   clips: `mse_tir 11.96`, `mse_resp 556 017`, `max|pred_resp| = 1371` (all 24
+   clips, so not one bad sample). At `checkpoint-0000` it was already
+   unhealthy: `mse_tir 0.418` (good) but `mse_resp 6.76` (worse than the 3.41
+   init). `182/182` optimizer `exp_avg` were non-zero, so gradients WERE
+   flowing - this is not the old `clip_grad 0` zero-gradient bug.
+3. **It was an ACTIVATION runaway, not a weight explosion.** Every parameter
+   group stayed within ~2x of init (`enc_blocks` 266 -> 520, `positions.tir`
+   784 -> 723, `heads.resp` 3.97 -> 2.58). The residual stream amplified instead:
+   at `checkpoint-0010` the encoded `tir` tokens reach 60.7 (vs ~1-2 at init)
+   and the prediction 1371. Note the target itself is ALWAYS bounded,
+   `|z| <= 1` (`(x-mean)/sqrt(var+eps)`), so a masked MSE of 556 017 can only
+   mean the PREDICTION exploded - that is a useful 1-line diagnostic.
+4. **The MR-STFT term is the trigger.** `spec_resp` reached **3.7e8** in single
+   steps with `grad_norm ~5e8` (reported pre-clip). Removing it
+   (`spectral_weight 0.0`) eliminated the spikes completely: the epoch average
+   tracks the last step (`0.877` vs `0.857` avg/step) and `grad_norm` is O(1-7)
+   instead of 1e8.
+5. **The EXACT mechanism (measured, next run with `spectral_weight 0.1` and
+   windows `128,256,512`): a zero-variance TARGET makes the scale-invariant
+   denominator vanish.** `spec_resp` hit **4.3e10 in a single step** while every
+   **median** value in the log stayed at 4.7-8.8 — the parenthesis, i.e. the
+   epoch global average, is what blew up (the median is a robust statistic; see
+   the log-reading note above) — so the model never exploded: one batch carried
+   the spike and the epoch AVERAGE stayed polluted for the rest of the epoch
+   (1.2e9 at step 10 -> 2.8e8 at step 96; over 97 steps that is ~2.7e10 summed,
+   i.e. 2 spikes of ~1.4e10, matching the predicted 3.07 % of batches). Root
+   cause, term by term:
+
+   * the spectral-convergence term is `||P - T|| / (||T|| + 1e-8)`, i.e.
+     SCALE-INVARIANT in the target;
+   * under `target_norm: clip` the target is `(x - mean)/sqrt(var + eps)`, so a
+     clip whose respiration is a **constant rail** becomes **exactly zero**;
+   * `||T|| = 0` -> `sc = ||P|| * 1e8`. Measured on a real clip: `sc 2.8e10 /
+     4.0e10 / 5.9e10` for the three windows, `||T|| = 0` exactly, vs
+     `sc 1.21 / 1.24 / 1.29` and `||T|| 343 / 455 / 613` on a normal clip;
+   * the **log-magnitude L1 term is NOT the culprit** (15.4 there vs 6.4 on a
+     normal clip) -- an earlier version of this note blamed it;
+   * `0.1 * 4.3e10 = 4.3e9` of loss and a pre-clip `grad_norm` of ~2.5e9, i.e.
+     exactly the orders of magnitude in the log. `clip_grad 5.0` is what keeps
+     this from destroying the run (the earlier divergence had
+     `clip_grad 0.0`).
+
+   The pathological clips are **3 of 388 (0.8 %)**, all a `-10.0000 V` rail:
+   `F004_T3` clip 0 (t 0 s) and `F004_T7` clips 0-1 (t 0/4 s) -- the leading
+   seconds of those two recordings are a dead/disconnected channel. Both files
+   vary overall, so this is a CLIP-level, not a session-level defect. The raw
+   8 s spread separates the classes cleanly: those 3 have spread EXACTLY `0 V`
+   and the next smallest clip is `0.093 V`. With `batch_size 4` over a random
+   sampler, `P(batch contains >= 1) = 3.07 %` -> **~3 polluted steps per 97-step
+   epoch**, which is precisely what the log shows (epoch 0: inside the first 10
+   steps; epoch 1: between steps 30-40; epoch 2: none in the first 44).
+
+   **So: the random sampler explains WHEN, the degenerate clip explains WHAT.**
+   Two independent fixes, both cheap; either removes the spike:
+
+   * **loss guard** (robust, general): compute `||T||` per sample and average the
+     spectral term over the samples with `||T|| > tol` only (skip the term when
+     none qualify). A scale-invariant ratio is meaningless when the reference
+     has no energy, so this is a correctness fix, not a clamp.
+   * **dataset rule** (specific, but also semantically right): drop clips whose
+     respiration window is (near-)constant -- a rail is a missing sensor, not a
+     breathing target, and the "predict 0" lesson it teaches is at best useless.
+     With a threshold anywhere in `(0, 0.09) V` this removes exactly those 3
+     clips and nothing else (388 -> 385).
+     **IMPLEMENTED 2026-10-01** as `min_signal_spread` (volts, default `0.0` =
+     off, exposed as `--min_signal_spread` on `run_pretrain` / `run_waveform` /
+     `run_inspect_tir_resp`); the shipped TIR-ROI configs set `0.01`. The rule
+     is per WINDOW (`max - min` of the raw window, computed on the model's
+     respiration grid), so a window that merely CONTAINS a rail but has real
+     breathing elsewhere is kept. RE-MEASURED on the low+moderate corpus (tasks
+     `T2,T3,T4,T7,T8,T10`): at 8 s / 4 s hop only **3 of 193 windows** have
+     spread exactly `0 V` -- F004_T3 @0 and F004_T7 @0/@4 s, i.e. exactly the
+     three clips this note predicted -- and the **next smallest spread is
+     0.86 V**, a much wider gap than the 0.09 V measured on the all-task corpus,
+     so any threshold in `(0, 0.86)` is equivalent (0.01/0.05/0.09 all give
+     178 clips vs 181). At the Stage-3 hop (2 s) it removes 4 of 79 val clips
+     and **0 training clips** -- so on the subject-disjoint split this cleans
+     the EVALUATION set, not training. Why it matters beyond hygiene: an
+     all-zero target gives a trivial zero predictor a free PERFECT score, so
+     those clips deflate the very baseline the model is measured against --
+     measured on the `--gamma 10` run, dropping them moves the constant-0
+     baseline MAE from 0.7163 to 0.7545 while the model's own MAE barely moves
+     (0.8236 -> 0.8241), i.e. the comparison becomes fair rather than kinder.
+   * A NEAR-constant window is worse than an exactly-constant one: z-scoring
+     amplifies sensor noise to unit variance, so the target looks statistically
+     normal while being meaningless. Anything at the loss level (or a threshold
+     on the raw spread, not on the z-score) catches both.
+
+**Recipe that is stable (measured at the same 8 s / batch-4 geometry):**
+
+```
+clip_grad:        5.0      # was 0.0 = OFF; 5-10 clips the rare resp spikes
+spectral_weight:  0.0      # was 0.1 = the trigger; re-add later, small, once healthy
+lr:               3.0e-4   # was 1e-3
+```
+
+2 epochs of the fixed config: epoch 0 `loss 2.69 / mse_tir 0.483 /
+mse_resp 4.418`, epoch 1 `loss 0.901 / mse_tir 0.376 / mse_resp 1.052`,
+`grad_norm` avg 2.91, **67 s/epoch** (385 clips, batch 4) -> 40 epochs ~ 45 min.
+
+**How to read the log (corrected 2026-09-26).** `SmoothedValue`'s default format
+is `'{median:.4f} ({global_avg:.4f})'` (`utils/logger.py:31`), so the FIRST
+number is the **median of the last 20 steps** — NOT the current step — and the
+parenthesis is the **epoch global average**. That matters exactly here: the
+median is deliberately spike-resistant, so a huge AVERAGE next to a sane MEDIAN
+IS the signature of a rare outlier batch (this is how the §7.5 spike was
+spotted, and it is why the median column stayed 4.7-8.8 while the average went
+to 1e9). The parenthesis is the number a single bad step destroys. `grad_norm`
+is measured BEFORE clipping, so it shows the spike even though the applied step
+was clipped; `time`/`data_time` use plain `{avg:.4f}`.
+
+**Still open after the fix: `mse_resp = 1.05` is exactly the constant-predictor
+floor.** The visual stream learns (`mse_tir 0.38`, far below 1.0) but the
+respiration stream does not beat a constant -- the same Stage-2 physio collapse
+documented in `ImplementationPlan.md` §4, now reproduced in the thermal-only
+setting. Turning the STFT off has a second benefit: it UNBLOCKS
+`target_norm: token` (the model refuses a spectral weight with token norm), which
+is the standing hypothesis for the collapse (per-token normalisation lets the
+decoder reconstruct from position alone). That is the next experiment.
+
+
+## 8. Implementation record
+
+**Files added**
+
+* `data/tir_resp_dataset.py::TirRoiRespPretrainDataset` +
+  `build_tir_roi_pretrain_dataset(args)`.
+* `configs/pretrain/stage2_local_tir_roi_resp.yaml` (local, VideoMAE-inherited
+  init, `streams: tir,resp`).
+* `data/task_groups.py` — named `task_groups:` -> explicit task-label resolution
+  (added 2026-09-30, see §11).
+* this document.
+
+**Files changed (additive only)**
+
+* `data/datasets.py` — `build_pretraining_dataset` dispatches on
+  `args.data_set` (`tir_roi` / `tir_roi_resp` → the new builder).
+* `core/multimae.py` — `load_pretrained_encoder` resolves the patch-embed
+  destination (report included in the returned counts dict).
+* `runners/run_pretrain.py` — `--data_set`, `--raw_root`, `--roi_padding`.
+* `runners/run_pretrain.py` / `runners/run_waveform.py` /
+  `runners/run_inspect_tir_resp.py` + the two TIR-ROI configs — the
+  `task_groups:` / `--task_set` selection added 2026-09-30 (see §11).
+
+**Local corpus (re-inventoried 2026-09-26: the raw tree grew from 11 thermal
+videos to 40 -- `F001..F004` x `T1..T10`).** Stats: **45 858 thermal frames /
+30.6 min**, an `IRFeatures` file for EVERY video, `lines == video frames` on all
+40 sessions, `Resp_Volts.txt` for all 40, and 3 sessions containing `(0,0)`
+sentinel lines (F001_T8 112/227, F002_T7 2/1111, F003_T3 70/1852). Clip budget:
+
+| window | hop | clips | windows dropped (sentinels) |
+| ------ | --- | ----- | --------------------------- |
+| 4 s | none | 431 | 9 |
+| 4 s | 2 s | 843 | 17 |
+| 4 s | 1 s | 1663 | 34 |
+| 8 s | none | 206 | 7 |
+
+Measured throughput at `input_size 64`, `batch_size 2`: **0.26-0.32 s/step on a
+local GPU** (32 steps/epoch) -> ~843 clips / 2 = 422 steps = **~2 min/epoch**, so
+the shipped 40-epoch recipe is ~1.5 h (the ROI path decodes each clip's frames on
+demand; `num_workers: 4` keeps the GPU fed). These counts are per WINDOW, so a
+`temporal_stride` does not change them -- it only changes `T`/`L` and the visual
+token count (`sig_kernel` must be rescaled with it, see §3).
+
+**Open items**
+
+* `resp` here is resampled from the raw 1000 Hz file onto the model grid, which
+  is *not* bit-identical to the canonical `signals.csv` column (anti-aliased
+  100 Hz from `prepare_bp4d.py`). If Stage-3 evaluation must line up with the
+  canonical numbers exactly, add a `resp_source: canonical` mode.
+* `roi_padding` is a genuine trade-off, measured: over F001_T1's 8 clips the
+  static box is 84x98..125x111 px (2.5-4.5x the single-frame mouth+nose area),
+  except the last clip where the subject turns away (118x162 px, 7.5x) — the
+  patch then contains eyes+nose+mouth. Tightening means `roi_padding: 0`,
+  shorter clips, or a spread threshold; **not** per-frame boxes (that
+  reintroduces the spatial jitter the static box exists to avoid).
+* The raw respiration rails at exactly `-10.0000 V` in some sessions
+  (F001 T2/T6/T7/T8). It is fed through as measured; z-scoring hides the rail
+  from the loss but not from the signal.
+
+---
+
+## 9. Research note — does a spectral term make sense on a 50 %-masked 1-D stream?
+
+Asked before re-enabling `spectral_weight`. **Measured answer: no** — not as a
+Stage-2 lever, and the measurement also exposes why the resp stream collapses.
+Both probes were run on the shipped geometry (8 s clips, stride 2, `N=50` resp
+tokens of 16 samples, `sig_kernel 16`, mask 0.5) over 24 real clips.
+
+### 9.1 Where the spectral gradient goes (one forward pass, both terms split)
+
+`spectral_weight 0.1`, `target_norm clip`, batch 4, effective training weights:
+
+| parameter group | grad(MSE part) | grad(MR-STFT part) | STFT/MSE |
+| --------------- | -------------- | ------------------ | -------- |
+| `adapters.tir` | 4.90 | 0.99 | 0.20 |
+| **`enc_blocks` (the shared encoder, all Stage 3 keeps)** | **13.09** | **2.66** | **0.20** |
+| `dec_blocks` (discarded at Stage 3) | 24.00 | 2.39 | 0.10 |
+| `heads.tir` | 2.28 | 0.00 | 0 |
+| `heads.resp` | 6.60 | 0.94 | 0.14 |
+| `mask_token` | 0.81 | 0.07 | 0.08 |
+
+So the term is **not** confined to the decoder: it supplies ~17 % of the
+encoder's gradient magnitude. But look at *what* it is computed on: the
+assembled waveform is 50 % exact copies of the given (visible) signal and 50 %
+decoder synthesis, and the STFT window (2.56 s at the largest FFT) always
+straddles both. Its residual is therefore dominated by **mask-boundary
+continuity**, i.e. it rewards a smooth interpolation across the gap — a
+constraint the encoder can satisfy without encoding any cross-modal information.
+
+### 9.2 Is the masked task solvable with ZERO video information?
+
+| predictor (uses only the VISIBLE resp samples) | `mse_resp` (masked) | `spec_resp` (MR-STFT) |
+| ---------------------------------------------- | ------------------- | --------------------- |
+| constant 0 — the trivial floor | 0.9989 | 5.0932 |
+| **linear interpolation between the nearest visible samples** | **0.1299** | **0.9709** |
+| ground truth (upper bound) | 0.0 | 0.0 |
+| *for reference:* the trained model (epoch 1, same geometry) | 1.052 | ≈5.0 |
+
+**A five-line linear interpolator — no video, no encoder, no learning — beats the
+trained 102 M-parameter model by 8x on the masked MSE and 5x on the very spectral
+metric the term is supposed to enforce.** The reason is structural: respiration
+is band-limited (0.16-0.4 Hz, period 2.5-6.25 s) while the physio stream is
+sampled at 100 Hz (`sig_kernel 16` = 0.16 s per token), i.e. oversampled
+~30-60x, and `_random_mask` masks tokens **scattered individually**, never as
+spans — so every masked token has visible neighbours 0.16-0.32 s away.
+
+### 9.3 Conclusion
+
+1. **The spectral optimum is reachable without the encoder**, so the term
+   cannot force the encoder to represent periodicity — it is satisfied by the
+   same within-modality interpolation shortcut that causes the collapse.
+2. **The loss family is not the problem; the masking design is.** A scattered
+   mask on an oversampled band-limited signal creates a reconstruction task
+   whose easiest solution bypasses the video entirely.
+3. **Scale pathology:** the log-magnitude L1 (floor `1e-6`) is unbounded, and at
+   the weights tried it produced `spec_resp 3.7e8` / pre-clip `grad_norm 5e8`
+   and destroyed the model (§7). An unbounded term whose optimum is already
+   attained by interpolation is a bad trade.
+4. **Precedent:** masked-autoencoder recipes (MAE, VideoMAE, MultiMAE,
+   Audio-MAE) reconstruct masked patches with MSE/L1 — none add a spectral loss
+   on the reconstructed waveform; Audio-MAE masks *spectrograms* yet still uses
+   plain MSE. MR-STFT / spectral-convergence losses come from neural vocoders
+   and speech enhancement (Parallel WaveGAN, MelGAN), where they supervise the
+   FINAL generated waveform with no masking. rPPG works that use a
+   frequency-domain loss supervise the final signal, usually via an
+   HR/dominant-frequency or PSD-peak term against the reference rate, not a
+   multi-resolution magnitude match. So this design has no precedent, and §9.2
+   shows why.
+
+### 9.4 What to do instead (ordered levers that attack the actual cause)
+
+1. **Span masking for the physio stream.** Mask CONTIGUOUS blocks of resp
+   tokens (ideally >= 1 breath, several seconds) so interpolation across the gap
+   is impossible and reconstruction requires extrapolation from the video. Code
+   change: `core/multimae.make_masks` uses `_random_mask` for every non-visual
+   stream; a span/block variant is needed (a 90 % contiguous span was
+   monkeypatched once to verify STFT/mask compatibility, never added to the
+   model). **Full design, implementation contract, measured difficulty by
+   pattern and acceptance criteria: `code/notes/design/SpanMask_PhysioSignals.md`.**
+2. **Mask the physio stream completely** (the clamp allows `N-1` of `N`, i.e.
+   49/50 ≈ 98 %), which makes Stage 2 the *same task* as Stage 3's "full sensor
+   failure" protocol instead of a same-modality interpolation exercise.
+3. **`target_norm: token`** — kills the position-wise-mean shortcut and is now
+   UNBLOCKED because the spectral term is off. Cheap to test, but note it does
+   not by itself defeat interpolation.
+4. **Only reconsider a spectral term after the model actually beats the
+   interpolator** (target: `mse_resp < 0.13` **and** `spec_resp < 0.97`). Below
+   those numbers there is nothing for a spectral prior to regularise; above
+   them the encoder is demonstrably not using the video.
+
+### 9.5 Implementation (2026-09-26) — the FFT windows are now PER STREAM
+
+Prompted by "is `fft_sizes` determined by the targeted modality?". It was not:
+Stage 2 built **one** `MultiResolutionSTFTLoss` and applied it to *every* physio
+stream, while the Stage-3 finetune configs **already** carried one window set per
+branch (`bp`/`bp_local`/`resp`/`resp_local`: `fft_sizes: '64,128,256'`,
+`eda: '256,512,1024'`). Changed (additive; see `code/README.md` and
+`ImplementationPlan.md` §6 for the user-facing description):
+
+* `core/multimae.py` — `parse_fft_sizes` (``'64,128,256'`` | `'resp=128/256/512,bp=64/128/256'`
+  | YAML mapping | `''`/`'auto'`), `_window_set`, `_fft_sizes_spec` (the
+  `--fft_sizes` Stage-3 alias), `_window_summary`, `SPECTRAL_FFT_DEFAULTS` /
+  `SPECTRAL_FFT_FALLBACK`; `MultiModalMAE` resolves per stream into
+  `self.spectral_fft_sizes: {stream: [windows]}` and
+  `self.spectral_fns: {stream: fn}` (equal windows share ONE module, so the
+  uniform case is byte-identical to the old single `self.spectral_fn`).
+* `runners/run_pretrain.py` — `--spectral_fft_sizes` (default is now `''` =
+  per-modality table) accepts the per-stream form, and `--fft_sizes` is the
+  Stage-3 alias for the same knob.
+* a `[spectral]` block is printed at build time: per stream the weight, whether
+  the set came from the config or the default table, the windows in
+  samples/seconds/Hz bins, and any window **DROPPED** for exceeding the clip.
+* `core/multimae.spectral_self_test()` (run by `python -m core.multimae`, along
+  with `mask_self_test`).
+
+**Verified.** Every shipped `configs/pretrain/*.yaml` resolves to exactly the
+windows it used before — all of them set `spectral_fft_sizes: 64,128,256`
+explicitly, i.e. the *global* form, e.g. `stage2_local_pretrained.yaml` →
+`{'bp': [64, 128, 256], 'resp': [64, 128, 256]}` — so no existing run changes
+meaning; `python -m core.multimae` → *ALL PASS* (both self-tests); and a 1-epoch
+real-data smoke (`--spectral_weight 0.05 --spectral_fft_sizes 'resp=128/256/512'`)
+logs `spec_resp` with `loss = mse_tir + 0.5·mse_resp + 0.05·spec_resp` exactly
+(2.0890 + 0.5·3.2286 + 0.05·7.8117 = 4.0939 vs the printed `loss 4.0940`).
+
+The **term stays OFF** in every shipped Stage-2 config (`spectral_weight: 0.0`),
+so this changed the plumbing, not the objective — the E0 objective is untouched
+(the whole spectral block is skipped when no stream carries a weight).
+
+**SCOPE DECISION 2026-09-26 (user): the spectral loss is a Stage-3 concern.**
+Stage 2 never uses it (every `configs/pretrain/*.yaml` is `0.0`, and a positive
+Stage-2 weight prints a warning); Stage 3 applies it at FULL weight to the
+FINAL waveform (`WaveformJointLoss`, `gamma = 1.0`). That makes the
+zero-variance-target failure in §7.5 a Stage-3 risk too — the same railed
+respiration windows are z-scored by `data/paired_dataset.py`
+(`physio_norm: 'zscore'`, `(w - mean)/(std + 1e-6)`), so a constant window is
+also exactly zero there and would divide by ~0 inside a `gamma = 1.0` term (10x
+the Stage-2 weight). `MultiResolutionSTFTLoss` therefore now EXCLUDES samples
+whose `||T||` is (near-)zero and warns once; for an all-valid batch the value is
+bit-identical to before, so no existing Stage-2/3 result changes.
+
+---
+
+## 10. Stage-3 handoff — the TIR-ROI -> RESP fine-tuning branch (2026-09-26)
+
+The Stage-2 run finished (40 epochs, `output/pretrain/stage2_local_tir_roi_resp/`,
+newest `checkpoints/checkpoint-0039.pth`). This section records what the Stage-3
+side needed, because a config alone was NOT enough: the Stage-3 data path
+returned RGB (or a full-frame rgb+tir channel stack) and never the ROI crop.
+
+### 10.1 What was missing (all measured, not assumed)
+
+| gap | evidence |
+| --- | --- |
+| Stage-3 `build_dataset` had no thermal-ROI branch | only `PAIRED_DATA_SETS` -> `PairedSessionDataset` |
+| that dataset cannot return TIR alone | `_load_visual` returns RGB, or `cat([rgb, tir])`; no `streams` arg |
+| the model rejects the 6-channel stack | `streams=tir` + `use_tir` -> `RuntimeError: expected 3 channels, got 6`; `streams=rgb,tir` -> `ValueError: expects a dict ... got a single tensor` |
+| `--use_tir` + `streams` guard made it unrunnable | `run_waveform` raised `SystemExit` for `streams: tir` with `use_tir` off |
+| TIR was FULL-FRAME | `read_all(target_size=input_size)` = the whole 726x480 frame squashed to 64x64, not the mouth+nose crop |
+| the corpus did not match | canonical tree = **11 sessions**; the Stage-2 run used **40** |
+| `entries.json` export assumed the paired layout | `for m, t in dataset_val.entries` vs the ROI dataset's clip DICTS |
+
+### 10.2 What was added (all additive)
+
+* `data/tir_resp_dataset.py::TirRoiRespFinetuneDataset` — the Stage-3 view of the
+  RAW tree. It SUBCLASSES `TirRoiRespPretrainDataset`, so the ROI crop, the
+  geometry expressions and the exclusion rules are literally the Stage-2 ones
+  (identical by construction, not by re-implementation), and adds: a
+  subject-disjoint `is_train`/`train_ratio`/`split_by` split, a `val_subject`
+  leave-one-subject-out override, the `(tir, waveform)` tensor contract, and the
+  per-clip `physio_norm` (the Stage-3 analogue of the Stage-2 `target_norm: clip`).
+* `data/tir_resp_dataset.py::build_tir_roi_finetune_dataset(is_train, test_mode, args)`
+  and the `data/datasets.build_dataset` dispatch on `TIR_ROI_DATA_SETS` — the
+  `data_set: tir_roi_resp` value now means "the Stage-3 view" in a FINETUNE
+  config and "the Stage-2 view" in a PRETRAIN config.
+* `runners/run_waveform.py`: the `use_tir`/`streams` guard is bypassed for the ROI
+  path (where `use_tir` is meaningless, and `streams` must be exactly `tir`); new
+  flags `--train_ratio`, `--val_subject`, `--clip_stride`, `--roi_padding`; the
+  `entries.json` export now handles BOTH entry layouts and records
+  `reference_source`.
+* `configs/finetune/resp_tir_roi_local.yaml` — the branch itself.
+
+### 10.3 The config, and why each geometry value is what it is
+
+Geometry MUST equal the Stage-2 run: the checkpoint's `positions.tir.pos_embed`
+is `[1, 800, 768]` (n_visual = 50 x 4 x 4) and `heads.resp.weight` is `(16, 768)`, so
+`clip_duration 8.0` + `temporal_stride 2` + `sig_kernel 16` + `seq_len 800` +
+`input_size 64` is the ONLY combination that transfers exactly. A 4 s / stride-1 /
+`sig_kernel-8` config (i.e. the RGB twin's values) loads 146 tensors with **no
+error** while leaving `adapters.rgb`/`positions.rgb`/`waveform_head` at RANDOM
+init -- `load_stage2_encoder` only checks that *something* loaded, not that every
+configured stream got its adapter. So the twin's geometry is deliberately NOT
+copied; only its loss/optimizer block is.
+
+Verified with the real checkpoint (matching geometry):
+
+```
+[stage3] loaded 150 Stage-2 encoder tensors, 4 skipped, 0 shape-mismatched;
+         head transferred: waveform_head.weight, waveform_head.bias (from heads.resp)
+  waveform_head.weight == ckpt heads.resp.weight : True
+  adapters.tir.patch_embed.weight / positions.tir.pos_embed : loaded, identical
+```
+
+### 10.4 The split (this is what question 1 was about)
+
+`split_by: subject` + `train_ratio: 0.8` over the 40-session RAW tree ->
+**train = F001,F002,F003 (588 clips) / val = F004 (168 clips)** at `clip_stride 2.0`,
+zero session and zero subject overlap. `--val_subject <S>` selects a
+leave-one-subject-out fold instead (4 subjects -> 4 folds; `--val_subject F002` =
+514 / 242 clips), which is the honest protocol here: a 0.8 ratio can only ever
+produce ONE fold, always F004. There is no separate TEST split (`test_mode` is a
+dead parameter in both datasets); the val split is the evaluation set.
+
+### 10.5 The exclusion rules (question 2's note)
+
+Inherited unchanged from `BP4DPlusTIRRespDataset`, so nothing had to be
+re-specified: a session without `IRFeatures` is skipped, and any clip whose frame
+span overlaps an all-`(0,0)` sentinel line is dropped. Measured on the train split:
+`sessions_skipped: 1` (F001_T8, `all_clips_dropped`), `clips_dropped_sentinel: 1`.
+`stats`/`skipped` are on the dataset object, and the clip count in
+`describe()`/the run log is the POST-drop count.
+
+### 10.6 Verified end to end
+
+* item contract: `tir (3, 100, 64, 64) float32 in [0,1]`, target `(800,)` with
+  mean ~1e-9 and **std 1.0006** (z-scored) -- the noise-free part of the item is
+  the [0,1] range of the ROI crop, i.e. bytes/255;
+* 1-epoch smoke: 29 steps at `--max_clips 2`, `loss 6.09` (dominated by the
+  `gamma = 1.0` MR-STFT term, whose constant-predictor floor is ~5 at
+  64/128/256 -- NOT a problem), eval `{mae 0.767, rmse 0.929, pearson 0.0013}`
+  and all artefacts written (`preds.npy`, `targets.npy`, `entries.json`,
+  `metrics_final.json`, `predictions_final.png`, `training_curves.png`);
+* the RGB paired path was re-smoked with the same runner edits (`resp_local.yaml`,
+  random init) -> identical split/artefacts, no regression.
+
+### 10.7 Open items
+
+1. **Session-level evaluation reference.** `run_evaluate_session.py` builds the
+   reference from `entries['signals_file']`; for this branch that is the RAW
+   1000 Hz `Resp_Volts.txt`, which `read_reference` cannot parse as a canonical
+   CSV, and the canonical tree covers only F004_T1/T2. The per-clip metrics are
+   unaffected, but the session-level Tier-1/2/3 numbers need a reference builder
+   for the RAW respiration (or a session-assembly path over `targets.npy`).
+2. **Cost.** With the shipped `clip_stride: 2.0` the train split is 588 clips =
+   147 steps/epoch at batch 4; at the smoke's ~1.3 s/it (dataloader-bound: 200
+   frames decoded per clip) that is ~3 min/epoch -> ~2 h for 40 epochs. Raise
+   `num_workers`, raise `clip_stride`, or shrink `epochs` for the first pass.
+3. **`clip_grad` deviates from the twin** (5.0 ON vs 0.0 OFF): this branch carries
+   the `gamma = 1.0` MR-STFT term on top of a checkpoint whose stream already
+   diverged once, so clipping is cheap insurance. Documented in the config.
+
+---
+
+## 11. Task groups ("distortion levels") — `task_groups:` + `--task_set` (2026-09-30)
+
+**Why.** The BP4D+ tasks (`T1`..`T10`) differ in how much they disturb the
+recordings (head motion, speech, pain), so a run wants to be restricted to a
+named subset of them. Before this change the only way to do that was
+`tasks: 'T1,T2'` — fine for a one-off, but it cannot name a *level*.
+
+**What was added (all additive).**
+
+* `data/task_groups.py` (new) — `parse_task_groups` / `parse_task_set` /
+  `resolve_task_selection`. The group DEFINITIONS are **not hardcoded**: they
+  come from the config (`task_groups:` mapping, or the
+  `'low=T1|T2;high=T7|T8|T9'` string form). The selection is
+  `union(explicit tasks, every task of every selected group)`; an empty result
+  means "all tasks". An unknown group raises `TaskGroupError` listing the
+  defined names. `python data/task_groups.py` runs the self-test.
+* `data/tir_resp_dataset.py` — `BP4DPlusTIRRespDataset`,
+  `TirRoiRespPretrainDataset` and `TirRoiRespFinetuneDataset` take
+  `task_groups=` / `task_set=`, resolved BEFORE `discover_sessions`, so the
+  existing filter path is untouched. Each entry gains `task_level` (the group
+  name(s) its task belongs to); `stats` gains `tasks` / `task_set` /
+  `task_groups` / `clips_per_level` / `sessions_per_level`; `describe()` prints
+  a `task selection` + `clips per level` line. A SELECTED task with zero clips
+  warns (a partial corpus is normal, so it does not fail). The `main()`
+  self-test now also asserts `task_level` per clip.
+* `runners/run_pretrain.py` — `--task_set`, `--task_groups`, and a
+  `dataset.describe()` print at build (a Stage-2 run has no `entries.json`, so
+  the run log is where the selection has to land).
+* `runners/run_waveform.py` — `--tasks` (which did not exist here before),
+  `--task_set`, `--task_groups`; `entries.json` records `task` + `task_level`,
+  and `metrics_final.json` records `task_set` + `task_groups`.
+* `runners/run_inspect_tir_resp.py` — `--task_set` / `--task_groups`; the
+  selection lands in `dataset_summary.json` with the rest of `stats`.
+* `configs/pretrain/stage2_local_tir_roi_resp.yaml` and
+  `configs/finetune/resp_tir_roi_local.yaml` — a commented-as-editable
+  `task_groups:` example (`low` / `moderate` / `high`) plus `task_set: ''`.
+
+**Config block.**
+
+```yaml
+task_groups:                       # EXAMPLE -- edit per experiment
+  low: [T1, T2]
+  moderate: [T3, T4, T5, T6, T10]
+  high: [T7, T8, T9]
+task_set: ''                       # '' = all; 'low' or 'low,high'
+```
+
+**Compatibility.** With `task_set: ''` the resolver returns `tasks=None`, i.e.
+exactly the historical "all tasks" filter — verified: the default 8 s / 4 s-hop
+corpus still resolves to **388 clips**, and the shipped Stage-2 smoke logs the
+same `mse_tir 2.0890 / mse_resp 3.2286` as before.
+
+**Verified (2026-09-30).** `python data/task_groups.py` -> all checks pass;
+`data/tir_resp_dataset.py --task_set low` -> 8 sessions / 73 clips and
+`clips per level: low=73/8`; `--task T3 --task_set low` -> `T1,T2,T3` (union);
+`--task_set low,high` -> 20 sessions found; `--task_set bogus` -> clean
+`TaskGroupError` listing the defined groups; Stage-2 smoke (`--task_set low`)
+prints the selection; Stage-3 smoke on the real `checkpoint-0039.pth`
+(`--task_set low`) splits on the filtered 8 sessions (train F001-F003 / val
+F004) and writes `entries.json` with `task_level: ['low']` and
+`metrics_final.json` with `task_set: ['low']`.
+
+**Out of scope (deliberate).** The RGB-ROI path (`data/rgb_roi_dataset.py`) has
+the same `tasks=` filter shape and can adopt the resolver in a ~3-line
+follow-up; `split_by: task` is NOT reintroduced (filtering != splitting); the
+other per-frame inspectors are untouched.
+
+---
+
+## 12. RECORDED RESULT (2026-10-01) — the TIR-ROI → RESP *waveform* line is closed
+
+**Verdict.** With the pipeline as designed, the thermal face ROI does not carry
+the respiration *phase*, so no architecture, loss, ROI or hyperparameter change
+can produce the waveform. Four independent measurements say this, and the
+control that validates the same measurement pipeline fires at 8/8. The line
+should be reported as a **measured negative**, not as a failure to train.
+
+### 12.1 The four measurements
+
+**(i) Pixel-level positive-control gate — 0/8 sessions (2026-09-26).**
+Statistic: `max` over ROI pixels **and** over lags in ±3 s of
+`|r(ROI pixel, belt)|` (lag-agnostic, so no delay assumption can defeat it),
+null = 200 phase-scrambled belts with the same max-over-pixels-and-lags
+statistic (so pixel multiplicity and the belt's autocorrelation are accounted
+for).
+
+| session | best \|r\| | null95 | p |
+|---|---|---|---|
+| F001_T1 | 0.629 | 0.655 | 0.400 |
+| F001_T3 | 0.530 | 0.661 | 1.000 |
+| F002_T1 | 0.705 | 0.737 | 0.400 |
+| F003_T2 | 0.712 | 0.777 | 1.000 |
+| F004_T2 | 0.706 | 0.811 | 1.000 |
+| F004_T3 | 0.464 | 0.596 | 1.000 |
+| F004_T9 | 0.553 | 0.610 | 0.800 |
+| F004_T8 | 0.771 | 0.867 | 1.000 |
+
+In every session the observed best `|r|` is **below the median of the scrambled
+null** (0.60-0.87): those 0.46-0.77 correlations are pure chance. **The pipeline
+demonstrably detects real signal** — same pixels, same boxes, reference = head
+motion (12-landmark centroid): **8/8 at p < 0.005**, `|r|` 0.67-0.98 against a
+null of ~0.1. The ROI tracks motion, not breathing. The 8-bit palette is *not*
+the limit: the respiration-band modulation is 2.9-36.2 palette levels (≫ 1) with
+30-95 distinct levels per pixel over time.
+
+**(ii) Probe gate (ridge, features → waveform, in-sample vs HELD-OUT).**
+A linear probe, so this is a lower bound for the encoder:
+
+| split | encoder in-sample | encoder held-out | raw 16×16 px in-sample | px held-out |
+|---|---|---|---|---|
+| subject-disjoint F001-F003 → F004 (the shipped protocol) | +0.276 | **−0.019** | +0.335 | **−0.053** |
+| **clip-disjoint**, same subjects | +0.261 | **+0.217** | +0.343 | +0.299 |
+| subject-disjoint F001-F002 → F003 | +0.285 | **−0.019** | +0.399 | +0.025 |
+
+Within a subject the mapping generalises to unseen clips; across subjects it is
+**exactly chance**, and raw pixels fail identically — so this is not an encoder
+defect.
+
+**(iii) Three Stage-3 arms (γ ladder), same `checkpoint-0039`, same corpus,
+same subject-disjoint split, scored on the same 75 val clips.**
+
+| arm | mae | rmse | pearson | psd_mae | `hf_power_rel` | pred std | seam ratio |
+|---|---|---|---|---|---|---|---|
+| `…_g000` (γ = 0) | 0.9706 | 1.3172 | −0.0328 | 0.2378 | 0.1957 | 0.698 | **1.44** |
+| `…_g001` (γ = 0.01) | 1.1932 | 1.5759 | −0.0272 | 0.3103 | 0.2453 | 0.866 | 2.64 |
+| `…_g10` (γ = 10) | 0.8241 | 1.2782 | +0.0117 | 0.2513 | 0.00018 | 0.012 | 0.46 |
+| **constant-0 baseline** | **0.7545** | 1.0000 | 0 | — | — | 0 | — |
+| target's own reference | — | — | — | — | 0.00296 | 1.000 | 1.43 |
+
+**All three arms lose to a constant predictor**, and the best val Pearson of any
+arm is `+0.0117` — noise. `psd_mae` even ranks the *collapsed* arm (γ = 10) as
+best, which is why `hf_power_rel` was added (§12.3).
+
+**(iv) The output is a FIXED waveform broadcast to every clip.** On the
+artifact-free arm (γ = 0):
+
+| control | value |
+|---|---|
+| `|r|` model vs its own target | 0.217 |
+| `|r|` **one fixed waveform** broadcast to every clip vs target | **0.229** |
+| cross-clip correlation of the predictions (targets: −0.004) | **0.49** (γ=0) / 0.756 (γ=0.01) |
+| phase-locking contrast: `|r(0)|` vs anti-phase floor (1.2-2.5 s) | **−0.148** (0.217 vs **0.365**) |
+| best single sinusoid fitted to the **target** | **0.638** |
+
+The model's per-clip output is statistically indistinguishable from a waveform
+that ignores the input, and it sits **below its own anti-phase floor** — the
+signature of zero phase information. The belt, meanwhile, is 0.64-describable by
+one sinusoid, so the failure is **phase**, not model expressivity.
+
+### 12.2 Why the γ term produced the visible high-frequency jitter
+
+`sig_kernel = 16` ⇒ the head emits **16 samples per visual token**, i.e. the
+token rate is `fs/16 = 6.25 Hz`. The assembled waveform is continuous in *value*
+at the seams but the *slope* kicks at every one: seam-slope ratio **2.64**
+(γ = 0.01) against the target's own **1.43**; at γ = 0 it is **1.44**, i.e. the
+artifact disappears. Spectral excess for γ = 0.01: **×143** (4-8 Hz), **×553**
+(8-20 Hz), **×991** at the token rate. At epoch 0 the transferred Stage-2 head
+measures `hf_power_rel` **2.48** (×838 the target) and α+β fine-tuning alone
+pulls it down to ~0.20. The mechanism is therefore: the jitter is inherited from
+the per-token head, α+β slowly clean it, and a small γ *keeps it alive* by paying
+the model to match the belt's noisy magnitude spectrum with the wrong phase —
+which is why γ = 0.01 is worse than γ = 0 on every metric.
+
+### 12.3 Tools this line produced (reusable, not TIR-specific)
+
+* `hf_power_rel` / `target_hf_power_rel` / `hf_lo_hz` in
+  `evaluation.metrics.spectral_metrics` — out-of-band energy relative to the
+  target's total power, the only Tier-2 number that can see a broadband
+  high-frequency floor (`psd_mae` normalises *inside* the band).
+* the per-token **seam ratio**, and the **degenerate-target skip** for a
+  dead-sensor plateau that fills the Welch segment (4/75 val clips here).
+* the Stage-2 → Stage-3 **ROI contract check** (`runners/run_waveform.py`):
+  `roi_landmarks` / `roi_padding` / `input_size` change the
+  pixels without changing any tensor shape, so they are compared against the
+  values recorded *in the checkpoint* and a mismatch aborts the run.
+  `data/tir_resp_dataset.py --check_views` proves the two views cropped
+  identically when the keys match.
+
+The two diagnostics behind §12.1(iv) and §12.2 are **in the repo** —
+`notes/eval/tir_resp/prior_control.py` (the fixed-prior + best-sinusoid control)
+and `notes/eval/tir_resp/waveform_diagnostics.py` (spectra, token seams,
+clip-independence, the HF-window calibration). Both read only a finished run's
+saved `preds.npy` / `targets.npy` / `entries.json`, so they need no model, no GPU
+and no repo imports:
+
+```bash
+python notes/eval/tir_resp/prior_control.py
+python notes/eval/tir_resp/waveform_diagnostics.py
+```
+
+Both select the SAME clips across arms and drop (near-)constant targets
+(`np.corrcoef` on a constant target is `NaN`). Note the several-fold spectral
+excess of §12.2 is **window-dependent**: ×143 (4-8 Hz) / ×553 (8-20 Hz) at
+`nperseg` 512 vs ×131 / ×549 at 600 — the order of magnitude is not. (The first
+copy of these scripts lived in `/tmp` and was lost in the 2026-10-01 working-tree
+restore; the repo copies reproduce the recorded numbers, which is verified above.)
+
+### 12.4 Reproduction
+
+```bash
+# Stage 2 (40 epochs, 21 min): 181 clips -> 178 with min_signal_spread 0.01
+python -u runners/run_pretrain.py -c configs/pretrain/stage2_local_tir_roi_resp.yaml \
+    --task_set low,moderate \
+    --output_dir ../output/pretrain/stage2_local_tir_roi_resp_low_mid
+
+# Stage 3, the three arms (~40 s/epoch; ~28 min each)
+CKPT=../output/pretrain/stage2_local_tir_roi_resp_low_mid/checkpoints/checkpoint-0039.pth
+python -u runners/run_waveform.py -c configs/finetune/resp_tir_roi_local.yaml \
+    --task_set low,moderate --gamma 0.0  --finetune $CKPT \
+    --output_dir ../output/finetune/resp_tir_roi_low_mid_g000
+python -u runners/run_waveform.py -c configs/finetune/resp_tir_roi_local.yaml \
+    --task_set low,moderate --gamma 0.01 --finetune $CKPT \
+    --output_dir ../output/finetune/resp_tir_roi_low_mid_g001
+python -u runners/run_waveform.py -c configs/finetune/resp_tir_roi_local.yaml \
+    --task_set low,moderate --gamma 10   --finetune $CKPT \
+    --output_dir ../output/finetune/resp_tir_roi_low_mid_g10
+
+# checks
+python -m evaluation.metrics                        # metric self-test
+python data/tir_resp_dataset.py --subject F001 --task T2 --clip_seconds 8 \
+    --clip_stride 4 --max_entries 6 --n_check 2 --check_views
+```
+
+### 12.5 What would reopen the line
+
+Nothing in the model. A **new input that first passes the gate in (i)** — one
+session where the ROI demonstrably carries the respiration phase, with a genuine
+collapse at anti-phase. Until then any training run reproduces §12.1(iv) by
+construction. Candidates, in order of expected value: raw/radiometric thermal if
+a release exists; a tight nostril ROI read non-linearly; or the geometry known to
+work for visual respiration (side/body view) — not the face.
+
+### 12.6 Caveats (do not overstate)
+
+* **4 subjects** (F001-F004), 0.1-0.5 Hz band, face-centric framing. A claim
+  about BP4D+ is not supported.
+* The gate in (i) is **linear and single-pixel**: a distributed non-linear
+  encoding is not formally excluded (though motion is caught at 0.98, so
+  sensitivity is not the issue).
+* The Stage-2 checkpoint was pre-trained on **all** subjects (no subject split at
+  Stage 2), so a subject-disjoint *fine-tune* is not end-to-end subject-disjoint.
+* The belt is assumed to be a faithful respiration reference.
+* **One flagged anomaly, unexplained:** F004_T2's r = +0.96 in one ~31 s window
+  is genuinely phase-locked (anti-phase collapse to +0.18) while its pixels show
+  no respiration signal (best `|r|` 0.706 vs null 0.811, p = 1.0). It is one
+  trial out of 8 — do not build a claim on it.
+* Rate-only grounding remains **unresolved, not negative**: the model's predicted
+  rate does not track the truth (0.375 Hz in 6/8 sessions), so even a rate claim
+  is unsupported by these runs.
+
+---
+
+## Addendum (2026-10-07) — Stage-2 target normalisation is now SESSION-level
+
+The procedure above documents the ORIGINAL Stage-2 setting (`target_norm: clip`,
+i.e. a per-clip z-score inside the model). The HPC full-corpus Stage-2 run has
+since changed, for the reasons and with the guarantees below. The local twin and
+the Stage-3 configs are UNCHANGED.
+
+* **`physio_norm: session`** in
+  `configs/pretrain/stage2_hpc_tir_roi_resp.yaml` — THE normalisation knob of
+  the pipeline, applied by the DATASET. `TirRoiRespPretrainDataset` wraps the
+  base dataset as `BP4DPlusTIRRespDataset(norm='session')`, so every clip is
+  z-scored with the **whole session's** mean/std (population statistics over the
+  entire `Resp_Volts.txt`) — a clip keeps its session-relative amplitude and
+  offset instead of being flattened to unit variance on its own.
+* **The model is pinned to identity.** `run_pretrain.pin_roi_target_norm` FORCES
+  `target_norm='none'` for every RAW-tree ROI lineage (`tir_roi` = TIR-ROI+RESP,
+  `rgb_roi` = RGB+BP), so there is only ONE knob and no pair to keep in sync
+  (the earlier `_resolve_resp_norm` exactly-once guard was removed with it).
+  The VISUAL streams still take their own per-token z-score.
+* **`clip_stride: 2.0`** (was 1.0) with the 8 s window unchanged: 3/4 overlap
+  instead of 7/8 — roughly half the clips and half the epoch, at a coarser
+  transient sampling. `clip_stride` is not part of the enforced Stage-2/3 ROI
+  contract.
+* Stage 3 is ALIGNED: `configs/finetune/resp_tir_roi_hpc.yaml` now uses
+  `physio_norm: session` (the same flag and values as Stage 2, applied by the
+  dataset), so both stages share ONE target space — the same clip yields the same
+  target in Stage 2 and Stage 3. Consequence to keep in mind: the Stage-3 target
+  std is no longer ~1 and the clip mean is non-zero, so `alpha` (StdLoss) becomes
+  a genuine amplitude term instead of `|std(pred) - 1|` (and a constant clip no
+  longer yields a ZERO-norm target for the MR-STFT term).
+* Verified by `tests/test_physio_norm.py` plus a 2-clip local smoke that
+  logs `norm : session`, `clip 8 s = 200 frames @ 25 fps, stride 50 frames`, and
+  the rail `9.9 V` / spread `0.1 V` cleaning line.
+

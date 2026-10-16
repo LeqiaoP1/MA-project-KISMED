@@ -18,8 +18,14 @@ code/
 ├── evaluation/  # Offline Tier-1/2/3 waveform metrics (time, PSD, NeuroKit2 HRV)
 ├── utils/       # Helper hub package with __init__ re-exports (<= MultiMAE utils/)
 ├── runners/     # Thin entry points: run_pretrain.py / run_finetune.py / ...
-└── scripts/     # HPC launchers, one .sh per dataset/variant (<= videomae/ scripts/)
+├── scripts/     # HPC launchers, one .sh per dataset/variant (<= videomae/ scripts/)
+└── notes/       # Context, NOT runtime: spec/ (contract) design/ plan/ eval/
 ```
+
+`code/notes/` is the single home for project context: `spec/` is the generated
+contract (see `scripts/project/write_specs.py`), `design/` says how it is built,
+`plan/` is the roadmap of record, `eval/` holds the measurements and their
+verdicts. The repository-root `docs/` is literature only. See `AGENTS.md` §3/§5.
 
 ## Source mapping (where to port the heavy parts from)
 
@@ -78,7 +84,7 @@ python runners/run_evaluate.py --pred_path out.npy --target_path gt.npy \
 python runners/run_au_probe.py -c configs/finetune/au_local.yaml
 
 # (5) OPTIONAL ADD-ON Stage 2: thermal ROI (visual) -> RESPIRATION (1-D)
-#     procedure of record: code/plan/TirROI_Resp_plan.md
+#     procedure of record: code/notes/plan/TirROI_Resp_plan.md
 python runners/run_pretrain.py -c configs/pretrain/stage2_local_tir_roi_resp.yaml
 
 # multi-GPU (HPC)
@@ -233,9 +239,9 @@ dataset behind `build_pretraining_dataset`: the default `bp4d+` keeps
 ADD-ON thermal-ROI + respiration dataset from the RAW tree and is the only
 path whose visual stream is the landmark-derived mouth/nose crop. The first
 such run is `configs/pretrain/stage2_local_tir_roi_resp.yaml` (`streams: tir,resp`);
-its procedure of record is `code/plan/TirROI_Resp_plan.md`. A measured diagnosis of
+its procedure of record is `code/notes/plan/TirROI_Resp_plan.md`. A measured diagnosis of
 *why* the physio stream collapses under scattered masking, and the span-masking
-design that replaces it, is in `code/design/SpanMask_PhysioSignals.md` (with the STFT
+design that replaces it, is in `code/notes/design/SpanMask_PhysioSignals.md` (with the STFT
 term's role re-derived under spans).
 
 **Task groups / "distortion levels" (`--task_set`, `task_groups:`).** A run can
@@ -261,7 +267,7 @@ thermal-ROI path, all also exposed on `run_inspect_tir_resp.py`:
   `+/-10 V` (the negative end is the corpus' dead-channel floor), so the shipped
   `9.90` rejects every window whose label holds even ONE rail-valued reading.
   It is deliberately **strict and two-sided**, and that is the point: the rail
-  has two causes (see `analysis/tir_resp/resp_data_quality.md` §3.4 and
+  has two causes (see `notes/eval/tir_resp/resp_data_quality.md` §3.4 and
   `rail_forensics.py`) -- a **sensor failure** (dead / disconnected belt, stuck
   DAQ -- the channel is pinned at the rail) and a **genuine extreme expiration**
   (the trough is driven into the clamp and sits there flat-topped until the
@@ -289,7 +295,7 @@ thermal-ROI path, all also exposed on `run_inspect_tir_resp.py`:
   `max - min` is a RANGE, so a single spike inflates it (a pinned channel with
   one 0.5 V glitch passes any threshold) and a loose belt that *swings* gives a
   LARGE artifact: neither is visible to this knob. See §5 of
-  `analysis/tir_resp/resp_rail_touch_filter_results.md` for the full curve.
+  `notes/eval/tir_resp/resp_rail_touch_filter_results.md` for the full curve.
 * `--roi_landmarks`: see the measured preset table in
   `data/tir_resp_dataset.ROI_LANDMARK_PRESETS` — `nostrils` (2 points) is an
   unstable thin slab (100x81 px on a still session, 91x15 px on a moving one);
@@ -430,7 +436,7 @@ scattered (`random`, the default, unchanged) or as contiguous blocks (`span`,
 length per stream via `--mask_span_s`, count derived from the ratio). Span
 masking removes the "interpolate the gap from its visible neighbours" shortcut
 that makes a scattered mask on an oversampled band-limited stream solvable with
-zero video information (`code/design/SpanMask_PhysioSignals.md` §1-§2). The resolved
+zero video information (`code/notes/design/SpanMask_PhysioSignals.md` §1-§2). The resolved
 geometry is printed at model build, and `python -m core.multimae` self-tests the
 invariants (uniform masked count across the batch -- a batch-max gather would
 otherwise leak masked tokens into the encoder). It needs no model
@@ -452,7 +458,7 @@ subsection above.)
 > **ADD-ON (not a pipeline stage):** the *AU-occurrence probe* (semantic
 > representation quality, `runners/run_au_probe.py`) is a separate diagnostic
 > on the Stage-2 encoder — it is not part of the three-stage pipeline above.
-> See the dedicated AU-probe subsection below and `code/plan/ImplementationPlan.md` §5.
+> See the dedicated AU-probe subsection below and `code/notes/plan/ImplementationPlan.md` §5.
 
 | Plan stage                                                                            | Supported here                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Still to port (thesis work)                                                                                                                                                                                                                                                                                                                           |
 | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -751,7 +757,7 @@ untracked any more.
 ### Solution A — Asymmetric Cross-MAE (ADD-ON pre-training variant)
 
 A second **pre-training objective** for the same TIR-ROI → respiration task, selectable
-per config; full write-up in `code/design/SolutionA_vs_SolutionC.md`.
+per config; full write-up in `code/notes/design/SolutionA_vs_SolutionC.md`.
 
 The shipped Stage-2 SSL (**Solution C**) feeds the visible tokens of every stream into
 ONE shared ViT encoder, and reconstructs each stream from its own visible tokens + mask
@@ -849,7 +855,7 @@ independent, self-contained module that re-uses the Stage-2 shared encoder
   `engines/au_probe.py` (BCE train + per-AU F1 eval),
   `runners/run_au_probe.py`, configs `configs/finetune/au_local{,_pretrained}.yaml`,
   launcher `scripts/local/au_smoke.sh`. Details & status:
-  `code/plan/ImplementationPlan.md` §5.
+  `code/notes/plan/ImplementationPlan.md` §5.
 
 ```bash
 # AU probe (linear, Stage-2 ckpt); local smoke via scripts/local/au_smoke.sh

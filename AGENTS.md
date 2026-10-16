@@ -28,7 +28,9 @@ environment profiles in `code/scripts/`:
 - **`report/`**: Academic LaTeX source files for papers. DO NOT modify unless explicitly instructed.
 - **`presentation/`**: Slides and talk materials. DO NOT touch during code edits.
 - **`models/` & `output/`**: Checkpoints, cached pretrained weights (`models/initial/`), and evaluation logs. Do not generate large output files directly into git tracking.
-- **`docs/`**: Reference material. **`notebooks/`**: Exploratory notebooks (incl. `TirROI_Resp_Pipeline.ipynb`). **`tmp/`**: Scratch only — never a deliverable.
+- **`docs/`**: **Literature and research reference only** (thesis handouts, `docs/references/*.pdf`). Read-only — never write project notes here.
+- **`code/notes/`**: The project's own context for human and agent readers — `spec/` (contract, generated), `design/` (how it is built, plus the review verdict), `eval/` (measurements and verdicts), `plan/` (roadmap of record). Not runtime code.
+- **`notebooks/`**: Exploratory notebooks (incl. `TirROI_Resp_Pipeline.ipynb`). **`tmp/`**: Scratch only — never a deliverable.
 - **Environment**: Local runs use the Python `venv` at `.venv/` (workspace root). HPC runs use `VENV`/`CONDA_ENV` from `code/scripts/env_hpc.sh`. Dependencies are listed in `code/requirements.txt`.
 
 ## 4. Directory & Architecture Standards (under `code/`)
@@ -42,16 +44,25 @@ environment profiles in `code/scripts/`:
 - `code/configs/`: YAML experiment configs under `pretrain/` and `finetune/`. Configs are loaded as argparse *defaults* (`-c/--config`), so explicit CLI flags always override.
 - `code/utils/`: Reusable helpers — `dist.py` (DDP + seed init), `logger.py` (`MetricLogger` / `SmoothedValue`, MultiMAE-style), `optim_factory.py`, `lr_sched.py`, `native_scaler.py` (AMP loss scaler + grad-norm), `model_ema.py`, `checkpoint.py`, `metrics.py`, `pos_embed.py`.
 - `code/evaluation/`: Metric computation and reporting — `metrics.py`, `clinical.py`, `assemble.py`, `report.py`.
-- `code/analysis/`, `code/design/`, `code/plan/`: Analysis scripts, design notes, and planning markdown — not runtime code.
-- `code/tests/`: Reserved for the `pytest` suite (forward passes, tensor-shape flows, loss computation). **Currently empty** — no test files exist yet, so do not assume a working test runner.
+- `code/notes/`: Context, **not runtime code** — `spec/` (generated contract), `design/` (how it is built), `eval/` (measurements + verdicts, including the probe scripts under `tir_resp/` and `rgb_bp/`), `plan/` (roadmap).
+- `code/tests/`: The live `pytest` suite (forward passes, tensor-shape flows, loss computation, AMP, config keys, ROI cache) plus `code/pytest.ini` (`testpaths = tests`). Run `python -m pytest` from `code/`.
 
 ## 5. Specification & Architecture Referencing
 
-- The repository specifications are modularized under `code/spec/`:
-  - Architecture & Tensor Dimensions: Refer to `#file:code/spec/02_model_architecture.md`
-  - Data Pipeline & Masking: Refer to `#file:code/spec/01_data_pipeline.md`
-  - Training Engine & Loss: Refer to `#file:code/spec/03_engine_and_loss.md`
-- Always check the relevant spec file under `code/spec/` before modifying existing PyTorch modules or adding new feature branches.
+- The repository specifications are modularized under `code/notes/spec/`:
+  - Architecture & Tensor Dimensions: Refer to `#file:code/notes/spec/02_model_architecture.md`
+  - Data Pipeline & Masking: Refer to `#file:code/notes/spec/01_data_pipeline.md`
+  - Training Engine & Loss: Refer to `#file:code/notes/spec/03_engine_and_loss.md`
+- Always check the relevant spec file under `code/notes/spec/` before modifying existing PyTorch modules or adding new feature branches.
+- The spec is a **dated snapshot** (`code/notes/spec/*.md`, reverse-engineered 2026-10-04). The code is the source of truth; regenerate the spec after architectural changes with `python code/scripts/project/write_specs.py` (read its warning first — it overwrites hand-edited content).
+
+### Document flow for a change
+
+`spec/` (what it must be) -> `design/` (how, plus the review verdict) -> implementation in `code/` -> `code/tests/` -> `eval/` (measurement and verdict).
+
+- One file per topic in `code/notes/`. Delete a superseded file instead of keeping a second copy; do not create `archive/`, `STATUS.md` or index files.
+- Authority when docs disagree: `eval/` measurements are facts; for plans, `code/notes/plan/simplifiedPlan.md` wins over `code/notes/plan/ImplementationPlan.md`.
+- Any doc a code comment or config points at **must exist** at the referenced path. If you delete or rename one, fix every reference in the same commit (`grep -rn "code/notes/" code/`).
 
 ## 6. PyTorch Engineering & Guardrails
 

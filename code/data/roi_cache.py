@@ -1,7 +1,7 @@
 """Offline TIR-ROI pixel cache: cache key, geometry gate, shard IO, verification.
 
-Spec: ``analysis/tir_resp/hpc_precomputation.md`` section 9. The probe that
-validates the design is ``analysis/tir_resp/cache_parity_probe.py``.
+Spec: ``notes/eval/tir_resp/hpc_precomputation.md`` section 9. The probe that
+validates the design is ``notes/eval/tir_resp/cache_parity_probe.py``.
 
 **The cache is ONE STEP of the pipeline and encodes no downstream decision.**
 It answers "which pixels" faster than a decoder can, and nothing else. That

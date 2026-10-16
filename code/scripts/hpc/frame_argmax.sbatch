@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Lichtenberg HPC: WHERE is the whole-frame gate's best pixel? (open Q1)
 #
-# Runs analysis/tir_resp/frame_argmax.py, which decodes the WHOLE thermal frame
+# Runs notes/eval/tir_resp/frame_argmax.py, which decodes the WHOLE thermal frame
 # (NOT the ROI crop) and locates the argmax pixel of the gate statistic (max over
 # pixels x lags of |r| vs the respiration belt). `roi_sweep.py` v2 found the
 # `frame` box detects the belt MORE strongly than any face box while the two
@@ -50,8 +50,8 @@ SESSIONS="${SESSIONS:-F001_T3}"
 # phase-scrambled null of the whole-frame max|r|, i.e. a p-value for the location.
 NPERM="${NPERM:-50}"
 DOWNSCALE="${DOWNSCALE:-1}"
-OUT="${OUT:-analysis/tir_resp/frame_argmax.json}"
-FIG="${FIG:-analysis/tir_resp/frame_argmax.png}"
+OUT="${OUT:-notes/eval/tir_resp/frame_argmax.json}"
+FIG="${FIG:-notes/eval/tir_resp/frame_argmax.png}"
 
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-32}"
 export MKL_NUM_THREADS="$OMP_NUM_THREADS"
@@ -65,7 +65,7 @@ echo "[argmax] threads   : $OMP_NUM_THREADS"
 echo
 
 set +e
-python -u analysis/tir_resp/frame_argmax.py \
+python -u notes/eval/tir_resp/frame_argmax.py \
     --raw_root "$RAW_ROOT" \
     --sessions "$SESSIONS" \
     --downscale "$DOWNSCALE" \
