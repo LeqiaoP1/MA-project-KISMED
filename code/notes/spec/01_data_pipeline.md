@@ -46,10 +46,12 @@ The session name encodes subject (`'F001_T1'.rsplit('_', 1)[0]` -> `'F001'`), en
 
 **Session discovery** (`scan_sessions`): scans `data_path` for dirs containing `rgb/`, `tir.wmv`, `signals.csv`. Falls back to first `*.wmv`. Raises `FileNotFoundError` if no valid sessions found.
 
-**Split policy**:
-- `split_by='session'` (default): splits sorted session list at `train_ratio`. **Risk: subject leakage.**
-- `split_by='subject'`: groups by subject prefix; subject-disjoint. **Recommended for evaluation.**
-- Stage-2 (`PairedPretrainDataset`): always `train_ratio=1.0` (pretrain on all).
+**Split policy (Cross-Validation)**:
+- `split_by='session'` (historical default): splits sorted session list at `train_ratio`. **Risk: subject leakage.**
+- `split_by='subject'`: groups by subject prefix; subject-disjoint. **Deprecated for evaluation** in favor of k-fold.
+- **GroupK-Fold Cyclic Rotation**: The authoritative evaluation protocol (`code/notes/design/kfold_val_strategy_design_v2.md`) mandates a cyclic 5-fold subject rotation ($F_k$ test, $F_{(k+1)}$ val, rest train).
+- Stage-2 (`PairedPretrainDataset`): always `train_ratio=1.0` (pretrain on all, 0% Val).
+- Stage-3: Option A (0% Val) or Option B (10% Val subset).
 
 **Dev caps** (applied in order): `max_sessions` -> `max_clips` -> `max_entries`.
 

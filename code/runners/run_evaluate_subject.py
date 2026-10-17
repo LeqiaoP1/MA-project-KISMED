@@ -16,7 +16,7 @@ the clip. This runner:
 
 PROTOCOL: a single fixed subject-disjoint TEST set now; ``--test_subjects`` is
 the hook for k-fold subject-disjoint cross-validation later -- a fold is just a
-different subject list, no code change (see ``code/notes/design/Evaluation_Protocol.md``).
+different subject list, no code change (see ``code/notes/design/Evaluation_RespWaveform_protocol.md``).
 
 Usage (from ``code/``)::
 

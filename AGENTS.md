@@ -2,9 +2,11 @@
 
 ## 1. Project Overview & Scope
 
-- **Domain**: PyTorch-based Deep Learning research and development (Focus: MultiMAE / VideoMAE Multi-modal Vision).
+- **Domain**: PyTorch-based Deep Learning research and development (Focus: MultiMAE and VideoMAE with multi-modal dataset).
 - **Goal**: High-performance, modular, and reproducible neural network architectures and training pipelines.
-- **AI Agent Context**: Code generation is driven by DeepSeek v4.1 Flash/Pro; code architecture, auditing, and reviews are handled by Claude 4.6 Sonnet. Maintain strict typing and modular OOP structure to ensure multi-agent context clarity.
+- **AI Agent Context**:
+  - Implemenation code is generated and execution script managed by DeepSeek v4.1 Flash
+  - Desgin architecture, feature auditing, and reviews are handled by Gemini 3.1 Pro or Claude 4.6 Sonnet.
 
 ## 2. Execution Environments & Workflows
 
@@ -29,7 +31,7 @@ environment profiles in `code/scripts/`:
 - **`presentation/`**: Slides and talk materials. DO NOT touch during code edits.
 - **`models/` & `output/`**: Checkpoints, cached pretrained weights (`models/initial/`), and evaluation logs. Do not generate large output files directly into git tracking.
 - **`docs/`**: **Literature and research reference only** (thesis handouts, `docs/references/*.pdf`). Read-only — never write project notes here.
-- **`code/notes/`**: The project's own context for human and agent readers — `spec/` (contract, generated), `design/` (how it is built, plus the review verdict), `eval/` (measurements and verdicts), `plan/` (roadmap of record). Not runtime code.
+- **`code/notes/`**: The project's own context for human and agent readers — `spec/` (contract, generated), `design/` (how it is built, plus the review verdict), `eval/` (measurements and verdicts), `plan/` (implementation roadmap). Not runtime code.
 - **`notebooks/`**: Exploratory notebooks (incl. `TirROI_Resp_Pipeline.ipynb`). **`tmp/`**: Scratch only — never a deliverable.
 - **Environment**: Local runs use the Python `venv` at `.venv/` (workspace root). HPC runs use `VENV`/`CONDA_ENV` from `code/scripts/env_hpc.sh`. Dependencies are listed in `code/requirements.txt`.
 
@@ -44,7 +46,7 @@ environment profiles in `code/scripts/`:
 - `code/configs/`: YAML experiment configs under `pretrain/` and `finetune/`. Configs are loaded as argparse *defaults* (`-c/--config`), so explicit CLI flags always override.
 - `code/utils/`: Reusable helpers — `dist.py` (DDP + seed init), `logger.py` (`MetricLogger` / `SmoothedValue`, MultiMAE-style), `optim_factory.py`, `lr_sched.py`, `native_scaler.py` (AMP loss scaler + grad-norm), `model_ema.py`, `checkpoint.py`, `metrics.py`, `pos_embed.py`.
 - `code/evaluation/`: Metric computation and reporting — `metrics.py`, `clinical.py`, `assemble.py`, `report.py`.
-- `code/notes/`: Context, **not runtime code** — `spec/` (generated contract), `design/` (how it is built), `eval/` (measurements + verdicts, including the probe scripts under `tir_resp/` and `rgb_bp/`), `plan/` (roadmap).
+- `code/notes/`: Context, **not runtime code** — `spec/` (generated contract), `design/` (how it is built), `eval/` (measurements + verdicts, including the probe scripts under `tir_resp/` and `rgb_bp/`), `plan/` (implementation roadmap).
 - `code/tests/`: The live `pytest` suite (forward passes, tensor-shape flows, loss computation, AMP, config keys, ROI cache) plus `code/pytest.ini` (`testpaths = tests`). Run `python -m pytest` from `code/`.
 
 ## 5. Specification & Architecture Referencing

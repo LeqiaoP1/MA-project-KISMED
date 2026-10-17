@@ -115,7 +115,7 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `sig_kernel` | int | Signal window size per token; must satisfy `sig_kernel/fs == tubelet_t*stride/fps` |
 | `physio_norm` | str | `none` / `ac` / `zscore` (per clip) / `session` (whole-session stats). The SAME knob, name and values as the ROI Stage-2 paths, so one clip yields one identical target in both stages |
 | `head_hidden` / `head_style` / `head_init` | int / str | Head architecture + initialisation |
-| `train_ratio` / `split_by` / `val_subject` | float / str | Split policy |
+| `n_folds` / `fold` / `val_frac` | int / int / float | K-fold Cyclic Rotation policy (Stage 3) |
 | `alpha` / `beta` / `gamma` | float | `WaveformJointLoss` term weights |
 | `fft_sizes` | str | Stage-3 STFT window sizes |
 | `eval_band` | str | `f_low,f_high` Hz for Tier-2 spectral metrics |

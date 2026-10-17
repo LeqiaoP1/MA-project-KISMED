@@ -158,7 +158,7 @@ Deprecated in PyTorch >= 2.0. **Risk: Low now; Medium in future PyTorch versions
 
 ### 4.6 `data/paired_dataset.py` — `split_by='session'` default allows subject leakage
 
-Alphabetical session split at `train_ratio` may put `F001_T1` in train and `F001_T2` in val. Always use `split_by='subject'` for evaluation configs. **Risk: Medium (evaluation validity).**
+Alphabetical session split at `train_ratio` may put `F001_T1` in train and `F001_T2` in val. Always use the new **GroupK-Fold Cyclic Rotation** (`n_folds`, `fold`) for evaluation configs as mandated by `kfold_val_strategy_design_v2.md`. **Risk: Medium (evaluation validity).**
 
 ### 4.7 `core/waveform_losses.py::MultiResolutionSTFTLoss` — `_warned_degenerate` fires once per instance
 
@@ -174,7 +174,7 @@ Callers must explicitly use `torch.no_grad()` during evaluation. `engines/wavefo
 
 | Risk | Severity | File(s) | Recommended action |
 |------|----------|---------|-------------------|
-| `split_by='session'` default allows subject leakage | Medium | `paired_dataset.py`, YAML configs | Always set `split_by: subject` in eval configs |
+| `split_by='session'` default allows subject leakage | Medium | `paired_dataset.py`, YAML configs | Always use `n_folds` and `fold` (Cyclic Rotation) in eval configs |
 | `finetune.py::evaluate` hardcodes `CrossEntropyLoss` | Medium | `engines/finetune.py` | Verify not called for waveform regression |
 | MR-STFT default `fft_sizes=(64,128,256)` unsuitable for RESP | Medium | `waveform_losses.py` | Override to `128,256,512` in all RESP configs |
 | `torch.cuda.amp.GradScaler` deprecated | Low-Medium | `utils/native_scaler.py` | Migrate to `torch.amp.GradScaler('cuda')` |

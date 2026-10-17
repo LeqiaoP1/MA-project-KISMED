@@ -45,7 +45,7 @@ By distortion group the model tracks the expected difficulty ordering:
 
 ## Caveats (must qualify any claim)
 
-1. **Selection leakage.** `best.pth` was chosen by val Pearson (+0.499) on the *same* subject-disjoint split that is reported here as "test" — per `Evaluation_Protocol.md` §3.1 this must not be the headline; only the LOSO (`--val_subject`) sweep would be clean.
+1. **Selection leakage.** `best.pth` was chosen by val Pearson (+0.499) on the *same* subject-disjoint split that is reported here as "test" — per `Evaluation_RespWaveform_protocol.md` §3.1 this must not be the headline; only the LOSO (`--val_subject`) sweep would be clean.
 2. **Barely above the rate-only baseline** — 0.569 vs 0.535, beating it in 54 % of subjects.
 3. **Rate accuracy** (46 % within 10 %) is below what a reportable vital-sign claim needs.
 4. Amplitudes need a true scale (oracle) to be meaningful.

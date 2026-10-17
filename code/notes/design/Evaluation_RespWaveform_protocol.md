@@ -36,8 +36,12 @@ aggregate across subjects.
 
 ### 3.2 Later — k-fold subject-disjoint cross-validation
 - The same command is run once per fold with that fold's held-out subject set;
-  `subject_metrics.json` per fold, then pooled. The runner is written so a fold
-  is *just a different `--test_subjects` list* — no code change.
+  `subject_metrics.json` per fold, then pooled.
+- Correction (2026-10-17): a fold is **not** just a different `--test_subjects`
+  list. That flag filters predictions *after* training, and `run_waveform.py`
+  only predicts on its val split, so the **training** split has to carry the
+  fold. The mechanism and its rollout are specified in
+  `code/notes/plan/subject_kfold_plan.md`.
 - Leave-one-subject-out is the k = N limit (140 subjects); pragmatically k = 5–10
   folds of ~14–28 subjects each balances rigor and budget.
 
