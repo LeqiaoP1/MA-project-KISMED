@@ -118,8 +118,14 @@ def write_fold_manifest(path: str, fold: int, n_folds: int, stage: int,
         'roles': roles
     }
     os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
-    with open(path, 'w') as f:
+    # ATOMIC: several writers can target this path (the DDP ranks of one run, a
+    # resumed run, an --eval_only re-run), and a truncated JSON would silently
+    # destroy the only audit record of the partition. Same pattern as the
+    # Stage-1 weight cache: process-unique temp, then one atomic replace.
+    tmp = f'{path}.{os.getpid()}.tmp'
+    with open(tmp, 'w') as f:
         json.dump(manifest, f, indent=2)
+    os.replace(tmp, path)
 
 
 def resolve_split_keys(usable_sessions: List[Dict], is_train: bool,

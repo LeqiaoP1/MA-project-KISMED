@@ -155,15 +155,31 @@ def test_stage2_and_stage3_agree_on_the_roi_contract(monkeypatch):
            (s3.seq_len or int(round(s3.clip_duration * s3.fs)))
 
 
-def test_stage3_hpc_points_at_the_stage2_checkpoint_dir(monkeypatch):
-    """The default `finetune` must live under the Stage-2 run's output dir."""
+def test_stage3_hpc_leaves_the_encoder_to_the_fold_aware_job_script(monkeypatch):
+    """The k-fold sweep must NEVER inherit a hardcoded encoder.
+
+    Stage-3 fold k has to start from the Stage-2 run that never saw fold k
+    (enforced by ``run_waveform.py``'s fold contract), so the encoder cannot be
+    a config constant: the job script resolves it PER FOLD from
+    ``.../stage2_hpc_tir_roi_resp_fold<k>/checkpoints/`` and aborts when it
+    cannot. A hardcoded whole-corpus path only WARNS in the contract check, i.e.
+    it would report a leaked CV number that looks perfectly healthy.
+    """
     a = _stage3(monkeypatch)
     assert a.data_set == 'tir_roi_resp'
     assert a.target == 'resp'
-    assert 'stage2_hpc_tir_roi_resp' in a.finetune
-    assert a.finetune.endswith('.pth')
+    assert a.finetune == ''          # deliberately empty -> the job script decides
     # tir_roi reads the RAW tree; data_path is supplied by the job script.
     assert a.max_clips == 0
+
+    # ... and the sweep script must actually be fold-aware, or the empty key
+    # above would degrade into "train from random weights".
+    with open(os.path.join(CODE_DIR, 'scripts', 'hpc',
+                           'submit_waveform_tir_roi.sbatch')) as fh:
+        script = fh.read()
+    assert 'stage2_hpc_tir_roi_resp_fold${fold}' in script
+    assert '--n_folds "$N_FOLDS"' in script
+    assert '--fold "$fold"' in script
 
 
 # --------------------------------------------------------------------------- #

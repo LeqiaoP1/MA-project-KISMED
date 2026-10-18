@@ -36,8 +36,8 @@
 #   VAL_SUBJECT / TASK_SET / EPOCHS / BATCH_SIZE
 #   Anything after the script name is forwarded to the runner verbatim.
 #SBATCH --job-name=st3_resp_tir
-# NB: the partition is set further down (acc_long) -- a full fold sweep does not
-# fit the 1-day `acc` cap; see the --time note.
+# NB: the partition is set further down (acc_long, sized for a whole-sweep job)
+# -- a per-fold job fits `acc` instead; see the --time note.
 # NB: the LUA plugin rejects --mem, so memory is --mem-per-cpu * cpus-per-task.
 # --account is omitted on purpose: the plugin bills your default project.
 # ---- GPU TYPE IS PINNED ON PURPOSE ---------------------------------------- #
@@ -52,11 +52,12 @@
 #SBATCH --ntasks-per-node=4
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=4G              # 4 tasks x 8 cpus x 4G = 128G total
-# --time: a REAL fold run is ~7-9 h (`epochs: 150` plus a validation pass every
-# epoch), and the default FOLDS is the whole 0..4 sweep -> up to ~45 h. `acc`
-# caps at 1 day, so the sweep default needs `acc_long`. A single fold
-# (FOLDS=3) can be submitted to the short queue with
-#     sbatch --partition=acc --time=24:00:00 ...
+# --time: Option A (no val split) at `epochs: 150` is ~3.5-4 h per fold on 4
+# rtx6000 GPUs with the ROI cache, so ONE fold fits `acc` (1-day cap) easily and
+# the whole 0..4 sweep is ~20 h. Preferred on this cluster: submit ONE JOB PER
+# FOLD (`FOLDS=<k>`), because shorter jobs backfill sooner and each fold then
+# gets its own log; a single job can still run the whole sweep, which is what
+# the `acc_long` default below is sized for.
 # A killed sweep is recoverable: every fold has its own checkpoint pointer, so
 # re-submitting resumes the fold it reached and skips the finished ones.
 #SBATCH --partition=acc_long          # 7-day max; see the --time note above

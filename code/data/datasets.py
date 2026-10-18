@@ -197,11 +197,20 @@ def build_pretraining_dataset(args):
             # checkpoint so a mismatched pair is visible after the fact.
             out_dir = str(getattr(args, 'output_dir', '') or '').strip()
             if out_dir:
+                from utils.dist import is_main_process
                 from utils.splits import write_fold_manifest
-                write_fold_manifest(
-                    os.path.join(out_dir, 'fold_manifest.json'),
-                    fold=fold, n_folds=n_folds, stage=2, roles=splits)
-                print(f'[data] wrote {os.path.join(out_dir, "fold_manifest.json")}')
+                # RANK-0 ONLY: every rank builds this dataset, but the manifest
+                # is an audit artefact of the RUN, not per-rank state. Four
+                # ranks truncating+writing one path could interleave into a
+                # corrupt JSON -- and it is the only record of the partition
+                # (write_fold_manifest itself is atomic, so a reader never sees
+                # a half-written file either way).
+                if is_main_process():
+                    write_fold_manifest(
+                        os.path.join(out_dir, 'fold_manifest.json'),
+                        fold=fold, n_folds=n_folds, stage=2, roles=splits)
+                    print(f'[data] wrote '
+                          f'{os.path.join(out_dir, "fold_manifest.json")}')
 
     if name in TIR_ROI_DATA_SETS:
         from .tir_resp_dataset import build_tir_roi_pretrain_dataset

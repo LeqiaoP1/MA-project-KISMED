@@ -57,26 +57,20 @@ task_set: ''                       # '' = all tasks -- SAME as the Stage-2 run.
 model: project_multimae_base
 streams: tir                       # the ROI crop alone; the 1-D input is the
                                    #   simulated sensor failure
-finetune: /work/scratch/ne95ocyg/pretrain/stage2_hpc_tir_roi_resp/checkpoints/checkpoint-0149.pth
-                                   # Stage-2 HPC checkpoint. This is the output
-                                   #   of scripts/hpc/submit_pretrain.sbatch at
-                                   #   its default OUT_ROOT ($WORK_SCRATCH).
-                                   #   NOTE: the Stage-2 config ships `epochs:
-                                   #   150` (NOT the 800 this file used to
-                                   #   name), so the final save is epoch 149.
-                                   #   submit_waveform_tir_roi.sbatch OVERRIDES
-                                   #   this key: FINETUNE=<path>, or, if unset,
-                                   #   it takes the NEWEST checkpoint-*.pth from
-                                   #   that run dir and logs which one it chose
-                                   #   -- so a longer Stage-2 run needs no edit
-                                   #   here, only when invoking the runner
-                                   #   directly.
-                                   #   Verified 2026-10-09 with
-                                   #   notes/eval/tir_resp/stage3_compat_probe.py:
-                                   #   encoder 150/150 tensors, 0 shape
-                                   #   mismatches, and heads.resp ->
-                                   #   waveform_head transfers VERBATIM
-                                   #   (samples_per_token 16 == sig_kernel 16).
+finetune: ''                       # DELIBERATELY EMPTY for the k-fold sweep: the
+                                   #   Stage-2 encoder MUST be the one pretrained
+                                   #   WITHOUT this fold's test subjects, i.e.
+                                   #   pretrain/stage2_hpc_tir_roi_resp_fold<k>/
+                                   #   checkpoints/checkpoint-0149.pth.
+                                   #   submit_waveform_tir_roi.sbatch resolves it
+                                   #   PER FOLD (STAGE2_DIR defaults to the fold's
+                                   #   own dir) and aborts when it cannot, and
+                                   #   run_waveform.py's fold contract refuses a
+                                   #   checkpoint whose recorded fold differs.
+                                   #   The hardcoded whole-corpus path that used
+                                   #   to sit here (n_folds=0) only WARNED in the
+                                   #   contract check -- i.e. it could report a
+                                   #   leaked CV number that looks healthy.
 head_hidden: 0                     # 0 = single Linear -> the Stage-2 heads.resp
                                    #   transfers VERBATIM
 
@@ -141,23 +135,29 @@ eval_band: '0.1,0.6'               # RESP band widened for metric resolution at
                                    #   fs 100 (an 8 s clip allows 0.125 Hz bins)
 
 # ---- training ----
-epochs: 200                        # starting budget (raise via EPOCHS=... to
-                                   #   extend: run_waveform.py AUTO-RESUMES from
-                                   #   <output_dir>/checkpoints, so a longer run
-                                   #   continues instead of restarting).
-                                   #   At the `clip_stride: 2.0` window count that
-                                   #   is ~331 steps/epoch (batch 16 x 4 ranks),
-                                   #   i.e. ~10-13 h on 4 x rtx6000 including the
-                                   #   per-epoch VALIDATION pass -- which is why
-                                   #   the SBATCH --time is 24 h, not 12 h.
-                                   #   NOTE warmup_epochs 5 is now 2.5 % of the
+epochs: 150                        # FIXED-EPOCH budget for the k-fold sweep.
+                                   #   Option A: no val split, so this is the ONLY
+                                   #   stopping rule (metrics_final.json records
+                                   #   selection='fixed_epoch'). Keep it IDENTICAL
+                                   #   across all folds: the cosine schedule is
+                                   #   REBUILT from --epochs and a resume needs
+                                   #   the same value (auto-resumes from
+                                   #   <output_dir>/checkpoints).
+                                   #   At `clip_stride: 2.0` a fold's train view
+                                   #   is ~112/139 of the corpus -> ~265 steps/
+                                   #   epoch (batch 16 x 4 ranks) -> ~3.5-4 h
+                                   #   train-only on 4 x rtx6000 with the ROI
+                                   #   cache: a 5-fold sweep is ~20 h of GPU.
+                                   #   NOTE warmup_epochs 5 is 3.3 % of the
                                    #   schedule (it was 10 % of the original
                                    #   50-epoch budget); raise it if the early
                                    #   loss is unstable.
 batch_size: 16
 update_freq: 1
 save_ckpt_freq: 10
-eval_freq: 1
+eval_freq: 1                       # INERT under Option A: with no val split the
+                                   #   per-epoch evaluation branch never runs (it
+                                   #   is only read on the legacy n_folds=0 path).
 
 # ---- optimizer (NOTE: run_waveform.py takes an ABSOLUTE lr -- there is no blr) ----
 opt: adamw
