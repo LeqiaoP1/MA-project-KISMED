@@ -362,4 +362,99 @@ Contract:
 The legacy `n_folds = 0` default (`train_ratio 0.8`, val = F004) hits the same
 rail property; it is visible as the same empty-view path, not a k-fold regression.
 
+### Per-fold artefact ownership (audited 2026-10-18)
+
+Every stage writes into `--output_dir`. Fold isolation therefore depends on the
+output dir being fold-specific, and on nothing else being shared:
+
+| Artefact | Owner | Fold-safe because |
+|---|---|---|
+| `<out>/checkpoints/checkpoint-NNNN.pth`, `latest_checkpoint.txt` | Stage 2 / 3 | per-fold `OUT_DIR`; `auto_resume_model` follows that pointer only |
+| `<out>/fold_manifest.json` | Stage 2 and 3 | one file per fold; the pair must agree |
+| `<out>/metrics.jsonl`, `metrics_final.json`, `training_curves.png` | Stage 3 | per-fold `OUT_DIR` |
+| `<out>/preds.npy`, `targets.npy`, `entries.json`, `predictions_final.png` | Stage 3 | per-fold `OUT_DIR` (`--save_preds`) |
+| `<out>/subject_metrics.json`, `subject_figures/` | `run_evaluate_subject` | per-fold `--pred_dir` |
+| ROI cache (shared) | corpus | key hashes the **unfiltered** corpus, deliberately: one cache for all folds, no rebuild, no per-fold copy. Fold membership is enforced by the dataset's `subjects=` filter, not by the cache |
+| `fold_manifest.json` of Stage 2 vs 3 | both | **was** write-only; now verified, see below |
+
+Two collisions were found and fixed in the same change:
+
+1. **`STAGE2_DIR` was not fold-scoped.** Under `--array=0-4` every fold resolved
+   the same "newest checkpoint" directory, so fold k could be fine-tuned from a
+   Stage-2 encoder that had already seen fold k's test subjects — the exact leak
+   the protocol exists to prevent. It now defaults to
+   `pretrain/stage2_hpc_tir_roi_resp_fold$FOLD`.
+2. **`submit_pretrain.sbatch` had no fold concept.** Two folds sharing one output
+   dir would collide on `checkpoint-NNNN.pth` and `latest_checkpoint.txt`, and
+   `auto_resume_model` would silently continue the *other* fold. The script now
+   supports `--array`, appends `_fold$FOLD` to the run name, and passes
+   `--n_folds/--fold/--pretrain_split fold`.
+
+In addition, `runners/run_waveform.py::check_stage2_fold_contract` now compares
+the fold recorded in the checkpoint's `args` against the fold being run:
+
+| Checkpoint records | Result |
+|---|---|
+| fold 0, run is fold 0 | `fold contract OK` |
+| fold 0, run is fold 1 | **`SystemExit`** — refuses to run a leaked pair |
+| no fold (`pretrain_split=all`) | loud warning (legitimate baseline, invalid CV number) |
+
+The verdict is stored as `fold_contract` in `metrics_final.json`.
+
+### Stage 1 (backbone init) isolation
+
+Every fold must start Stage 2 from the **same pristine VideoMAE ViT-Base**, and
+no fold may inherit another fold's weights. Three properties make that true:
+
+| Property | Mechanism |
+|---|---|
+| Stage-1 source is shared and read-only | `models/pretrained.py::resolve_encoder_weights` only *reads* the cached file; nothing in training writes to `INITIAL_MODELS_DIR`. Checkpoints go to `<out>/checkpoints/` |
+| Concurrent folds cannot corrupt the shared file | the download temp is now `…<kind>.<pid>.part`; `os.replace` is the only contended step and it is atomic. A shared `.part` name previously let two array tasks interleave writes into one file and install a corrupt checkpoint for all later folds |
+| A fold can only resume its own state | `utils/checkpoint.py::check_resume_fold` compares the fold recorded in the checkpoint's `args` with the running fold: same -> OK, different -> `SystemExit`, checkpoint written without folds -> warning |
+
+`run_pretrain.py` also prints a provenance line per fold:
+
+```
+[stage1] init from <repo>/models/initial/videomae_base_patch16_224.pth
+         (spec 'videomae:k400', 148 encoder tensors, 376.9 MB, mtime …)
+```
+
+so a fold sweep can be checked by eye: identical path, size and mtime means all
+folds started from the same baseline.
+
+Verified locally: fold 0 and fold 1 each re-initialise from that file, and
+pointing fold 1 at fold 0's `--output_dir` is refused with
+`[resume] FOLD MISMATCH: … fold 0 of 4, but this run is fold 1 of 4`.
+
+### HPC rollout: folds run SEQUENTIALLY
+
+Both job scripts run the whole sweep inside **one** allocation. The 4 GPUs are
+used *within* a fold (DDP); fold `k+1` starts only after fold `k` exits.
+
+| Aspect | Behaviour |
+|---|---|
+| submission | `sbatch scripts/hpc/<job>.sbatch` → folds `0..N_FOLDS-1`, in order |
+| subset | `FOLDS="0 1"` (still sequential); `FOLDS=3` for a single fold |
+| `--array` | **refused** (exit 2) — an array task would run the whole sweep, and the tasks would run in parallel |
+| per fold | own `OUT_DIR` (`…_fold<k>`), own Stage-2 checkpoint dir, own `MASTER_PORT` offset (avoids a TIME_WAIT rebind) |
+| failure | a fold that cannot start is reported, the sweep continues, and the job exits 1 listing the failed folds |
+| resume | each fold has its own `latest_checkpoint.txt`, so a requeued job continues where it stopped |
+
+**Resource note.** A full Stage-3 sweep is 5 × ~7-9 h (~45 h), which exceeds the
+`acc` 1-day cap, so the default partition in both scripts is now `acc_long`
+(`--time=5-00:00:00` for Stage 3, `2-00:00:00` for Stage 2, ~4.5 h per fold). A
+single fold can be submitted back to the short queue with
+`sbatch --partition=acc --time=24:00:00 …`.
+
+Verified with a stubbed `srun` (no cluster needed): folds execute 0→4 in order,
+each with a distinct output dir and port; removing one fold's Stage-2 checkpoint
+produces `ERROR: fold 2: no Stage-2 checkpoint resolved`, the remaining folds
+still run, and the job exits 1 with `these folds failed: 2`.
+
+**Not implemented:** a pooling script that walks the per-fold run dirs and
+aggregates `subject_metrics.json`. Until it exists, a pooler must skip run dirs
+whose `metrics_final.json` has `skipped: true` (those folds have no
+`preds.npy`/`entries.json`, so `run_evaluate_subject.py` cannot read them).
+
+
 

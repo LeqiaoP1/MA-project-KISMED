@@ -12,6 +12,7 @@ Until then this script wires everything except those two thesis-specific parts.
 import argparse
 import os
 import sys
+import time
 
 # allow running either `python runners/run_pretrain.py` or `python -m runners.run_pretrain`
 # from the code/ root by ensuring code/ is on sys.path
@@ -475,9 +476,18 @@ def main(args):
             dataset=getattr(args, 'videomae_dataset', 'k400'),
             require=True)
         stats = load_pretrained_encoder(model, ckpt)
+        # Provenance line: every fold must show the SAME pristine Stage-1 file.
+        # Printing size+mtime (cheap) lets a fold sweep prove it started from
+        # the shared read-only baseline and not from another fold's output.
+        try:
+            _st = os.stat(ckpt)
+            _prov = (f'{_st.st_size / 1e6:.1f} MB, '
+                     f'mtime {time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(_st.st_mtime))}')
+        except OSError:
+            _prov = 'stat unavailable'
         print(f'[stage1] init from {ckpt} '
               f'(spec {args.pretrained_encoder!r}, '
-              f'{stats["loaded"]} encoder tensors)')
+              f'{stats["loaded"]} encoder tensors, {_prov})')
     else:
         raise SystemExit(
             f'--model {args.model!r}: Stage 1 only supports the multimodal '

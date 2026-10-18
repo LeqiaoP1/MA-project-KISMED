@@ -12,12 +12,15 @@
 #   2) mkdir -p logs        (sbatch resolves --output relative to the submit dir)
 #
 # Submit from code/:
-#   sbatch scripts/hpc/submit_waveform_tir_roi.sbatch
-#   FINETUNE=/work/scratch/$USER/pretrain/stage2_hpc_tir_roi_resp/checkpoints/checkpoint-0399.pth \
-#       sbatch scripts/hpc/submit_waveform_tir_roi.sbatch
+#   sbatch scripts/hpc/submit_waveform_tir_roi.sbatch            # folds 0..4, in order
+#   FOLDS="0 1" sbatch scripts/hpc/submit_waveform_tir_roi.sbatch  # a subset, still sequential
+#   FOLDS=3     sbatch scripts/hpc/submit_waveform_tir_roi.sbatch  # ONE fold
 #   TASK_SET=low,moderate sbatch scripts/hpc/submit_waveform_tir_roi.sbatch
-#   sbatch --array=0-4 scripts/hpc/submit_waveform_tir_roi.sbatch        # 5-fold sweep
 #   VAL_SUBJECT=F004 sbatch scripts/hpc/submit_waveform_tir_roi.sbatch   # legacy LOSO fold
+#
+# Folds are SEQUENTIAL: one Slurm job runs them one after another, each using all
+# 4 GPUs (DDP is intra-fold). Do NOT use --array -- it would run the whole sweep
+# once per array task, in parallel.
 #
 # Env overrides:
 #   CONFIG      configs/finetune/resp_tir_roi_hpc.yaml
@@ -33,7 +36,8 @@
 #   VAL_SUBJECT / TASK_SET / EPOCHS / BATCH_SIZE
 #   Anything after the script name is forwarded to the runner verbatim.
 #SBATCH --job-name=st3_resp_tir
-#SBATCH --partition=acc               # GPU; 1 day max ('acc_long' = 7 days)
+# NB: the partition is set further down (acc_long) -- a full fold sweep does not
+# fit the 1-day `acc` cap; see the --time note.
 # NB: the LUA plugin rejects --mem, so memory is --mem-per-cpu * cpus-per-task.
 # --account is omitted on purpose: the plugin bills your default project.
 # ---- GPU TYPE IS PINNED ON PURPOSE ---------------------------------------- #
@@ -48,12 +52,15 @@
 #SBATCH --ntasks-per-node=4
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=4G              # 4 tasks x 8 cpus x 4G = 128G total
-# --time is 24 h, not 12 h: the config ships `epochs: 150`, and Stage 3 runs a
-# VALIDATION pass every epoch (unlike Stage-2 pre-training), so ~150 epochs costs
-# roughly 7-9 h. At a 12 h limit a slower-than-expected epoch would be killed
-# mid-run, and a requeue costs another multi-day scheduling wait -- far more than
-# the margin is worth. Stage 2 used 4.5 h of its 24 h for reference.
-#SBATCH --time=24:00:00
+# --time: a REAL fold run is ~7-9 h (`epochs: 150` plus a validation pass every
+# epoch), and the default FOLDS is the whole 0..4 sweep -> up to ~45 h. `acc`
+# caps at 1 day, so the sweep default needs `acc_long`. A single fold
+# (FOLDS=3) can be submitted to the short queue with
+#     sbatch --partition=acc --time=24:00:00 ...
+# A killed sweep is recoverable: every fold has its own checkpoint pointer, so
+# re-submitting resumes the fold it reached and skips the finished ones.
+#SBATCH --partition=acc_long          # 7-day max; see the --time note above
+#SBATCH --time=5-00:00:00
 #SBATCH --output=logs/st3_resp_tir_%j.out
 #SBATCH --error=logs/st3_resp_tir_%j.err
 
@@ -84,15 +91,28 @@ export INITIAL_MODELS_DIR="${WEIGHTS_DIR:-$PROJ_DIR/models/initial}"
 CONFIG="${CONFIG:-configs/finetune/resp_tir_roi_hpc.yaml}"
 RUN_NAME="${RUN_NAME:-$(basename "${CONFIG%.yaml}")}"
 
-# Array job support: append fold index to RUN_NAME and export FOLD
+# ---- fold sweep: SEQUENTIAL by design ------------------------------------- #
+# All folds run one after another INSIDE THIS ONE JOB, each fold using all
+# GPUs of the allocation (DDP is intra-fold only). Nothing runs in parallel
+# across folds, so the folds never compete for GPU memory, the ROI cache, or
+# the shared Stage-1 weight cache.
+#
+#   FOLDS="0 1 2 3 4"  sbatch ...      # default: 0..N_FOLDS-1
+#   FOLDS="3"          sbatch ...      # a single fold
+#
+# Do NOT submit this with --array: each array task would run the whole sweep.
 if [ -n "${SLURM_ARRAY_TASK_ID:-}" ]; then
-    FOLD="${FOLD:-$SLURM_ARRAY_TASK_ID}"
-    RUN_NAME="${RUN_NAME}_fold${FOLD}"
+    echo "ERROR: this script is a SEQUENTIAL fold sweep; drop --array." >&2
+    echo "       Use FOLDS=\"0 1 2 3 4\" (the default) to run every fold in" >&2
+    echo "       order inside one job, or FOLDS=\"<k>\" for a single fold." >&2
+    exit 2
 fi
 
+N_FOLDS="${N_FOLDS:-5}"
+# space-separated, so it prints on one line and splits cleanly in `for fold in`
+FOLDS="${FOLDS:-$(seq 0 $((N_FOLDS - 1)) | tr '\n' ' ')}"
+FOLDS="$(echo $FOLDS)"
 OUT_ROOT="${OUT_ROOT:-${WORK_SCRATCH:-$OUTPUT_DIR}}"
-OUT_DIR="${OUT_DIR:-$OUT_ROOT/finetune/$RUN_NAME}"
-STAGE2_DIR="${STAGE2_DIR:-$OUT_ROOT/pretrain/stage2_hpc_tir_roi_resp}"
 
 if [ ! -f "$CONFIG" ]; then
     echo "ERROR: config not found: $CONFIG (run from $CODE_DIR)" >&2
@@ -106,22 +126,12 @@ if [ -z "${RAW_DATA_PATH:-}" ] || [ ! -d "$RAW_DATA_PATH" ]; then
 fi
 
 # ---- resolve the Stage-2 checkpoint --------------------------------------- #
-if [ -z "${FINETUNE:-}" ]; then
-    FINETUNE="$(ls -1 "$STAGE2_DIR"/checkpoints/checkpoint-*.pth 2>/dev/null \
-                | sort -V | tail -n 1 || true)"
-    if [ -n "$FINETUNE" ]; then
-        echo "[submit_waveform_tir_roi] FINETUNE not set -> newest Stage-2 ckpt:"
-        echo "                          $FINETUNE"
-    fi
-fi
-if [ -z "${FINETUNE:-}" ] || [ ! -f "$FINETUNE" ]; then
-    echo "ERROR: no Stage-2 checkpoint resolved." >&2
-    echo "       Looked in : ${STAGE2_DIR}/checkpoints/" >&2
-    echo "       Got       : '${FINETUNE:-<unset>}'" >&2
-    echo "       Run scripts/hpc/submit_pretrain.sbatch first, or pass" >&2
-    echo "           FINETUNE=/path/to/checkpoint-NNNN.pth sbatch $0" >&2
-    exit 1
-fi
+# Per fold, INSIDE the loop: the Stage-2 tree a fold was pretrained from MUST be
+# that fold's own run. A shared "newest checkpoint" directory would silently
+# pair a fold with a Stage-2 model that already saw its test subjects -- exactly
+# the leak the k-fold protocol exists to prevent. An explicit STAGE2_DIR or
+# FINETUNE override still applies to every fold (the run-time fold contract
+# check refuses a mismatched pair).
 
 # ---- runner args (config -> defaults; explicit flags override) ------------- #
 # --data_path MUST be the RAW tree for data_set: tir_roi_resp (the canonical
@@ -143,21 +153,7 @@ if [ -n "$ROI_CACHE" ] && [ ! -d "$ROI_CACHE" ]; then
     exit 1
 fi
 
-ARGS=(-c "$CONFIG"
-      --data_path "$RAW_DATA_PATH"
-      --finetune "$FINETUNE"
-      --output_dir "$OUT_DIR")
-[ -n "${FOLD:-}" ]        && ARGS+=(--fold "$FOLD")
-[ -n "${VAL_SUBJECT:-}" ] && ARGS+=(--val_subject "$VAL_SUBJECT")
-[ -n "${TASK_SET:-}" ]    && ARGS+=(--task_set "$TASK_SET")
-[ -n "${TASKS:-}" ]       && ARGS+=(--tasks "$TASKS")
-[ -n "${EPOCHS:-}" ]      && ARGS+=(--epochs "$EPOCHS")
-[ -n "${BATCH_SIZE:-}" ]  && ARGS+=(--batch_size "$BATCH_SIZE")
-[ -n "${NUM_WORKERS:-}" ] && ARGS+=(--num_workers "$NUM_WORKERS")
-[ -n "$ROI_CACHE" ]      && ARGS+=(--roi_cache "$ROI_CACHE")
-ARGS+=("$@")
-
-mkdir -p "$OUT_DIR" "$CODE_DIR/logs"
+mkdir -p "$CODE_DIR/logs"
 
 # Port derived from the job id: a hardcoded 29501 collides whenever two jobs land
 # on the same node (Lichtenberg packs 4-GPU jobs 2-per-node) and the loser dies
@@ -166,20 +162,82 @@ mkdir -p "$OUT_DIR" "$CODE_DIR/logs"
 # range at 20000-29999, i.e. BELOW the Linux ephemeral range (32768-60999), so
 # the kernel can never hand this port to an outbound connection.
 export MASTER_ADDR="${MASTER_ADDR:-$(scontrol show hostname "$SLURM_JOB_NODELIST" | sed -n '1p')}"
-export MASTER_PORT="${MASTER_PORT:-$((20000 + (SLURM_JOB_ID * 17) % 10000))}"
 
-echo "[submit_waveform_tir_roi] config   : $CONFIG"
-echo "[submit_waveform_tir_roi] raw_root : $RAW_DATA_PATH"
-echo "[submit_waveform_tir_roi] finetune : $FINETUNE"
-echo "[submit_waveform_tir_roi] roi_cache: ${ROI_CACHE:-<disabled: decode .wmv>}"
-echo "[submit_waveform_tir_roi] output   : $OUT_DIR"
-echo "[submit_waveform_tir_roi] world    : ${SLURM_NTASKS} task(s) on $(hostname)"
-echo "[submit_waveform_tir_roi] gres     : $(scontrol show job -o "$SLURM_JOB_ID" 2>/dev/null | grep -oE 'gres/gpu[a-z0-9/]*=[0-9]+' | tr '\n' ' ')"
-echo "[submit_waveform_tir_roi] command  : python -u runners/run_waveform.py ${ARGS[*]}"
-echo
+run_fold() {
+    local fold="$1"
+    shift          # the rest are runner args forwarded from the submit command
+    local run_name="${RUN_NAME}_fold${fold}"
+    local out_dir="${OUT_DIR:-$OUT_ROOT/finetune/$run_name}"
+    local stage2_dir="${STAGE2_DIR:-$OUT_ROOT/pretrain/stage2_hpc_tir_roi_resp_fold${fold}}"
+    local finetune="${FINETUNE:-}"
+    local args=()
 
-# one task per GPU; utils/dist.py reads SLURM_* env to init DDP
-srun --ntasks="$SLURM_NTASKS" --ntasks-per-node="$SLURM_NTASKS_PER_NODE" \
-    python -u runners/run_waveform.py "${ARGS[@]}"
+    # Per-fold port offset: the folds share this allocation, and re-binding the
+    # same port a few seconds after the previous fold's process exits can hit a
+    # lingering TIME_WAIT socket.
+    export MASTER_PORT="$(( 20000 + (SLURM_JOB_ID * 17 + fold) % 10000 ))"
 
-echo "Stage-3 (resp / tir_roi) finished -> $OUT_DIR"
+    if [ -z "$finetune" ]; then
+        finetune="$(ls -1 "$stage2_dir"/checkpoints/checkpoint-*.pth 2>/dev/null \
+                    | sort -V | tail -n 1 || true)"
+        if [ -n "$finetune" ]; then
+            echo "[fold $fold] FINETUNE not set -> newest Stage-2 ckpt: $finetune"
+        fi
+    fi
+    if [ -z "$finetune" ] || [ ! -f "$finetune" ]; then
+        echo "ERROR: fold $fold: no Stage-2 checkpoint resolved." >&2
+        echo "       Looked in : ${stage2_dir}/checkpoints/" >&2
+        echo "       Got       : '${finetune:-<unset>}'" >&2
+        echo "       Run scripts/hpc/submit_pretrain.sbatch for this fold first," >&2
+        echo "       or pass FINETUNE=/path/to/checkpoint-NNNN.pth." >&2
+        return 1
+    fi
+
+    args=(-c "$CONFIG"
+          --data_path "$RAW_DATA_PATH"
+          --finetune "$finetune"
+          --output_dir "$out_dir"
+          --n_folds "$N_FOLDS"
+          --fold "$fold")
+    [ -n "${VAL_SUBJECT:-}" ] && args+=(--val_subject "$VAL_SUBJECT")
+    [ -n "${TASK_SET:-}" ]    && args+=(--task_set "$TASK_SET")
+    [ -n "${TASKS:-}" ]       && args+=(--tasks "$TASKS")
+    [ -n "${EPOCHS:-}" ]      && args+=(--epochs "$EPOCHS")
+    [ -n "${BATCH_SIZE:-}" ]  && args+=(--batch_size "$BATCH_SIZE")
+    [ -n "${NUM_WORKERS:-}" ] && args+=(--num_workers "$NUM_WORKERS")
+    [ -n "$ROI_CACHE" ]       && args+=(--roi_cache "$ROI_CACHE")
+    args+=("$@")
+
+    echo
+    echo "=================================================================="
+    echo "[fold $fold] config   : $CONFIG"
+    echo "[fold $fold] raw_root : $RAW_DATA_PATH"
+    echo "[fold $fold] finetune : $finetune"
+    echo "[fold $fold] roi_cache: ${ROI_CACHE:-<disabled: decode .wmv>}"
+    echo "[fold $fold] output   : $out_dir"
+    echo "[fold $fold] world    : ${SLURM_NTASKS} task(s) on $(hostname)"
+    echo "[fold $fold] command  : python -u runners/run_waveform.py ${args[*]}"
+    echo "=================================================================="
+
+    mkdir -p "$out_dir"
+    # one task per GPU; utils/dist.py reads SLURM_* env to init DDP
+    srun --ntasks="$SLURM_NTASKS" --ntasks-per-node="$SLURM_NTASKS_PER_NODE" \
+        python -u runners/run_waveform.py "${args[@]}" || return 1
+    echo "[fold $fold] finished -> $out_dir"
+}
+
+FAILED=""
+for fold in $FOLDS; do
+    echo "[submit_waveform_tir_roi] SEQUENTIAL sweep: fold $fold (of $N_FOLDS)"
+    if ! run_fold "$fold" "$@"; then
+        echo "[fold $fold] FAILED -- continuing with the remaining folds" >&2
+        FAILED="$FAILED $fold"
+    fi
+done
+
+if [ -n "$FAILED" ]; then
+    echo "ERROR: these folds failed:$FAILED -- see the per-fold logs above." >&2
+    exit 1
+fi
+echo "All folds finished: $FOLDS"
+

@@ -198,6 +198,54 @@ def check_stage2_roi_contract(args, stage2_args, allow_mismatch=False):
             for key, stage2, stage3, same in rows}
 
 
+def check_stage2_fold_contract(args, stage2_args) -> dict:
+    """Verify the --finetune checkpoint belongs to THIS fold.
+
+    The k-fold protocol only holds if fold k's Stage-3 run starts from a Stage-2
+    encoder that never saw fold k's test subjects. Nothing in the tensor shapes
+    can reveal a violation: the checkpoint loads cleanly either way, and the run
+    looks perfectly healthy while the headline number is inflated. So compare
+    the fold the checkpoint RECORDS against the fold this run is executing.
+
+    * both folds recorded and different -> hard ``SystemExit``.
+    * checkpoint records no fold (``n_folds == 0``, i.e. pretrained on the whole
+      corpus) -> loud warning; that is a deliberate choice for some baselines,
+      but it is leakage for a cross-validated number.
+    * this run is not a fold run -> nothing to check.
+    """
+    n_folds = int(getattr(args, 'n_folds', 0) or 0)
+    if n_folds <= 1:
+        return {}
+    fold = int(getattr(args, 'fold', 0) or 0)
+    s2_nf = int(getattr(stage2_args, 'n_folds', 0) or 0) if stage2_args else 0
+    s2_fold = getattr(stage2_args, 'fold', None) if stage2_args else None
+
+    if not stage2_args:
+        print('[stage3] fold contract: the checkpoint records no args -> cannot '
+              'verify which fold it was pre-trained on.')
+        return {}
+    if s2_nf <= 1 or s2_fold is None:
+        print(f'[stage3] WARNING: fold contract -- this run is fold {fold} of '
+              f'{n_folds}, but the Stage-2 checkpoint records NO fold '
+              f'(pretrain_split=all, i.e. it saw every subject). A '
+              f'cross-validated number from this pair is LEAKED; re-pretrain '
+              f'with --pretrain_split fold for a clean fold.')
+        return {'stage2_fold': None, 'stage3_fold': fold, 'match': False}
+
+    same = int(s2_fold) == fold and s2_nf == n_folds
+    if not same:
+        raise SystemExit(
+            f'[stage3] fold contract VIOLATED: the --finetune checkpoint was '
+            f'pre-trained as fold {s2_fold} of {s2_nf}, but this run is fold '
+            f'{fold} of {n_folds}. Its test subjects were therefore seen during '
+            f'pre-training, which silently inflates every reported metric. '
+            f'Point --finetune (or STAGE2_DIR) at the fold-{fold} Stage-2 run.')
+    print(f'[stage3] fold contract OK: checkpoint and run are both fold '
+          f'{fold}/{n_folds}.')
+    return {'stage2_fold': int(s2_fold), 'stage3_fold': fold, 'match': True}
+
+
+
 def get_args():
     parser = argparse.ArgumentParser('Stage-3 waveform fine-tuning', add_help=True)
     add_common_args(parser)
@@ -513,6 +561,7 @@ def main(args):
                 f'--use_tir.')
 
     # ----- model: Stage-2 encoder + waveform regression head --------------- #
+    _fold_check: dict = {}
     use_multimae = str(args.model).startswith('project_multimae')
     if use_multimae:
         # Stage-3 proper: re-use the Stage-2 multimodal (tubelet, joint
@@ -532,6 +581,11 @@ def main(args):
             # tensor shape either way, different pixels.
             check_stage2_roi_contract(args, _stage2.get('stage2_args'),
                                       allow_mismatch=args.allow_roi_mismatch)
+            # k-fold: a fold-k run must start from a fold-k Stage-2 encoder.
+            # Same hazard class as the ROI check -- nothing in the tensor shapes
+            # reveals it, and the run looks healthy while the number is leaked.
+            _fold_check = check_stage2_fold_contract(args,
+                                                     _stage2.get('stage2_args'))
         else:
             print('[stage3] WARNING: no --finetune checkpoint -> the encoder '
                   'starts from random weights (this is NOT Stage-3 fine-tuning).')
@@ -848,6 +902,12 @@ def main(args):
                 'epochs': args.epochs,
                 'selection': 'best_pearson' if has_val else 'fixed_epoch',
                 'eval_role': eval_role,
+                # k-fold provenance: the fold this run executed AND the fold the
+                # Stage-2 checkpoint recorded ('match' is False when the
+                # checkpoint records no fold at all).
+                'fold': int(getattr(args, 'fold', 0) or 0),
+                'n_folds': n_folds,
+                'fold_contract': _fold_check,
                 # loss provenance: the A/B (std vs smoothl1 L_time) must be
                 # readable off the artefact, not only off the job log.
                 'loss': {'time_loss': criterion.time_loss,

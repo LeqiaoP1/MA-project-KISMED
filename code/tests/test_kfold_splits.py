@@ -141,3 +141,40 @@ def test_session_split_rejected_with_folds():
             train_ratio=0.8, split_by="session", val_subject=None,
             split_role="train", n_folds=3, fold=0, use_small_val=False,
             dataset_name="dummy")
+
+
+# --------------------------------------------------------------------------- #
+# Stage 1/2 isolation: a fold may only ever resume its OWN fold.
+# --------------------------------------------------------------------------- #
+def _ns(**kw):
+    from types import SimpleNamespace
+    return SimpleNamespace(**kw)
+
+
+def test_resume_accepts_the_same_fold():
+    from utils.checkpoint import check_resume_fold
+
+    verdict = check_resume_fold(_ns(n_folds=4, fold=2),
+                               _ns(n_folds=4, fold=2))
+    assert verdict['match'] is True
+
+
+def test_resume_refuses_another_fold():
+    from utils.checkpoint import check_resume_fold
+
+    with pytest.raises(SystemExit, match="FOLD MISMATCH"):
+        check_resume_fold(_ns(n_folds=4, fold=1), _ns(n_folds=4, fold=0))
+
+
+def test_resume_warns_on_a_non_fold_checkpoint():
+    """A whole-corpus pretrain resumed into a fold run is allowed but flagged."""
+    from utils.checkpoint import check_resume_fold
+
+    verdict = check_resume_fold(_ns(n_folds=4, fold=1), _ns(n_folds=0, fold=0))
+    assert verdict['match'] is False
+
+
+def test_resume_noop_when_not_a_fold_run():
+    from utils.checkpoint import check_resume_fold
+
+    assert check_resume_fold(_ns(n_folds=0, fold=0), _ns(n_folds=4, fold=3)) == {}

@@ -475,7 +475,13 @@ def download_pretrained(spec: str, dest_dir: Optional[str] = None,
     errors: List[str] = []
     try:
         for url, kind in plan['candidates']:
-            tmp = dest.with_name(f'{dest.name}.{kind}.part')
+            # PID in the temp name: with k-fold ARRAY jobs, N independent
+            # processes may miss the same cached variant at the same moment.
+            # A shared `.part` name would let two of them interleave writes into
+            # ONE file and `os.replace` a corrupt checkpoint into the cache --
+            # poisoning Stage 1 for every later fold. Distinct temps make the
+            # final os.replace the only contention point, and that is atomic.
+            tmp = dest.with_name(f'{dest.name}.{kind}.{os.getpid()}.part')
             try:
                 _log(f'[init-weights] downloading {url}', quiet)
                 _stream_download(url, tmp, quiet)

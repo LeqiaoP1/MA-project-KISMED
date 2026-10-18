@@ -36,6 +36,52 @@ def save_model(args, epoch, model, model_without_ddp, optimizer, loss_scaler,
             f.write(checkpoint_path)
 
 
+def check_resume_fold(cur_args, ck_args) -> dict:
+    """Refuse to resume a fold from ANOTHER fold's checkpoint.
+
+    Stage 1/2 isolation is a property of the output directory: fold k's run may
+    only ever continue fold k's own state. Nothing in the tensor shapes reveals
+    a violation -- the checkpoint loads perfectly -- so the fold recorded in the
+    checkpoint's ``args`` is compared with the fold this process is running.
+
+    * both folds recorded and different  -> ``SystemExit``;
+    * checkpoint records no fold, run does -> warning (a whole-corpus pretrain
+      resumed into a fold run);
+    * run is not a fold run -> nothing to check.
+
+    :returns: a small verdict dict for logging.
+    """
+    cur_nf = int(getattr(cur_args, 'n_folds', 0) or 0)
+    cur_fold = int(getattr(cur_args, 'fold', 0) or 0)
+    if cur_nf <= 1:
+        return {}
+    ck_nf = int(getattr(ck_args, 'n_folds', 0) or 0) if ck_args else 0
+    ck_fold = getattr(ck_args, 'fold', None) if ck_args else None
+
+    if not ck_args:
+        print('[resume] the checkpoint records no args -> cannot verify which '
+              'fold it belongs to.')
+        return {'checkpoint_fold': None, 'run_fold': cur_fold, 'match': False}
+    if ck_nf <= 1 or ck_fold is None:
+        print(f'[resume] WARNING: this run is fold {cur_fold}/{cur_nf} but the '
+              f'checkpoint records NO fold (it was written by a whole-corpus '
+              f'run). Continuing would mix a non-fold state into a fold -- '
+              f'use a fresh --output_dir for the fold.')
+        return {'checkpoint_fold': None, 'run_fold': cur_fold, 'match': False}
+
+    if int(ck_fold) != cur_fold or ck_nf != cur_nf:
+        raise SystemExit(
+            f'[resume] FOLD MISMATCH: the checkpoint belongs to fold {ck_fold} '
+            f'of {ck_nf}, but this run is fold {cur_fold} of {cur_nf}. Resuming '
+            f'would continue another fold\'s weights, and that fold saw these '
+            f'test subjects. Point --output_dir at this fold\'s own run dir '
+            f'(or start fresh).')
+    print(f'[resume] fold contract OK: checkpoint and run are both fold '
+          f'{cur_fold}/{cur_nf}.')
+    return {'checkpoint_fold': int(ck_fold), 'run_fold': cur_fold,
+            'match': True}
+
+
 def load_model(args, model_without_ddp, optimizer, loss_scaler, model_ema=None):
     """Load a checkpoint (from ``args.resume``) into model/optimizer/scaler."""
     if args.resume:
@@ -46,6 +92,8 @@ def load_model(args, model_without_ddp, optimizer, loss_scaler, model_ema=None):
         # core.waveform_model.load_stage2_encoder.
         checkpoint = torch.load(args.resume, map_location='cpu',
                                 weights_only=False)
+        # k-fold: a fold run may only resume its OWN fold (see the helper).
+        check_resume_fold(args, checkpoint.get('args'))
         model_without_ddp.load_state_dict(checkpoint['model'])
         print("Resume checkpoint %s" % args.resume)
         if 'optimizer' in checkpoint and 'epoch' in checkpoint:

@@ -52,7 +52,8 @@
 # $PROJ_DIR/output is itself a symlink to the scratch, so both branches land on
 # the scratch file system. OUT_ROOT still defaults to $WORK_SCRATCH explicitly.
 #SBATCH --job-name=st2_pretrain
-#SBATCH --partition=acc               # GPU; 1 day max ('acc_long' = 7 days)
+# NB: the partition is set further down (acc_long) -- a full fold sweep does not
+# fit the 1-day `acc` cap; see the --time note.
 # NB: the LUA plugin rejects --mem, so memory is --mem-per-cpu * cpus-per-task.
 # --account is omitted on purpose: the plugin bills your default project.
 # ---- GPU TYPE IS PINNED ON PURPOSE ---------------------------------------- #
@@ -79,7 +80,13 @@
                                       # of the node's 128 cores; keep
                                       # ntasks x cpus-per-task <= 128.
 #SBATCH --mem-per-cpu=4G              # 4 tasks x 16 cpus x 4G = 256G total
-#SBATCH --time=24:00:00
+# --time: one fold is ~4.5 h (measured), and the default FOLDS is the whole
+# 0..4 sweep -> ~23 h, over the `acc` 1-day cap once ROI decode is included.
+# A single fold (FOLDS=3) can use the short queue:
+#     sbatch --partition=acc --time=24:00:00 ...
+# A killed sweep is recoverable: each fold has its own checkpoint pointer.
+#SBATCH --partition=acc_long          # 7-day max; see the --time note above
+#SBATCH --time=2-00:00:00
 #SBATCH --output=logs/st2_pretrain_%j.out
 #SBATCH --error=logs/st2_pretrain_%j.err
 
@@ -111,8 +118,34 @@ export INITIAL_MODELS_DIR="${WEIGHTS_DIR:-$PROJ_DIR/models/initial}"
 
 CONFIG="${CONFIG:-configs/pretrain/stage2_hpc_tir_roi_resp.yaml}"
 RUN_NAME="${RUN_NAME:-$(basename "${CONFIG%.yaml}")}"
+
+# ---- fold sweep: SEQUENTIAL by design ------------------------------------- #
+# All folds run one after another INSIDE THIS ONE JOB, each fold using all GPUs
+# of the allocation (DDP is intra-fold only). No two folds ever run at the same
+# time, so GPU memory, the ROI cache and the shared Stage-1 weight cache are
+# never contended.
+#
+# Each fold MUST own its run dir: checkpoints are checkpoint-NNNN.pth and
+# auto_resume_model() follows OUT_DIR/checkpoints/latest_checkpoint.txt, so two
+# folds sharing ONE dir would resume each other. The test fold is excluded from
+# the corpus by --pretrain_split fold.
+#
+#   FOLDS="0 1 2 3 4"  sbatch ...      # default: 0..N_FOLDS-1
+#   FOLDS="3"          sbatch ...      # a single fold
+#
+# Do NOT submit this with --array: each array task would run the whole sweep.
+if [ -n "${SLURM_ARRAY_TASK_ID:-}" ]; then
+    echo "ERROR: this script is a SEQUENTIAL fold sweep; drop --array." >&2
+    echo "       Use FOLDS=\"0 1 2 3 4\" (the default) to run every fold in" >&2
+    echo "       order inside one job, or FOLDS=\"<k>\" for a single fold." >&2
+    exit 2
+fi
+
+N_FOLDS="${N_FOLDS:-5}"
+# space-separated, so it prints on one line and splits cleanly in `for fold in`
+FOLDS="${FOLDS:-$(seq 0 $((N_FOLDS - 1)) | tr '\n' ' ')}"
+FOLDS="$(echo $FOLDS)"
 OUT_ROOT="${OUT_ROOT:-${WORK_SCRATCH:-$OUTPUT_DIR}}"
-OUT_DIR="${OUT_DIR:-$OUT_ROOT/pretrain/$RUN_NAME}"
 
 if [ ! -f "$CONFIG" ]; then
     echo "ERROR: config not found: $CONFIG (run from $CODE_DIR)" >&2
@@ -134,33 +167,24 @@ if [ -n "$ROI_CACHE" ] && [ ! -d "$ROI_CACHE" ]; then
     exit 1
 fi
 
-# ---- runner args (config -> defaults; explicit flags override) ------------ #
-ARGS=(-c "$CONFIG" --raw_root "$RAW_DATA_PATH" --output_dir "$OUT_DIR")
-[ -n "${SUBJECTS:-}" ]    && ARGS+=(--subjects "$SUBJECTS")
-[ -n "${TASKS:-}" ]       && ARGS+=(--tasks "$TASKS")
-[ -n "${TASK_SET:-}" ]    && ARGS+=(--task_set "$TASK_SET")
-[ -n "${EPOCHS:-}" ]      && ARGS+=(--epochs "$EPOCHS")
-[ -n "${BATCH_SIZE:-}" ]  && ARGS+=(--batch_size "$BATCH_SIZE")
-[ -n "${INPUT_SIZE:-}" ]  && ARGS+=(--input_size "$INPUT_SIZE")
-[ -n "${CLIP_STRIDE:-}" ] && ARGS+=(--clip_stride "$CLIP_STRIDE")
-[ -n "${NUM_WORKERS:-}" ] && ARGS+=(--num_workers "$NUM_WORKERS")
-[ -n "$ROI_CACHE" ]      && ARGS+=(--roi_cache "$ROI_CACHE")
+# ---- runner args: assembled PER FOLD inside run_fold --------------------- #
 # You normally do NOT need --resume: run_pretrain.py auto-resumes from
 # OUT_DIR/checkpoints. An explicit path can still be appended via "$@" below.
-ARGS+=("$@")
+mkdir -p "$CODE_DIR/logs"
 
-mkdir -p "$OUT_DIR" "$CODE_DIR/logs"
-
-# ---- FRESH=1: force a clean start ----------------------------------------- #
+# ---- FRESH=1: force a clean start (applies to every fold) ----------------- #
 # auto_resume_model() keys off OUT_DIR/checkpoints/latest_checkpoint.txt. Moving
 # the whole directory aside (rather than deleting the pointer) makes the start
 # unambiguous AND keeps the old weights, which a bare `rm latest_checkpoint.txt`
 # would silently overwrite at the first save_ckpt_freq epoch.
-if [ -n "${FRESH:-}" ] && [ -d "$OUT_DIR/checkpoints" ]; then
-    ARCHIVE="$OUT_DIR/checkpoints.precache_$(date +%Y%m%d_%H%M%S)"
-    mv "$OUT_DIR/checkpoints" "$ARCHIVE"
-    echo "[submit_pretrain] FRESH=1: archived old checkpoints -> $ARCHIVE"
-fi
+fresh_dir() {
+    local out_dir="$1"
+    if [ -n "${FRESH:-}" ] && [ -d "$out_dir/checkpoints" ]; then
+        local archive="$out_dir/checkpoints.precache_$(date +%Y%m%d_%H%M%S)"
+        mv "$out_dir/checkpoints" "$archive"
+        echo "[submit_pretrain] FRESH=1: archived old checkpoints -> $archive"
+    fi
+}
 
 export MASTER_ADDR="${MASTER_ADDR:-$(scontrol show hostname "$SLURM_JOB_NODELIST" | sed -n '1p')}"
 # Derive the port from the job id -- a hardcoded 29500 collides whenever two jobs
@@ -169,20 +193,63 @@ export MASTER_ADDR="${MASTER_ADDR:-$(scontrol show hostname "$SLURM_JOB_NODELIST
 # batch sweep 2 of its 6 arms before any training ran). The modulus keeps the
 # range at 20000-29999, i.e. BELOW the Linux ephemeral range (32768-60999), so
 # the kernel can never hand this port to an outbound connection.
-export MASTER_PORT="${MASTER_PORT:-$((20000 + (SLURM_JOB_ID * 17) % 10000))}"
+run_fold() {
+    local fold="$1"
+    shift          # the rest are runner args forwarded from the submit command
+    local out_dir="${OUT_DIR:-$OUT_ROOT/pretrain/${RUN_NAME}_fold${fold}}"
+    local args=()
 
-echo "[submit_pretrain] config   : $CONFIG"
-echo "[submit_pretrain] raw_root : $RAW_DATA_PATH"
-echo "[submit_pretrain] weights  : $INITIAL_MODELS_DIR"
-echo "[submit_pretrain] output   : $OUT_DIR"
-echo "[submit_pretrain] roi_cache: ${ROI_CACHE:-<disabled: decode .wmv>}"
-echo "[submit_pretrain] world    : ${SLURM_NTASKS} task(s) on $(hostname)"
-echo "[submit_pretrain] gres     : $(scontrol show job -o "$SLURM_JOB_ID" 2>/dev/null | grep -oE 'gres/gpu[a-z0-9/]*=[0-9]+' | tr '\n' ' ')"
-echo "[submit_pretrain] command  : python -u runners/run_pretrain.py ${ARGS[*]}"
-echo
+    # Per-fold port offset: folds share this allocation, and re-binding the same
+    # port right after the previous fold exits can hit a lingering TIME_WAIT
+    # socket.
+    export MASTER_PORT="$(( 20000 + (SLURM_JOB_ID * 17 + fold) % 10000 ))"
 
-# one task per GPU; utils/dist.py reads SLURM_* env to init DDP
-srun --ntasks="$SLURM_NTASKS" --ntasks-per-node="$SLURM_NTASKS_PER_NODE" \
-    python -u runners/run_pretrain.py "${ARGS[@]}"
+    args=(-c "$CONFIG" --raw_root "$RAW_DATA_PATH" --output_dir "$out_dir"
+          --n_folds "$N_FOLDS" --fold "$fold" --pretrain_split fold)
+    [ -n "${SUBJECTS:-}" ]    && args+=(--subjects "$SUBJECTS")
+    [ -n "${TASKS:-}" ]       && args+=(--tasks "$TASKS")
+    [ -n "${TASK_SET:-}" ]    && args+=(--task_set "$TASK_SET")
+    [ -n "${EPOCHS:-}" ]      && args+=(--epochs "$EPOCHS")
+    [ -n "${BATCH_SIZE:-}" ]  && args+=(--batch_size "$BATCH_SIZE")
+    [ -n "${INPUT_SIZE:-}" ]  && args+=(--input_size "$INPUT_SIZE")
+    [ -n "${CLIP_STRIDE:-}" ] && args+=(--clip_stride "$CLIP_STRIDE")
+    [ -n "${NUM_WORKERS:-}" ] && args+=(--num_workers "$NUM_WORKERS")
+    [ -n "$ROI_CACHE" ]       && args+=(--roi_cache "$ROI_CACHE")
+    args+=("$@")
+
+    fresh_dir "$out_dir"
+    mkdir -p "$out_dir"
+
+    echo
+    echo "=================================================================="
+    echo "[fold $fold] config   : $CONFIG"
+    echo "[fold $fold] raw_root : $RAW_DATA_PATH"
+    echo "[fold $fold] weights  : $INITIAL_MODELS_DIR"
+    echo "[fold $fold] output   : $out_dir"
+    echo "[fold $fold] roi_cache: ${ROI_CACHE:-<disabled: decode .wmv>}"
+    echo "[fold $fold] world    : ${SLURM_NTASKS} task(s) on $(hostname)"
+    echo "[fold $fold] command  : python -u runners/run_pretrain.py ${args[*]}"
+    echo "=================================================================="
+
+    # one task per GPU; utils/dist.py reads SLURM_* env to init DDP
+    srun --ntasks="$SLURM_NTASKS" --ntasks-per-node="$SLURM_NTASKS_PER_NODE" \
+        python -u runners/run_pretrain.py "${args[@]}" || return 1
+    echo "[fold $fold] finished -> $out_dir"
+}
+
+FAILED=""
+for fold in $FOLDS; do
+    echo "[submit_pretrain] SEQUENTIAL sweep: fold $fold (of $N_FOLDS)"
+    if ! run_fold "$fold" "$@"; then
+        echo "[fold $fold] FAILED -- continuing with the remaining folds" >&2
+        FAILED="$FAILED $fold"
+    fi
+done
+
+if [ -n "$FAILED" ]; then
+    echo "ERROR: these folds failed:$FAILED -- see the per-fold logs above." >&2
+    exit 1
+fi
+echo "All folds finished: $FOLDS"
 
 echo "Stage-2 pre-training finished -> $OUT_DIR"
