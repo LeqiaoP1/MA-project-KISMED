@@ -70,6 +70,29 @@ def add_common_args(parser: argparse.ArgumentParser):
     add_amp_args(parser)
 
 
+def add_split_args(parser: argparse.ArgumentParser):
+    """Flags for k-fold cyclic rotation splits.
+
+    ``n_folds <= 1`` keeps the legacy ratio split (``train_ratio`` /
+    ``split_by`` / ``val_subject``), so every existing config is unaffected.
+    """
+    parser.add_argument('--n_folds', default=0, type=int,
+                        help='number of subject folds for the cyclic rotation '
+                             '(0 or 1 = off, legacy ratio split)')
+    parser.add_argument('--fold', default=0, type=int,
+                        help='fold index of THIS run (0 to n_folds - 1); its '
+                             'subjects are the held-out test fold')
+    parser.add_argument('--use_small_val', action='store_true', default=False,
+                        help='Stage 3 Option B: carve ~10 percent of the '
+                             'non-test pool as a subject-disjoint validation '
+                             'set. Off = Option A (no val, fixed-epoch '
+                             'checkpointing, test fold scored at the end).')
+    parser.add_argument('--split_role', default='', type=str,
+                        choices=['', 'train', 'val', 'test'],
+                        help='single-view override: build THIS role only. '
+                             'Empty = the runner chooses (train + val + test)')
+
+
 def _check_config_keys(parser: argparse.ArgumentParser, cfg: dict, path: str):
     """Fail loudly on YAML keys the target parser does not define.
 

@@ -158,7 +158,7 @@ Deprecated in PyTorch >= 2.0. **Risk: Low now; Medium in future PyTorch versions
 
 ### 4.6 `data/paired_dataset.py` — `split_by='session'` default allows subject leakage
 
-Alphabetical session split at `train_ratio` may put `F001_T1` in train and `F001_T2` in val. Always use the new **GroupK-Fold Cyclic Rotation** (`n_folds`, `fold`) for evaluation configs as mandated by `kfold_val_strategy_design_v2.md`. **Risk: Medium (evaluation validity).**
+Alphabetical session split at `train_ratio` may put `F001_T1` in train and `F001_T2` in val. Always use the **GroupK-Fold Cyclic Rotation** (`n_folds`, `fold`, implemented in `utils/splits.py`) for evaluation configs as mandated by `kfold_val_strategy_design_v2.md`. **Risk: Medium (evaluation validity).** Note the rotation is opt-in: `n_folds=0` (the default) still takes the leaking ratio path.
 
 ### 4.7 `core/waveform_losses.py::MultiResolutionSTFTLoss` — `_warned_degenerate` fires once per instance
 

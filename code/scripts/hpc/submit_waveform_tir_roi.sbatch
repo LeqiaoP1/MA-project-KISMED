@@ -16,7 +16,8 @@
 #   FINETUNE=/work/scratch/$USER/pretrain/stage2_hpc_tir_roi_resp/checkpoints/checkpoint-0399.pth \
 #       sbatch scripts/hpc/submit_waveform_tir_roi.sbatch
 #   TASK_SET=low,moderate sbatch scripts/hpc/submit_waveform_tir_roi.sbatch
-#   VAL_SUBJECT=F004 sbatch scripts/hpc/submit_waveform_tir_roi.sbatch   # LOSO fold
+#   sbatch --array=0-4 scripts/hpc/submit_waveform_tir_roi.sbatch        # 5-fold sweep
+#   VAL_SUBJECT=F004 sbatch scripts/hpc/submit_waveform_tir_roi.sbatch   # legacy LOSO fold
 #
 # Env overrides:
 #   CONFIG      configs/finetune/resp_tir_roi_hpc.yaml
@@ -82,6 +83,13 @@ export INITIAL_MODELS_DIR="${WEIGHTS_DIR:-$PROJ_DIR/models/initial}"
 
 CONFIG="${CONFIG:-configs/finetune/resp_tir_roi_hpc.yaml}"
 RUN_NAME="${RUN_NAME:-$(basename "${CONFIG%.yaml}")}"
+
+# Array job support: append fold index to RUN_NAME and export FOLD
+if [ -n "${SLURM_ARRAY_TASK_ID:-}" ]; then
+    FOLD="${FOLD:-$SLURM_ARRAY_TASK_ID}"
+    RUN_NAME="${RUN_NAME}_fold${FOLD}"
+fi
+
 OUT_ROOT="${OUT_ROOT:-${WORK_SCRATCH:-$OUTPUT_DIR}}"
 OUT_DIR="${OUT_DIR:-$OUT_ROOT/finetune/$RUN_NAME}"
 STAGE2_DIR="${STAGE2_DIR:-$OUT_ROOT/pretrain/stage2_hpc_tir_roi_resp}"
@@ -139,6 +147,7 @@ ARGS=(-c "$CONFIG"
       --data_path "$RAW_DATA_PATH"
       --finetune "$FINETUNE"
       --output_dir "$OUT_DIR")
+[ -n "${FOLD:-}" ]        && ARGS+=(--fold "$FOLD")
 [ -n "${VAL_SUBJECT:-}" ] && ARGS+=(--val_subject "$VAL_SUBJECT")
 [ -n "${TASK_SET:-}" ]    && ARGS+=(--task_set "$TASK_SET")
 [ -n "${TASKS:-}" ]       && ARGS+=(--tasks "$TASKS")

@@ -46,12 +46,14 @@ The session name encodes subject (`'F001_T1'.rsplit('_', 1)[0]` -> `'F001'`), en
 
 **Session discovery** (`scan_sessions`): scans `data_path` for dirs containing `rgb/`, `tir.wmv`, `signals.csv`. Falls back to first `*.wmv`. Raises `FileNotFoundError` if no valid sessions found.
 
-**Split policy (Cross-Validation)**:
+**Split policy (Cross-Validation)** — implemented 2026-10-18:
 - `split_by='session'` (historical default): splits sorted session list at `train_ratio`. **Risk: subject leakage.**
-- `split_by='subject'`: groups by subject prefix; subject-disjoint. **Deprecated for evaluation** in favor of k-fold.
-- **GroupK-Fold Cyclic Rotation**: The authoritative evaluation protocol (`code/notes/design/kfold_val_strategy_design_v2.md`) mandates a cyclic 5-fold subject rotation ($F_k$ test, $F_{(k+1)}$ val, rest train).
-- Stage-2 (`PairedPretrainDataset`): always `train_ratio=1.0` (pretrain on all, 0% Val).
-- Stage-3: Option A (0% Val) or Option B (10% Val subset).
+- `split_by='subject'`: groups by subject prefix; subject-disjoint. Legacy, used only when `n_folds <= 1`.
+- **GroupK-Fold Cyclic Rotation** (`utils/splits.py::get_stage_splits`, design `code/notes/design/kfold_val_strategy_design_v2.md`, rollout `code/notes/plan/subject_kfold_plan.md`): one `subject_folds` partition of sorted unique subject ids via `np.array_split`; fold `k` = test, all other folds = train, and Option B carves ~10% of the non-test pool as val with `np.random.default_rng(42 + fold)`. Entered through `--n_folds` / `--fold` / `--use_small_val`; `n_folds <= 1` reproduces the legacy ratio keys exactly.
+- **Roles**: `build_dataset(..., split_role='train'|'val'|'test')`. Stage 3 Option A builds no val view — an EMPTY role is refused, because `discover_sessions(subjects=[])` means "every subject".
+- `split_by='session'` is rejected when `n_folds > 1` (one subject's sessions could span two roles).
+- Stage-2: `pretrain_split='all'` (default) or `'fold'`, which excludes that fold's test subjects from the pretrain corpus and writes `fold_manifest.json` into the run dir.
+- Stage-3: Option A (0% Val, fixed-epoch checkpointing, test fold scored at the end) or Option B (~10% Val subset).
 
 **Dev caps** (applied in order): `max_sessions` -> `max_clips` -> `max_entries`.
 

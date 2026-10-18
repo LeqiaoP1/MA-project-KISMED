@@ -35,9 +35,9 @@ import torch
 from core import WaveformJointLoss
 from engines import (evaluate_waveforms, predict_waveforms,
                      train_one_epoch_waveform)
-from runners._common import (add_common_args, check_loader_not_empty, env_or,
-                             init_env, make_data_loader,
-                             parse_args_with_config)
+from runners._common import (add_common_args, add_split_args,
+                             check_loader_not_empty, env_or, init_env,
+                             make_data_loader, parse_args_with_config)
 
 
 def _parse_fft_sizes(s):
@@ -201,6 +201,7 @@ def check_stage2_roi_contract(args, stage2_args, allow_mismatch=False):
 def get_args():
     parser = argparse.ArgumentParser('Stage-3 waveform fine-tuning', add_help=True)
     add_common_args(parser)
+    add_split_args(parser)
 
     # model / task
     parser.add_argument('--model', default='project_multimae_base', type=str,
@@ -579,22 +580,47 @@ def main(args):
 
     # ----- data (implement bp4d+ first) ----------------------------------- #
     from data import build_dataset
-    dataset_val = build_dataset(is_train=False, test_mode=False, args=args)
-    data_loader_val = make_data_loader(args, dataset_val, shuffle=False,
-                                       drop_last=False)
+    
+    n_folds = int(getattr(args, 'n_folds', 0))
+    use_small_val = bool(getattr(args, 'use_small_val', False))
+    has_val = (n_folds <= 1) or use_small_val
+    
+    if has_val:
+        dataset_val = build_dataset(is_train=False, test_mode=False, args=args, split_role='val')
+        if len(dataset_val) == 0:
+            # A val subject can lose every clip to the rail/sentinel rules.
+            # Degrade to Option A loudly instead of crashing a fold sweep.
+            print('[stage3] WARNING: the requested val split is EMPTY -- '
+                  'falling back to no-val (fixed-epoch checkpointing, test '
+                  'fold scored at the end). Reason: '
+                  f'{getattr(dataset_val, "empty_reason", "unknown")}')
+            dataset_val, data_loader_val, has_val = None, None, False
+        else:
+            data_loader_val = make_data_loader(args, dataset_val,
+                                               shuffle=False, drop_last=False)
+            check_loader_not_empty(
+                data_loader_val, 'val', args,
+                extra='an empty val split means the run has nothing to score '
+                      '(see the split keys printed above)')
+    else:
+        dataset_val, data_loader_val = None, None
+
     if args.eval_only:
         # No training split: --eval_only never steps an optimiser, and walking
         # the train entries would only give an evaluation-only job a new way
         # to fail.
         dataset_train, data_loader_train = None, None
     else:
-        dataset_train = build_dataset(is_train=True, test_mode=False, args=args)
+        dataset_train = build_dataset(is_train=True, test_mode=False, args=args, split_role='train')
+        if len(dataset_train) == 0:
+            raise SystemExit(
+                '[stage3] the TRAIN split is EMPTY -- nothing to train on. '
+                f'Reason: {getattr(dataset_train, "empty_reason", "unknown")}. '
+                'Relax the corpus cleaning (rail_touch_v / min_signal_spread) '
+                'or choose another fold.')
         data_loader_train = make_data_loader(args, dataset_train, shuffle=True)
         # fail fast + name the cause instead of crashing later in the logger
         check_loader_not_empty(data_loader_train, 'train', args)
-    check_loader_not_empty(data_loader_val, 'val', args,
-                           extra='an empty val split means the run has nothing '
-                                 'to score (see the split keys printed above)')
 
     model_without_ddp = model
     if args.distributed:
@@ -709,7 +735,7 @@ def main(args):
             start_steps=epoch * steps_per_epoch,
             amp_config=amp_config, loss_in_fp32=True)
 
-        if epoch % args.eval_freq == 0 or epoch + 1 == args.epochs:
+        if has_val and (epoch % args.eval_freq == 0 or epoch + 1 == args.epochs):
             stats = evaluate_waveforms(data_loader_val, model, device,
                                        fs=args.fs, band=args.eval_band)
             print(f'[epoch {epoch}] {args.target}: {stats}')
@@ -733,18 +759,72 @@ def main(args):
                 os.makedirs(args.output_dir, exist_ok=True)
                 torch.save({'model': model_without_ddp.state_dict(),
                             'epoch': epoch}, os.path.join(args.output_dir, 'best.pth'))
+        elif not has_val:
+            # Record train loss only
+            record = {'epoch': epoch, 'target': args.target,
+                      'train_loss': (train_stats or {}).get('loss'),
+                      'lr': (train_stats or {}).get('lr')}
+            history.append(record)
+            if is_main_process():
+                append_jsonl(os.path.join(args.output_dir, 'metrics.jsonl'), record)
 
         if is_main_process() and (epoch % args.save_ckpt_freq == 0
                                   or epoch + 1 == args.epochs):
             save_model(args, epoch, model, model_without_ddp, optimizer,
                        loss_scaler)
 
-    print(f'Best Pearson ({args.target}): {best_pearson:.4f}')
+    if has_val:
+        print(f'Best Pearson ({args.target}): {best_pearson:.4f}')
 
     # ----- final evaluation artefacts: figures + JSON (not just stdout) ----- #
     if is_main_process():
         from evaluation import metrics as _metrics
-        pred, target = predict_waveforms(data_loader_val, model, device)
+        
+        if n_folds > 1:
+            # Evaluate on the test fold
+            dataset_test = build_dataset(is_train=False, test_mode=False, args=args, split_role='test')
+            # Audit artefact: exactly which subjects each role saw in THIS run.
+            # A Stage-2 / Stage-3 pair is only valid if the two manifests agree.
+            from utils import write_fold_manifest
+            write_fold_manifest(
+                os.path.join(args.output_dir, 'fold_manifest.json'),
+                fold=int(getattr(args, 'fold', 0) or 0), n_folds=n_folds,
+                stage=3,
+                roles={'train': list(getattr(dataset_train, 'split_keys', ())
+                                     or ()),
+                       'val': list(getattr(dataset_val, 'split_keys', ())
+                                   or ()),
+                       'test': list(dataset_test.split_keys)})
+            if len(dataset_test) == 0:
+                # A held-out subject can have NO usable clip (locally F004 is
+                # rail-saturated). The fold is still a valid fold: record that
+                # it could not be scored and finish WITHOUT a fabricated number
+                # so a sweep continues to the next fold.
+                _reason = getattr(dataset_test, 'empty_reason', 'unknown')
+                print('[stage3] FOLD NOT SCORABLE: the test split of fold '
+                      f'{getattr(args, "fold", 0)} has no usable clip. '
+                      f'Reason: {_reason}')
+                save_json(os.path.join(args.output_dir, 'metrics_final.json'), {
+                    'target': args.target, 'model': args.model,
+                    'split_by': args.split_by, 'n_clips': 0,
+                    'skipped': True, 'skip_reason': _reason,
+                    'fold': int(getattr(args, 'fold', 0) or 0),
+                    'n_folds': n_folds,
+                    'selection': 'best_pearson' if has_val else 'fixed_epoch',
+                    'eval_role': 'test',
+                    'test_subjects': list(dataset_test.split_keys)})
+                print(f'[stage3] wrote metrics_final.json (skipped=true) to '
+                      f'{args.output_dir}')
+                return
+            data_loader_test = make_data_loader(args, dataset_test, shuffle=False, drop_last=False)
+            check_loader_not_empty(data_loader_test, 'test', args)
+            pred, target = predict_waveforms(data_loader_test, model, device)
+            eval_role = 'test'
+        else:
+            # Legacy: evaluate on val
+            pred, target = predict_waveforms(data_loader_val, model, device)
+            eval_role = 'val'
+            
         if pred.size:
             final = dict(_metrics.time_domain_metrics(pred, target))
             try:
@@ -754,7 +834,8 @@ def main(args):
                 final.update({'psd_mae': float('nan'),
                               'hf_power_rel': float('nan')})
             n_pred = int(pred.shape[0])
-            _tsel = getattr(dataset_val, 'task_selection', None)
+            _ds_eval = dataset_test if n_folds > 1 else dataset_val
+            _tsel = getattr(_ds_eval, 'task_selection', None)
             save_json(os.path.join(args.output_dir, 'metrics_final.json'), {
                 'target': args.target, 'model': args.model,
                 'task_set': list(getattr(_tsel, 'requested', ()) or ()),
@@ -765,6 +846,8 @@ def main(args):
                 'input_size': args.input_size, 'sig_kernel': args.sig_kernel,
                 'physio_norm': args.physio_norm, 'finetune': args.finetune,
                 'epochs': args.epochs,
+                'selection': 'best_pearson' if has_val else 'fixed_epoch',
+                'eval_role': eval_role,
                 # loss provenance: the A/B (std vs smoothl1 L_time) must be
                 # readable off the artefact, not only off the job log.
                 'loss': {'time_loss': criterion.time_loss,
@@ -789,16 +872,16 @@ def main(args):
             try:
                 _val_sessions = [
                     (e['session'] if isinstance(e, dict) else e[0]['session'])
-                    for e in dataset_val.entries]
+                    for e in _ds_eval.entries]
             except Exception as _exc:
                 _val_sessions = None
-                print(f'[stage3] WARNING: no val session labels ({_exc}); the '
-                      f'prediction panel will show the FIRST clips, which may '
-                      f'all come from ONE session.')
+                print(f'[stage3] WARNING: no {eval_role} session labels '
+                      f'({_exc}); the prediction panel will show the FIRST '
+                      f'clips, which may all come from ONE session.')
             plot_waveform_panel(
                 pred, target, fs=args.fs,
                 out_png=os.path.join(args.output_dir, 'predictions_final.png'),
-                title=(f'{args.target}: predicted vs target, val split '
+                title=(f'{args.target}: predicted vs target, {eval_role} split '
                        f'(z-scored)'),
                 band=args.eval_band, metrics=final,
                 sessions=_val_sessions)
@@ -814,7 +897,7 @@ def main(args):
                 # {'session', 't_start', 'signals_file'} record that
                 # run_evaluate_session.py consumes.
                 entries = []
-                for e in dataset_val.entries:
+                for e in _ds_eval.entries:
                     if isinstance(e, dict):                    # thermal-ROI path
                         meta, t_start = e, e.get('t_start', 0.0)
                         sig = (meta.get('resp_file')

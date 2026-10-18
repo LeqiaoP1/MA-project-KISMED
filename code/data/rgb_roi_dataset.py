@@ -746,6 +746,7 @@ class RGBRoiPretrainDataset(Dataset):
                  subjects=None, tasks=None,
                  max_clips_per_session: Optional[int] = None,
                  max_entries: Optional[int] = None,
+                 allow_empty: bool = False,
                  verbose: bool = False):
         self.streams = tuple(str(s).strip() for s in streams if str(s).strip())
         if 'rgb' not in self.streams:
@@ -799,7 +800,7 @@ class RGBRoiPretrainDataset(Dataset):
             landmarks=landmarks,
             decode_scale=decode_scale, norm=self.physio_norm,
             max_clips_per_session=max_clips_per_session,
-            max_entries=max_entries, verbose=verbose)
+            max_entries=max_entries, allow_empty=allow_empty, verbose=verbose)
         self.entries = self.base.entries
         self.unusable = self.base.unusable
         self.skipped = self.base.skipped
@@ -862,8 +863,10 @@ class RGBRoiFinetuneDataset(RGBRoiPretrainDataset):
       ``_fit_time`` / ``samples_per_token == sig_kernel`` pass.
 
     Stage-3-specific: a SUBJECT-disjoint split by default (``split_by``), an
-    explicit ``val_subject`` override for leave-one-subject-out, and a
-    ``(rgb, waveform)`` tuple item; the target is normalised HERE
+    explicit ``val_subject`` override for leave-one-subject-out, the k-fold
+    cyclic rotation (``n_folds`` > 1, with ``split_role`` selecting the
+    train/val/test subject set; see :func:`utils.splits.resolve_split_keys`),
+    and a ``(rgb, waveform)`` tuple item; the target is normalised HERE
     (``physio_norm``) because Stage 3 scores the final waveform against the
     label, while the base class returns RAW values.
     """
@@ -874,6 +877,10 @@ class RGBRoiFinetuneDataset(RGBRoiPretrainDataset):
                  train_ratio: float = 0.8,
                  split_by: str = 'subject',
                  val_subject: Optional[str] = None,
+                 split_role: Optional[str] = None,
+                 n_folds: int = 0,
+                 fold: int = 0,
+                 use_small_val: bool = False,
                  fs: float = 100.0,
                  clip_duration: float = DEFAULT_CLIP_SECONDS,
                  clip_stride: Optional[float] = None,
@@ -913,6 +920,7 @@ class RGBRoiFinetuneDataset(RGBRoiPretrainDataset):
         self.train_ratio = float(train_ratio)
         self.val_subject = (str(val_subject).strip() or None
                             if val_subject is not None else None)
+        self.split_role = split_role or ('train' if is_train else 'val')
 
         # ---- the split, computed on USABLE sessions, before any clip work ---
         # "usable" = the (subject, task) pair passed the frame-count gate AND
@@ -928,36 +936,33 @@ class RGBRoiFinetuneDataset(RGBRoiPretrainDataset):
             raise RuntimeError(
                 f'RGBRoiFinetuneDataset: no usable session under {root} carries '
                 f'{SIGNAL_FILES[target]}.')
-        if self.val_subject:
-            subs = sorted({s['subject'] for s in usable})
-            if self.val_subject not in subs:
-                raise ValueError(f'val_subject={self.val_subject!r} is not among '
-                                 f'the usable subjects {subs}.')
-            keep = ({self.val_subject} if not self.is_train
-                    else set(subs) - {self.val_subject})
-            if not keep:
-                raise ValueError(f'val_subject={self.val_subject!r} leaves the '
-                                 f'train split empty.')
-            self.split_keys = sorted(keep)
-            self.split_key_kind = 'subject'
-        else:
-            keys = sorted({s['subject'] if split_by == 'subject' else s['session']
-                           for s in usable})
-            n_keep = max(1, int(round(len(keys) * self.train_ratio)))
-            keep = set(keys[:n_keep]) if self.is_train else set(keys[n_keep:])
-            if not keep:
-                raise ValueError(
-                    f"split_by={split_by!r} with train_ratio {self.train_ratio} "
-                    f"leaves the {'train' if self.is_train else 'val'} split "
-                    f'empty: {len(keys)} {split_by}(s) -> {n_keep} train side(s). '
-                    f'Lower train_ratio, or pass val_subject.')
-            self.split_keys = sorted(keep)
-            self.split_key_kind = split_by
+                
+        from utils.splits import resolve_split_keys
+        self.split_keys, self.split_key_kind = resolve_split_keys(
+            usable, self.is_train, self.train_ratio, self.split_by,
+            self.val_subject, self.split_role, n_folds, fold, use_small_val,
+            'RGBRoiFinetuneDataset')
 
         print(f'[data] rgb_roi split_by={self.split_key_kind}: '
-              f'{"train" if self.is_train else "val"} = {self.split_keys} '
+              f'{self.split_role} = {self.split_keys} '
               f'({len(usable)} usable session(s), '
               f'{len({s["subject"] for s in usable})} subject(s))')
+
+        # An empty role is a legitimate outcome; see the tir_roi twin.
+        self._empty_view = False
+        self._empty_reason = ''
+        if not self.split_keys:
+            self._empty_view = True
+            self._empty_reason = (f'no subject assigned to role '
+                                  f'{self.split_role!r} (n_folds={n_folds}, '
+                                  f'fold={fold})')
+            self.entries = []
+            self.split_sessions = []
+            self.skipped = []
+            self.stats = {'empty_reason': self._empty_reason}
+            print(f'[data] rgb_roi {self.split_role} view is EMPTY: '
+                  f'{self._empty_reason}')
+            return
 
         keep_subjects = ([k.rsplit('_', 1)[0] for k in self.split_keys]
                          if self.split_key_kind == 'session' else self.split_keys)
@@ -975,7 +980,24 @@ class RGBRoiFinetuneDataset(RGBRoiPretrainDataset):
             physio_norm=('session' if self.physio_norm == 'session' else 'none'),
             subjects=_as_list(keep_subjects), tasks=tasks,
             max_clips_per_session=max_clips_per_session,
-            max_entries=max_entries, verbose=verbose)
+            max_entries=max_entries,
+            # A scored subject whose clips are all filtered out is a data
+            # fact, not a split error -> keep the fold representable as an
+            # EMPTY view (training on nothing is still an error).
+            allow_empty=(self.split_role != 'train'),
+            verbose=verbose)
+
+        if not self.entries:
+            self._empty_view = True
+            reasons = '; '.join(f"{s['session']}: {s['reason']}"
+                                for s in getattr(self.base, 'skipped', []))\
+                or 'none'
+            self._empty_reason = (
+                f'{self.split_role} subject(s) {self.split_keys} have no '
+                f'usable clip under the current cleaning rules (skipped: '
+                f'{reasons})')
+            print(f'[data] rgb_roi {self.split_role} view is EMPTY: '
+                  f'{self._empty_reason}')
 
         # The parent stores ITS canonical dataset norm under the same attribute
         # name (see the tir_roi twin), so restore this class's STAGE-3 value.
@@ -1022,11 +1044,19 @@ class RGBRoiFinetuneDataset(RGBRoiPretrainDataset):
             w = w / (float(w.std()) + 1e-6)
         return w.astype(np.float32)
 
+    @property
+    def empty_reason(self) -> str:
+        """Why this view holds zero clips (empty string when it is populated)."""
+        return self._empty_reason
+
     def describe(self) -> str:
+        if self._empty_view:
+            return (f'RGBRoiFinetuneDataset: EMPTY {self.split_role} view -- '
+                    f'{self._empty_reason}')
         return (super().describe()
                 + f'\n  Stage-3 view: target={self.target} '
                   f'physio_norm={self.physio_norm} split={self.split_key_kind} '
-                  f'({"train" if self.is_train else "val"}) = {self.split_keys}'
+                  f'({self.split_role}) = {self.split_keys}'
                   f'\n  clips {len(self)} over {len(self.split_sessions)} '
                   f'session(s): {self.split_sessions}')
 
@@ -1068,7 +1098,7 @@ def build_rgb_roi_pretrain_dataset(args) -> RGBRoiPretrainDataset:
 
 
 def build_rgb_roi_finetune_dataset(is_train: bool, test_mode: bool,
-                                   args) -> RGBRoiFinetuneDataset:
+                                   args, split_role: Optional[str] = None) -> RGBRoiFinetuneDataset:
     """Build the Stage-3 RGB-ROI -> waveform dataset from runner ``args``.
 
     Selected by ``data_set: rgb_roi`` / ``rgb_roi_resp`` in a FINETUNE config
@@ -1088,6 +1118,10 @@ def build_rgb_roi_finetune_dataset(is_train: bool, test_mode: bool,
         train_ratio=float(getattr(args, 'train_ratio', 0.8)),
         split_by=str(getattr(args, 'split_by', 'subject')),
         val_subject=val_subject,
+        split_role=split_role,
+        n_folds=int(getattr(args, 'n_folds', 0)),
+        fold=int(getattr(args, 'fold', 0)),
+        use_small_val=bool(getattr(args, 'use_small_val', False)),
         fs=float(getattr(args, 'fs', 100.0)),
         clip_duration=float(getattr(args, 'clip_duration', DEFAULT_CLIP_SECONDS)),
         clip_stride=getattr(args, 'clip_stride', None),

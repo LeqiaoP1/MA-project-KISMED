@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
 
-from runners._common import (add_common_args, env_or, init_env,
+from runners._common import (add_common_args, add_split_args, env_or, init_env,
                              make_data_loader, parse_args_with_config)
 
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -35,6 +35,7 @@ _DEFAULT_AU_ROOT = os.path.join(_REPO, 'data', 'raw', 'BP4D', 'AUCoding', 'AU_OC
 def get_args():
     parser = argparse.ArgumentParser('AU occurrence probe', add_help=True)
     add_common_args(parser)
+    add_split_args(parser)
 
     # --- data ------------------------------------------------------------ #
     parser.add_argument('--data_path', default=env_or('DATA_PATH'), type=str,

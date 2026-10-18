@@ -20,6 +20,8 @@ YAML config via ``data_set``.
 """
 from typing import Callable, Dict, Optional
 
+import os
+
 __all__ = ['build_dataset', 'build_pretraining_dataset', 'register_dataset',
            'list_datasets', 'TIR_ROI_DATA_SETS', 'RGB_ROI_DATA_SETS']
 
@@ -53,7 +55,7 @@ def list_datasets() -> list:
     return sorted(_DATASET_BUILDERS)
 
 
-def build_dataset(is_train: bool, test_mode: bool, args):
+def build_dataset(is_train: bool, test_mode: bool, args, split_role: Optional[str] = None):
     """Build a supervised (fine-tuning / eval) dataset from ``args.data_set``.
 
     ``data_set in ('bp4d+', 'paired')`` uses the recorded RGB(jpg-seq)+TIR(wmv)
@@ -67,15 +69,28 @@ def build_dataset(is_train: bool, test_mode: bool, args):
     """
     from .paired_dataset import PAIRED_DATA_SETS, build_paired_dataset
 
+    # An explicit --split_role overrides the role the runner asked for. That is
+    # the single-view use case (e.g. `--split_role test` to score a fold), and
+    # it is the ONLY meaning of the flag: one process cannot be three roles at
+    # once, so the runner still builds its train/val/test views itself.
+    explicit_role = str(getattr(args, 'split_role', '') or '').strip().lower()
+    if explicit_role:
+        split_role = explicit_role
+
     name = getattr(args, 'data_set', None)
     if name in PAIRED_DATA_SETS:
+        if split_role and str(split_role) != ('train' if is_train else 'val'):
+            raise NotImplementedError(
+                f'data_set={name!r} cannot honour split_role={split_role!r}: '
+                f'the canonical paired layout has no subject-discovery hook for '
+                f'the k-fold rotation. Use a ROI data_set, or drop --split_role.')
         return build_paired_dataset(is_train, test_mode, args)
     if str(name or '').strip().lower() in TIR_ROI_DATA_SETS:
         from .tir_resp_dataset import build_tir_roi_finetune_dataset
-        return build_tir_roi_finetune_dataset(is_train, test_mode, args)
+        return build_tir_roi_finetune_dataset(is_train, test_mode, args, split_role=split_role)
     if str(name or '').strip().lower() in RGB_ROI_DATA_SETS:
         from .rgb_roi_dataset import build_rgb_roi_finetune_dataset
-        return build_rgb_roi_finetune_dataset(is_train, test_mode, args)
+        return build_rgb_roi_finetune_dataset(is_train, test_mode, args, split_role=split_role)
     if name not in _DATASET_BUILDERS:
         raise NotImplementedError(
             f'Unknown data_set "{name}". Registered datasets: {list_datasets()}. '
@@ -104,12 +119,90 @@ def build_pretraining_dataset(args):
     pass.
     """
     split = str(getattr(args, 'pretrain_split', 'all') or '').strip().lower()
-    if split != 'all':
+    if split not in ('all', 'fold'):
         raise ValueError(
-            'Stage-2 pre-training requires pretrain_split="all"; '
-            'train/validation splitting is only used for Stage 3.')
+            f'Stage-2 pre-training requires pretrain_split="all" or "fold"; '
+            f'got {split!r}.')
 
     name = str(getattr(args, 'data_set', '') or '').strip().lower()
+
+    if split == 'fold':
+        # Stage 2 must NOT see the test fold of the fold it is paired with, or
+        # the Stage-3 number is contaminated by pretraining. The partition is
+        # computed over the FULL usable subject list (never the capped/filtered
+        # one): --max_sessions / --max_clips would otherwise shift the folds
+        # between the Stage-2 and Stage-3 runs of the same fold.
+        from utils.splits import get_stage_splits
+        from . import task_groups as tgrp
+
+        n_folds = int(getattr(args, 'n_folds', 0) or 0)
+        fold = int(getattr(args, 'fold', 0) or 0)
+
+        if n_folds <= 1:
+            print('[data] pretrain_split=fold but n_folds <= 1: the whole '
+                  'corpus is used (no fold to exclude).')
+        elif name in TIR_ROI_DATA_SETS:
+            from .tir_resp_dataset import default_raw_root, discover_sessions
+            root = (getattr(args, 'raw_root', None)
+                    or getattr(args, 'data_path', None) or default_raw_root())
+            sel = tgrp.resolve_task_selection(
+                tasks=getattr(args, 'tasks', None),
+                task_set=getattr(args, 'task_set', None),
+                task_groups=getattr(args, 'task_groups', None))
+            usable = [s for s in discover_sessions(root, tasks=sel.tasks)
+                      if s['ir_file'] and s['resp_file']]
+            subs = sorted({s['subject'] for s in usable})
+        elif name in RGB_ROI_DATA_SETS:
+            from .rgb_roi_dataset import default_raw_root, discover_rgb_sessions
+            root = (getattr(args, 'raw_root', None)
+                    or getattr(args, 'data_path', None) or default_raw_root())
+            usable = [s for s in discover_rgb_sessions(root, tasks=None,
+                                                       attach_landmarks=False)
+                      if s['status'] == 'usable']
+            subs = sorted({s['subject'] for s in usable})
+        else:
+            raise NotImplementedError(
+                "pretrain_split='fold' is implemented for the ROI paths "
+                '(tir_roi / rgb_roi) only; the canonical paired layout has no '
+                'subject discovery hook yet.')
+
+        if n_folds > 1:
+            if not subs:
+                raise RuntimeError(
+                    f"pretrain_split='fold': no usable subject under {root}; "
+                    f'nothing to partition.')
+            splits = get_stage_splits(subs, fold=fold, n_folds=n_folds,
+                                      stage=2)
+            train_subjects = splits['train']
+            # honour an explicit --subjects filter, but never silently widen
+            requested = [s.strip() for s in
+                         str(getattr(args, 'subjects', '') or '').split(',')
+                         if s.strip()]
+            if requested:
+                train_subjects = [s for s in train_subjects
+                                  if s in set(requested)]
+                if not train_subjects:
+                    raise RuntimeError(
+                        f"pretrain_split='fold': --subjects "
+                        f'{sorted(requested)} is disjoint from the fold '
+                        f'{fold} train pool.')
+            args.subjects = train_subjects
+            print(f'[data] Stage 2 pretrain_split=fold: fold {fold}/{n_folds} '
+                  f'-> {len(train_subjects)} train subject(s), '
+                  f'{len(splits["test"])} held out '
+                  f'(test fold): {splits["test"]}')
+            # Audit artefact (trap: the partition can drift between the Stage-2
+            # and Stage-3 runs of the same fold, e.g. when --tasks or
+            # --max_sessions change the subject universe). Written next to the
+            # checkpoint so a mismatched pair is visible after the fact.
+            out_dir = str(getattr(args, 'output_dir', '') or '').strip()
+            if out_dir:
+                from utils.splits import write_fold_manifest
+                write_fold_manifest(
+                    os.path.join(out_dir, 'fold_manifest.json'),
+                    fold=fold, n_folds=n_folds, stage=2, roles=splits)
+                print(f'[data] wrote {os.path.join(out_dir, "fold_manifest.json")}')
+
     if name in TIR_ROI_DATA_SETS:
         from .tir_resp_dataset import build_tir_roi_pretrain_dataset
         return build_tir_roi_pretrain_dataset(args)

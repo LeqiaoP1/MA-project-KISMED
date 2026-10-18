@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
 
 from engines import train_one_epoch_pretrain
-from runners._common import (add_common_args, check_loader_not_empty, env_or,
+from runners._common import (add_common_args, add_split_args, check_loader_not_empty, env_or,
                              init_env, make_data_loader,
                              parse_args_with_config)
 
@@ -48,6 +48,7 @@ def str2bool(value) -> bool:
 def get_args():
     parser = argparse.ArgumentParser('Project MAE pre-training', add_help=True)
     add_common_args(parser)
+    add_split_args(parser)
 
     # model
     parser.add_argument('--model', default='project_multimae_base', type=str,
@@ -82,11 +83,13 @@ def get_args():
                         help='tir_roi/rgb_roi only: comma list of subjects '
                              '(empty=all)')
     parser.add_argument('--pretrain_split', default='all', type=str,
-                        choices=['all'],
-                        help='Stage-2 pre-training data scope. Must be "all": '
-                             'self-supervised pre-training has no train/val '
-                             'split; subject-disjoint splitting belongs to '
-                             'Stage 3 fine-tuning.')
+                        choices=['all', 'fold'],
+                        help='Stage-2 pre-training data scope. "all" (default) '
+                             '= every usable subject; "fold" = exclude the '
+                             'held-out TEST fold of this run (--n_folds/--fold) '
+                             'so the Stage-3 score is not contaminated by '
+                             'pretraining. There is still no Stage-2 val split: '
+                             'SSL has no label to early-stop on.')
     parser.add_argument('--tasks', default='', type=str,
                         help='tir_roi/rgb_roi only: comma list of tasks '
                              '(empty=all)')

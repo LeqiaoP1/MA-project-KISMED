@@ -136,12 +136,12 @@ physio_norm: session               # WHOLE-session z-score -- the twin of the
                                    #   fine-tune a per-clip Stage-2 run.
 
 # ---- data split (SUBJECT-disjoint) ----
-train_ratio: 0.8                   # full corpus (~140 subjects) -> ~113 / ~27,
-                                   #   so the ratio split is well populated here
-                                   #   (unlike the 4-subject local corpus, where a
-                                   #   LOSO sweep via --val_subject was required)
+n_folds: 5                         # 5-fold cyclic rotation (28 test / 112 train)
+fold: 0                            # overridden by the sbatch array
+use_small_val: false               # Option A: 0% val, fixed-epoch checkpointing
+train_ratio: 0.8                   # legacy fallback
 split_by: subject
-val_subject: ''                    # e.g. F001 = a LOSO fold (overrides the above)
+val_subject: ''                    # legacy fallback
 clip_stride: 2.0                   # window hop in SECONDS. MUST equal the Stage-2
                                    #   value (stage2_hpc_tir_roi_resp.yaml): the
                                    #   windows then ARE the pre-training corpus,
