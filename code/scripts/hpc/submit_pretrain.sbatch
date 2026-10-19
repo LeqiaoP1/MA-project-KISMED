@@ -252,4 +252,13 @@ if [ -n "$FAILED" ]; then
 fi
 echo "All folds finished: $FOLDS"
 
-echo "Stage-2 pre-training finished -> $OUT_DIR"
+# NOTE: OUT_DIR is only set when the CALLER pinned one directory; the normal
+# per-fold layout is $OUT_ROOT/pretrain/${RUN_NAME}_fold<k> (see run_fold()).
+# Referring to $OUT_DIR bare under `set -u` aborted this script with
+# "line 255: OUT_DIR: unbound variable" AFTER every fold had trained, so jobs
+# 55476920/55476921 were reported as FAILED 1:0 although their folds completed.
+if [ -n "${OUT_DIR:-}" ]; then
+    echo "Stage-2 pre-training finished -> $OUT_DIR"
+else
+    echo "Stage-2 pre-training finished -> $OUT_ROOT/pretrain/${RUN_NAME}_fold<k> (fold(s): $FOLDS)"
+fi
