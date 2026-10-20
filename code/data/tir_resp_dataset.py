@@ -6,6 +6,8 @@ exactly the same time span::
 
     'tir_video'    float32 [3, T, H, W]  T = clip_seconds * 25 fps (8 s -> 200)
     'resp_signal'  float32 [L]           L = clip_seconds * 1000 Hz (8 s -> 8000)
+                                         RAW VOLTS (norm='none', the default);
+                                         no per-clip z-score
     'subject_task' str                   e.g. 'F001_T1'
 
 Raw layout consumed (the RAW tree -- no ``prepare_bp4d.py`` copy is needed)::
@@ -535,8 +537,9 @@ class BP4DPlusTIRRespDataset(Dataset):
         interpolated window that becomes the target (see ``_build_entries``),
         so "touched" means "the label contains a rail-valued sample".
         Must match between the Stage-2 and Stage-3 runs.
-    :param norm: ``'clip'`` (per-clip z-score, default), ``'session'`` (z-score
-        with the whole session's statistics) or ``'none'`` (raw volts).
+    :param norm: ``'none'`` (RAW VOLTS -- the default, so ``resp_signal`` is
+        never silently rescaled), ``'clip'`` (per-clip z-score, opt-in) or
+        ``'session'`` (z-score with the whole session's statistics).
     :param max_clips_per_session, max_entries: dev caps (smoke runs).
     :param preload: materialise every clip tensor at init (small -- a 64 px
         clip is 2.5 MB -- and makes repeated epochs cheap). Off by default.
@@ -556,7 +559,7 @@ class BP4DPlusTIRRespDataset(Dataset):
                  target_landmarks: Sequence[int] = TARGET_LANDMARKS,
                  min_signal_spread: float = 0.0,
                  rail_touch_v: float = 0.0,
-                 norm: str = 'clip',
+                 norm: str = 'none',
                  max_clips_per_session: Optional[int] = None,
                  max_entries: Optional[int] = None,
                  preload: bool = False,

@@ -11,11 +11,14 @@ checks that it is what the ROI strategy promises:
   box, so the "one box per clip, no per-frame jitter" claim is visible.
 * **ROI patch** -- exactly the ``[3, T, H, W]`` tensor slice the dataset
   returns (first frame), NOT a re-crop: if the tensor and the box disagreed,
-  this panel would show it.
-* **respiration (raw)** -- the ``Resp_Volts.txt`` window over the clip's own
-  time span, in volts (the dataset's ``norm='none'`` output).
-* **respiration (target)** -- the normalised ``resp_signal`` the dataset
-  returns, i.e. the per-clip z-score.
+  this panel would show it. The SAME 12 landmarks are drawn again, mapped into
+  PATCH pixels (``(x - x0) * S/(x1 - x0)``), so the crop's own framing of the
+  nose and mouth is visible -- not just the box on the source frame.
+* **respiration (raw VOLTS)** -- the ``Resp_Volts.txt`` window over the clip's
+  own time span, in volts. The dataset's ``resp_signal`` is the SAME array: the
+  default is ``norm='none'``, i.e. **no per-clip z-score**. ``--norm clip`` /
+  ``--norm session`` exist only to inspect an explicitly normalised run, and the
+  panel and the JSON then say so.
 
 The LAYOUT follows the same priority: the annotated frame owns the full-width top
 row (it is the panel that has to be read closely -- box edges and the 28-point
@@ -31,6 +34,9 @@ live in the JSON and on stdout.
 Artifacts::
 
     <output_dir>/<subject>_<task>/clip_0000.png     # 4-panel figure (or .json only)
+    <output_dir>/<subject>_<task>/clip_0000.gif     # the WHOLE 8 s clip as an
+                                                    # animation (--video; .mp4
+                                                    # instead with --video mp4)
     <output_dir>/<subject>_<task>/clip_0000.json    # clip + dataset report
     <output_dir>/dataset_summary.json               # whole-dataset summary
     <output_dir>/tir_resp_index.json                # one row per clip inspected
@@ -40,7 +46,7 @@ Usage (from ``code/``)::
     python runners/run_inspect_tir_resp.py --list
     python runners/run_inspect_tir_resp.py --subject F001 --task T1 --clip_index 0
     python runners/run_inspect_tir_resp.py --subject F001 --task T1 --clip_index 0,1,7
-    python runners/run_inspect_tir_resp.py --input_size 224 --no-plot
+    python runners/run_inspect_tir_resp.py --input_size 64 --no-plot
 
 Paths default to ``$RAW_DATA_PATH`` (raw BP4D root) and
 ``$OUTPUT_DIR/inspect_data/tir_resp`` (see ``scripts/env_local.sh``); without the
@@ -62,6 +68,13 @@ _CODE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _REPO_DIR = os.path.dirname(_CODE_DIR)
 
 FIG_TAG = 'clip'
+
+#: Inspection default ROI-patch side. ``trd.DEFAULT_INPUT_SIZE`` (64) is the
+#: TRAINING geometry -- a DOWN-sample of the ~73x89 px native box, which is
+#: too small to read in the figure. 112 up-samples the same crop so the patch
+#: starts to look like the face it is; it does NOT change what the model sees
+#: (pass ``--input_size 64`` to inspect the training geometry exactly).
+DEFAULT_INSPECT_INPUT_SIZE = 112
 
 #: the 12 ROI landmarks split by region, for the colours in panel 1
 _NOSE = (9, 10, 20, 21)
@@ -98,8 +111,12 @@ def _split(value):
 # --------------------------------------------------------------------------- #
 # plotting
 # --------------------------------------------------------------------------- #
-def _plot_clip(ds, index: int, path: str, box, lm, frame0, tir, raw, tgt):
-    """4-panel figure for one clip; see the module docstring for the content."""
+def _plot_clip(ds, index: int, path: str, box, lm, frame0, tir, resp):
+    """4-panel figure for one clip; see the module docstring for the content.
+
+    ``resp`` is the raw respiration window in VOLTS (the dataset's
+    ``resp_signal`` under the default ``norm='none'``).
+    """
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -142,29 +159,197 @@ def _plot_clip(ds, index: int, path: str, box, lm, frame0, tir, raw, tgt):
     patch = tir[:, 0].permute(1, 2, 0).numpy()
     ax['patch'].imshow(np.clip(patch, 0.0, 1.0), interpolation='nearest',
                        aspect='equal')
-    ax['patch'].set_title(f'ROI patch {ds.input_size}x{ds.input_size} (tensor)')
+    # The SAME 12 landmarks, re-expressed in PATCH pixels: the crop is the box
+    # stretched to input_size, so x_patch = (x - x0) * S / (x1 - x0), likewise
+    # y_patch. Drawn for every frame faintly, then the clip's first frame
+    # colour-coded exactly like panel 1 (no second legend -- panel 1 has it).
+    s_px = float(ds.input_size)
+    px = (p[..., 0] - x0) * (s_px / float(max(x1 - x0, 1)))
+    py = (p[..., 1] - y0) * (s_px / float(max(y1 - y0, 1)))
+    ax['patch'].scatter(px.ravel(), py.ravel(), s=3.0, c='#00e5ff',
+                        alpha=0.45, lw=0)
+    for labels, colour in ((_NOSE, '#ffe600'), (_MOUTH, '#ff3df2')):
+        sel = [want.index(lab) for lab in labels if lab in want]
+        if not sel:
+            continue
+        ax['patch'].scatter(px[0, sel], py[0, sel], s=34, c=colour,
+                            edgecolors='k', lw=0.5)
+    ax['patch'].set_title(f'ROI patch {ds.input_size}x{ds.input_size} '
+                          f'(tensor + {len(want)} landmarks)')
 
-    # --- panel 3: raw respiration volts + the normalised target
+    # --- panel 3: the respiration window, RAW VOLTS (no z-score) ----------
+    # The legend never mentions the scale story: 'resp_signal [V]' when the
+    # dataset is raw (the default), 'resp_signal [z]' only for an explicit
+    # --norm clip/session run.
+    raw_units = ds.norm == 'none'
+    unit = 'V' if raw_units else 'z'
     t = entry['t_start'] + np.arange(ds.resp_len) / ds.resp_fs
-    ax['resp'].plot(t, raw, color='0.35', lw=0.8, label='Resp_Volts.txt')
-    ax['resp'].set_ylabel('respiration [V]')
+    ax['resp'].plot(t, resp, color='#1f4e9c', lw=0.9,
+                    label=f'resp_signal [{unit}]')
+    ax['resp'].set_ylabel(f'respiration [{unit}]')
     ax['resp'].set_xlabel('time [s]')
     ax['resp'].set_xlim(float(t[0]), float(t[-1]))
-    ax['resp'].set_title(f'clip {index} respiration window '
-                         f'({ds.resp_len} samples @ {ds.resp_fs:g} Hz)')
-    tw = ax['resp'].twinx()
-    tw.plot(t, tgt, color='#d62728', lw=0.9, label='resp_signal (z-scored)')
-    tw.set_ylabel('resp_signal [z]')
-    h1, l1 = ax['resp'].get_legend_handles_labels()
-    h2, l2 = tw.get_legend_handles_labels()
-    ax['resp'].legend(h1 + h2, l1 + l2, loc='lower right', fontsize=7,
-                      framealpha=0.7)
+    ax['resp'].set_title(
+        f'clip {index} respiration window, '
+        f'{"raw volts" if raw_units else f"norm={ds.norm}"} '
+        f'({ds.resp_len} samples @ {ds.resp_fs:g} Hz)')
+    ax['resp'].legend(loc='lower right', fontsize=7, framealpha=0.7)
 
     for key in ('roi', 'patch'):
         ax[key].set_xticks([])
         ax[key].set_yticks([])
     fig.savefig(path, dpi=130)
     plt.close(fig)
+
+
+def _write_video(ds, index: int, stem: str, box, lm, frames, tir, resp,
+                 fps: float = 25.0, dpi: int = 70,
+                 fmt: str = 'gif'):
+    """Write the WHOLE clip (8 s) as an animation, not one frame.
+
+    Layout mirrors the static figure: source frame + box + landmark track,
+    the ``[3, T, S, S]`` ROI patch as the dataset returns it, and the raw
+    respiration window with a playhead that follows the frame's time. Frames
+    are rendered with the Agg canvas (no ffmpeg needed); ``mp4`` uses OpenCV's
+    ``mp4v`` (MPEG-4 Part 2), ``gif`` uses Pillow with ONE shared palette so
+    the false-colour thermal image does not flicker.
+
+    ``fps`` is the OUTPUT rate: source frames are decimated to the nearest
+    integral ratio (``25`` = every frame, ``12.5`` = every 2nd). Returns the
+    written paths.
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
+
+    entry = ds.entries[index]
+    step = max(1, int(round(ds.fps / float(fps))))
+    out_fps = ds.fps / step
+    resp = np.asarray(resp, dtype=np.float32)
+
+    want = [int(l) for l in ds.target_landmarks]
+    p = np.asarray(lm)[:, np.asarray(want) - 1, :]
+    x0, x1, y0, y1 = box
+    s_px = float(ds.input_size)
+    sx = s_px / float(max(x1 - x0, 1))
+    sy = s_px / float(max(y1 - y0, 1))
+    px = (p[..., 0] - x0) * sx
+    py = (p[..., 1] - y0) * sy
+    nose_sel = [want.index(lab) for lab in _NOSE if lab in want]
+    mouth_sel = [want.index(lab) for lab in _MOUTH if lab in want]
+
+    fig = plt.figure(figsize=(9.0, 6.0), dpi=int(dpi))
+    ax = fig.subplot_mosaic([['roi', 'patch'], ['resp', 'resp']],
+                            height_ratios=[1.8, 1.0], width_ratios=[2.0, 1.0])
+    fig.subplots_adjust(left=0.03, right=0.98, top=0.92, bottom=0.09,
+                        hspace=0.16, wspace=0.05)
+
+    # source frame + the clip-static box + the WHOLE track (static)
+    im_src = ax['roi'].imshow(frames[0], interpolation='nearest')
+    ax['roi'].add_patch(Rectangle((x0, y0), x1 - x0, y1 - y0, fill=False,
+                                  ec='#ff2020', lw=2.0))
+    ax['roi'].scatter(p[..., 0].ravel(), p[..., 1].ravel(), s=2.5,
+                      c='#00e5ff', alpha=0.35, lw=0)
+    src_nose = ax['roi'].scatter([], [], s=34, c='#ffe600', edgecolors='k',
+                                 lw=0.5, label='nose')
+    src_mouth = ax['roi'].scatter([], [], s=34, c='#ff3df2', edgecolors='k',
+                                  lw=0.5, label='mouth')
+    ax['roi'].legend(loc='upper right', fontsize=8, framealpha=0.7)
+
+    # the ROI patch exactly as the dataset returns it (this frame)
+    im_patch = ax['patch'].imshow(
+        np.clip(tir[:, 0].permute(1, 2, 0).numpy(), 0.0, 1.0),
+        interpolation='nearest', aspect='equal')
+    ax['patch'].scatter(px.ravel(), py.ravel(), s=2.0, c='#00e5ff',
+                        alpha=0.3, lw=0)
+    patch_nose = ax['patch'].scatter([], [], s=28, c='#ffe600',
+                                     edgecolors='k', lw=0.4)
+    patch_mouth = ax['patch'].scatter([], [], s=28, c='#ff3df2',
+                                      edgecolors='k', lw=0.4)
+
+    # raw respiration + playhead
+    tt = entry['t_start'] + np.arange(ds.resp_len) / ds.resp_fs
+    ax['resp'].plot(tt, resp, color='#1f4e9c', lw=0.9,
+                    label='resp_signal [V]' if ds.norm == 'none'
+                    else f'resp_signal [{ds.norm}]')
+    play = ax['resp'].axvline(float(tt[0]), color='#d62728', lw=1.2)
+    dot, = ax['resp'].plot([], [], 'o', color='#d62728', ms=5)
+    ax['resp'].set_xlim(float(tt[0]), float(tt[-1]))
+    ax['resp'].set_xlabel('time [s]')
+    ax['resp'].set_ylabel('respiration [V]' if ds.norm == 'none'
+                          else 'respiration [z]')
+    ax['resp'].legend(loc='lower right', fontsize=7, framealpha=0.7)
+    for key in ('roi', 'patch'):
+        ax[key].set_xticks([])
+        ax[key].set_yticks([])
+
+    writer = None
+    gif_frames, gif_base = [], None
+    if fmt in ('mp4', 'both'):
+        import cv2
+    from PIL import Image
+    n = int(tir.shape[1])
+    for i in range(0, n, step):
+        im_src.set_data(frames[i])
+        im_patch.set_data(np.clip(tir[:, i].permute(1, 2, 0).numpy(), 0.0, 1.0))
+        src_nose.set_offsets(np.column_stack([p[i, nose_sel, 0],
+                                              p[i, nose_sel, 1]])
+                             if nose_sel else np.empty((0, 2)))
+        src_mouth.set_offsets(np.column_stack([p[i, mouth_sel, 0],
+                                               p[i, mouth_sel, 1]])
+                              if mouth_sel else np.empty((0, 2)))
+        patch_nose.set_offsets(np.column_stack([px[i, nose_sel],
+                                                py[i, nose_sel]])
+                               if nose_sel else np.empty((0, 2)))
+        patch_mouth.set_offsets(np.column_stack([px[i, mouth_sel],
+                                                 py[i, mouth_sel]])
+                                if mouth_sel else np.empty((0, 2)))
+        t_i = entry['t_start'] + i / ds.fps
+        k = int(min(max(round((t_i - entry['t_start']) * ds.resp_fs), 0),
+                    ds.resp_len - 1))
+        play.set_xdata([t_i, t_i])
+        dot.set_data([t_i], [resp[k]])
+        ax['roi'].set_title(
+            f'{entry["session"]} clip {index}   t = {t_i:5.2f} s   '
+            f'frame {i}/{n - 1}', fontsize=11)
+        fig.canvas.draw()
+        a = np.asarray(fig.canvas.buffer_rgba())[..., :3]
+
+        if fmt in ('mp4', 'both'):
+            if writer is None:
+                h, w = a.shape[:2]
+                writer = cv2.VideoWriter(
+                    stem + '.mp4', cv2.VideoWriter_fourcc(*'mp4v'),
+                    out_fps, (w, h))
+                if not writer.isOpened():
+                    raise RuntimeError('cv2.VideoWriter(mp4v) refused to open')
+            writer.write(np.ascontiguousarray(a[..., ::-1]))
+        if fmt in ('gif', 'both'):
+            im = Image.fromarray(np.ascontiguousarray(a))
+            if gif_base is None:
+                gif_base = im.quantize(colors=255,
+                                       method=Image.Quantize.MEDIANCUT)
+                gif_frames.append(gif_base)
+            else:
+                gif_frames.append(im.quantize(palette=gif_base,
+                                              dither=Image.Dither.NONE))
+    if writer is not None:
+        writer.release()
+    plt.close(fig)
+
+    paths = []
+    if fmt in ('mp4', 'both'):
+        paths.append(stem + '.mp4')
+    if fmt in ('gif', 'both'):
+        if not gif_frames:
+            raise RuntimeError('no frames rendered for the GIF')
+        gif_frames[0].save(stem + '.gif', save_all=True,
+                           append_images=gif_frames[1:], loop=0,
+                           duration=int(round(1000.0 / out_fps)),
+                           optimize=True, disposal=1)
+        paths.append(stem + '.gif')
+    return paths
 
 
 # --------------------------------------------------------------------------- #
@@ -212,6 +397,7 @@ def _clip_report(ds, index: int, box, fails) -> dict:
         'resp_signal': {
             'shape': list(resp.shape),
             'dtype': str(resp.dtype),
+            'units': 'V' if ds.norm == 'none' else 'z',
             'min': float(resp.min()),
             'max': float(resp.max()),
             'mean': float(resp.mean()),
@@ -305,7 +491,10 @@ def main(argv=None) -> int:
                    help='clip hop in seconds (default: non-overlapping)')
     p.add_argument('--fps', type=float, default=trd.DEFAULT_FPS)
     p.add_argument('--resp_fs', type=float, default=trd.DEFAULT_RESP_FS)
-    p.add_argument('--input_size', type=int, default=trd.DEFAULT_INPUT_SIZE)
+    p.add_argument('--input_size', type=int, default=DEFAULT_INSPECT_INPUT_SIZE,
+                   help='ROI patch side in the figure/report (default 112; the '
+                        'TRAINING geometry is 64 -- pass 64 to inspect exactly '
+                        'what the model receives)')
     p.add_argument('--roi_padding', type=float, default=trd.DEFAULT_ROI_PADDING)
     p.add_argument('--roi_landmarks', default='',
                    help='the landmarks whose bounding box IS the ROI: a preset '
@@ -325,12 +514,32 @@ def main(argv=None) -> int:
                         'sample that touched the rail, i.e. abs(x) >= this '
                         'many VOLTS (0.0 = off; the study value is 9.90). Must '
                         'match the run being inspected.')
+    p.add_argument('--norm', default='none', type=str,
+                   choices=['none', 'clip', 'session'],
+                   help="respiration scale of resp_signal: 'none' (default) = "
+                        "RAW VOLTS, NO per-clip z-score; 'clip' = per-clip "
+                        "z-score; 'session' = session z-score. Only use a "
+                        'normalised value to inspect a run that was trained '
+                        'with --physio_norm clip/session.')
     p.add_argument('--clip_index', default='0',
                    help='comma list of clip indices in the selection')
     p.add_argument('--max_entries', type=int, default=0, help='0 = no cap')
     p.add_argument('--output_dir', default=default_output_dir())
     p.add_argument('--no-plot', dest='plot', action='store_false',
                    help='write the JSON reports only')
+    p.add_argument('--video', default='gif',
+                   choices=['none', 'gif', 'mp4', 'both'],
+                   help="write the WHOLE clip as an animation next to the "
+                        "figure: 'gif' (default, Pillow, plays in VS Code), "
+                        "'mp4' (OpenCV mp4v -- MPEG-4 Part 2, NOT H.264, so "
+                        "some players refuse it), 'both' or 'none'")
+    p.add_argument('--video_fps', type=float, default=25.0,
+                   help='output frame rate of the animation: source frames are '
+                        'decimated to the nearest integral ratio (25 = every '
+                        'frame, 12.5 = every 2nd; default 25)')
+    p.add_argument('--video_dpi', type=int, default=70,
+                   help='render dpi of the animation (default 70 -> about '
+                        '630x420 px; raise for a sharper/larger file)')
     p.add_argument('--list', action='store_true',
                    help='list the thermal sessions on disk and exit')
     args = p.parse_args(argv)
@@ -347,6 +556,7 @@ def main(argv=None) -> int:
         target_landmarks=trd.resolve_roi_landmarks(args.roi_landmarks),
         min_signal_spread=args.min_signal_spread,
         rail_touch_v=args.rail_touch_v,
+        norm=args.norm,
         max_entries=args.max_entries or None)
 
     print('=' * 76)
@@ -377,16 +587,25 @@ def main(argv=None) -> int:
         out_dir = os.path.join(args.output_dir, entry['session'])
         os.makedirs(out_dir, exist_ok=True)
         stem = os.path.join(out_dir, f'{FIG_TAG}_{index:04d}')
+        item = ds[index]
         if args.plot:
             try:
                 _plot_clip(ds, index, stem + '.png', box, lm, frames[0],
-                           ds[index]['tir_video'],
-                           ds.respiration_clip(index, normalized=False),
-                           ds[index]['resp_signal'])
+                           item['tir_video'], item['resp_signal'])
                 rep['figure'] = stem + '.png'
             except Exception as exc:                     # never lose the JSON
                 rep['figure_error'] = str(exc)
                 print(f'[warn] figure failed: {exc}')
+            if args.video != 'none':
+                try:
+                    rep['videos'] = _write_video(
+                        ds, index, stem, box, lm, frames,
+                        item['tir_video'], item['resp_signal'],
+                        fps=args.video_fps, dpi=args.video_dpi,
+                        fmt=args.video)
+                except Exception as exc:                 # never lose the JSON
+                    rep['video_error'] = str(exc)
+                    print(f'[warn] video failed: {exc}')
         with open(stem + '.json', 'w') as fh:
             json.dump(rep, fh, indent=2)
 
@@ -401,7 +620,8 @@ def main(argv=None) -> int:
         for f in fails:
             print(f'       - {f}')
         rows.append({'session': entry['session'], 'clip_index': index,
-                     'figure': rep.get('figure'), 'json': stem + '.json',
+                     'figure': rep.get('figure'), 'videos': rep.get('videos'),
+                     'json': stem + '.json',
                      'roi_box_px': roi['box_px'],
                      'tir_shape': rep['tir_video']['shape'],
                      'resp_shape': rep['resp_signal']['shape'],
