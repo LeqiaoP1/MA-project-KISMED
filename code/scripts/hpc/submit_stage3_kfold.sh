@@ -33,10 +33,15 @@
 #   * the ROI cache out_root and the Stage-3 config exist.
 #
 # RESOURCES (override by env): GPU_TYPE=rtx6000 GPUS=4 PARTITION=acc
-#   TIME=12:00:00. rtx6000 is the right type: a100 is ~2.6x slower per step on
-#   this workload (measured 0.31 -> 0.82 s/it), which would push a fold to ~20 h.
-#   Fallback if the rtx6000 pool is congested:
-#     GPU_TYPE=a100 GPUS=4 TIME=24:00:00 bash scripts/hpc/submit_stage3_kfold.sh --submit
+#   TIME=10:00:00.
+#   WHY 10 h FITS ONE FOLD: the previous 200-epoch Stage-3 run
+#   ($WORK_SCRATCH/finetune/resp_tir_roi_hpc, 4x rtx6000, cache ON) measured
+#   208 s/epoch INCLUDING checkpoint writes (03:50 -> 15:23 = 11h33m), so 150
+#   epochs is ~8h40m and leaves ~1h20 of margin. Option A also drops the
+#   per-epoch validation pass the old run had, so that is a conservative number.
+#   12 h changes NEITHER the LUA time slot nor the test-only estimate (both are
+#   'TIME_SLOT is default'), so `TIME=12:00:00` is free extra margin if wanted.
+#   a100 is ~2.6x slower per step (~20 h/fold) and needs `TIME=24:00:00`.
 #
 # NOTE: GPU count changes the GLOBAL BATCH (and therefore the LR), so keep
 # GPUS=4 to stay comparable with the Stage-2 folds and with any earlier run.
@@ -92,7 +97,7 @@ JOB_SCRIPT="scripts/hpc/submit_waveform_tir_roi.sbatch"
 GPU_TYPE="${CALLER_GPU_TYPE:-rtx6000}"
 GPUS="${GPUS:-4}"
 PARTITION="${CALLER_PARTITION:-acc}"
-TIME="${CALLER_TIME:-12:00:00}"
+TIME="${CALLER_TIME:-10:00:00}"
 ROI_CACHE="${ROI_CACHE-${WORK_SCRATCH:-$OUTPUT_DIR}/tir_roi_cache}"
 
 fail() { echo "ERROR: $*" >&2; exit 1; }
@@ -117,6 +122,7 @@ echo "  result root : $FIN_ROOT   (dir pattern: ${RUN_NAME}_fold<k>)"
 echo "  folds       : $FOLDS  (of $N_FOLDS)"
 echo "  roi_cache   : ${ROI_CACHE:-<disabled>}"
 echo "  gres        : gpu:${GPU_TYPE}:${GPUS}   partition=$PARTITION  time=$TIME"
+echo "  budget      : ~8h40 measured for 150 epochs on 4x rtx6000 (+~2 min startup)"
 echo "  mode        : $([ "$SUBMIT" -eq 1 ] && echo SUBMIT || echo 'DRY RUN (pass --submit)')"
 echo "=================================================================="
 

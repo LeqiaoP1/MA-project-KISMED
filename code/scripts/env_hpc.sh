@@ -12,7 +12,7 @@ export CONDA_ENV="${CONDA_ENV:-}"                    # EDIT (leave empty if usin
 export RAW_DATA_PATH="${WORK_PROJ}/test"          # EDIT
 export DATA_PATH="${HOME}/MA-project-KISMED/data/processed/bp4d_canonical"  # EDIT
 export PROJ_DIR="${HOME}/MA-project-KISMED"
-# Checkpoints are ~1.2 GB EACH (30 of them at save_ckpt_freq 5 ~= 36 GB), and
+# Checkpoints are ~1.2 GB EACH (15 of them at save_ckpt_freq 10 ~= 18 GB), and
 # $PROJ_DIR/output sits on $HOME's small quota -- a full Stage-2/3 run fills it
 # and dies mid-save. Prefer the scratch file system when the site provides one.
 # NOTE $WORK_SCRATCH is a SITE variable, not defined by this profile, so the
