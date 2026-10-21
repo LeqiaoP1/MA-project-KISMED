@@ -27,7 +27,7 @@ V_EMB --> V_POS : Video Tokens V (N_v = 19,600)
 A_EMB --> A_POS : Waveform Tokens A (N_a ≈ T/k)
 
 node "RANDOM TUBE MASK (90%)\nKeep visible V_vis" as V_MASK
-node "RANDOM MASK (75%)\nKeep visible A_vis" as A_MASK
+node "RANDOM MASK (50%)\nKeep visible A_vis" as A_MASK
 
 V_POS --> V_MASK
 A_POS --> A_MASK
@@ -69,12 +69,12 @@ DECODER --> V_HEAD
 DECODER --> A_HEAD
 
 node "L_video\nMSE on MASKED patches" as V_LOSS
-node "L_waveform\nL1 + Multi-res STFT" as A_LOSS
+node "L_waveform\nMSE on MASED tokens" as A_LOSS
 
 V_HEAD --> V_LOSS
 A_HEAD --> A_LOSS
 
-node "TOTAL LOSS\nL = λ_v·L_video + λ_a·L_waveform + (optional λ_c·L_contrastive)" as TOTAL_LOSS #Pink
+node "TOTAL LOSS\nL = L_video + L_waveform" as TOTAL_LOSS #Pink
 
 V_LOSS --> TOTAL_LOSS
 A_LOSS --> TOTAL_LOSS
