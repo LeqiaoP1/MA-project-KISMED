@@ -9,6 +9,82 @@ pre-training stage (see diagram 3).
 
 ---
 
+#0 Solution A: Asymmetric Cross-MAE Architecture Workflow
+
+```plantuml
+@startuml
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam packageStyle rectangle
+
+
+  
+    node "Inputs" {
+        [Thermal Video Stream] as TIR_Input
+        [Respiration Waveform] as RESP_Target
+    }
+
+    package "Visual Tokenization & Encoder" {
+        [Tubelet Patch Projection] as Projection
+        [Spatial-Temporal Tubelet Masking] as Masking
+        [ViT Encoder] as Encoder
+    }
+
+    package "TIR Reconstruction" {
+        [TIR Pixel Decoder (Self-Attention)] as TIR_Decoder
+        [TIR Pixel Loss] as Loss_TIR
+    }
+
+    package "RESP Reconstruction" {
+        [Learned Positional Queries] as Queries
+        [<font color=red>RESP Decoder (Cross-Attention)</font>] as RESP_Decoder
+        [RESP Waveform Loss] as Loss_RESP
+    }
+  
+
+    ' Stage 1 Data Flow
+    TIR_Input --> Projection
+    Projection --> Masking
+    Masking --> Encoder : Unmasked Visual Tokens Only
+  
+    Encoder --> TIR_Decoder : Latent Visual Embeddings
+    TIR_Decoder --> Loss_TIR
+    TIR_Input ..> Loss_TIR : Ground Truth Masked Pixels
+  
+    Encoder --> RESP_Decoder : Keys & Values
+    Queries --> RESP_Decoder : Queries
+    RESP_Decoder --> Loss_RESP
+    RESP_Target .[#red].> Loss_RESP : <font color=red>Ground Truth Alignment</font>
+
+
+@enduml
+```
+
+## 0.2 SL fine-tuning
+
+```plantuml
+
+@startuml
+
+package "Stage 2: Downstream Fine-Tuning (FT)" {
+  
+    [Full Unmasked Thermal Video] as FT_Input
+    [Pre-trained ViT Encoder] as FT_Encoder
+    [1D Temporal Regression Head] as Reg_Head
+    [Predicted Respiration Waveform] as Waveform_Output
+
+    ' Stage 2 Data Flow
+    FT_Input --> FT_Encoder
+    FT_Encoder --> Reg_Head
+    Reg_Head --> Waveform_Output
+}
+
+
+@enduml
+```
+
+---
+
 ## 1. SSL pre-training — Solution A (resp tokens excluded from the encoder)
 
 ```plantuml
