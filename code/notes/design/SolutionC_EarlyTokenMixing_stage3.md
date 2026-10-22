@@ -58,19 +58,21 @@ skinparam ComponentStyle rectangle
 
 title Part 2: Stage-3 Waveform Head + Joint Loss
 
-node "LATENT FEATURES H (B, G_t = 50, D)" as LATENT
-node "WAVEFORM HEAD Linear(D, samples_per_token = output_len / G_t = 8)" as HEAD
-node "PREDICTED WAVEFORM (B, output_len = 400)" as PRED
-node "TARGET WAVEFORM label column bp or resp, z-scored per clip" as TGT
-node "PER-TOKEN ALIGNMENT segment k covers exactly the window of tubelet k" as ALIGN
+node "LATENT FEATURES H (B, G_t = 50, D = 768)" as LATENT
+node "WAVEFORM HEAD default nn.Linear(D, samples_per_token = 8), one output row per tubelet step" as HEAD
+node "HEAD VARIANTS head_hidden above 0 gives a 2-layer MLP; head_style transposed_conv gives Conv1d then ConvTranspose1d at stride 8" as HEADALT
+node "PREDICTED WAVEFORM (B, output_len = 400), the flatten of B x G_t x 8" as PRED
+node "TARGET WAVEFORM label column bp or resp, z-scored per clip (physio_norm zscore)" as TGT
+node "PER-TOKEN ALIGNMENT segment k covers exactly the window of tubelet k; build raises unless samples_per_token equals sig_kernel" as ALIGN
 
 LATENT --> HEAD
+HEADALT ..> HEAD : alternative, not the default
 HEAD --> PRED
 ALIGN --> TGT
 
-node "L_time = StdLoss |std(pred) - std(target)| (amplitude)" as L1
-node "L_Pearson = 1 - Pearson r (phase locking)" as PEAR
-node "L_MR-STFT = multi-resolution STFT magnitude (windows 64, 128, 256 at fs = 100 Hz)" as STFT
+node "L_time = StdLoss, absolute difference of std(pred) and std(target), amplitude only; time_loss smoothl1 swaps in Huber on the point-wise error" as L1
+node "L_Pearson = 1 minus Pearson r, batch mean, phase locking" as PEAR
+node "L_MR-STFT per window spectral convergence plus log magnitude L1, averaged over the kept windows" as STFT
 
 PRED --> L1
 TGT --> L1
@@ -79,27 +81,47 @@ TGT --> PEAR
 PRED --> STFT
 TGT --> STFT
 
-node "TOTAL LOSS L_joint = alpha x L_time + beta x L_Pearson + gamma x L_MR-STFT" as TOTAL #Pink
+node "LOSS EVALUATED IN FP32 the autocast output is cast back before the criterion runs" as FP32
+node "TOTAL LOSS L_joint = alpha x L_time + beta x L_Pearson + gamma x L_MR-STFT, all weights 1.0 by default" as TOTAL #Pink
 L1 --> TOTAL
 PEAR --> TOTAL
 STFT --> TOTAL
+FP32 ..> TOTAL
 
-node "OPTIMIZER AdamW, full fine-tune (no frozen params), lr 1e-4" as OPT
+node "OPTIMIZER AdamW, full fine-tune (no frozen params), lr 1e-4, weight decay 0.05" as OPT
+node "SCHEDULE 5 epoch warmup then cosine to min_lr 0.0; layer_decay 1.0 (off) by default" as SCHED
 node "TWO RUNS share the encoder, one per target: bp and resp" as BRANCHES
 node "CHECKPOINT SELECTION best validation Pearson" as SEL
 
 TOTAL --> OPT
-OPT --> SEL
+OPT --> SCHED
+SCHED --> SEL
 BRANCHES --> SEL
 
 note right of HEAD
-  Stage-2 heads.bp / heads.resp transfer into waveform_head is shape-exact
-  but NOT wired yet (pending Phase 1 of local_downstream_plan.md)
+  Stage-2 heads.bp / heads.resp DO transfer into waveform_head, but only
+  when head_init is transfer (the default) AND the head is a single
+  Linear, i.e. samples_per_token equals sig_kernel and head_hidden is 0.
+  head_init none keeps the pre-training decoder discarded and starts the
+  head RANDOM, which is what both current A / C configs use. The legacy
+  key heads.bvp is accepted for bp and named in the load log.
+end note
+
+note bottom of STFT
+  Windows 64, 128, 256 at fs = 100 Hz for the local RGB runs (400 or 496
+  samples); the resp_tir_roi configs use 128, 256, 512. A window longer
+  than output_len is dropped before training, and samples whose target
+  carries no spectral energy are excluded from the term.
 end note
 
 note right of SEL
-  best.pth stores model and epoch only;
-  no metrics JSON and no per-epoch history are written
+  best.pth stores model and epoch only. Per-epoch history DOES reach
+  disk: metrics.jsonl gets one line per evaluated epoch,
+  training_curves.png is refreshed, and metrics_final.json carries the
+  per-clip metrics plus the loss table and the selection record. Each
+  per-epoch checkpoint also carries the training args. With k folds the
+  selection stays on val Pearson while metrics_final.json reports the
+  TEST fold.
 end note
 
 @enduml
@@ -116,12 +138,12 @@ title Part 3: Evaluation (not part of the loss graph)
 
 node "PER-CLIP PREDICTION (B, output_len = 400)" as PRED
 
-node "SAVE PREDICTIONS (planned) preds.npy, targets.npy, entries.json" as SAVE
-node "SESSION ASSEMBLY (planned) Hann overlap-add with weight-sum normalisation" as ASSEMBLE
+node "SAVE PREDICTIONS via the save_preds flag: preds.npy, targets.npy, entries.json" as SAVE
+node "SESSION ASSEMBLY Hann overlap-add with weight-sum normalisation, evaluation / assemble.py" as ASSEMBLE
 node "SESSION REFERENCE read from that session signals.csv" as REF
-node "TIER-1 and TIER-2 recomputed on the assembled session waveform" as SESS #PINK
+node "TIER-1 and TIER-2 recomputed on the assembled session waveform" as SESS #Pink
 node "TIER-3 HRV via NeuroKit2, needs at least 30 s, offline only" as T3
-node "SESSION METRICS JSON (planned) written by run_evaluate_session.py" as JSON
+node "SESSION METRICS JSON session_metrics.json written by run_evaluate_session.py" as JSON
 
 PRED --> SAVE
 SAVE --> ASSEMBLE
@@ -132,8 +154,10 @@ SESS --> JSON
 T3 --> JSON
 
 note right of SAVE
-  Nothing saves predictions today: the offline evaluator
-  needs prediction and target npy files supplied by hand
+  The save_preds flag writes the three files from the final pass,
+  and the eval_only flag re-runs just that pass on a finished run.
+  Both must run SINGLE-PROCESS, otherwise each rank dumps only its
+  own slice of the split.
 end note
 
 @enduml
@@ -151,14 +175,19 @@ end note
 * **End-to-end.** `freeze_encoder()` exists but is never called; the optimizer covers
   every parameter, so `enc_blocks`, `enc_norm`, `adapters.rgb` and `positions.rgb` are
   all updated alongside the head.
-* **What is persisted.** Only `checkpoints/checkpoint-NNNN.pth`, `latest_checkpoint.txt`
-  and `best.pth` (model + epoch, plus the training `args` inside each checkpoint). The
-  Tier-1/2 numbers are printed per epoch and never written to disk, there is no metrics
-  JSON and no prediction dump; Tier-3 is offline and needs saved predictions, which no
-  runner produces today.
-* **Pending items shown as notes.** The Stage-2 head transfer, the warmup + cosine LR
-  schedule, the prediction dump, the session-level evaluation runner, and the Tier-3
-  guard (2 s today, needs 30 s) are not implemented yet.
+* **What is persisted.** `checkpoints/checkpoint-NNNN.pth`, `latest_checkpoint.txt` and
+  `best.pth` (model + epoch only). Each per-epoch checkpoint also carries the training
+  `args`. Per epoch the run appends one line to `metrics.jsonl` and refreshes
+  `training_curves.png`; at the end it writes `metrics_final.json` with the per-clip
+  Tier-1/2 metrics plus the loss and selection provenance. `--save_preds` adds
+  `preds.npy`, `targets.npy` and `entries.json`, which `runners/run_evaluate_session.py`
+  turns into `session_metrics.json` offline, Tier-3 included.
+* **Formerly pending, now implemented.** The Stage-2 head transfer
+  (`load_stage2_encoder`, `head_init: transfer` by default), the warmup + cosine LR
+  schedule (`cosine_scheduler` with `warmup_epochs`), the prediction dump
+  (`--save_preds`), the session-level evaluation runner
+  (`runners/run_evaluate_session.py`) and the Tier-3 30 s guard
+  (`evaluation/clinical.py`, `min_samples = 30 * fs`) all exist in the code.
 * **Rendering.** Labels avoid the creole traps known in
   `code/notes/design/SolutionC_EarlyTokenMixing_stage2.md`: no `--`
   pairs, no `>>`, no angle brackets. Validate with
