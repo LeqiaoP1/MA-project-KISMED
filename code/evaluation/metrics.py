@@ -8,7 +8,8 @@ import numpy as np
 __all__ = ['time_domain_metrics', 'spectral_metrics', 'to_numpy',
            'aggregate_metrics', 'breakdown_by_label', 'bandpass_fft',
            'band_limited_pearson', 'single_tone_template', 'bootstrap_ci',
-           'estimate_rate_bpm', 'rate_metrics', 'rate_summary']
+           'estimate_rate_bpm', 'rate_metrics', 'rate_summary',
+           'amplitude_metrics']
 
 try:
     from scipy import signal as _sp_signal
@@ -523,6 +524,69 @@ def rate_metrics(pred, target, fs=100.0, band=(0.1, 0.6), tol=0.10):
     """Estimate + compare per-window rates: ``rate_summary`` on ``pred``/``target``."""
     return rate_summary(estimate_rate_bpm(pred, fs, band),
                         estimate_rate_bpm(target, fs, band), tol=tol)
+
+
+# --------------------------------------------------------------------------- #
+# amplitude agreement (breathing depth)
+# --------------------------------------------------------------------------- #
+#: A reference row whose IN-BAND RMS is below this fraction of its own total
+#: (de-meaned) RMS carries no usable breathing amplitude, so the amplitude
+#: comparison is skipped instead of dividing by ~0.
+_AMP_REL_TOL = 1e-3
+
+
+def amplitude_metrics(pred, target, fs=100.0, band=(0.1, 0.6)):
+    """Breathing AMPLITUDE agreement of two series IN A COMMON SPACE.
+
+    Amplitude is the RMS of the BAND-LIMITED series, so baseline drift and
+    out-of-band noise cannot pass for breathing depth (a pure sinusoid of peak
+    ``A`` gives ``A / sqrt(2)``, so ``amp_ratio`` is exactly the amplitude
+    ratio). Returned per-row and then macro-averaged over the rows that carry
+    usable in-band reference energy.
+
+    SPACE CONTRACT -- the caller must put ``pred`` into the SAME units as
+    ``target`` first. Under ``physio_norm: session`` the prediction is
+    session-z-scored while the reference is raw volts, so this metric is only
+    meaningful after ``evaluation.assemble.affine_calibrate`` has mapped the
+    prediction into volts. That calibration uses the session's TRUE scale, so
+    the resulting amplitude error is **oracle-calibrated** (not deployable),
+    exactly like ``mae_affine`` / ``rmse_affine``.
+
+    :returns: ``{'n', 'amp_pred', 'amp_ref', 'amp_ratio', 'amp_rel_err'}`` --
+        ``amp_rel_err = |amp_ratio - 1|`` (0 = perfect depth, 1 = double or
+        zero), ``amp_ratio`` / ``amp_rel_err`` NaN when no row is usable.
+    """
+    p = _flatten(pred)
+    t = _flatten(target)
+    if p.shape != t.shape:
+        raise ValueError(f'Shape mismatch pred {p.shape} vs target {t.shape}')
+    pb = bandpass_fft(p, fs, band)
+    tb = bandpass_fft(t, fs, band)
+    ratios, aps, ars = [], [], []
+    for pi, ti, p0, t0 in zip(pb, tb, p, t):
+        # in-band energy of the reference relative to its own total energy
+        tot = float(np.sqrt(np.mean((t0 - t0.mean()) ** 2)))
+        if tot <= 0.0:
+            continue
+        amp_ref = float(np.sqrt(np.mean(ti ** 2)))
+        if amp_ref <= _AMP_REL_TOL * tot:
+            continue                       # no in-band breathing to compare
+        amp_pred = float(np.sqrt(np.mean(pi ** 2)))
+        ratios.append(amp_pred / amp_ref)
+        aps.append(amp_pred)
+        ars.append(amp_ref)
+    if not ratios:
+        nan = float('nan')
+        return {'n': 0, 'amp_pred': nan, 'amp_ref': nan,
+                'amp_ratio': nan, 'amp_rel_err': nan}
+    ratios = np.asarray(ratios, dtype=float)
+    return {
+        'n': int(ratios.size),
+        'amp_pred': float(np.mean(aps)),
+        'amp_ref': float(np.mean(ars)),
+        'amp_ratio': float(np.mean(ratios)),
+        'amp_rel_err': float(np.mean(np.abs(ratios - 1.0))),
+    }
 
 
 # --------------------------------------------------------------------------- #

@@ -1,0 +1,265 @@
+metadata:
+  output: "presentation/slides/research_midterm_clean.pptx"
+  title: "Multimodal Masked Autoencoders for Robust Videos and Signal Reconstruction"
+  presentation_type: "MA midterm"
+  author: "Leqiao Peng"
+  supervisor: "Prof. Antink / Mr. Tizian Dege"
+  date: "Oktober 2026"
+
+slides:
+  # Slide 1: Preserved Title Slide
+  - type: "title"
+
+  # Motivation
+  - type: "split"
+    layout: 5
+    title: "Motivation & Research Problem"
+    section: "I. Motivation"
+    bullets:
+      - "**Clinical motivation:** Physiological waveforms are usually measured with contact sensors."
+      - "**Research problem:** RGB and TIR videos contain weak, heterogeneous physiological signals."
+      - "**Research question:** Can multimodal atuoencoder help reconstruction of vital signs for unseen subjects?"
+    image:
+      path: "figures/motivation_diagram.png"
+      label: "RGB/TIR video -> representation -> BP/RESP waveform"
+
+  # Dataset overview
+  - type: "split"
+    layout: 5
+    title: "Dataset Overview"
+    section: "I. Motivation"
+    bullets:
+      - "**Corpus:** BP4D+ multimodal spontaneous emotion corpus [3]."
+      - "**Subjects:** 140 subjects, 8 sessions each, 40 clips per session."
+      - "**Modalities:** RGB, thermal infrared (TIR), depth, audio, and physiological signals (ECG, EMG, EDA, respiration)."
+      - "**Focus:**** Different Auxiliary tasks (T1-T10): facial expression, head pose, gaze, and action units."
+
+  # Data and physiological targets
+  - type: "split"
+    layout: 5
+    title: "Data & Physiological Targets"
+    section: "I. Motivation"
+    bullets:
+      - "**Current input:** False-colour thermal infrared video cropped to a facial TIR. ROI extracted from the full frame using a pre-trained face detector.**"
+      - "**Current target:** Continuous respiration waveform from the contact sensor."
+      - "**Evaluation setting:** Contactless reconstruction for strictly unseen subjects; RGB/BP remain comparison paths."
+    image:
+      path: "experiments/figures/data_targets_overview.png"
+      label: "TIR-ROI video and respiration reference signal"
+
+  # Method inspiration
+  - type: "split"
+    layout: 5
+    title: "Method inspirated by work MultiMAE"
+    section: "II. Method"
+    bullets: 
+      - MultiAME [2] is a multi-modal, multi-task masked autoencoder that can handle RGB, depth, and audio modalities. 
+    image:
+      path: "experiments/figures/multimae_architecture.png" 
+      label: "MultiMAE architecture"
+
+  - type: "split"
+    layout: 5
+    title: "Method inspirated by work VideoMAE"
+    section: "II. Method"
+    bullets: 
+      - VideoMAE [1] is a masked autoencoder for video representation learning.
+    image:
+      path: "experiments/figures/videomae_architecture.png"
+      label: "VideoMAE architecture" 
+
+
+  # Method
+  - type: "split"
+    layout: 5
+    title: "Architecture: Multi-Task Masked Autoencoder"
+    section: "II. Method"
+    bullets:
+      - "**Stage 1:** Initialize the visual encoder with VideoMAE."
+      - "**Stage 2:** Masked multi-modal pre-training: visual masking 90 %, physiological stream 50 %, with span masking for the 1-D signal."
+      - "**Stage 3:** Reconstruct the respiration waveform from the TIR-ROI alone, simulating total contact-sensor failure."
+    image:
+      path: "experiments/figures/architecture_overview.png"
+      label: "Three stages: initialization -> pre-training -> fine-tuning"
+
+  # Current experimental focus
+  - type: "split"
+    layout: 5
+    title: "Current Experimental Focus"
+    section: "II. Method"
+    bullets:
+      - "**Primary path:** Thermal infrared region of interest (TIR-ROI) -> respiration waveform."
+      - "**HPC full run:** Stage-2 pre-training and Stage-3 fine-tuning completed on the full corpus (~1,400 sessions discovered; ~97 % usable)."
+      - "**Matched setup:** 8-second clips, 112 x 112 ROI input, 100 Hz target, and subject-disjoint splitting."
+      - "**Infrastructure:** An offline 112 x 112 ROI cache (1,385 shards, 91 GB) removes the decode bottleneck, so full-corpus training is compute-bound (loader share 84.5 % -> 0.0 %)."
+    image:
+      path: "experiments/figures/tir_roi_resp_pipeline.png"
+      label: "Completed HPC pipeline: TIR-ROI video -> respiration waveform"
+
+  # Current status
+  - type: "full_image"
+    layout: 5
+    title: "First Full HPC Run Completed: TIR-ROI -> Respiration"
+    section: "III. Results"
+    image:
+      path: "experiments/figures/pipeline_status.png"
+      label: "Completed HPC run and preliminary subject-level evaluation"
+      left_in: 1.0
+      top_in: 1.6
+      width_in: 11.33
+      height_in: 5.0
+
+  # Preliminary results
+  - type: "table"
+    layout: 5
+    title: "Preliminary HPC Results"
+    section: "III. Results"
+    table_data:
+      headers: ["Measure", "Result", "Interpretation"]
+      rows:
+        - ["Evaluation volume", "28 subjects / 273 sessions / 5,143 clips", "Held-out subject split"]
+        - ["Band-limited Pearson", "0.569", "Median per subject; 95% CI [0.451, 0.624]"]
+        - ["Single-tone baseline", "0.535", "Rate-only reference; 95% CI [0.499, 0.545]"]
+        - ["Subjects beating baseline", "53.6%", "Essentially at chance (50%)"]
+        - ["Task-group ordering", "+0.738 / +0.524 / +0.515", "Low clearly ahead; moderate = high"]
+
+  # Result interpretation
+  - type: "text_only"
+    layout: 5
+    title: "How to Interpret the First Run"
+    section: "III. Results"
+    bullets:
+      - "**Marginal edge:** The median band-limited Pearson (0.569) edges the single-tone template (0.535), but the model CI [0.451, 0.624] overlaps the baseline CI [0.499, 0.545]."
+      - "**At chance level:** Only 53.6 % of held-out subjects beat the rate-only baseline - essentially a coin flip."
+      - "**Practical reading:** The model recovers a breathing-rate-related pattern for part of the cohort, but does not establish reliable facial respiration reconstruction."
+      - "**Status:** An initial full-run result for debugging and scientific diagnosis, not a final generalisation claim."
+
+  # Task difficulty ordering
+  - type: "table"
+    layout: 5
+    title: "Low-Distortion Tasks Score Clearly Better"
+    section: "III. Results"
+    table_data:
+      headers: ["Distortion group", "Tasks", "Median band-limited Pearson"]
+      rows:
+        - ["Low", "T2, T3", "+0.738"]
+        - ["Moderate", "T4, T7, T8, T10", "+0.524"]
+        - ["High", "T1, T5, T6, T9", "+0.515"]
+        - ["Low - moderate / low - high", "+0.214 / +0.223", "Clear, consistent gap"]
+
+  # Why the low tasks win
+  - type: "text_only"
+    layout: 5
+    title: "Why Low-Distortion Tasks Score Better"
+    section: "III. Results"
+    bullets:
+      - "**What the grouping is:** A project-defined convention (config `task_groups`), not a BP4D+ annotation - shipped levels: low T2/T3, moderate T4/T7/T8/T10, high T1/T5/T6/T9."
+      - "**Not a data-cleanliness effect:** Rail/clipping prevalence is level-independent (mean file rail share 3.31 % / 3.02 % / 3.65 %), and clip supply only tracks recording length (T3 and T9 dominate)."
+      - "**Not an input-signal effect:** The thermal-ROI detection gate is near-uniform across tasks and non-monotonic across groups - the low tasks do not carry more respiration in the pixels either."
+      - "**Mechanism (hypothesis):** The ROI is one static box unioned over the whole clip, so more head motion inflates it and the spatial mean pools pose/background instead of nostril temperature."
+      - "**Local support:** In a 4-subject session-split run only the two low tasks carried signal (T2 +0.69, T3 +0.23; T4-T9 at 0 or negative), and ROI area / landmark jitter track the failure (r ~ -0.5, n = 8 - suggestive, not established)."
+
+  # Why the negative happens
+  - type: "text_only"
+    layout: 5
+    title: "Why the Thermal Face ROI Does Not Carry Respiration"
+    section: "III. Results"
+    bullets:
+      - "**Off-face winners:** The strongest respiration-correlated pixel in the frame sits on the chest, the hair, or a fixed background/rig band - never on the face."
+      - "**Wrong reference on the face:** On the face the strongest correlation is with head motion, not with the respiration belt."
+      - "**Not the difficulty label:** Detection is near-uniform across tasks and non-monotonic across distortion groups, so the task label is not the lever."
+      - "**Representation-limited input:** 8-bit palettised false colour, face near the saturated end, frontal view - the exhaled-air plume has almost no thermal contrast against equally warm skin."
+      - "**Verdict:** A controlled negative for facial thermal respiration at this geometry; the limiting factor is the input, not the architecture."
+
+
+  - type: "text_only"
+    layout: 5
+    title: "Scientific Qualification of the Result"
+    section: "III. Results"
+    bullets:
+      - "**Implication:** A respiration-correlated prediction can reflect motion or the recording setup rather than a robust facial thermal signal."
+      - "**Evaluation caveat:** The reported checkpoint was selected using validation Pearson on the same subject-disjoint split used for the reported evaluation."
+      - "**Amplitude caveat:** The prediction is session-z-scored against a raw-volts reference, so only scale-invariant metrics are valid; amplitude errors need an oracle calibration."
+      - "**Claim boundary:** Present the run as a useful baseline, ablation and failure analysis; do not claim clinical validity or reliable whole-cohort reconstruction."
+
+  # Why the negative is credible
+  - type: "text_only"
+    layout: 5
+    title: "Why the Negative Is a Measurement, Not a Failure to Measure"
+    section: "III. Results"
+    bullets:
+      - "**Positive control (thermal):** The same statistic detects head motion in 8/8 sessions at p<0.005 (|r| up to 0.98), while respiration is not detected in any session."
+      - "**Palette is not the limit:** In-band thermal modulation spans 2.9-36.2 palette levels (far above 1 level), so the render does carry variation."
+      - "**Resolution is not the limit:** Native-resolution and 64 x 64 probes reach the same verdict; downsampling is harmless for a spatially coherent signal."
+      - "**Positive control (RGB):** On the same corpus facial RGB carries a genuine skin-borne cardiac signal (CHROM/POS detected in 35/40 sessions, background control at chance)."
+      - "**Scope:** Controls were run on a 4-subject / 8-session subset; the corpus-scale verdict is the subject-level report."
+
+  # Evaluation protocol
+  - type: "split"
+    layout: 5
+    title: "Evaluation: Preliminary Single-Split Test"
+    section: "III. Results"
+    bullets:
+      - "**Split:** Training, validation and test subjects are strictly disjoint (split_by subject)."
+      - "**Unit of evaluation:** A subject; all clips of a session are assembled into one continuous waveform (Hann overlap-add)."
+      - "**Headline metric:** Band-limited Pearson (0.1-0.6 Hz), median per subject, against a single-tone template and a constant line."
+      - "**Known gap:** Checkpoint selection and reporting use the same validation split (selection leakage)."
+      - "**Next eval step:** Separate selection from reporting (--test_subjects) and run the leave-one-subject-out sweep; k-fold is the follow-up."
+    image:
+      path: "experiments/figures/evaluation_protocol.png"
+      label: "Single subject-disjoint test split and baseline comparison"
+
+  # Roadmap
+  - type: "full_image"
+    layout: 5
+    title: "Roadmap & Milestones"
+    section: "IV. Outlook"
+    image:
+      path: "experiments/figures/timeline_gantt.png"
+      label: "Completed -> ongoing -> planned"
+      left_in: 1.0
+      top_in: 1.6
+      width_in: 11.33
+      height_in: 5.0
+
+  # Conclusion
+  - type: "text_only"
+    layout: 5
+    title: "Interim Conclusions & Next Steps"
+    section: "IV. Outlook"
+    bullets:
+      - "**Achieved:** The first complete full-corpus HPC run for TIR-ROI -> respiration (Stage 2 + Stage 3)."
+      - "**Finding:** The median rhythm score edges the single-tone baseline only marginally (0.569 vs. 0.535) and half the cohort does not beat it."
+      - "**Mechanism:** Whole-frame wins are off-face (chest / hair / rig); on the face the dominant reference is head motion, not the belt."
+      - "**Ongoing A/B:** Point-wise SmoothL1 instead of the amplitude-only StdLoss (same encoder, geometry and schedule) - tests whether the near-single-tone collapse is a loss artefact or an input limit."
+      - "**Infrastructure:** The offline TIR-ROI cache makes the full-corpus run compute-bound rather than decode-bound."
+      - "**Next step:** Separate checkpoint selection from reporting and run the LOSO sweep; k-fold cross-validation is the follow-up."
+
+  # Appendix: References
+  - type: "text_only"
+    layout: 5
+    title: "References"
+    section: "APPENDIX"
+    bullets:
+      - "[1] K. He, X. Chen, S. Xie, Y. Li, P. Dollár, and R. Girshick, 'Masked Autoencoders Are Scalable Vision Learners,' CVPR, 2022."
+      - "[2] R. Bachmann, D. Mizrahi, A. Atanov, and A. Zamir, 'MultiMAE: Multi-modal Multi-task Masked Autoencoders,' ECCV, 2022."
+      - "[3] Z. Zhang et al., 'Multimodal Spontaneous Emotion Corpus (BP4D+),' IEEE FG, 2016."
+
+  # Appendix: Executed versus planned configuration
+  - type: "table"
+    layout: 5
+    title: "Appendix: Current and Planned Configuration"
+    section: "APPENDIX"
+    table_data:
+      headers: ["Aspect", "HPC Full Run", "Evaluation Status"]
+      rows:
+        - ["Input size", "112 x 112 pixels", "Matched Stage-2/Stage-3 geometry"]
+        - ["Clip geometry", "8 s, 100 Hz target", "Time-aligned waveform output"]
+        - ["Stage-2 checkpoint", "checkpoint-0149.pth", "Used for Stage-3 fine-tuning"]
+        - ["Test set", "28 held-out subjects", "Evaluated once"]
+        - ["Cross-validation", "Not performed", "LOSO sweep is the next step"]
+        - ["Signal normalisation", "physio_norm: session", "Whole-session z-score"]
+        - ["Clip hygiene", "rail_touch 9.90 V; spread 0.1 V", "Drops railed / pinned windows"]
+        - ["Task groups", "low / moderate / high", "T2-T3 / T4,T7,T8,T10 / T1,T5,T6,T9"]
+        - ["L_time term", "StdLoss (reported run)", "SmoothL1 A/B arm in progress"]
+        - ["ROI cache", "1,385 shards / 91 GB", "Decode-bound -> compute-bound; serves Stage 2 and 3"]

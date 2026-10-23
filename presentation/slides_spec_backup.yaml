@@ -1,0 +1,93 @@
+metadata:
+  output: "presentation/output/research_midterm_clean.pptx"
+  title: "Multimodal Representation Learning with Masked Autoencoders"
+  presentation_type: "Zwischenvortrag Masterarbeit"
+  author: "Leqiao Peng"
+  supervisor: "Tizian Dege"
+  date: "Oktober 2026"
+
+slides:
+  # Slide 1: Preserved Title Slide
+  - type: "title"
+
+  # Slide 3: Split (Motivation)
+  - type: "split"
+    title: "Motivation & Problemstellung"
+    section: "I. Motivation"
+    bullets:
+      - "**Multimodale physiologische Daten:** Hohe Dimensionalität bei limitierter Annotation."
+      - "**Cross-Modal Alignment:** Bestehende MAE-Ansätze erfassen Kreuzkorrelationen oft nur unzureichend."
+      - "**Zielsetzung:** Gemeinsame Repräsentationsräume durch multimodales Masked Autoencoding."
+    image:
+      path: "experiments/figures/motivation_diagram.png"
+      label: "Multimodale Pipeline & Sensorfusion"
+
+  # Slide 5: Split (Architecture)
+  - type: "split"
+    title: "Architektur: Multi-Task Masked Autoencoder"
+    section: "II. Methodik"
+    bullets:
+      - "**Asymmetrischer Encoder-Decoder:** Separate Patch-Projektionen für heterogene Ströme."
+      - "**Joint Cross-Attention:** Iterative Fusion unmaskierter Tokens über Modalitätsgrenzen hinweg."
+      - "**Verlustfunktion:** Kombination aus MSE-Rekonstruktionsverlust und kontrastiver Regularisierung."
+    image:
+      path: "experiments/figures/architecture_overview.png"
+      label: "Modellübersicht & Tensor-Dimensionen"
+
+
+  # Slide 7: Full Figure (Broad Signal / Loss Curves)
+  - type: "full_image"
+    title: "Zwischenergebnisse: Rekonstruktion & Validierung"
+    section: "III. Ergebnisse"
+    image:
+      path: "experiments/figures/evaluation_curves.png"
+      label: "Trainings- und Validierungskurven (Lichtenberg II Cluster)"
+      left_in: 1.0
+      top_in: 1.6
+      width_in: 11.33
+      height_in: 5.0
+
+  # Slide 8: Full Figure (Project Timeline / Zeitplan)
+  - type: "full_image"
+    title: "Zeitplan & Meilensteine"
+    section: "IV. Ausblick"
+    image:
+      path: "experiments/figures/timeline_gantt.png"
+      label: "Gantt-Chart: Meilensteine bis zur Abgabe"
+      left_in: 1.0
+      top_in: 1.6
+      width_in: 11.33
+      height_in: 5.0
+
+  # Slide 9: Concluding Summary (Hinweis: 1-2 expressive figures, no bare 'Thank you')
+  - type: "comparison"
+    title: "Zusammenfassung & Nächste Schritte"
+    section: "IV. Ausblick"
+    images:
+      - path: "experiments/figures/latent_tsne.png"
+        label: "Latent Space t-SNE"
+      - path: "experiments/figures/radar_performance.png"
+        label: "Modale Robustheitsmetriken"
+
+
+  # Slide 11: Text Only (References)
+  - type: "text_only"
+    title: "Quellenverzeichnis"
+    section: "ANHANG"
+    bullets:
+      - "[1] K. He, X. Chen, S. Xie, Y. Li, P. Dollár, and R. Girshick, 'Masked Autoencoders Are Scalable Vision Learners,' CVPR, 2022."
+      - "[2] R. Bachmann, D. Mizrahi, A. Atanov, and A. Zamir, 'MultiMAE: Multi-modal Multi-task Masked Autoencoders,' ECCV, 2022."
+      - "[3] Z. Zhang et al., 'Multimodal Spontaneous Emotion Corpus (BP4D+),' IEEE FG, 2016."
+
+  # Slide 12: Native Table (Hyperparameters)
+  - type: "table"
+    title: "Anhang: Hyperparameter & Trainingskonfiguration"
+    section: "ANHANG"
+    table_data:
+      headers: ["Parameter", "Konfiguration / Wert", "Bemerkung"]
+      rows:
+        - ["Optimizer", "AdamW (lr=1.5e-4, weight_decay=0.05)", "Cosine Annealing Schedule"]
+        - ["Hardware", "4x NVIDIA A100 (40GB SXM4)", "PyTorch DDP mit Mixed Precision (AMP)"]
+        - ["Batch Size", "64 pro GPU (Gesamt: 256)", "Gradient Accumulation Steps: 2"]
+        - ["Maskierungsrate", "75% Vision / 50% Physiologie", "Zufällige Patch-Maskierung"]
+
