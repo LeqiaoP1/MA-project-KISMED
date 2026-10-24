@@ -1,0 +1,200 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 514" width="1000" height="514"
+     role="img" aria-labelledby="figTitle figDesc" font-family="Helvetica, Arial, sans-serif">
+  <title id="figTitle">Respiration Stage-3, 5-fold CV: per-task and per-group medians</title>
+  <desc id="figDesc">Three horizontal bar panels showing band-limited Pearson (0.1-0.6 Hz), oracle amplitude relative error and rate MAE (BPM) for the ten BP4D+ tasks T1 to T10 and the three score groups. Task rows are in T1-T10 order and the low tier&#39;s tasks are drawn in bold; the group rows are a re-aggregation of the same sessions under the shipped task-tier definition.</desc>
+  <style>
+    .bg    { fill: #ffffff; }
+    .title { font-size: 17px; font-weight: 700; fill: #1a1a1a; }
+    .sub   { font-size: 12px; fill: #5a5a5a; }
+    .hdr   { font-size: 13px; font-weight: 700; fill: #1a1a1a; }
+    .lab   { font-size: 13px; fill: #333333; text-anchor: end; }
+    .labB  { font-size: 13px; font-weight: 700; fill: #1a1a1a; text-anchor: end; }
+    .val   { font-size: 11px; fill: #4a4a4a; font-variant-numeric: tabular-nums; }
+    .valB  { font-size: 11px; font-weight: 700; fill: #1a1a1a; font-variant-numeric: tabular-nums; }
+    .task  { fill: #3b6ea5; }
+    .group { fill: #e07b39; }
+    .band  { fill: #f5f8fc; }
+    .gband { fill: #fdf3e7; }
+    .grid  { stroke: #e2e2e2; stroke-width: 1; }
+    .axis  { stroke: #9a9a9a; stroke-width: 1; }
+    .tick  { stroke: #9a9a9a; stroke-width: 1; }
+    .tlab  { font-size: 10px; fill: #777777; text-anchor: middle; }
+    .sep   { stroke: #cfc6b8; stroke-width: 1; stroke-dasharray: 4 3; }
+    .foot  { font-size: 11px; fill: #6a6a6a; }
+  </style>
+  <rect class="bg" x="0" y="0" width="1000" height="514"/>
+  <text class="title" x="92" y="28">Respiration Stage-3 &#183; 5-fold CV: per-task and per-group medians</text>
+  <text class="sub" x="92" y="48">138 subjects &#183; 1260 sessions &#183; 21 231 clips &#183; median over sessions, then median over subjects</text>
+  <text class="sub" x="92" y="66">score groups: low = T2, T3, T5 &#183; moderate = T1, T4 &#183; high = T6, T7, T8, T9, T10</text>
+  <rect class="task" x="742" y="36" width="12" height="12" rx="2"/>
+  <text class="sub" x="760" y="47">per task (T1&#8211;T10)</text>
+  <rect class="group" x="872" y="36" width="12" height="12" rx="2"/>
+  <text class="sub" x="890" y="47">score group</text>
+  <text class="hdr" x="96" y="86">band-limited Pearson (0.1–0.6 Hz) ↑</text>
+  <text class="hdr" x="402" y="86">amplitude rel. error (oracle) ↓</text>
+  <text class="hdr" x="708" y="86">rate MAE (BPM) ↓</text>
+  <rect class="band" x="84" y="132" width="910" height="26"/>
+  <rect class="band" x="84" y="188" width="910" height="26"/>
+  <rect class="band" x="84" y="244" width="910" height="26"/>
+  <rect class="band" x="84" y="300" width="910" height="26"/>
+  <rect class="band" x="84" y="356" width="910" height="26"/>
+  <rect class="gband" x="84" y="387" width="910" height="92" rx="3"/>
+  <g class="grid">
+    <line x1="96" y1="94" x2="96" y2="484"/>
+    <line x1="173" y1="94" x2="173" y2="484"/>
+    <line x1="249" y1="94" x2="249" y2="484"/>
+    <line x1="326" y1="94" x2="326" y2="484"/>
+    <line x1="402" y1="94" x2="402" y2="484"/>
+    <line x1="517" y1="94" x2="517" y2="484"/>
+    <line x1="632" y1="94" x2="632" y2="484"/>
+    <line x1="708" y1="94" x2="708" y2="484"/>
+    <line x1="785" y1="94" x2="785" y2="484"/>
+    <line x1="861" y1="94" x2="861" y2="484"/>
+    <line x1="938" y1="94" x2="938" y2="484"/>
+  </g>
+  <g class="lab">
+    <text class="lab" x="80" y="116">T1</text>
+    <text class="labB" x="80" y="144">T2</text>
+    <text class="labB" x="80" y="172">T3</text>
+    <text class="lab" x="80" y="200">T4</text>
+    <text class="labB" x="80" y="228">T5</text>
+    <text class="lab" x="80" y="256">T6</text>
+    <text class="lab" x="80" y="284">T7</text>
+    <text class="lab" x="80" y="312">T8</text>
+    <text class="lab" x="80" y="340">T9</text>
+    <text class="lab" x="80" y="368">T10</text>
+  </g>
+  <g class="lab">
+    <text class="labB" x="80" y="406">low</text>
+    <text class="lab" x="80" y="434">high</text>
+    <text class="lab" x="80" y="462">moderate</text>
+  </g>
+  <line class="sep" x1="84" y1="384" x2="994" y2="384"/>
+  <g class="task">
+    <rect x="96" y="110" width="110.9" height="16" rx="2"/>
+    <rect x="96" y="138" width="128.8" height="16" rx="2"/>
+    <rect x="96" y="166" width="217.3" height="16" rx="2"/>
+    <rect x="96" y="194" width="97.4" height="16" rx="2"/>
+    <rect x="96" y="222" width="144.6" height="16" rx="2"/>
+    <rect x="96" y="250" width="116.9" height="16" rx="2"/>
+    <rect x="96" y="278" width="97.8" height="16" rx="2"/>
+    <rect x="96" y="306" width="139.9" height="16" rx="2"/>
+    <rect x="96" y="334" width="122.8" height="16" rx="2"/>
+    <rect x="96" y="362" width="77.7" height="16" rx="2"/>
+  </g>
+  <g class="group">
+    <rect x="96" y="400" width="157.7" height="16" rx="2"/>
+    <rect x="96" y="428" width="111.7" height="16" rx="2"/>
+    <rect x="96" y="456" width="106.7" height="16" rx="2"/>
+  </g>
+  <g class="val">
+    <text class="val" x="334" y="116">+0.289</text>
+    <text class="valB" x="334" y="144">+0.336</text>
+    <text class="valB" x="334" y="172">+0.567</text>
+    <text class="val" x="334" y="200">+0.254</text>
+    <text class="valB" x="334" y="228">+0.377</text>
+    <text class="val" x="334" y="256">+0.305</text>
+    <text class="val" x="334" y="284">+0.255</text>
+    <text class="val" x="334" y="312">+0.365</text>
+    <text class="val" x="334" y="340">+0.320</text>
+    <text class="val" x="334" y="368">+0.203</text>
+    <text class="valB" x="334" y="406">+0.411</text>
+    <text class="val" x="334" y="434">+0.291</text>
+    <text class="val" x="334" y="462">+0.278</text>
+  </g>
+  <g class="task">
+    <rect x="402" y="110" width="185.2" height="16" rx="2"/>
+    <rect x="402" y="138" width="191.6" height="16" rx="2"/>
+    <rect x="402" y="166" width="134.8" height="16" rx="2"/>
+    <rect x="402" y="194" width="214.2" height="16" rx="2"/>
+    <rect x="402" y="222" width="178.8" height="16" rx="2"/>
+    <rect x="402" y="250" width="195.6" height="16" rx="2"/>
+    <rect x="402" y="278" width="217.1" height="16" rx="2"/>
+    <rect x="402" y="306" width="173.5" height="16" rx="2"/>
+    <rect x="402" y="334" width="201.4" height="16" rx="2"/>
+    <rect x="402" y="362" width="201.0" height="16" rx="2"/>
+  </g>
+  <g class="group">
+    <rect x="402" y="400" width="170.2" height="16" rx="2"/>
+    <rect x="402" y="428" width="197.1" height="16" rx="2"/>
+    <rect x="402" y="456" width="198.4" height="16" rx="2"/>
+  </g>
+  <g class="val">
+    <text class="val" x="640" y="116">0.644</text>
+    <text class="valB" x="640" y="144">0.667</text>
+    <text class="valB" x="640" y="172">0.469</text>
+    <text class="val" x="640" y="200">0.745</text>
+    <text class="valB" x="640" y="228">0.622</text>
+    <text class="val" x="640" y="256">0.680</text>
+    <text class="val" x="640" y="284">0.755</text>
+    <text class="val" x="640" y="312">0.604</text>
+    <text class="val" x="640" y="340">0.700</text>
+    <text class="val" x="640" y="368">0.699</text>
+    <text class="valB" x="640" y="406">0.592</text>
+    <text class="val" x="640" y="434">0.685</text>
+    <text class="val" x="640" y="462">0.690</text>
+  </g>
+  <g class="task">
+    <rect x="708" y="110" width="189.9" height="16" rx="2"/>
+    <rect x="708" y="138" width="165.1" height="16" rx="2"/>
+    <rect x="708" y="166" width="41.2" height="16" rx="2"/>
+    <rect x="708" y="194" width="192.0" height="16" rx="2"/>
+    <rect x="708" y="222" width="154.9" height="16" rx="2"/>
+    <rect x="708" y="250" width="226.2" height="16" rx="2"/>
+    <rect x="708" y="278" width="188.5" height="16" rx="2"/>
+    <rect x="708" y="306" width="192.0" height="16" rx="2"/>
+    <rect x="708" y="334" width="220.8" height="16" rx="2"/>
+    <rect x="708" y="362" width="168.1" height="16" rx="2"/>
+  </g>
+  <g class="group">
+    <rect x="708" y="400" width="112.1" height="16" rx="2"/>
+    <rect x="708" y="428" width="198.5" height="16" rx="2"/>
+    <rect x="708" y="456" width="192.0" height="16" rx="2"/>
+  </g>
+  <g class="val">
+    <text class="val" x="946" y="116">4.95</text>
+    <text class="valB" x="946" y="144">4.31</text>
+    <text class="valB" x="946" y="172">1.08</text>
+    <text class="val" x="946" y="200">5.01</text>
+    <text class="valB" x="946" y="228">4.04</text>
+    <text class="val" x="946" y="256">5.90</text>
+    <text class="val" x="946" y="284">4.92</text>
+    <text class="val" x="946" y="312">5.01</text>
+    <text class="val" x="946" y="340">5.76</text>
+    <text class="val" x="946" y="368">4.39</text>
+    <text class="valB" x="946" y="406">2.92</text>
+    <text class="val" x="946" y="434">5.18</text>
+    <text class="val" x="946" y="462">5.01</text>
+  </g>
+  <g class="axis">
+    <line x1="96" y1="484" x2="326" y2="484"/>
+    <line x1="402" y1="484" x2="632" y2="484"/>
+    <line x1="708" y1="484" x2="938" y2="484"/>
+  </g>
+  <g class="tick">
+    <line x1="96" y1="484" x2="96" y2="489"/>
+    <line x1="173" y1="484" x2="173" y2="489"/>
+    <line x1="249" y1="484" x2="249" y2="489"/>
+    <line x1="326" y1="484" x2="326" y2="489"/>
+    <line x1="402" y1="484" x2="402" y2="489"/>
+    <line x1="517" y1="484" x2="517" y2="489"/>
+    <line x1="632" y1="484" x2="632" y2="489"/>
+    <line x1="708" y1="484" x2="708" y2="489"/>
+    <line x1="785" y1="484" x2="785" y2="489"/>
+    <line x1="861" y1="484" x2="861" y2="489"/>
+    <line x1="938" y1="484" x2="938" y2="489"/>
+  </g>
+  <g class="tlab">
+    <text x="96" y="502">0</text>
+    <text x="173" y="502">0.2</text>
+    <text x="249" y="502">0.4</text>
+    <text x="326" y="502">0.6</text>
+    <text x="402" y="502">0</text>
+    <text x="517" y="502">0.4</text>
+    <text x="632" y="502">0.8</text>
+    <text x="708" y="502">0</text>
+    <text x="785" y="502">2</text>
+    <text x="861" y="502">4</text>
+    <text x="938" y="502">6</text>
+  </g>
+</svg>

@@ -111,6 +111,17 @@ an aggregation). The ordering is unchanged (`low > high > moderate`) but the
 low lead narrows (+0.447 -> +0.411) because T5 joins it while T1 leaves `high`
 and T10 joins it -- a **composition** effect, not a model change.
 
+Figures for this section (v2 = `_v2` in the filename):
+`resp_kfold_task_group_medians_v2.svg` (per-task and per-group medians, rendered
+by `plot_task_group_medians.py` from the regrouped JSON -- task rows in T1..T10
+order, `low`-tier tasks in bold, header listing the tier definition),
+`resp_kfold_task_scatter_v2.svg` (per-task Pearson vs rate MAE, colour = oracle
+amplitude error; no tier text and no caption, `plot_task_scatter.py`) and
+`resp_T3_waveforms_v2.svg` (representative T3 waveforms,
+`plot_task_waveforms.py --no-footers`, i.e. no in-figure caption at all). The
+unsuffixed SVGs in this folder are the v1 record and still show the old group
+numbers.
+
 ## Verdict
 
 1. **The rhythm is tracked weakly, and only weakly.** +0.307 per-subject
@@ -137,6 +148,14 @@ and T10 joins it -- a **composition** effect, not a model change.
 
 ## Caveats
 
+- **140 subjects in the tree, 138 in the evaluation.** `M049` has no
+  `IRFeatures/*.txt` at all, so there are no landmarks and no ROI; `F004` has
+  landmarks but its respiration channel is saturated at the -10 V recorder rail
+  (15-80 % of samples per task), so **all 168** of its candidate 8 s windows trip
+  `rail_touch_v: 9.9`. Neither subject yields a single clip. Only 86 of the 138
+  subjects keep all ten tasks; the rest lose sessions to the same rail / spread /
+  `(0,0)`-sentinel rules, which is why 138 subjects give 1260 sessions rather
+  than 1380.
 - **Fold = cohort.** The folds are contiguous blocks of sorted subject ids
   (F001-F028, F029-F056, F057-F082+M001-M002, M003-M030, M031-M058), so
   fold 3's lead (+0.506) is confounded with sex/recording cohort. Never read

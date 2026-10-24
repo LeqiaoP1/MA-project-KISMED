@@ -31,6 +31,17 @@ All phases landed; `python -m pytest -q` -> **371 pass** (was 345; the new
   convention sentence, `code/README.md`, `TirROI_Resp_Guide.md`,
   `slides_spec.yaml`, plus dated v2 sections in `resp_5fold_cv.md` and
   `finetuned1_subjectReport.md`.
+- **Figures**: `resp_kfold_task_group_medians_v2.svg` (new generator
+  `notes/eval/tir_resp/plot_task_group_medians.py`, reads the regrouped JSON;
+  task rows in T1..T10 order, the `low`-tier tasks in bold, no caption below the
+  axes) and `resp_T3_waveforms_v2.svg` (same probe with `--no-footers`: no
+  annotation and no caption, so the figure ends at the axis labels). The version
+  lives in the FILENAME only -- `--note` defaults to empty, so no figure carries
+  a tier annotation. The unsuffixed SVGs stay as the v1 record.
+- **Scatter**: `resp_kfold_task_scatter_v2.svg` from the new
+  `notes/eval/tir_resp/plot_task_scatter.py` (per-task Pearson vs rate MAE,
+  colour = oracle amplitude error). Per-task only, so it carries no tier text at
+  all and no caption below the axes.
 
 Deviations: (a) the eval figures were written to each run's existing `figures/`
 directory instead of a `figures_regrouped/` copy -- the plots do not depend on
