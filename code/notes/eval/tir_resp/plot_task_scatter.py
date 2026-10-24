@@ -9,8 +9,12 @@ straight out of the k-fold JSON written by ``runners/run_evaluate_kfold.py``:
 * ``y`` = ``mae_bpm_median``       (rate error in BPM, lower is better),
 * fill = ``amp_rel_err_median``    (oracle-calibrated, descriptive only).
 
-The figure is PER TASK, so it is unaffected by the task-tier definition: there is
-no group row and no tier annotation. Nothing is printed below the axes -- the
+Axes are FIXED so successive renders stay comparable: x = band-limited Pearson
+0.15-0.60, y = rate MAE 0-8 BPM, colour = amplitude relative error 0.40-0.80
+(a value outside a fixed range is clipped, never rescaled). One marker carries
+two channels: the FILL is the amplitude error and the RING is the task's
+distortion tier (low / moderate / high), with an in-plot key naming each tier's
+tasks. Nothing is printed below the axes. Nothing is printed below the axes -- the
 plot ends at the x-axis title, so no caption can drift away from the data.
 
 Usage (from ``code/``)::
@@ -23,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -32,9 +37,41 @@ __all__ = ['load', 'write_svg', 'main']
 #: plot rectangle: x0, y0, x1, y1
 PANEL = (90.0, 100.0, 660.0, 520.0)
 X_MIN, X_MAX = 0.15, 0.60
-Y_MIN, Y_MAX = 0.0, 6.0
+Y_MIN, Y_MAX = 0.0, 8.0
 X_TICKS: Tuple[float, ...] = (0.2, 0.3, 0.4, 0.5, 0.6)
-Y_TICKS: Tuple[float, ...] = (0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
+Y_TICKS: Tuple[float, ...] = (0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0)
+
+#: FIXED colour domain for the oracle amplitude relative error. Not derived from
+#: the data, so two renders stay directly comparable and a re-aggregated dump
+#: cannot silently rescale the colour map.
+A_MIN, A_MAX = 0.40, 0.80
+A_TICKS: Tuple[float, ...] = (0.40, 0.50, 0.60, 0.70, 0.80)
+
+#: Task-tier membership is drawn as a RING around each dot -- the fill stays
+#: reserved for the amplitude error, so one marker carries both channels. The
+#: three ring colours are deliberately outside the blue/yellow/red fill ramp.
+TIER_ORDER: Tuple[str, ...] = ('low', 'moderate', 'high')
+#: Colour alone is not enough here: the dot FILL already uses the whole
+#: blue-yellow-red ramp, so a dark purple "moderate" ring read as "another dark
+#: ring" next to the near-black "high" one. Moderate therefore also gets a DASH
+#: pattern -- a shape cue that survives any hue confusion (and colour blindness).
+TIER_STROKE = {'low': '#1a8f3c', 'moderate': '#00a8c0', 'high': '#101010'}
+TIER_DASH = {'low': '', 'moderate': ' stroke-dasharray="4.2 2.6"',
+             'high': ''}
+TIER_DESC = {'low': 'solid green', 'moderate': 'dashed cyan',
+             'high': 'solid black'}
+
+#: marker geometry. The tier ring sits OUTSIDE a white separator ring, so its
+#: colour never competes with the amplitude fill it surrounds (a thin ring drawn
+#: directly on the fill is hard to match against the legend).
+DOT_R = 7.5
+GAP_R, GAP_W = 8.7, 2.4
+RING_R, RING_W = 10.2, 2.6
+
+#: in-plot legend box (x0, y0, width, height); the lower-left of the panel is
+#: empty for the shipped dump, and the box is opaque so gridlines do not bleed
+#: through the key.
+LEGEND_BOX = (98.0, 404.0, 212.0, 86.0)
 W = 800.0
 
 #: blue -> pale yellow -> red, as discrete strips (no gradient support needed)
@@ -93,31 +130,66 @@ def _points(doc: dict) -> List[dict]:
     return out
 
 
-def _overlaps(box, placed) -> bool:
-    return any(not (box[2] < p[0] or box[0] > p[2]
+def _overlaps(box, placed) -> bool:    return any(not (box[2] < p[0] or box[0] > p[2]
                     or box[3] < p[1] or box[1] > p[3]) for p in placed)
 
 
-def _place_labels(points: List[dict], x0: float, y0: float, x1: float,
+def _dodge(xy, min_sep: float, passes: int = 60, cap: float = 9.0):
+    """Push markers apart until every pair is at least ``min_sep`` px apart.
+
+    Display-only, and deliberately capped. Two tasks whose medians are nearly
+    identical -- T4 and T7 differ by 0.09 BPM and 0.001 Pearson -- would
+    otherwise draw one ring straight on top of the other, hiding a whole tier.
+    The shift is limited to ``cap`` px (well under one grid step), so the dot
+    still reads as "T4/T7 overlap" while both rings stay visible.
+    """
+    xy = [list(p) for p in xy]
+    orig = [tuple(p) for p in xy]
+    for _ in range(passes):
+        moved = False
+        for i in range(len(xy)):
+            for j in range(i + 1, len(xy)):
+                dx, dy = xy[j][0] - xy[i][0], xy[j][1] - xy[i][1]
+                dist = math.hypot(dx, dy)
+                if dist >= min_sep:
+                    continue
+                if dist < 1e-6:
+                    dx, dy, dist = 0.0, -1.0, 1.0
+                push = (min_sep - dist) / 2.0
+                ux, uy = dx / dist, dy / dist
+                xy[i][0] -= push * ux
+                xy[i][1] -= push * uy
+                xy[j][0] += push * ux
+                xy[j][1] += push * uy
+                moved = True
+        if not moved:
+            break
+    for k, (ox, oy) in enumerate(orig):
+        dx, dy = xy[k][0] - ox, xy[k][1] - oy
+        dist = math.hypot(dx, dy)
+        if dist > cap:
+            xy[k][0] = ox + dx / dist * cap
+            xy[k][1] = oy + dy / dist * cap
+    return xy
+
+
+def _place_labels(points: List[dict], xy, x0: float, y0: float, x1: float,
                   y1: float) -> Dict[str, Tuple[float, float, str]]:
     """Greedy, deterministic label placement around each dot.
 
     Candidates are tried in a fixed order (right, below-right, left,
     below-left, above); the first box that hits neither another label nor the
     plot border wins. Ties are resolved by the fixed order, so the same JSON
-    always renders the same figure.
+    always renders the same figure. ``xy`` are the (already dodged) marker
+    centres.
     """
-    sx = (x1 - x0) / (X_MAX - X_MIN)
-    sy = (y1 - y0) / (Y_MAX - Y_MIN)
     pw, ph = 24.0, 15.0
     placed: List[Tuple[float, float, float, float]] = []
     out: Dict[str, Tuple[float, float, str]] = {}
-    offsets = ((11.0, -7.0, 'start'), (11.0, 15.0, 'start'),
-               (-11.0, -7.0, 'end'), (-11.0, 15.0, 'end'),
-               (0.0, -13.0, 'middle'))
-    for p in points:
-        cx = x0 + (p['x'] - X_MIN) * sx
-        cy = y1 - (p['y'] - Y_MIN) * sy
+    offsets = ((15.0, -7.0, 'start'), (15.0, 15.0, 'start'),
+               (-15.0, -7.0, 'end'), (-15.0, 15.0, 'end'),
+               (0.0, -17.0, 'middle'))
+    for p, (cx, cy) in zip(points, xy):
         chosen = None
         for dx, dy, anchor in offsets:
             lx, ly = cx + dx, cy + dy
@@ -133,7 +205,7 @@ def _place_labels(points: List[dict], x0: float, y0: float, x1: float,
                 chosen = (lx, ly, anchor, box)
                 break
         if chosen is None:                       # fall back: right of the dot
-            lx, ly, anchor = cx + 11.0, cy - 7.0, 'start'
+            lx, ly, anchor = cx + 15.0, cy - 7.0, 'start'
             chosen = (lx, ly, anchor, (lx, ly - 11.0, lx + pw, ly + 4.0))
         lx, ly, anchor, box = chosen
         placed.append(box)
@@ -141,16 +213,31 @@ def _place_labels(points: List[dict], x0: float, y0: float, x1: float,
     return out
 
 
+def _tiers_of(doc: dict) -> Dict[str, Tuple[str, ...]]:
+    """``{task: (tier, ...)}`` from the document's recorded ``task_groups``.
+
+    Order follows :data:`TIER_ORDER`, so a task listed in two tiers renders as
+    the plain grey ring (the figure never invents a mixed colour).
+    """
+    groups = (doc.get('protocol') or {}).get('task_groups') or {}
+    out: Dict[str, List[str]] = {}
+    for name in TIER_ORDER:
+        for task in groups.get(name, ()):
+            out.setdefault(str(task).upper(), []).append(name)
+    return {k: tuple(v) for k, v in out.items()}
+
+
 def write_svg(doc: dict, out_path: str) -> str:
     """Render the scatter to ``out_path`` (no caption below the axes)."""
     pts = _points(doc)
+    tier_map = _tiers_of(doc)
     x0, y0, x1, y1 = PANEL
     axis_title_y = y1 + 42.0
     H = axis_title_y + 22.0
 
-    amps = [p['amp'] for p in pts]
-    a_lo, a_hi = min(amps), max(amps)
-    span = (a_hi - a_lo) or 1e-6
+    # fixed colour domain: see A_MIN / A_MAX (values outside are clipped)
+    a_lo, a_hi = A_MIN, A_MAX
+    span = a_hi - a_lo
 
     def frac(a: float) -> float:
         return (a - a_lo) / span
@@ -170,7 +257,10 @@ def write_svg(doc: dict, out_path: str) -> str:
              ' (0.1-0.6 Hz, higher is better), the y axis is rate MAE in breaths'
              ' per minute (lower is better). Dot colour encodes the'
              ' oracle-calibrated amplitude relative error, blue for small error'
-             ' through red for large error.</desc>')
+             ' through red for large error; the ring around each dot encodes the'
+             ' task&#39;s distortion tier ('
+             + ', '.join(f'{TIER_DESC[t]} = {t}' for t in TIER_ORDER)
+             + '), and the in-plot key lists the tasks of each tier.</desc>')
     L.append('  <style>')
     L.append('    .bg    { fill: #ffffff; }')
     L.append('    .title { font-size: 17px; font-weight: 700; fill: #1a1a1a; }')
@@ -187,6 +277,10 @@ def write_svg(doc: dict, out_path: str) -> str:
     L.append('    .hint  { font-size: 11px; font-style: italic; fill: #9a9a9a; }')
     L.append('    .cbt   { font-size: 10px; fill: #666666; }')
     L.append('    .cbtitle { font-size: 10px; fill: #666666; }')
+    L.append('    .lgbox { fill: #ffffff; fill-opacity: 0.94;'
+             ' stroke: #dcdcdc; stroke-width: 0.8; }')
+    L.append('    .lgh   { font-size: 10px; font-weight: 700; fill: #777777; }')
+    L.append('    .lgd   { font-size: 11px; fill: #333333; }')
     L.append('  </style>')
     L.append(f'  <rect class="bg" x="0" y="0" width="{W:.0f}"'
              f' height="{H:.0f}"/>')
@@ -251,14 +345,24 @@ def write_svg(doc: dict, out_path: str) -> str:
              ' text-anchor="end">better</text>')
 
     # ---- dots + labels ----------------------------------------------------
-    labels = _place_labels(pts, x0, y0, x1, y1)
+    xy = _dodge([(x0 + (p['x'] - X_MIN) * sx, y1 - (p['y'] - Y_MIN) * sy)
+                 for p in pts], 2.0 * RING_R + 2.0)
+    labels = _place_labels(pts, xy, x0, y0, x1, y1)
     L.append('  <!-- task dots: x = band-limited Pearson, y = rate MAE,'
-             ' fill = oracle amp rel. err -->')
-    for p in pts:
-        cx = x0 + (p['x'] - X_MIN) * sx
-        cy = y1 - (p['y'] - Y_MIN) * sy
-        L.append(f'  <circle class="dot" cx="{cx:.0f}" cy="{cy:.0f}" r="7"'
-                 f' fill="{_colour(frac(p["amp"]))}"/>')
+             ' fill = oracle amp rel. err, outer ring = distortion tier -->')
+    for p, (cx, cy) in zip(pts, xy):
+        tiers = tier_map.get(p['task'], ())
+        ring = TIER_STROKE.get(tiers[0], '#3a3a3a') if len(tiers) == 1 else '#3a3a3a'
+        L.append(f'  <circle class="dot" cx="{cx:.0f}" cy="{cy:.0f}"'
+                 f' r="{DOT_R:g}" fill="{_colour(frac(p["amp"]))}"'
+                 ' stroke="none"/>')
+        # white separator, then the tier ring OUTSIDE it
+        L.append(f'  <circle cx="{cx:.0f}" cy="{cy:.0f}" r="{GAP_R:g}"'
+                 f' fill="none" stroke="#ffffff" stroke-width="{GAP_W:g}"/>')
+        L.append(f'  <circle class="tier" cx="{cx:.0f}" cy="{cy:.0f}"'
+                 f' r="{RING_R:g}" fill="none" stroke="{ring}"'
+                 f' stroke-width="{RING_W:g}"'
+                 f'{TIER_DASH.get(tiers[0], "") if len(tiers) == 1 else ""}/>')
     L.append('  <!-- task labels (greedy de-overlap) -->')
     L.append('  <g class="dlab">')
     for p in pts:
@@ -268,7 +372,27 @@ def write_svg(doc: dict, out_path: str) -> str:
                  f'{p["task"]}</text>')
     L.append('  </g>')
 
-    # ---- colour scale -----------------------------------------------------
+    # ---- distortion-tier legend (ring encoding) ---------------------------
+    if tier_map:
+        bx, by, bw, bh = LEGEND_BOX
+        L.append('  <!-- tier legend: ring colour = low / moderate / high -->')
+        L.append(f'  <rect class="lgbox" x="{bx:.0f}" y="{by:.0f}"'
+                 f' width="{bw:.0f}" height="{bh:.0f}" rx="3"/>')
+        L.append(f'  <text class="lgh" x="{bx + 10:.0f}" y="{by + 16:.0f}">'
+                 'distortion tier (outer ring)</text>')
+        for i, tier in enumerate(TIER_ORDER):
+            members = list((doc.get('protocol') or {})
+                           .get('task_groups', {}).get(tier, ()))
+            if not members:
+                continue
+            ry = by + 34.0 + i * 18.0
+            L.append(f'  <circle cx="{bx + 16:.0f}" cy="{ry - 4:.0f}" r="6"'
+                     ' fill="#ffffff"'
+                     f' stroke="{TIER_STROKE.get(tier, "#3a3a3a")}"'
+                     f' stroke-width="{2.8:g}"'
+                     f'{TIER_DASH.get(tier, "")}/>')
+            L.append(f'  <text class="lgd" x="{bx + 28:.0f}"'
+                     f' y="{ry:.0f}">{tier} = {", ".join(members)}</text>')
     bar_x, bar_y0, bar_y1 = 686.0, y0, y1
     step = (bar_y1 - bar_y0) / STRIPS
     L.append('  <!-- colour scale for amplitude rel. error: discrete strips'
@@ -284,7 +408,7 @@ def write_svg(doc: dict, out_path: str) -> str:
              f' height="{bar_y1 - bar_y0:.0f}" fill="none" stroke="#9a9a9a"'
              ' stroke-width="0.6"/>')
     L.append('  </g>')
-    for i, a in enumerate((a_lo, (a_lo + a_hi) / 2.0, a_hi)):
+    for a in A_TICKS:
         y = bar_y1 - frac(a) * (bar_y1 - bar_y0)
         L.append(f'  <line class="tick" x1="{bar_x - 6:.0f}" y1="{y:.0f}"'
                  f' x2="{bar_x:.0f}" y2="{y:.0f}"/>')

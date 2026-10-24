@@ -40,8 +40,8 @@ All phases landed; `python -m pytest -q` -> **371 pass** (was 345; the new
   a tier annotation. The unsuffixed SVGs stay as the v1 record.
 - **Scatter**: `resp_kfold_task_scatter_v2.svg` from the new
   `notes/eval/tir_resp/plot_task_scatter.py` (per-task Pearson vs rate MAE,
-  colour = oracle amplitude error). Per-task only, so it carries no tier text at
-  all and no caption below the axes.
+  colour = oracle amplitude error, dot ring = distortion tier + in-plot key,
+  0-8 BPM and 0.40-0.80 colour domain). No caption below the axes.
 
 Deviations: (a) the eval figures were written to each run's existing `figures/`
 directory instead of a `figures_regrouped/` copy -- the plots do not depend on

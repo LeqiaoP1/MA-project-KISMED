@@ -116,7 +116,8 @@ Figures for this section (v2 = `_v2` in the filename):
 by `plot_task_group_medians.py` from the regrouped JSON -- task rows in T1..T10
 order, `low`-tier tasks in bold, header listing the tier definition),
 `resp_kfold_task_scatter_v2.svg` (per-task Pearson vs rate MAE, colour = oracle
-amplitude error; no tier text and no caption, `plot_task_scatter.py`) and
+amplitude error, dot ring = distortion tier with an in-plot key; no caption
+below the axes, `plot_task_scatter.py`) and
 `resp_T3_waveforms_v2.svg` (representative T3 waveforms,
 `plot_task_waveforms.py --no-footers`, i.e. no in-figure caption at all). The
 unsuffixed SVGs in this folder are the v1 record and still show the old group
