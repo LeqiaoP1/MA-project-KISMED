@@ -88,6 +88,29 @@ median exactly, i.e. this runner agrees with `run_evaluate_session.py`.
 Groups: **low** +0.447 / 0.577 / 2.36 BPM (n=258) > **high** +0.323 / 0.668 /
 5.34 (n=515) > **moderate** +0.272 / 0.694 / 4.91 (n=487).
 
+### Grouping v2 (2026-10-24, re-aggregated -- NOT a new run)
+
+The shipped tiers changed: `low=[T2,T3,T5]`, `moderate=[T1,T4]`,
+`high=[T6,T7,T8,T9,T10]` (T5 high->low, T1 high->moderate, T10
+moderate->high; `data/task_groups.SHIPPED_TASK_GROUPS`, rationale in
+`code/notes/design/TIR_ROI_RESP_TasksDistortion.md`). The table above is the
+v1 split and is kept as measured. Re-aggregating the **same** five fold dumps
+with `runners/run_evaluate_kfold.py --task_groups '...'` (no re-training; output
+`output/eval/resp_kfold/kfold_resp_tir_roi_hpc_regrouped.json`, which records
+`protocol.task_group_source: cli`) gives:
+
+| group | tasks | pearson_band | amp_rel_err | rate MAE (BPM) | n |
+|---|---|---|---|---|---|
+| low | T2, T3, T5 | **+0.411** | 0.592 | **2.92** | 387 |
+| moderate | T1, T4 | +0.278 | 0.690 | 5.01 | 239 |
+| high | T6, T7, T8, T9, T10 | +0.291 | 0.685 | 5.18 | 634 |
+
+Only the per-GROUP rows change under the regrouping; the corpus, the
+checkpoints and the per-subject/per-task values are identical (grouping is
+an aggregation). The ordering is unchanged (`low > high > moderate`) but the
+low lead narrows (+0.447 -> +0.411) because T5 joins it while T1 leaves `high`
+and T10 joins it -- a **composition** effect, not a model change.
+
 ## Verdict
 
 1. **The rhythm is tracked weakly, and only weakly.** +0.307 per-subject

@@ -6,14 +6,20 @@ speech, pain), so a run often wants to be restricted to a SUBSET of them. This
 module turns *named* subsets into the explicit task-label list that the existing
 ``discover_sessions(..., tasks=...)`` filter already understands.
 
-**No mapping is hardcoded here** -- the group definitions live in the YAML config
+**No mapping is inferred here** -- the group definitions live in the YAML config
 and are passed in::
 
     task_groups:                # name -> list of task labels (free-form)
-      low:      [T1, T2]
-      moderate: [T3, T4, T5, T6, T10]
-      high:     [T7, T8, T9]
+      low:      [T2, T3, T5]
+      moderate: [T1, T4]
+      high:     [T6, T7, T8, T9, T10]
     task_set: ''                # '' = all; 'low' or 'low,high' = union
+
+The one definition this module KNOWS about is :data:`SHIPPED_TASK_GROUPS`, the
+tiers the ``tir_roi*`` configs ship (a partition of ``T1``..``T10``). It exists
+only as a default/test anchor -- resolution is still driven by whatever the
+config passes in, and a config may legitimately define a different split. The
+rationale of record is ``code/notes/design/TIR_ROI_RESP_TasksDistortion.md``.
 
 The SELECTION is resolved to explicit task labels ONCE at dataset-build time::
 
@@ -46,9 +52,19 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+#: The tiers shipped by every ``tir_roi*`` config (v2, 2026-10-24).
+#: ``low`` = passive viewing + short yes/no answers, ``moderate`` = laughter /
+#: facial expression + transient startle, ``high`` = singing, threat, pain,
+#: anger, disgust. A PARTITION of ``T1``..``T10`` (3 / 2 / 5):
+#: :func:`runners.run_survey_tir_resp._aggregate` and
+#: ``notes/eval/tir_resp/gate_model_input.group_of`` assume one group per task.
+#: Rationale: ``code/notes/design/TIR_ROI_RESP_TasksDistortion.md``.
+SHIPPED_TASK_GROUPS = 'low=T2|T3|T5;moderate=T1|T4;high=T6|T7|T8|T9|T10'
+
 __all__ = ['TASK_LABEL_RE', 'normalise_task', 'normalise_group',
            'parse_task_groups', 'parse_task_set', 'TaskSelection',
-           'levels_by_task', 'resolve_task_selection']
+           'levels_by_task', 'levels_for_task', 'unmapped_tasks',
+           'resolve_task_selection', 'SHIPPED_TASK_GROUPS']
 
 #: a BP4D+ task label, e.g. ``T1`` .. ``T10`` (case-insensitive on input).
 TASK_LABEL_RE = re.compile(r'^[Tt]\d+$')
@@ -241,6 +257,36 @@ def levels_by_task(levels: Mapping[str, Sequence[str]]
         for task in levels[name]:
             out.setdefault(task, []).append(name)
     return {k: tuple(v) for k, v in sorted(out.items(), key=lambda kv: _task_sort_key(kv[0]))}
+
+
+def levels_for_task(override, task) -> Tuple[str, ...]:
+    """The groups of ``task`` in an override map (:func:`levels_by_task` form).
+
+    Used by the offline evaluators, which can RE-LABEL an existing prediction
+    dump instead of re-training: ``entries.json`` carries the ``task_level``
+    that was resolved when the dump was written, so a changed grouping needs an
+    explicit override. An unparsable label returns ``()`` rather than raising --
+    a session name without a ``_T<digit>`` suffix is not an error here.
+    """
+    if not override:
+        return ()
+    try:
+        return tuple(override.get(normalise_task(task), ()))
+    except TaskGroupError:
+        return ()
+
+
+def unmapped_tasks(tasks: Iterable[str], override) -> List[str]:
+    """Task labels present in NO group of ``override`` (sorted, de-duped).
+
+    ``evaluation.metrics.breakdown_by_label`` SKIPS a session whose label list
+    is empty, so an incomplete override silently shrinks every per-group ``n``.
+    The evaluators print this list before scoring.
+    """
+    if not override:
+        return []
+    missing = [str(t) for t in tasks if not levels_for_task(override, t)]
+    return sorted(set(missing))
 
 
 def resolve_task_selection(tasks=None, task_set=None, task_groups=None

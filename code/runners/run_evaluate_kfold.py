@@ -47,6 +47,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from data import task_groups as _tgrp
 from evaluation import metrics as _metrics
 from evaluation.assemble import affine_calibrate, assemble_session, group_entries
 from evaluation.report import save_json
@@ -79,9 +80,14 @@ def _fold_dir(root, prefix, k):
 
 
 def score_fold(pred_dir, fs, raw_fs, band, waveform, rate_window_s, rate_tol,
-               fold, max_sessions=0):
+               fold, max_sessions=0, group_override=None):
     """Score every session of ONE fold.
 
+    :param group_override: optional ``{task: (group, ...)}``
+        (:func:`data.task_groups.levels_by_task`) that REPLACES the
+        ``task_level`` recorded in ``entries.json``. ``None`` keeps the recorded
+        labels. The grouping is aggregation-only, so this re-labels an existing
+        dump without re-training.
     :returns: ``(records, windows)`` -- a list of per-session dicts and the
         concatenated ``(pred_bpm, target_bpm)`` window arrays for the pooled
         rate summary.
@@ -123,11 +129,14 @@ def score_fold(pred_dir, fs, raw_fs, band, waveform, rate_window_s, rate_tol,
             continue
         ref, yh = ref_full[:n][cov].copy(), y[:n][cov].copy()
 
+        task_label = entries[rows[0]].get('task') or _task_of_name(name)
         rec = {
             'session': name,
             'subject': subject_of(name),
-            'task': entries[rows[0]].get('task') or _task_of_name(name),
-            'task_level': list(entries[rows[0]].get('task_level') or ()),
+            'task': task_label,
+            'task_level': (list(_tgrp.levels_for_task(group_override, task_label))
+                           if group_override is not None
+                           else list(entries[rows[0]].get('task_level') or ())),
             'fold': int(fold),
             'n_clips': len(rows),
             'duration_s': float(t[-1]) if t.size else 0.0,
@@ -297,6 +306,12 @@ def get_args():
     p.add_argument('--n_boot', default=2000, type=int)
     p.add_argument('--max_sessions', default=0, type=int,
                    help='per fold; for smoke runs only')
+    p.add_argument('--task_groups', default='', type=str,
+                   help="override the task -> distortion-group mapping recorded "
+                        "in each fold's entries.json, e.g. "
+                        "'low=T2|T3|T5;moderate=T1|T4;high=T6|T7|T8|T9|T10' "
+                        "(see data/task_groups.py). Empty = use the recorded "
+                        "task_level.")
     return p.parse_args()
 
 
@@ -309,17 +324,30 @@ def main(args):
     wkey = f'within_{int(round(args.rate_tol * 100))}pct'
 
     records, summaries, pw_all, tw_all = [], [], [], []
+    # Optional RE-LABEL of existing dumps (aggregation-only; no re-training).
+    group_levels = _tgrp.parse_task_groups(getattr(args, 'task_groups', ''))
+    group_override = (_tgrp.levels_by_task(group_levels) if group_levels
+                      else None)
     for k in folds:
         d = _fold_dir(args.root, args.run_prefix, k)
         with open(os.path.join(d, 'entries.json')) as f:
             n_entries = len(json.load(f))
         recs, (pw, tw) = score_fold(
             d, args.fs, args.raw_fs, band, args.waveform,
-            args.rate_window_s, args.rate_tol, k, args.max_sessions)
+            args.rate_window_s, args.rate_tol, k, args.max_sessions,
+            group_override=group_override)
         records.extend(recs)
         summaries.append(_fold_summary(k, recs, n_entries))
         pw_all.append(pw)
         tw_all.append(tw)
+
+    if group_override is not None:
+        missing = _tgrp.unmapped_tasks(
+            [r['task'] for r in records], group_override)
+        if missing:
+            print(f'[kfold] WARNING: task(s) {", ".join(missing)} are in no '
+                  f'--task_groups group; their sessions are EXCLUDED from '
+                  f'per_group (breakdown_by_label skips an empty label list).')
 
     n_subjects = _check_partition(summaries)
     agg = aggregate_kfold(records, n_boot=args.n_boot)
@@ -348,8 +376,12 @@ def main(args):
                          'calibration -> ORACLE-calibrated (not deployable)',
             'rate': f'dominant in-band FFT peak per {args.rate_window_s:g} s '
                     f'window; MAE (BPM) + {wkey}',
+            'task_group_source': ('cli' if group_override is not None
+                                  else 'entries'),
+            'task_groups': {k: list(v) for k, v in group_levels.items()},
             'n_subjects': n_subjects,
         },
+        'task_levels': {t: list(v) for t, v in (group_override or {}).items()},
         'overall': agg['overall'],
         'rate_overall': rate_overall,
         'folds': summaries,

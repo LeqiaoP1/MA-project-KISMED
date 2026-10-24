@@ -33,6 +33,26 @@ By distortion group the model tracks the expected difficulty ordering:
 
 (T3 is the single best task at +0.83; T4 the worst at +0.40.)
 
+**Grouping v2 (2026-10-24, re-aggregated -- NOT a new run).** The shipped tiers
+changed (T5 high->low, T1 high->moderate, T10 moderate->high; see
+`code/notes/design/TIR_ROI_RESP_TasksDistortion.md`). The table above is the v1
+split and is kept as measured. Re-aggregating the **same** `preds.npy` dump
+(`runners/run_evaluate_subject.py --task_groups '...' --no_figures --out
+subject_metrics_regrouped.json`) gives:
+
+| group | tasks | median band-Pearson (v2) | v1 |
+|---|---|---|---|
+| low | T2, T3, T5 | **+0.663** (n=82) | +0.738 (n=54) |
+| moderate | T1, T4 | +0.464 (n=51) | +0.524 (n=110) |
+| high | T6, T7, T8, T9, T10 | +0.546 (n=140) | +0.515 (n=109) |
+
+Two things move, both by CONSTRUCTION rather than by any change to the model:
+the low lead shrinks (+0.738 -> +0.663) because the mid-ranking T5 leaves, and
+`moderate` becomes the WEAKEST tier (+0.524 -> +0.464) because T1 joins it and
+T10 leaves. On the session-level read of the same dump the ordering stays
+`low > high > moderate` (0.573 / 0.435 / 0.413), so the subject-level
+`moderate < high` flip is composition, not evidence of a new effect.
+
 ## Derived vital sign — respiration rate (30 s windows)
 
 - **MAE 4.66 BPM**, within-10 % acceptance **46 %** (n = 409 windows). Rate is consistent with the moderate Pearson: it can follow the rhythm in easy subjects but misses the acceptance band in most windows.

@@ -32,6 +32,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from data import task_groups as _tgrp
 from evaluation import metrics as _metrics
 from evaluation.assemble import affine_calibrate, assemble_session, group_entries
 from evaluation.report import plot_session_waveform, save_json
@@ -251,6 +252,12 @@ def get_args():
                         "'0.1,0.6'; empty = raw")
     p.add_argument('--n_boot', default=2000, type=int)
     p.add_argument('--no_figures', action='store_true', default=False)
+    p.add_argument('--task_groups', default='', type=str,
+                   help="override the task -> distortion-group mapping recorded "
+                        "in entries.json, e.g. "
+                        "'low=T2|T3|T5;moderate=T1|T4;high=T6|T7|T8|T9|T10' "
+                        "(see data/task_groups.py). Empty = use each entry's "
+                        "recorded task_level.")
     return p.parse_args()
 
 
@@ -275,6 +282,11 @@ def main(args):
               if str(args.smooth).strip() else None)
     if smooth is not None:
         preds = smooth_band(preds, args.fs, smooth)
+    # Optional RE-LABEL of an existing dump (aggregation-only; see
+    # data/task_groups.py). Empty -> keep ``entry['task_level']``.
+    group_levels = _tgrp.parse_task_groups(getattr(args, 'task_groups', ''))
+    group_override = (_tgrp.levels_by_task(group_levels) if group_levels
+                      else None)
 
     test = {s.strip() for s in str(args.test_subjects).split(',') if s.strip()}
     groups = group_entries(entries, args.fs)
@@ -305,10 +317,20 @@ def main(args):
         quality[name] = _flat(rec)
         subj_of[name] = rec['subject']
         task_of[name] = rec['task']
-        levels_of[name] = list(entries[groups[name][0][0]].get('task_level') or ())
+        levels_of[name] = (
+            list(_tgrp.levels_for_task(group_override, rec['task']))
+            if group_override is not None
+            else list(entries[groups[name][0][0]].get('task_level') or ()))
         session_names.append(name)
         per_subject_sessions.setdefault(rec['subject'], []).append(
             (name, rec['pearson_band']))
+
+    if group_override is not None:
+        missing = _tgrp.unmapped_tasks(task_of.values(), group_override)
+        if missing:
+            print(f'[subject-eval] WARNING: task(s) {", ".join(missing)} are in '
+                  f'no --task_groups group; their sessions are EXCLUDED from '
+                  f'per_group (breakdown_by_label skips an empty label list).')
 
     agg = aggregate_subjects(quality, subj_of, task_of, levels_of, _AGG_KEYS)
     agg['overall']['pearson_band'] = _metrics.bootstrap_ci(
@@ -338,6 +360,10 @@ def main(args):
            'smooth': (list(smooth) if smooth is not None else None),
            'headline': 'pearson_band',
            'test_subjects': sorted(test) or 'ALL',
+           'task_group_source': ('cli' if group_override is not None
+                                 else 'entries'),
+           'task_groups': {k: list(v) for k, v in group_levels.items()},
+           'task_levels': {t: list(v) for t, v in (group_override or {}).items()},
            'n_sessions': len(session_names),
            'n_subjects': len(agg['per_subject']),
            'per_subject': agg['per_subject'],

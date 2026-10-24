@@ -40,9 +40,13 @@ The "rail" is a sample `<= -10.0 V` (float32-exact; the corpus' dead channel
 reads exactly `-10.0000`), and the ADOPTED clip rule additionally treats any
 `abs(x) >= 9.90 V` sample as a rail touch (§3.4).
 
-**Task levels** use the `stage2_local_tir_roi_resp.yaml` / HPC config
-convention: `low = {T2,T3}`, `moderate = {T4,T7,T8,T10}`,
-`high = {T1,T5,T6,T9}`.
+**Task levels** use the shipped tiers (`data/task_groups.py::SHIPPED_TASK_GROUPS`,
+v2 2026-10-24): `low = {T2,T3,T5}`, `moderate = {T1,T4}`,
+`high = {T6,T7,T8,T9,T10}`. **The per-level tables in this note were produced
+under the v1 tiers** (`low = {T2,T3}`, `moderate = {T4,T7,T8,T10}`,
+`high = {T1,T5,T6,T9}`), so their level labels are that older split -- the
+per-SESSION rows are unaffected, because v2 is a re-aggregation of the same
+survey records (`run_survey_tir_resp.py --task_groups ...`).
 
 ---
 

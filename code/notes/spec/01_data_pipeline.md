@@ -93,7 +93,7 @@ The session name encodes subject (`'F001_T1'.rsplit('_', 1)[0]` -> `'F001'`), en
 
 **ROI crop pipeline**: `IRFeatures` landmarks -> `roi_box_from_landmarks` + `roi_padding`. Clips with all-(0,0) sentinel rows dropped. Optional `rail_touch_v` rejects a window that TOUCHED the recorder rail -- i.e. it contains any sample with `abs(x) >= rail_touch_v` volts (the recorder clamps at `+/-10 V`, so the shipped `9.90` drops every window holding a rail-valued target sample: a dead/pinned channel AND a genuinely clipped trough). Optional `min_signal_spread` (shipped `0.1`) then rejects a window whose spread (`max−min`) is below it -- the dead-signal guard for a channel PINNED just inside a clamp without touching it; it is checked second and is complementary to the rail test.
 
-**Task groups** (`data/task_groups.py`): e.g. `low=[T2,T3]`, `moderate=[T4,T7,T8,T10]`, `high=[T1,T5,T6,T9]`. Stage-2 and Stage-3 must use **identical** `task_groups` / `task_set`.
+**Task groups** (`data/task_groups.py`): the shipped tiers (v2, 2026-10-24) are `low=[T2,T3,T5]`, `moderate=[T1,T4]`, `high=[T6,T7,T8,T9,T10]` -- a PARTITION of `T1`..`T10`, canonical form `data.task_groups.SHIPPED_TASK_GROUPS`, pinned by `tests/test_task_group_configs.py`. Stage-2 and Stage-3 must use **identical** `task_groups` / `task_set`.
 
 **Builders**: `build_tir_roi_pretrain_dataset(args)`, `build_tir_roi_finetune_dataset(is_train, test_mode, args)`.
 

@@ -56,6 +56,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
 from data import roi_cache as rc                                  # noqa: E402
+from data import task_groups as tgrp                              # noqa: E402
 from data.tir_resp_dataset import discover_sessions               # noqa: E402
 # Reuse the statistic, the null and the reference loaders verbatim, so this run
 # differs from the recorded gate ONLY in the pixel source.
@@ -65,6 +66,10 @@ from native_resolution_gate import (load_belt, landmark_motion,  # noqa: E402
 #: the recorded gate's 8 sessions, so the rows line up with the recorded 0/8.
 DEFAULT_SESSIONS = ('F001_T1', 'F001_T3', 'F002_T1', 'F003_T2',
                     'F004_T2', 'F004_T3', 'F004_T9', 'F004_T8')
+
+#: ``--groups`` default = the shipped tiers in the comma form :func:`group_of`
+#: parses (it splits tasks on ',' only, NOT on '|').
+DEFAULT_GROUPS = tgrp.SHIPPED_TASK_GROUPS.replace('|', ',')
 
 
 def find_cache_dir(root: str) -> str:
@@ -190,9 +195,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                          'LABEL from the cache (all 10 tasks). Subject-spread, '
                          'so the sample is not clustered on a few subjects.')
     ap.add_argument('--groups',
-                    default='low=T2,T3;moderate=T4,T7,T8,T10;high=T1,T5,T6,T9',
+                    default=DEFAULT_GROUPS,
                     help='task -> group mapping used for the per-group tally '
-                         '(must mirror the Stage-2/3 `task_groups:` block).')
+                         '(must mirror the Stage-2/3 `task_groups:` block; '
+                         'default = data.task_groups.SHIPPED_TASK_GROUPS).')
     ap.add_argument('--sizes', default='112,box',
                     help="comma list: an int (resize to NxN, the model's input) "
                          "or 'box' (native cached box, NO resize). Default "

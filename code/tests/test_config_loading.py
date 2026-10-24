@@ -150,6 +150,15 @@ def test_stage2_and_stage3_agree_on_the_roi_contract(monkeypatch):
                                     'task_set'):
         assert getattr(s2, key) == getattr(s3, key), (
             f'{key}: stage2={getattr(s2, key)!r} != stage3={getattr(s3, key)!r}')
+    # ``task_groups`` reaches the namespace as a MAPPING (not a string), so it
+    # is compared PARSED -- and it must be compared at all: with a non-empty
+    # task_set a drifted tier definition silently evaluates Stage 3 on a
+    # different corpus than the encoder was pre-trained on. This is the
+    # "MUST mirror" comment finally enforced (see
+    # tests/test_task_group_configs.py for every shipped config).
+    from data.task_groups import parse_task_groups
+
+    assert parse_task_groups(s2.task_groups) == parse_task_groups(s3.task_groups)
     # seq_len == 0 means "derive the window length": both must derive the same.
     assert (s2.seq_len or int(round(s2.clip_duration * s2.fs))) == \
            (s3.seq_len or int(round(s3.clip_duration * s3.fs)))

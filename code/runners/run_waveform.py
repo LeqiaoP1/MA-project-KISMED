@@ -115,6 +115,25 @@ def _fft_window_advisory(kept, band_lo, output_len, fs=100.0):
 ROI_CONTRACT_KEYS = ('roi_landmarks', 'roi_padding', 'input_size')
 
 
+def _parse_recorded_groups(ns):
+    """``args.task_groups`` -> ``{group: (tasks,)}``; ``None`` when unset.
+
+    Accepts both accepted definitions forms (YAML mapping and the
+    ``'low=T2|T3;high=T7'`` string). A malformed definition is treated as
+    "nothing to compare" instead of raising: the dataset already fails fast on
+    it, and this routine only produces the advisory corpus note.
+    """
+    from data import task_groups as tgrp
+
+    raw = getattr(ns, 'task_groups', None)
+    if raw is None or not str(raw).strip():
+        return None
+    try:
+        return tgrp.parse_task_groups(raw)
+    except tgrp.TaskGroupError:
+        return None
+
+
 def check_stage2_roi_contract(args, stage2_args, allow_mismatch=False):
     """Verify that Stage 3 crops the ROI exactly as the Stage-2 run did.
 
@@ -193,6 +212,24 @@ def check_stage2_roi_contract(args, stage2_args, allow_mismatch=False):
             print(f'[stage3] note: {key} differs from the Stage-2 run '
                   f'({stage2!r} -> {stage3!r}) -> this run is not evaluated '
                   f'on exactly the pre-trained corpus (allowed).')
+
+    # ``task_groups`` belongs to the same hazard class, but ONLY when a group is
+    # actually SELECTED. With ``task_set`` and ``tasks`` both empty the mapping
+    # is pure metadata: it labels the eval breakdown and cannot change which
+    # sessions exist. So a changed tier definition MUST NOT warn there -- re-
+    # grouping the labels of an existing k-fold Stage-3 run is a legitimate,
+    # corpus-preserving operation (see data/task_groups.py).
+    stage2_groups = _parse_recorded_groups(stage2_args)
+    stage3_groups = _parse_recorded_groups(args)
+    selecting = any(str(getattr(ns, key, '') or '').strip()
+                    for ns in (stage2_args, args)
+                    for key in ('task_set', 'tasks'))
+    if selecting and stage2_groups is not None and stage3_groups is not None:
+        if stage2_groups != stage3_groups:
+            print('[stage3] note: task_groups differs from the Stage-2 run '
+                  f'({stage2_groups!r} -> {stage3_groups!r}) while a group IS '
+                  'selected -> this run is not evaluated on exactly the '
+                  'pre-trained corpus (allowed).')
 
     return {key: {'stage2': stage2, 'stage3': stage3, 'match': same}
             for key, stage2, stage3, same in rows}

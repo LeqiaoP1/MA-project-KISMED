@@ -55,7 +55,7 @@ SAMPLE_PER_TASK="${SAMPLE_PER_TASK:-0}"
 # NB: do NOT name this GROUPS -- that is a BASH-RESERVED array (the user's group
 # IDs), so `${GROUPS:-default}` never applies its default and the per-GROUP tally
 # silently collapses to '?'. It must be TASK_GROUPS.
-TASK_GROUPS="${TASK_GROUPS:-low=T2,T3;moderate=T4,T7,T8,T10;high=T1,T5,T6,T9}"
+TASK_GROUPS="${TASK_GROUPS:-low=T2,T3,T5;moderate=T1,T4;high=T6,T7,T8,T9,T10}"
 NPERM="${NPERM:-200}"
 # `112` is the model's input_size; `box` is the cached native box with NO resize,
 # so the pair separates "the resize destroyed it" from "the representation did".

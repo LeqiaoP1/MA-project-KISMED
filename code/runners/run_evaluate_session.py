@@ -48,6 +48,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from data import task_groups as _tgrp
 from evaluation import clinical as _clinical
 from evaluation import metrics as _metrics
 from evaluation.assemble import (affine_calibrate, assemble_session,
@@ -252,6 +253,12 @@ def get_args():
                         "prediction and the reference before scoring, e.g. "
                         "'0.1,0.6' (band-pass) or '0.7' (low-pass); empty = "
                         "raw. The band is recorded in the output JSON.")
+    p.add_argument('--task_groups', default='', type=str,
+                   help="override the task -> distortion-group mapping recorded "
+                        "in entries.json, e.g. "
+                        "'low=T2|T3|T5;moderate=T1|T4;high=T6|T7|T8|T9|T10' "
+                        "(see data/task_groups.py; NOT the metric --tier). "
+                        "Empty = use each entry's recorded task_level.")
     return p.parse_args()
 
 
@@ -278,6 +285,12 @@ def main(args):
               if str(args.smooth).strip() else None)
     if smooth is not None:
         preds = smooth_band(preds, args.fs, smooth)
+    # Optional RE-LABEL of an existing dump: the grouping is aggregation-only,
+    # so a changed tier definition needs no re-training, just this override.
+    # Empty -> keep ``entry['task_level']`` exactly as recorded.
+    group_levels = _tgrp.parse_task_groups(getattr(args, 'task_groups', ''))
+    group_override = (_tgrp.levels_by_task(group_levels) if group_levels
+                      else None)
     print(f'[session-eval] {preds.shape[0]} clips, {len(entries)} entries, '
           f'waveform={args.waveform}, fs={args.fs:g}, band={band}, '
           f'smooth={smooth}, tiers={tiers}')
@@ -396,7 +409,17 @@ def main(args):
         meta = entries[groups[name][0][0]] if groups.get(name) else {}
         meta = meta if isinstance(meta, dict) else {}
         task_of[name] = meta.get('task') or _task_of_name(name)
-        levels_of[name] = list(meta.get('task_level') or ())
+        if group_override is not None:
+            levels_of[name] = list(_tgrp.levels_for_task(
+                group_override, task_of[name]))
+        else:
+            levels_of[name] = list(meta.get('task_level') or ())
+    if group_override is not None:
+        missing = _tgrp.unmapped_tasks(task_of.values(), group_override)
+        if missing:
+            print(f'[session-eval] WARNING: task(s) {", ".join(missing)} are in '
+                  f'no --task_groups group; their sessions are EXCLUDED from '
+                  f'per_group (breakdown_by_label skips an empty label list).')
     per_task = _metrics.breakdown_by_label(quality, task_of, _BREAKDOWN_KEYS)
     per_group = _metrics.breakdown_by_label(quality, levels_of, _BREAKDOWN_KEYS)
     for label, table in (('per-task', per_task), ('per-group', per_group)):
@@ -413,6 +436,10 @@ def main(args):
            'smooth': (list(smooth) if smooth is not None else None),
            'tiers': sorted(tiers), 'n_clips': int(preds.shape[0]),
            'n_sessions': len(sessions), 'per_clip_macro': per_clip,
+           'task_group_source': ('cli' if group_override is not None
+                                 else 'entries'),
+           'task_groups': {k: list(v) for k, v in group_levels.items()},
+           'task_levels': {t: list(v) for t, v in (group_override or {}).items()},
            'per_task': per_task, 'per_group': per_group,
            'sessions': sessions}
     if tier3_all:

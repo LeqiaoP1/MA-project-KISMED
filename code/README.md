@@ -258,6 +258,20 @@ same `discover_sessions` filter as before. Every clip records its group(s) in
 `metrics_final.json`). Implemented 2026-09-30 for the TIR-ROI Stage-2/Stage-3
 path (`run_pretrain.py`, `run_waveform.py`, `run_inspect_tir_resp.py`).
 
+**Shipped tiers (v2, 2026-10-24).** `low = T2,T3,T5` (passive viewing + short
+yes/no answers), `moderate = T1,T4` (laughter / facial expression + transient
+startle), `high = T6,T7,T8,T9,T10` (singing, threat, pain, anger, disgust) -- a
+PARTITION of `T1`..`T10`. The canonical form is
+`data.task_groups.SHIPPED_TASK_GROUPS`; every `tir_roi*` config and the
+survey/gate defaults are pinned to it by `tests/test_task_group_configs.py`.
+The tiers are **labels** by default (`task_set: ''`), i.e. they only stratify
+the evaluation; to actually restrict the corpus set `TASK_SET=low` (or
+`--task_set low,moderate`) on **both** the Stage-2 and Stage-3 jobs, because the
+definition alone cannot change the corpus while no group is selected. Existing
+prediction dumps can be re-grouped offline with the eval runners'
+`--task_groups 'low=T2|T3|T5;moderate=T1|T4;high=T6|T7|T8|T9|T10'` flag (no
+re-training; the JSON records `task_group_source` / `task_levels`).
+
 **TIR-ROI corpus hygiene + ROI knobs (2026-10-01).** Three additions to the
 thermal-ROI path, all also exposed on `run_inspect_tir_resp.py`:
 

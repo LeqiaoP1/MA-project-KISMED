@@ -137,15 +137,15 @@ slides:
   # Task difficulty ordering
   - type: "table"
     layout: 5
-    title: "Low-Distortion Tasks Score Clearly Better"
+    title: "Low-Distortion Tasks Still Score Best"
     section: "III. Results"
     table_data:
       headers: ["Distortion group", "Tasks", "Median band-limited Pearson"]
       rows:
-        - ["Low", "T2, T3", "+0.738"]
-        - ["Moderate", "T4, T7, T8, T10", "+0.524"]
-        - ["High", "T1, T5, T6, T9", "+0.515"]
-        - ["Low - moderate / low - high", "+0.214 / +0.223", "Clear, consistent gap"]
+        - ["Low", "T2, T3, T5", "+0.663"]
+        - ["Moderate", "T1, T4", "+0.464"]
+        - ["High", "T6-T10", "+0.546"]
+        - ["Low - moderate / low - high", "+0.199 / +0.117", "Low still leads; the gap narrows"]
 
   # Why the low tasks win
   - type: "text_only"
@@ -153,7 +153,7 @@ slides:
     title: "Why Low-Distortion Tasks Score Better"
     section: "III. Results"
     bullets:
-      - "**What the grouping is:** A project-defined convention (config `task_groups`), not a BP4D+ annotation - shipped levels: low T2/T3, moderate T4/T7/T8/T10, high T1/T5/T6/T9."
+      - "**What the grouping is:** A project-defined convention (config `task_groups`), not a BP4D+ annotation - shipped v2 levels: low T2/T3/T5, moderate T1/T4, high T6-T10 (a partition; `data.task_groups.SHIPPED_TASK_GROUPS`)."
       - "**Not a data-cleanliness effect:** Rail/clipping prevalence is level-independent (mean file rail share 3.31 % / 3.02 % / 3.65 %), and clip supply only tracks recording length (T3 and T9 dominate)."
       - "**Not an input-signal effect:** The thermal-ROI detection gate is near-uniform across tasks and non-monotonic across groups - the low tasks do not carry more respiration in the pixels either."
       - "**Mechanism (hypothesis):** The ROI is one static box unioned over the whole clip, so more head motion inflates it and the spatial mean pools pose/background instead of nostril temperature."
@@ -260,6 +260,6 @@ slides:
         - ["Cross-validation", "Not performed", "LOSO sweep is the next step"]
         - ["Signal normalisation", "physio_norm: session", "Whole-session z-score"]
         - ["Clip hygiene", "rail_touch 9.90 V; spread 0.1 V", "Drops railed / pinned windows"]
-        - ["Task groups", "low / moderate / high", "T2-T3 / T4,T7,T8,T10 / T1,T5,T6,T9"]
+        - ["Task groups", "low / moderate / high", "T2,T3,T5 / T1,T4 / T6-T10"]
         - ["L_time term", "StdLoss (reported run)", "SmoothL1 A/B arm in progress"]
         - ["ROI cache", "1,385 shards / 91 GB", "Decode-bound -> compute-bound; serves Stage 2 and 3"]

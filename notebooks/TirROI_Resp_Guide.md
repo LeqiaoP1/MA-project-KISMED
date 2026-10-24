@@ -44,9 +44,11 @@ This document serves as an exhaustive engineering and architecture specification
 * **Spatial Crop Target Size**: $112 \times 112\text{ pixels}$.
 
 ### 2.4 Task Distortion Grouping & Filtering Contracts
-* **Group A — Low Distortion (Passive Baseline)**: Task 2 (Graphic Show), Task 3 (Sadness Video Clip).
-* **Group B — Moderate / Controlled Distortion (Stress/Pain/Threat)**: Task 4 (Startle Probe), Task 7 (Physical Threat), Task 8 (Cold Pressor Pain), Task 10 (Unpleasant Smell).
-* **Group C — Excluded High Distortion (Speech/Vocalization)**: Task 1 (Interview/Jokes), Task 5 (Interview/Questions), Task 6 (Improvised Song), Task 9 (Interview/Feedback).
+* **Group A — Low Distortion (minimal motion, single-word responses)**: Task 2 (3D Avatar), Task 3 (911 Emergency Video), Task 5 (True/False Interview).
+* **Group B — Moderate Distortion (facial expression, transient startle)**: Task 1 (Listen to Joke), Task 4 (Burst of Sound).
+* **Group C — High Distortion (active singing, severe motion, pain, grimacing)**: Task 6 (Silly Song), Task 7 (Physical Threat), Task 8 (Cold Pressor), Task 9 (Performance Complaint), Task 10 (Smelly Odor).
+
+*Canonical form: `code/data/task_groups.py::SHIPPED_TASK_GROUPS` (a partition of `T1`..`T10`); rationale in `code/notes/design/TIR_ROI_RESP_TasksDistortion.md`.*
 
 ---
 
@@ -166,7 +168,7 @@ This document serves as an exhaustive engineering and architecture specification
 * **Respiration Rate Error**: Calculate MAE between predicted BPM and ground-truth BPM.
 
 ### 8.3 Task-Wise Performance Stratification Analysis
-* **Task Disaggregation**: Evaluate model metrics separately across Low Distortion (Tasks 2, 3) and Moderate Distortion (Tasks 4, 7, 8, 10) groups.
+* **Task Disaggregation**: Evaluate model metrics separately across Low Distortion (Tasks 2, 3, 5), Moderate Distortion (Tasks 1, 4) and High Distortion (Tasks 6-10) groups.
 * **Performance Reporting**: Generate comparative tables detailing metric shifts across task categories.
 
 ---

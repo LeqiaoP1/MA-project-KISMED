@@ -42,10 +42,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 
+from data import task_groups as tgrp
 from data import tir_resp_dataset as trd
 
-#: the low/moderate/high split used by configs/pretrain/stage2_local_tir_roi_resp.yaml
-DEFAULT_TASK_GROUPS = 'low=T2|T3;moderate=T4|T7|T8|T10;high=T1|T5|T6|T9'
+#: the low/moderate/high split shipped by the ``tir_roi*`` configs (v2,
+#: 2026-10-24). Canonical definition (and rationale link) live in
+#: ``data.task_groups.SHIPPED_TASK_GROUPS``; override with --task_groups.
+DEFAULT_TASK_GROUPS = tgrp.SHIPPED_TASK_GROUPS
 
 #: the corpus' rail floor -- kept equal to the dataset's ``RESP_RAIL_V`` so the
 #: survey and the clip filter never disagree (float32-exact, see the dataset).
