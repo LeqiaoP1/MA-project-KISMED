@@ -70,6 +70,16 @@ Per-subject spread -0.154 (M054) .. +0.786 (M007).
 The plain-Pearson column reproduces each fold's own `session_metrics.json`
 median exactly, i.e. this runner agrees with `run_evaluate_session.py`.
 
+> **CAVEAT on the per-fold column (measured 2026-10-25).**
+> `utils/splits.py::subject_folds` is `np.array_split(sorted(subjects), n_folds)`
+> -- **contiguous blocks of the sorted subject ID list**. Sorted IDs are all `F*`
+> then all `M*`, so the fold test sets are **F001-F028 / F029-F056 /
+> F057-M002 / M003-M030 / M031-M058**: two folds 100 % female, two 100 % male.
+> Gender (and any acquisition-order/batch effect) is therefore perfectly
+> confounded with fold, and the per-fold spread above is a **cohort** spread, not
+> a model-variance estimate. The pooled numbers (1260 sessions, subject-disjoint)
+> are unaffected. Detail + the fix: `resp_t3_spread_sources.md` section 2.
+
 ### Per task / per group (medians)
 
 | task | pearson_band | amp_rel_err | rate MAE | n |
