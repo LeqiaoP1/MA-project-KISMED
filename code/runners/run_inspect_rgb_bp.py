@@ -61,6 +61,9 @@ config pins) reproduces a training run exactly.
 Artifacts::
 
     <output_dir>/<subject>_<task>/clip_0000.png     # 4-panel figure (or .json only)
+    <output_dir>/<subject>_<task>/clip_0000.gif     # the WHOLE clip as an
+                                                    # animation (--video; .mp4
+                                                    # instead with --video mp4)
     <output_dir>/<subject>_<task>/clip_0000.json    # clip + dataset report
     <output_dir>/dataset_summary.json               # whole-dataset summary
     <output_dir>/rgb_bp_index.json                  # one row per clip inspected
@@ -72,15 +75,27 @@ Usage (from ``code/``)::
     python runners/run_inspect_rgb_bp.py --subject F001 --task T1 --clip_index 0,7
     python runners/run_inspect_rgb_bp.py --landmarks nose_mouth --input_size 64 --no-plot
     python runners/run_inspect_rgb_bp.py --subject F001 --task T1 --clip_index 0 --skin_mask
+    python runners/run_inspect_rgb_bp.py --subject F050 --task T8 --decode_scale 4 --video none
 
 Paths default to ``$RAW_DATA_PATH`` (raw BP4D root) and
 ``$OUTPUT_DIR/inspect_data/rgb_bp`` (see ``scripts/env_local.sh``); without the
 env profile they fall back to the in-repo ``data/raw/BP4D`` and ``<repo>/output``.
 
-NOTE: the RGB frames are ~1392x1040 JPEGs read from the RAW tree, so a native
-(``--decode_scale 1``) clip costs a full clip decode per load -- the dataset's
-check decodes it once more. ``--decode_scale 4`` (with the landmarks rescaled by
-the same factor) is the fast path for a quick look; the report records both the
+Archived sequences
+------------------
+The frames may be an EXTRACTED ``2D+3D/<S>/<T>/`` directory or a per-subject
+``2D+3D/<S>.zip`` (how BP4D+ actually ships: 140 archives, nothing extracted).
+Discovery handles both (``data.rgb_roi_dataset.discover_rgb_sessions``); the zip
+case is exposed as a ``zip+file://<zip>!/<member prefix>`` source, so the
+inspector and the provider read it through the same code path. ``--list`` shows
+which kind each session uses (``src`` column), and the JSON report records the
+source that was decoded.
+
+NOTE: the RGB frames are ~1392x1040 JPEGs read from the RAW tree (or from the
+archive member), so a native (``--decode_scale 1``) clip costs a full clip
+decode per load -- the dataset's check decodes it once more, and ``--video``
+renders it once more. ``--decode_scale 4`` (with the landmarks rescaled by the
+same factor) is the fast path for a quick look; the report records both the
 source and the decoded frame size, so the two are never confused.
 """
 import argparse
@@ -88,6 +103,7 @@ import json
 import math
 import os
 import sys
+from collections import OrderedDict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -461,6 +477,156 @@ def _plot_clip(ds, index, path, box, lm, frame0, tensor, raw, over, sig, unit,
     plt.close(fig)
 
 
+def _write_video(ds, index: int, stem: str, box, lm, tensor, raw,
+                 fps: float = 25.0, dpi: int = 70, fmt: str = 'gif'):
+    """Write the WHOLE clip as an animation, not one frame.
+
+    Layout mirrors the static figure: the source frame with the clip-static box
+    and the CURRENT frame's target landmarks, the ``[3, T, S, S]`` ROI patch as
+    the dataset returns it, and the raw 1-D window with a playhead that follows
+    the frame's time. Frames are rendered with the Agg canvas (no ffmpeg needed);
+    ``mp4`` uses OpenCV's ``mp4v``, ``gif`` uses Pillow with ONE shared palette
+    so the skin tones do not flicker between frames.
+
+    Source frames are decoded ON DEMAND and only for the frames that are kept --
+    the clip is never held in memory as ``[T, H, W, 3]``. ``fps`` is the OUTPUT
+    rate: source frames are decimated to the nearest integral ratio (``25`` =
+    every frame, ``12.5`` = every 2nd). Returns the written paths.
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
+
+    entry = ds.entries[index]
+    session = entry['session']
+    files = ds._files_of(session)
+    src_h, src_w = ds._source_size(session)
+    step = max(1, int(round(ds.fps / float(fps))))
+    out_fps = ds.fps / step
+    raw = np.asarray(raw, dtype=np.float32)
+
+    # target landmarks in SOURCE pixels, grouped for a readable legend
+    pts = np.asarray(lm, dtype=np.float64)[:, ds.target_idx, :]
+    groups = [(name, [ds.landmarks.index(l) for l in labels])
+              for name, labels in _group_members(ds.landmarks)]
+    x0, x1, y0, y1 = box
+    s = float(ds.input_size)
+    px = (pts[..., 0] - x0) * (s / float(max(x1 - x0, 1)))
+    py = (pts[..., 1] - y0) * (s / float(max(y1 - y0, 1)))
+
+    fig = plt.figure(figsize=(9.4, 6.2), dpi=int(dpi))
+    ax = fig.subplot_mosaic([['roi', 'patch'], ['sig', 'sig']],
+                            height_ratios=[1.8, 1.0], width_ratios=[2.0, 1.0])
+    fig.subplots_adjust(left=0.03, right=0.98, top=0.92, bottom=0.09,
+                        hspace=0.16, wspace=0.05)
+
+    # panel 1: the source frame -- seeded with frame 0 so imshow has an extent
+    frame0 = ds._read_rgb(os.path.join(entry['rgb_dir'], files[entry['frame_start']]))
+    dec_h, dec_w = frame0.shape[:2]
+    sx, sy = dec_w / src_w, dec_h / src_h
+    p_dec = pts.copy()
+    p_dec[..., 0] *= sx
+    p_dec[..., 1] *= sy
+    im_src = ax['roi'].imshow(frame0, interpolation='nearest')
+    ax['roi'].add_patch(Rectangle((x0 * sx, y0 * sy), (x1 - x0) * sx,
+                                  (y1 - y0) * sy, fill=False, ec='#ff2020',
+                                  lw=2.0))
+    ax['roi'].scatter(p_dec[..., 0].ravel(), p_dec[..., 1].ravel(), s=2.5,
+                      c='#00e5ff', alpha=0.35, lw=0)
+    src_dots = [ax['roi'].scatter([], [], s=30, c=_GROUP_COLOURS[k % len(_GROUP_COLOURS)],
+                                  edgecolors='k', lw=0.5, label=name)
+                for k, (name, _l) in enumerate(groups)]
+    ax['roi'].legend(loc='upper right', fontsize=7, ncol=2, framealpha=0.7)
+
+    # panel 2: the ROI patch exactly as the dataset returns it (this frame)
+    im_patch = ax['patch'].imshow(
+        np.clip(tensor[:, 0].permute(1, 2, 0).numpy(), 0.0, 1.0),
+        interpolation='nearest', aspect='equal')
+    ax['patch'].scatter(px.ravel(), py.ravel(), s=2.0, c='#00e5ff',
+                        alpha=0.3, lw=0)
+    patch_dots = [ax['patch'].scatter([], [], s=26,
+                                      c=_GROUP_COLOURS[k % len(_GROUP_COLOURS)],
+                                      edgecolors='k', lw=0.4)
+                  for k, _g in enumerate(groups)]
+
+    # panel 3: the raw 1-D window + a playhead
+    sig = ds.signal_names[0]
+    unit = SIGNAL_UNITS.get(sig, '')
+    tt = entry['t_start'] + np.arange(ds.phys_len) / ds.phys_fs
+    ax['sig'].plot(tt, raw, color='#1f4e9c', lw=0.9,
+                   label=f'{sig} [{unit}]')
+    play = ax['sig'].axvline(float(tt[0]), color='#d62728', lw=1.2)
+    dot, = ax['sig'].plot([], [], 'o', color='#d62728', ms=5)
+    ax['sig'].set_xlim(float(tt[0]), float(tt[-1]))
+    ax['sig'].set_xlabel('time [s]')
+    ax['sig'].set_ylabel(f'{sig} [{unit}]')
+    ax['sig'].legend(loc='lower right', fontsize=7, framealpha=0.7)
+    for key in ('roi', 'patch'):
+        ax[key].set_xticks([])
+        ax[key].set_yticks([])
+
+    writer = None
+    gif_frames, gif_base = [], None
+    from PIL import Image
+    n = int(tensor.shape[1])
+    for i in range(0, n, step):
+        frame_i = (frame0 if i == 0 else
+                   ds._read_rgb(os.path.join(entry['rgb_dir'],
+                                             files[entry['frame_start'] + i])))
+        im_src.set_data(frame_i)
+        im_patch.set_data(np.clip(tensor[:, i].permute(1, 2, 0).numpy(), 0.0, 1.0))
+        for (name, cols), sd, pd in zip(groups, src_dots, patch_dots):
+            sd.set_offsets(np.column_stack([p_dec[i, cols, 0], p_dec[i, cols, 1]]))
+            pd.set_offsets(np.column_stack([px[i, cols], py[i, cols]]))
+        t_i = entry['t_start'] + i / ds.fps
+        k = int(min(max(round((t_i - entry['t_start']) * ds.phys_fs), 0),
+                    ds.phys_len - 1))
+        play.set_xdata([t_i, t_i])
+        dot.set_data([t_i], [raw[k]])
+        ax['roi'].set_title(
+            f'{session} clip {index}   t = {t_i:5.2f} s   frame {i}/{n - 1}',
+            fontsize=11)
+        fig.canvas.draw()
+        a = np.asarray(fig.canvas.buffer_rgba())[..., :3]
+
+        if fmt in ('mp4', 'both'):
+            import cv2
+            if writer is None:
+                h, w = a.shape[:2]
+                writer = cv2.VideoWriter(stem + '.mp4',
+                                         cv2.VideoWriter_fourcc(*'mp4v'),
+                                         out_fps, (w, h))
+                if not writer.isOpened():
+                    raise RuntimeError('cv2.VideoWriter(mp4v) refused to open')
+            writer.write(np.ascontiguousarray(a[..., ::-1]))
+        if fmt in ('gif', 'both'):
+            im = Image.fromarray(np.ascontiguousarray(a))
+            if gif_base is None:
+                gif_base = im.quantize(colors=255,
+                                       method=Image.Quantize.MEDIANCUT)
+                gif_frames.append(gif_base)
+            else:
+                gif_frames.append(im.quantize(palette=gif_base,
+                                              dither=Image.Dither.NONE))
+    if writer is not None:
+        writer.release()
+    plt.close(fig)
+
+    paths = []
+    if fmt in ('mp4', 'both'):
+        paths.append(stem + '.mp4')
+    if fmt in ('gif', 'both'):
+        if not gif_frames:
+            raise RuntimeError('no frames rendered for the GIF')
+        gif_frames[0].save(stem + '.gif', save_all=True,
+                           append_images=gif_frames[1:], loop=0,
+                           duration=int(round(1000.0 / out_fps)),
+                           optimize=True, disposal=1)
+        paths.append(stem + '.gif')
+    return paths
+
+
 # --------------------------------------------------------------------------- #
 # report
 # --------------------------------------------------------------------------- #
@@ -502,6 +668,9 @@ def _clip_report(ds, index, box, fails, skin=None) -> dict:
         't_start_s': float(entry['t_start']),
         't_end_s': float(entry['t_end']),
         'rgb_dir': entry['rgb_dir'],
+        'source_kind': entry.get('source_kind',
+                                 'zip' if rrd.is_zip_source(entry['rgb_dir'])
+                                 else 'dir'),
         'feat_file': entry['feat_file'],
         'signal_file': entry['signals'][sig],
         'roi': {
@@ -562,6 +731,13 @@ def _clip_report(ds, index, box, fails, skin=None) -> dict:
 
 
 def _append_index(output_dir: str, rows) -> str:
+    """Append rows, keeping ONE row per ``(session, clip_index)``.
+
+    The file is a cross-run log, so re-inspecting the same clip (the common case
+    while iterating on a figure) UPDATES its row instead of adding a duplicate
+    -- ``clip_<n>.json`` / ``.png`` are overwritten anyway, so a duplicate row
+    would point at artefacts it no longer describes.
+    """
     path = os.path.join(output_dir, 'rgb_bp_index.json')
     existing = []
     if os.path.isfile(path):
@@ -572,10 +748,14 @@ def _append_index(output_dir: str, rows) -> str:
             existing = []
     if not isinstance(existing, list):
         existing = []
-    existing.extend(rows)
+    merged = OrderedDict()
+    for row in existing:
+        merged[(row.get('session'), row.get('clip_index'))] = row
+    for row in rows:
+        merged[(row.get('session'), row.get('clip_index'))] = row
     os.makedirs(output_dir, exist_ok=True)
     with open(path, 'w') as fh:
-        json.dump(existing, fh, indent=2)
+        json.dump(list(merged.values()), fh, indent=2)
     return path
 
 
@@ -590,17 +770,22 @@ def list_sessions(raw_root: str) -> int:
         print(f'[error] {exc}')
         return 1
     print(f'raw root: {raw_root}')
-    print(f'{"session":<10} {"jpg":>5} {"mat":>5} {"status":<9} {"signals":<9} note')
+    print(f'{"session":<10} {"src":<4} {"jpg":>5} {"mat":>5} {"status":<9} '
+          f'{"signals":<9} note')
     n_bad = 0
     for spec in specs:
         ok = spec['status'] == 'usable'
         n_bad += 0 if ok else 1
         sig = ','.join(sorted(spec['signals'])) or '-'
         note = '' if ok else spec['reason']
-        print(f'{spec["session"]:<10} {spec["n_jpg"]:>5} {spec["n_mat"]:>5} '
+        print(f'{spec["session"]:<10} {spec.get("source_kind", "dir"):<4} '
+              f'{spec["n_jpg"]:>5} {spec["n_mat"]:>5} '
               f'{"ok" if ok else "UNUSABLE":<9} {sig:<9} {note}')
-    print(f'{len(specs)} RGB sequence(s) on disk, {len(specs) - n_bad} usable, '
-          f'{n_bad} unusable (excluded whole -- their 1-D signals are never read)')
+    n_zip = sum(1 for s in specs if s.get('source_kind') == 'zip')
+    print(f'{len(specs)} RGB sequence(s) on disk '
+          f'({n_zip} inside a 2D+3D archive, {len(specs) - n_zip} extracted), '
+          f'{len(specs) - n_bad} usable, {n_bad} unusable (excluded whole -- '
+          f'their 1-D signals are never read)')
     return 0
 
 
@@ -611,7 +796,9 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(
         description='Inspect RGBRoiDataset clips (RGB face ROI + 1-D physiology).')
     p.add_argument('--raw_root', default=rrd.default_raw_root(),
-                   help='raw BP4D root (default $RAW_DATA_PATH)')
+                   help='raw BP4D root (default $RAW_DATA_PATH); the frames may '
+                        'be extracted (2D+3D/<S>/<T>/) or archived '
+                        '(2D+3D/<S>.zip) -- both are discovered')
     p.add_argument('--subject', default='F001', help='comma list, or all')
     p.add_argument('--task', default='T1', help='comma list, or all')
     p.add_argument('--signal', default=DEFAULT_SIGNAL,
@@ -650,6 +837,17 @@ def main(argv=None) -> int:
     p.add_argument('--clip_index', default='0',
                    help='comma list of clip indices in the selection')
     p.add_argument('--max_entries', type=int, default=0, help='0 = no cap')
+    p.add_argument('--video', default='gif',
+                   choices=['none', 'gif', 'mp4', 'both'],
+                   help="also write the WHOLE clip as an animation next to the "
+                        "figure: 'gif' (default, Pillow, plays in VS Code), "
+                        "'mp4' (OpenCV mp4v), 'both', or 'none'. Adds one "
+                        'decode+render pass over the clip')
+    p.add_argument('--video_fps', type=float, default=25.0,
+                   help='OUTPUT frame rate of the animation (source frames are '
+                        'decimated; default 25 = every frame)')
+    p.add_argument('--video_dpi', type=int, default=70,
+                   help='render DPI of the animation frames (default 70)')
     p.add_argument('--output_dir', default=default_output_dir())
     p.add_argument('--no-plot', dest='plot', action='store_false',
                    help='write the JSON reports only')
@@ -735,6 +933,15 @@ def main(argv=None) -> int:
             except Exception as exc:                     # never lose the JSON
                 rep['figure_error'] = str(exc)
                 print(f'[warn] figure failed: {exc}')
+            if args.video != 'none':
+                try:
+                    rep['videos'] = _write_video(
+                        ds, index, stem, box, lm, item['rgb_video'], raw,
+                        fps=args.video_fps, dpi=args.video_dpi,
+                        fmt=args.video)
+                except Exception as exc:                 # never lose the JSON
+                    rep['video_error'] = str(exc)
+                    print(f'[warn] video failed: {exc}')
         with open(stem + '.json', 'w') as fh:
             json.dump(rep, fh, indent=2)
 
@@ -758,7 +965,8 @@ def main(argv=None) -> int:
                   f'{[round(v, 1) for v in st["retained_mean_rgb"]]} vs dropped '
                   f'{[round(v, 1) for v in st["dropped_mean_rgb"]]}')
         rows.append({'session': session, 'clip_index': index,
-                     'figure': rep.get('figure'), 'json': stem + '.json',
+                     'figure': rep.get('figure'), 'videos': rep.get('videos'),
+                     'json': stem + '.json',
                      'roi_box_px': roi['box_px'],
                      'rgb_shape': rep['rgb_video']['shape'],
                      f'{args.signal}_shape': rep['signal']['item_shape'],

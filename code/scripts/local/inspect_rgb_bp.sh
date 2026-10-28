@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
-# Inspect RGBRoiDataset clips: the visible-light face ROI + the 1000 Hz 1-D
-# window the dataset hands to a model, straight out of the RAW tree (no
-# canonical decode, no prepared session copy).
+# Inspect the "2-D RGB texture -> BP waveform" study's clips: the visible-light
+# face ROI + the 1000 Hz BP window the dataset hands to a model, straight out of
+# the RAW tree (no canonical decode, no prepared session copy).
+#
+# Frames may be EXTRACTED (2D+3D/<S>/<T>/*.jpg) or ARCHIVED (2D+3D/<S>.zip, how
+# BP4D+ ships: 140 archives, nothing unpacked). Both are discovered; an extracted
+# directory wins over an archive of the same subject, and `--list` shows which
+# kind each session uses (the `src` column).
 #
 # Per clip it draws (runners/run_inspect_rgb_bp.py)
 #   * the clip's first RGB frame with the ONE crop box shared by all clip_frames
@@ -17,30 +22,33 @@
 #     the patch, with the per-frame retained fraction and the retained vs dropped
 #     mean RGB in the JSON. The mask is REPORTED here, not applied to the tensor
 #     (wiring it into the provider is a separate step).
-# and writes clip_<n>.png + clip_<n>.json + dataset_summary.json +
-# rgb_bp_index.json into $OUTPUT_DIR/inspect_data/rgb_bp/.
+# and writes clip_<n>.png + clip_<n>.gif (the whole clip as an animation, with
+# the frame, the patch and a BP playhead) + clip_<n>.json + dataset_summary.json
+# + rgb_bp_index.json into $OUTPUT_DIR/inspect_data/rgb_bp/.
 #
 # The SAME clip is run through the dataset's own checks (keys, dtypes, [0,1]
 # range, the jpg==mat unusable gate, ROI box containment / clip-static box /
 # "the tensor is the resize of that crop", the raw-file signal slice, and
 # T/fps == L/phys_fs); a failing clip makes the script exit non-zero.
 #
-#   SUBJECT=F001 TASK=T1  bash scripts/local/inspect_rgb_bp.sh
+#   SUBJECT=F050 TASK=T8  bash scripts/local/inspect_rgb_bp.sh
 #   bash scripts/local/inspect_rgb_bp.sh --list                 # what is on disk?
-#   CLIPS=0,7             bash scripts/local/inspect_rgb_bp.sh
+#   CLIPS=0,6             bash scripts/local/inspect_rgb_bp.sh
 #   LANDMARKS=nose_mouth  bash scripts/local/inspect_rgb_bp.sh
 #   SIZE=64 DECODE_SCALE=4 PADDING=0.2 bash scripts/local/inspect_rgb_bp.sh
 #   SKIN=0                bash scripts/local/inspect_rgb_bp.sh   # no skin mask
+#   VIDEO=none            bash scripts/local/inspect_rgb_bp.sh   # figure only
 #   bash scripts/local/inspect_rgb_bp.sh --task all --no-plot
 #
 # SIZE=224 (default) is the provider's default; the local Stage-2/3 runs use 64.
 # PADDING defaults to 0.1 (+20% overall) -- deliberately tighter than the RGB
 # provider's 0.2 (+40%), which is what the configs pin; pass PADDING=0.2 to
 # reproduce a training run. CLIPS is the clip index (or comma list) INSIDE the
-# selection: F001_T1 (1612 frames, 8 s, non-overlapping) has 8 clips, so
-# CLIPS=0,7 is its first and its last window. A native (DECODE_SCALE=1) clip
+# selection: F050_T8 (1535 frames, 8 s, non-overlapping) has 7 clips, so
+# CLIPS=0,6 is its first and its last window. A native (DECODE_SCALE=1) clip
 # costs a full 1392x1040 JPEG decode per frame, so DECODE_SCALE=4 is the fast
-# look (the box is rescaled accordingly and both sizes land in the JSON).
+# look (the box is rescaled accordingly and both sizes land in the JSON); an
+# ARCHIVED session costs the same decode plus the zip seek.
 #
 # Anything after the script name is passed to the runner verbatim.
 set -e
@@ -70,6 +78,9 @@ PADDING="${PADDING:-0.1}"
 # SKIN=1 adds the two-stage skin mask (report + figure tint); SKIN=0 is the
 # plain ROI view. It costs one extra clip decode.
 SKIN="${SKIN:-1}"
+# VIDEO=gif writes the whole clip as an animation next to the figure
+# (none|gif|mp4|both); it costs one more decode+render pass over the clip.
+VIDEO="${VIDEO:-gif}"
 MAX_ENTRIES="${MAX_ENTRIES:-0}"
 PLOT="${PLOT:-1}"
 
@@ -81,7 +92,7 @@ else
           --input_size "$SIZE" --clip_seconds "$CLIP_SECONDS"
           --clip_index "$CLIPS" --landmarks "$LANDMARKS"
           --decode_scale "$DECODE_SCALE" --norm "$NORM"
-          --roi_padding "$PADDING")
+          --roi_padding "$PADDING" --video "$VIDEO")
     [ "$CLIP_STRIDE" != "0" ] && ARGS+=(--clip_stride "$CLIP_STRIDE")
     [ "$MAX_ENTRIES" != "0" ] && ARGS+=(--max_entries "$MAX_ENTRIES")
     case "$SKIN" in

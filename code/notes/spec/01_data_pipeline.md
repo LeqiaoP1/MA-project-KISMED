@@ -81,6 +81,8 @@ The session name encodes subject (`'F001_T1'.rsplit('_', 1)[0]` -> `'F001'`), en
 
 **ROI crop pipeline**: 2DFeature landmarks -> bounding box + `roi_padding` -> crop + resize to `input_size x input_size`. Sessions where 2DFeatures frame count differs from JPEG count are rejected (`unusable`).
 
+**Frame source — extracted OR archived** (added 2026-10-28): the JPEGs may be an extracted `2D+3D/<S>/<T>/` directory **or** a per-subject archive `2D+3D/<S>.zip` (BP4D+ ships 140 archives and unpacks nothing). `discover_rgb_sessions` handles both and tags the spec with `source_kind` (`'dir'` | `'zip'`); a subject present both ways uses the directory. An archived task is addressed by a source URI `zip+file://<abs zip>!/<member prefix>` (`zip_source` / `split_zip_source` / `is_zip_source`), which is what `spec['rgb_dir']` / `entry['rgb_dir']` hold, so `os.path.join(entry['rgb_dir'], name)` still names a frame and `_read_rgb` / `_source_size` decode it with `cv2.imdecode` (same pixels as `cv2.imread` on the extracted file). Consequence for runs: `$RAW_DATA_PATH` may point at a zip-only mount, `stats['sessions_from_zip']` records how many sessions were read that way, and the per-process `ZipFile` handle cache is keyed on `os.getpid()` so a forked DataLoader worker reopens instead of sharing a seek offset.
+
 **Builders**: `build_rgb_roi_pretrain_dataset(args)`, `build_rgb_roi_finetune_dataset(is_train, test_mode, args)`.
 
 ### 3.3 TIR-ROI + Respiration — `data/tir_resp_dataset.py`

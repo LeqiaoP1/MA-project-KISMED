@@ -17,8 +17,23 @@ This module provides the **RGB ROI** variant: the crop is derived from the
 Trees read (RAW only, never modified)::
 
     <raw_root>/2D+3D/<S>/<T>/%04d.jpg        visible-light frames (25 fps)
+    <raw_root>/2D+3D/<S>.zip                 ... OR the whole subject as ONE
+                                             archive (this is how BP4D+ ships:
+                                             140 zips, no extracted tree)
     <raw_root>/2DFeatures/<S>_<T>.mat        49 (x, y) landmarks + head pose
     <raw_root>/Physiology/<S>/<T>/<signal>   1-D physiology (1000 Hz nominal)
+
+Archived sequences (``2D+3D/<S>.zip``)
+--------------------------------------
+The frames may live inside a per-subject ZIP instead of a directory. The task
+sub-tree inside the archive is addressed by a **source URI**
+(``zip+file://<abs zip path>!/<member prefix>``, :func:`zip_source`), which is
+returned in ``spec['rgb_dir']`` / ``entry['rgb_dir']`` and therefore behaves
+exactly like a directory for every consumer: ``os.path.join(uri, '0000.jpg')``
+still names the frame, and :meth:`RGBRoiDataset._read_rgb` decodes it with
+``cv2.imdecode``. An EXTRACTED ``2D+3D/<S>/<T>/`` directory always WINS over an
+archive of the same subject, so a tree that is being unpacked keeps its old
+behaviour (and its old speed).
 
 The "unusable" rule (explicit requirement)
 ------------------------------------------
@@ -51,6 +66,8 @@ from __future__ import annotations
 
 import math
 import os
+import threading
+import zipfile
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -72,10 +89,11 @@ except ImportError:                           # direct script execution
 
 __all__ = [
     'RGB_TREE', 'FEAT_TREE', 'PHYS_TREE', 'SIGNAL_FILES', 'FACE_LANDMARKS',
-    'resolve_face_landmarks', 'find_rgb_dir', 'find_signal_file',
+    'ZIP_SCHEME', 'resolve_face_landmarks', 'find_rgb_dir', 'find_signal_file',
     'discover_rgb_sessions', 'RGBRoiDataset', 'RGBRoiPretrainDataset',
     'RGBRoiFinetuneDataset', 'build_rgb_roi_pretrain_dataset',
     'build_rgb_roi_finetune_dataset', 'default_raw_root',
+    'zip_source', 'split_zip_source', 'is_zip_source', 'zip_task_index',
 ]
 
 # --------------------------------------------------------------------------- #
@@ -134,6 +152,147 @@ def _as_list(value) -> Optional[List[str]]:
 
 
 # --------------------------------------------------------------------------- #
+# archived sequences (2D+3D/<S>.zip)
+# --------------------------------------------------------------------------- #
+#: URI scheme that lets an ARCHIVED sequence be addressed exactly like a
+#: directory. ``zip+file://`` is deliberately NOT a real URL scheme (no handler
+#: will ever try to open it) -- it only has to be a string ``os.path.join`` can
+#: extend, which is what every frame-access site in this module does.
+ZIP_SCHEME = 'zip+file://'
+_ZIP_SEP = '!/'
+
+#: ``abs zip path -> (pid, ZipFile, member names)``. See :func:`_zip_handle` for
+#: why the pid is part of the key, and why the cache is CAPPED.
+_ZIP_CACHE: Dict[str, Tuple[int, zipfile.ZipFile, List[str]]] = {}
+
+#: how many archives stay open at once. A run's ``entries`` are contiguous per
+#: session, so cycling past this many means a walk over many SUBJECTS -- reopen
+#: (~1 s on a 30+ GB archive) is then the right trade against holding 140
+#: handles and ~10^4 member names each in memory.
+_ZIP_CACHE_MAX = 4
+
+#: ``abs zip path -> (pid, {task: {'prefix':..., 'n_img':...}})``; the task scan
+#: is O(members) once per process, never once per clip.
+_ZIP_TASKS: Dict[str, Tuple[int, Dict[str, dict]]] = {}
+
+#: one handle is seeked by ``ZipFile.read``, so concurrent reads from the same
+#: process would clash (workers are separate PROCESSES, see above)
+_ZIP_LOCK = threading.Lock()
+
+
+def zip_source(zip_path: str, prefix: str = '') -> str:
+    """``zip+file://<abs zip>!/<prefix>`` -- an archive directory as a base path."""
+    return (f'{ZIP_SCHEME}{os.path.abspath(zip_path)}{_ZIP_SEP}'
+            f'{str(prefix).strip("/")}')
+
+
+def is_zip_source(source: str) -> bool:
+    """True when ``source`` is a :func:`zip_source` URI."""
+    return isinstance(source, str) and source.startswith(ZIP_SCHEME)
+
+
+def split_zip_source(source: str) -> Optional[Tuple[str, str]]:
+    """``zip+file://…!/prefix/name`` -> ``(zip_path, 'prefix/name')``.
+
+    ``None`` for a plain filesystem path -- so callers can branch on the result
+    instead of testing :func:`is_zip_source` first.
+    """
+    if not is_zip_source(source):
+        return None
+    rest = source[len(ZIP_SCHEME):]
+    if _ZIP_SEP not in rest:
+        return None
+    zip_path, member = rest.split(_ZIP_SEP, 1)
+    return zip_path, member.strip('/')
+
+
+def _zip_handle(zip_path: str) -> Tuple[zipfile.ZipFile, List[str]]:
+    """Cached ``(open ZipFile, member names)`` for ``zip_path``.
+
+    The cache is keyed on ``(path, os.getpid())`` and the archive is REOPENED
+    whenever the pid changes. That is not decoration: a ``DataLoader`` worker is
+    forked from the parent, and ``ZipFile`` keeps ONE file object whose offset
+    every ``read`` seeks -- a handle inherited across ``fork`` would be seeked
+    by two processes at once and silently return the wrong bytes. Reopening per
+    process costs one central-directory scan (the 140 BP4D+ archives are 30+
+    GB / ~10^4 members each, so this is ~1 s, paid once, not per frame).
+
+    At most :data:`_ZIP_CACHE_MAX` archives stay open (oldest closed first); a
+    single session only ever touches one, so steady-state training never pays
+    the reopen.
+    """
+    key = os.path.abspath(zip_path)
+    pid = os.getpid()
+    cached = _ZIP_CACHE.get(key)
+    if cached is not None and cached[0] == pid:
+        return cached[1], cached[2]
+    if cached is not None:                       # forked: drop the stale handle
+        _ZIP_CACHE.pop(key, None)
+        try:
+            cached[1].close()
+        except Exception:                        # already closed / broken fd
+            pass
+    while len(_ZIP_CACHE) >= _ZIP_CACHE_MAX:     # bound fds + member-name memory
+        old_key = next(iter(_ZIP_CACHE))
+        _old_pid, old_zf, _old_names = _ZIP_CACHE.pop(old_key)
+        try:
+            old_zf.close()
+        except Exception:
+            pass
+    zf = zipfile.ZipFile(key)
+    names = zf.namelist()
+    _ZIP_CACHE[key] = (pid, zf, names)
+    return zf, names
+
+
+def _zip_read(zip_path: str, member: str) -> bytes:
+    """Raw bytes of one member (``KeyError`` if the archive has no such name)."""
+    zf, _names = _zip_handle(zip_path)
+    with _ZIP_LOCK:
+        return zf.read(member)
+
+
+def zip_task_index(zip_path: str,
+                   subject: Optional[str] = None) -> Dict[str, dict]:
+    """``{task: {'prefix': member prefix, 'n_img': image count}}`` of a zip.
+
+    Derived from the LAST TWO directory components of every member, so the
+    archive may have its subject at the root (``F050/T8/0000.jpg``, how BP4D+
+    ships) or wrapped (``2D+3D/F050/T8/0000.jpg``) -- both give prefix
+    ``.../F050/T8/``. ``subject`` filters on the component above the task; when
+    nothing matches it is ignored (a mis-named archive still inspects), which is
+    reported by the caller comparing the task names.
+    """
+    key = os.path.abspath(zip_path)
+    pid = os.getpid()
+    cached = _ZIP_TASKS.get(key)
+    if cached is not None and cached[0] == pid:
+        return cached[1]
+    _zf, names = _zip_handle(key)
+    full: Dict[str, dict] = {}
+    for name in names:
+        if name.endswith('/'):
+            continue
+        parts = name.split('/')
+        if len(parts) < 3:                       # no <subj>/<task>/ level
+            continue
+        task = parts[-2]
+        rec = full.setdefault(task, {'prefix': '/'.join(parts[:-1]) + '/',
+                                     'n_img': 0, 'subjects': set()})
+        rec['subjects'].add(parts[-3])
+        if os.path.splitext(parts[-1])[1].lower() in _IMAGE_EXTS:
+            rec['n_img'] += 1
+    if subject is not None:
+        sel = {t: r for t, r in full.items() if str(subject) in r['subjects']}
+        if sel:
+            full = sel
+    index = {t: {'prefix': r['prefix'], 'n_img': int(r['n_img'])}
+             for t, r in full.items()}
+    _ZIP_TASKS[key] = (pid, index)
+    return index
+
+
+# --------------------------------------------------------------------------- #
 # landmark set resolution
 # --------------------------------------------------------------------------- #
 def resolve_face_landmarks(spec) -> Tuple[int, ...]:
@@ -175,11 +334,20 @@ def resolve_face_landmarks(spec) -> Tuple[int, ...]:
 # paths / discovery
 # --------------------------------------------------------------------------- #
 def find_rgb_dir(raw_root: str, subject: str, task: str) -> Optional[str]:
-    """``<raw_root>/2D+3D/<S>/<T>/`` (also the ``<S>_<T>`` flat variant)."""
+    """The session's frame source: an extracted dir, else a ``zip_source`` URI.
+
+    Looks for ``<raw_root>/2D+3D/<S>/<T>/`` (and the ``<S>_<T>`` flat variant)
+    first, then ``<raw_root>/2D+3D/<S>.zip``. An extracted directory always wins.
+    """
     for cand in (os.path.join(raw_root, RGB_TREE, subject, str(task)),
                  os.path.join(raw_root, RGB_TREE, f'{subject}_{task}')):
         if os.path.isdir(cand):
             return cand
+    zip_path = os.path.join(raw_root, RGB_TREE, f'{subject}.zip')
+    if os.path.isfile(zip_path):
+        rec = zip_task_index(zip_path, subject).get(str(task))
+        if rec is not None:
+            return zip_source(zip_path, rec['prefix'])
     return None
 
 
@@ -192,9 +360,47 @@ def find_signal_file(raw_root: str, subject: str, task: str,
     return path if os.path.isfile(path) else None
 
 
-def _list_rgb_files(directory: str) -> List[str]:
-    return sorted(f for f in os.listdir(directory)
-                  if os.path.splitext(f)[1].lower() in _IMAGE_EXTS)
+def _list_rgb_files(source: str) -> List[str]:
+    """Sorted image NAMES of a sequence directory OR of a ``zip_source`` URI.
+
+    Returns bare file names either way, so ``os.path.join(source, name)`` is the
+    frame's address in both cases (a real path, or a ``zip+file://`` member URI).
+    """
+    split = split_zip_source(source)
+    if split is None:
+        return sorted(f for f in os.listdir(source)
+                      if os.path.splitext(f)[1].lower() in _IMAGE_EXTS)
+    zip_path, prefix = split
+    _zf, names = _zip_handle(zip_path)
+    head = (prefix.rstrip('/') + '/') if prefix else ''
+    out = []
+    for name in names:
+        if not name.startswith(head):
+            continue
+        rest = name[len(head):]
+        if not rest or '/' in rest:              # a sub-directory, not a frame
+            continue
+        if os.path.splitext(rest)[1].lower() in _IMAGE_EXTS:
+            out.append(rest)
+    return sorted(out)
+
+
+def _imread(source: str, flag: int) -> np.ndarray:
+    """``cv2.imread`` for a path, ``cv2.imdecode`` for a ``zip_source`` URI."""
+    cv2 = _cv2()
+    split = split_zip_source(source)
+    if split is None:
+        img = cv2.imread(source, flag)
+    else:
+        zip_path, member = split
+        try:
+            buf = _zip_read(zip_path, member)
+        except KeyError:
+            raise IOError(f'{member!r} is not a member of {zip_path}')
+        img = cv2.imdecode(np.frombuffer(buf, np.uint8), flag)
+    if img is None:
+        raise IOError(f'Failed to read image {source}')
+    return img
 
 
 def discover_rgb_sessions(raw_root: str,
@@ -206,9 +412,15 @@ def discover_rgb_sessions(raw_root: str,
     Discovery keys on the JPEG directory (that is the modality the dataset
     predicts from). Each returned spec holds
 
-    ``session`` / ``subject`` / ``task`` / ``rgb_dir`` / ``feat_file`` /
-    ``signals`` (name -> path, only those that exist) / ``n_jpg`` / ``n_mat`` /
-    ``status`` (``'usable'`` | ``'unusable'``) / ``reason``.
+    ``session`` / ``subject`` / ``task`` / ``rgb_dir`` / ``source_kind`` /
+    ``feat_file`` / ``signals`` (name -> path, only those that exist) /
+    ``n_jpg`` / ``n_mat`` / ``status`` (``'usable'`` | ``'unusable'``) /
+    ``reason``.
+
+    ``rgb_dir`` is a directory OR a ``zip_source`` URI (an archived
+    ``2D+3D/<S>.zip`` subject); ``source_kind`` records which (``'dir'`` |
+    ``'zip'``). A subject that exists BOTH extracted and archived uses the
+    directory.
 
     The FRAME-COUNT check lives here so the exclusion is decided in exactly one
     place: a pair is ``'unusable'`` when the ``2DFeatures`` track is missing,
@@ -227,29 +439,52 @@ def discover_rgb_sessions(raw_root: str,
     want_subj = {str(s) for s in subjects} if subjects else None
     want_task = {str(t) for t in tasks} if tasks else None
 
+    # --- enumerate the frame sources: extracted subject dirs first, then the
+    #     per-subject archives. A subject present BOTH ways keeps the directory
+    #     (same source, cheaper access, and the historical behaviour).
+    sources: List[Tuple[str, str, str]] = []            # (subject, kind, path)
+    ext_zip: List[Tuple[str, str, str]] = []
+    for name in sorted(os.listdir(rgb_root)):
+        path = os.path.join(rgb_root, name)
+        if os.path.isdir(path):
+            sources.append((name, 'dir', path))
+        elif name.lower().endswith('.zip') and os.path.isfile(path):
+            ext_zip.append((name[:-4], 'zip', path))
+    have_dir = {s for s, _k, _p in sources}
+    sources.extend(z for z in ext_zip if z[0] not in have_dir)
+    sources.sort(key=lambda t: t[0])
+
     out: List[dict] = []
-    for subj in sorted(os.listdir(rgb_root)):
-        subj_dir = os.path.join(rgb_root, subj)
-        if not os.path.isdir(subj_dir) or (want_subj and subj not in want_subj):
+    for subj, kind, subj_src in sources:
+        if want_subj and subj not in want_subj:
             continue
-        dirs: Dict[str, str] = {}
-        for name in sorted(os.listdir(subj_dir)):
-            path = os.path.join(subj_dir, name)
-            if os.path.isdir(path):
-                dirs[name] = path
-        for task in sorted(dirs):
+        if kind == 'dir':
+            tasks: Dict[str, Optional[str]] = {}
+            for name in sorted(os.listdir(subj_src)):
+                path = os.path.join(subj_src, name)
+                if os.path.isdir(path):
+                    tasks[name] = path
+        else:                                           # archived subject
+            tasks = {t: rec['prefix']
+                     for t, rec in zip_task_index(subj_src, subj).items()}
+        zip_index = (zip_task_index(subj_src, subj) if kind == 'zip' else {})
+        for task in sorted(tasks):
             if want_task and task not in want_task:
                 continue
-            rgb_dir = dirs[task]
+            rgb_dir = (tasks[task] if kind == 'dir'
+                       else zip_source(subj_src, tasks[task]))
+            n_jpg = (len(_list_rgb_files(rgb_dir)) if kind == 'dir'
+                     else int(zip_index[task]['n_img']))
             spec = {
                 'session': f'{subj}_{task}',
                 'subject': subj,
                 'task': task,
                 'rgb_dir': rgb_dir,
+                'source_kind': kind,
                 'feat_file': find_2d_features(raw_root, subj, task),
                 'signals': {n: p for n in SIGNAL_FILES
                             if (p := find_signal_file(raw_root, subj, task, n))},
-                'n_jpg': len(_list_rgb_files(rgb_dir)),
+                'n_jpg': n_jpg,
                 'n_mat': -1,
                 'status': 'usable',
                 'reason': '',
@@ -466,6 +701,8 @@ class RGBRoiDataset(Dataset):
             'raw_root': self.raw_root,
             'sessions_discovered': len(discovered),
             'sessions_used': len(self.sessions),
+            'sessions_from_zip': sum(1 for s in self.sessions.values()
+                                     if s.get('source_kind') == 'zip'),
             'sessions_unusable': len(self.unusable),
             'sessions_skipped': len(self.skipped),
             'clips': len(self.entries),
@@ -555,13 +792,16 @@ class RGBRoiDataset(Dataset):
 
     # ------------------------------------------------------------------ frames
     def _read_rgb(self, path: str) -> np.ndarray:
-        """One JPEG as uint8 **RGB** ``[h, w, 3]`` (BGR reversed), DCT-scaled."""
+        """One frame as uint8 **RGB** ``[h, w, 3]`` (BGR reversed), DCT-scaled.
+
+        ``path`` is either a real JPEG path or a ``zip_source`` member URI (see
+        the module docstring): both are decoded here, so nothing downstream has
+        to know which kind of sequence the clip came from.
+        """
         cv2 = _cv2()
         flag = (cv2.IMREAD_COLOR if self.decode_scale == 1
                 else getattr(cv2, f'IMREAD_REDUCED_COLOR_{self.decode_scale}'))
-        img = cv2.imread(path, flag)
-        if img is None:
-            raise IOError(f'Failed to read image {path}')
+        img = _imread(path, flag)
         if img.ndim == 2:
             img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
         elif img.shape[2] == 4:
@@ -577,9 +817,7 @@ class RGBRoiDataset(Dataset):
                                  self._files_of(session)[0])
                     if session in self.sessions else first['rgb_dir'])
             cv2 = _cv2()
-            img = cv2.imread(path, cv2.IMREAD_COLOR)
-            if img is None:
-                raise IOError(f'Failed to probe frame size for {session}: {path}')
+            img = _imread(path, cv2.IMREAD_COLOR)
             self._src_size[session] = (int(img.shape[0]), int(img.shape[1]))
         return self._src_size[session]
 
@@ -685,7 +923,9 @@ class RGBRoiDataset(Dataset):
             f'raw_root        : {s["raw_root"]}',
             f'sessions        : {s["sessions_used"]} used / '
             f'{s["sessions_discovered"]} found / {s["sessions_unusable"]} unusable / '
-            f'{s["sessions_skipped"]} skipped',
+            f'{s["sessions_skipped"]} skipped'
+            + (f' [{s["sessions_from_zip"]} from a 2D+3D archive]'
+               if s.get('sessions_from_zip') else ''),
             f'clips           : {s["clips"]} '
             f'({s["clips_dropped_nan"]} window(s) dropped for a non-finite landmark)',
             f'clip            : {s["clip_seconds"]:g} s = {s["clip_frames"]} '
