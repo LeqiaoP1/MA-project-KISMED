@@ -246,6 +246,61 @@ Help text carries: the value changes WHICH PIXELS (and, for `max_sway_px`, which
 CLIPS exist), it is a Stage-2/Stage-3 contract key, and the gate is task-biased
 (T4 keeps 80 % at 40 px).
 
+**Step 10b — the inspection tool carries the contract visibly.**
+`runners/run_inspect_tir_resp.py` already follows the dataset for the things that
+matter most — the box comes from `ds.clip_roi_box(index)` (580), the PASS/FAIL
+line from `trd._check_clip` (582), the counters from `ds.describe()` (565) and the
+patch from the returned tensor — so those need no edit. The rest does:
+
+* pass `crop_rule` / `max_sway_px` into the `BP4DPlusTIRRespDataset(...)` call
+  (547–563) and expose both as flags (~498), defaulting to the training values;
+  without them the tool inspects whatever the class default is, which is the same
+  silent-mismatch class as the existing `--roi_padding 0.1` vs configs `0.2`;
+* `_clip_report`'s `roi` block gains `crop_rule`, `side_px`, `is_square`,
+  `max_sway_px`, `sway_px` and the session's `clips_dropped_motion` — a kept
+  clip's distance from the gate is only observable offline (design §9 item 6);
+* the patch-pixel mapping in `_plot_clip` (167–168) and `_write_video` (235–236)
+  collapses to one `sigma = s / (x1 - x0)` and asserts `x1 - x0 == y1 - y0`
+  before mapping; otherwise the figure keeps encoding the per-axis scale the
+  contract forbids (numerically equal today, wrong the moment it is not);
+* the module docstring's "points that min/max produced the box" (10) and "the
+  crop is the box stretched to `input_size`" (163) become "one box per clip,
+  squared, one isotropic scale";
+* fix the `DEFAULT_INSPECT_INPUT_SIZE` comment: 64 is the local/smoke geometry,
+  the HPC Stage-2/3 lineage trains at 112 (design §4.5).
+
+**Step 10c — outlier review, which the tool cannot do today.** `_check_clip` is a
+*conformance* check (tensor == resize(crop), box in frame and over the landmarks,
+respiration aligned) with exactly one quality bound, `box area > 50 % of the frame`;
+the largest measured box is 413 x 252 = 30 % of the 726 x 480 frame, so a
+pathological clip still reports `[ok]` and exits 0. Three gaps, all of which bite the
+moment the motion gate exists:
+
+* **Indices are not stable.** The gate renumbers `ds.entries`, so `--clip_index 3`
+  addresses a *different* window before and after the port — "go back and look at
+  the clip I flagged" stops being expressible. Add `--frame_start` / `--t_start`
+  selection alongside the index.
+* **An absent window must explain itself.** A clip dropped by the motion or envelope
+  gate is not in `entries` at all; today an out-of-range index prints `[skip] … out
+  of range` and the run still prints `PASS: 0/0 clip(s) checked` and returns **0**.
+  Re-evaluate the requested window against the gates and report which one dropped it
+  (`sentinel` / `envelope` / `motion` / `rail` / `flat`), exiting non-zero.
+* **Report measurements, not just a verdict.** Add `sway_px`,
+  `gate_margin_px = max_sway_px - sway`, `box_side_px`, `area_frac_of_frame` and
+  `envelope_frac_of_patch` (how much of the patch the landmark envelope covers —
+  the direct "how much of this is face" measure), plus a `flags` list
+  (`near_gate`, `box_gt_40pct_frame`, `envelope_lt_25pct_patch`). Keep the binary
+  FAIL for contract conformance only: mixing quality thresholds into `_check_clip`
+  would destroy the meaning of its FAIL.
+
+Also make the loop exception-safe: a contract violation raised from `ds[index]`
+(e.g. a box escaping the hull under I2) currently surfaces as a traceback instead of
+a FAIL, losing the JSON report.
+
+Adding `--roi_cache` to the inspector is optional and separate: it would make the
+cached path visually auditable, but `cache_parity_probe.py` (step 19) is the gate
+of record for cache parity.
+
 **Step 11 — the contract check** (`runners/run_waveform.py`).
 
 ```python
@@ -391,6 +446,8 @@ exclude, not a region to exploit.
 | 1 | `cd code && ../.env/bin/python -m pytest -q` | 345 baseline green + the new modules |
 | 2 | `python -m compileall code`; import `data.tir_resp_dataset`, `data.roi_cache`, `runners.run_waveform` | no error |
 | 3 | synthetic raw tree (`_stub_video` / `_FakeReader` pattern of `tests/test_tir_resp_rail_filter.py`, no decode): square box, envelope containment, `clips_dropped_motion`, `describe()` shows `crop square … max_sway 40 px` | assertions pass |
+| 3b | `run_inspect_tir_resp.py --no-plot --clip_index 0` on the stub tree | clip JSON carries `crop_rule`, `side_px == height_px`, `sway_px`, and the run reports `PASS` |
+| 3c | inspect a window the gate drops, addressed by `--t_start` | the report names the gate that dropped it and the exit code is non-zero — not `PASS: 0/0` |
 | 4 | `python -m data.tir_resp_dataset --check_views` on the stub tree | Stage-2 == Stage-3 tensors and boxes |
 | 5 | `roi_geometry_ledger.py` | matches the design's ledger (step 18) |
 | 6 | `run_build_roi_cache.py --check --hops 1.0,2.0` + `cache_parity_probe.py` | PASS / PASS |
