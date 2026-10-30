@@ -366,7 +366,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                    help='first N discovered subject-tasks (0 = all; smoke tests)')
 
     # ROI CONTRACT -- every field below is part of the cache key
-    p.add_argument('--roi_padding', type=float, default=0.2)
+    p.add_argument('--roi_padding', type=float, default=trd.DEFAULT_ROI_PADDING)
     p.add_argument('--roi_landmarks', default='',
                    help="'' or a preset name (nose_mouth, nostrils, "
                         "nostril_mouth, nose_tip) or an explicit CSV of indices")

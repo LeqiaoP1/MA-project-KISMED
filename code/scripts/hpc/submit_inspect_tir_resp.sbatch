@@ -25,11 +25,11 @@
 #   INSPECT_TASK      task id(s) or "all"  default T1
 #   INSPECT_TASK_SET  task group(s)        default '' (none)
 #   INSPECT_CLIPS     clip index, or list  default 0
-#   INSPECT_SIZE      ROI side in px       default 112  (the HPC config value)
-#   INSPECT_ROI_PADDING  per-side ROI margin, default 0.2 -- MUST stay in sync
-#                       with the configs: data/tir_resp_dataset.DEFAULT_ROI_PADDING
-#                       is 0.1, so the runner's own default would draw a
-#                       DIFFERENT crop than the model actually receives.
+#   INSPECT_SIZE      ROI side in px       default 96  (the HPC config value)
+#   INSPECT_ROI_PADDING  per-side ROI margin, default 0.10 -- MUST stay in sync
+#                       with the configs. It equals data/tir_resp_dataset
+#                       .DEFAULT_ROI_PADDING, so the runner's own default draws
+#                       the same crop the model actually receives.
 #   INSPECT_LANDMARKS '' = 12-pt nose+mouth preset; or nose_tip / CSV
 #   INSPECT_SPREAD    --min_signal_spread  default 0.01 (matches the HPC configs)
 #   INSPECT_OUTPUT_DIR write under $WORK instead of the $HOME default
@@ -85,8 +85,8 @@ mkdir -p "$OUT_DIR" "$CODE_DIR/logs"
 ARGS=(--raw_root "$RAW_DATA_PATH"
       --subject "${INSPECT_SUBJECT:-F001}"
       --task "${INSPECT_TASK:-T1}"
-      --input_size "${INSPECT_SIZE:-112}"
-      --roi_padding "${INSPECT_ROI_PADDING:-0.2}"
+      --input_size "${INSPECT_SIZE:-96}"
+      --roi_padding "${INSPECT_ROI_PADDING:-0.1}"
       --roi_landmarks "${INSPECT_LANDMARKS:-}"
       --min_signal_spread "${INSPECT_SPREAD:-0.01}"
       --output_dir "$OUT_DIR")

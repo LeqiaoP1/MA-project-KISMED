@@ -4,11 +4,14 @@
 # corpus semantics and stream setup, scaled to the whole raw corpus with the
 # large-batch MAE schedule.
 #
-# !! input_size is 112 HERE. The landmark-derived ROI is only ~100x100 px at
-#    native resolution, so 112 is roughly 1:1 -- 224 would purely UPSAMPLE a crop
-#    that carries no extra detail (224 in the canonical stage2_multimodal.yaml is
-#    a FULL-FRAME geometry, not a ROI one). 112x112 is also the ROI crop size
-#    specified in notebooks/TirROI_Resp_Guide.md 2.3.
+# !! input_size is 96 and roi_padding is 0.10 HERE -- they are chosen TOGETHER.
+#    The square landmark box is ~95 px at padding 0.10 (the nose+mouth envelope is
+#    ~60x60 px, so it fills 41 % of the patch instead of 30 % at 0.20), and 96 is
+#    the nearest legal grid (patch 16) to that side, so the crop is sampled at
+#    ~1:1 (sigma = s / side = 1.01). Holding 112 at padding 0.10 would instead
+#    UPSAMPLE 1.18x on 82 % of clips: the same photons on 650 extra interpolated
+#    tokens. 224 (the canonical stage2_multimodal.yaml value) is a FULL-FRAME
+#    geometry, not a ROI one.
 #    This is still a SEPARATE lineage from the local 64 px configs: the shipped
 #    configs/finetune/resp_tir_roi_local.yaml (input_size 64) will ABORT against
 #    a checkpoint from this run. Fine-tune it with the matching twin
@@ -28,7 +31,7 @@
 # sig_kernel / tubelet / roi_* decide WHICH pixels and WHICH seconds reach the
 # encoder. runners/run_waveform.py ABORTS on a mismatch with what is stored in
 # the Stage-2 checkpoint. Keep this block identical to the Stage-3 config you
-# fine-tune with -- for this 112 px lineage that is
+# fine-tune with -- for this 96 px lineage that is
 # configs/finetune/resp_tir_roi_hpc.yaml, NOT resp_tir_roi_local.yaml.
 
 # ---------------------------------------------------------------- data source
@@ -77,25 +80,28 @@ clip_stride: 2.0                   # window hop (s) -- 3/4 of consecutive window
                                    # it), so Stage 3 may legitimately differ.
 temporal_stride: 2                 # clipless decimation INSIDE the window
 seq_len: 0                         # 0 => round(kept_seconds * fs) = 800 samples
-input_size: 112                    # ROI patch side. 112/16 -> a 7x7 grid =
-                                   #   49 patches/frame -> 2450 video tokens at
-                                   #   50 temporal steps. The landmark-derived ROI
-                                   #   is only ~100x100 px at native resolution,
-                                   #   so 112 is roughly 1:1 -- 224 (the canonical
-                                   #   stage2_multimodal.yaml value, which is a
-                                   #   FULL-FRAME config) would just upscale a crop
-                                   #   that holds no extra detail. 112x112 is also
-                                   #   the ROI crop size in
-                                   #   notebooks/TirROI_Resp_Guide.md 2.3;
-                                   #   mask_ratio_tir 0.90 leaves ~5 visible
-                                   #   patches/frame here (vs ~1.6 at 64 px).
-                                   # !! NEW GEOMETRY LINEAGE: positions.tir
-                                   #   .pos_embed changes shape, so the shipped
+input_size: 96                     # ROI patch side. 96/16 -> a 6x6 grid = 36
+                                   #   patches/frame -> 1800 video tokens at 50
+                                   #   temporal steps. Paired with roi_padding
+                                   #   0.10 (median square box 95 px) so ONE
+                                   #   sensor pixel maps to ~1 grid point
+                                   #   (sigma 1.01) -- the same sampling density
+                                   #   as the old 112 px / padding 0.20 pair, for
+                                   #   650 fewer tokens. 224 would upscale a crop
+                                   #   that holds no extra detail; 112 at this
+                                   #   padding would upscale it 1.18x.
+                                   #   mask_ratio_tir 0.90 leaves ~3.6 visible
+                                   #   patches/frame here.
+                                   # !! GEOMETRY LINEAGE: positions.tir.pos_embed
+                                   #   changes shape, so the 64 px config
                                    #   configs/finetune/resp_tir_roi_local.yaml
-                                   #   (input_size 64) ABORTS at Stage 3 -- a
-                                   #   Stage-3 twin with input_size 112 is
-                                   #   required (same roi_* keys).
-roi_padding: 0.2                   # landmark-box margin on EACH side
+                                   #   ABORTS at Stage 3 -- fine-tune with
+                                   #   configs/finetune/resp_tir_roi_hpc.yaml.
+roi_padding: 0.10                  # landmark-box margin on EACH side. Lands the
+                                   #   square box at ~95 px, where the nose+mouth
+                                   #   envelope is 41 % of the patch (30 % at
+                                   #   0.20) without clipping it. Also a frozen
+                                   #   CACHE KEY -- 0.20 would miss the cache.
 crop_rule: square                  # square the padded box BEFORE the rescale,
                                    #   so ONE scale factor is applied (sx == sy)
                                    #   and the anatomy is never deformed; 'box' is

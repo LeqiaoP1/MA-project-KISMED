@@ -3,8 +3,8 @@
 #
 # WHAT IT DOES -- caches the NATIVE-resolution union crop of every subject-task
 # in <raw_root>, so the training loader never has to decode a .wmv again. Serves
-# Stage 2 (2 s hop), Stage 3 (1 s hop) and both the 112 px and 64 px lineages
-# from ONE ~92 GB artifact.
+# Stage 2 (2 s hop), Stage 3 (1 s hop) and both the 96 px and 64 px lineages
+# from ONE ~95 GB artifact.
 #
 # CPU-ONLY: the work is decode + crop + write, no GPU is involved. Do NOT add a
 # --gres line -- an 'acc' slot would be wasted (our own 4-GPU job waited 17 h).
@@ -24,7 +24,8 @@
 # Env-style overrides (propagated by sbatch's default --export=ALL). NOTE: every
 # one of these changes the cache KEY, so --init and --build must agree on them:
 #   CACHE_OUT_ROOT      destination                default: $WORK_SCRATCH/tir_roi_cache
-#   CACHE_ROI_PADDING   ROI margin                  default: 0.2
+#   CACHE_ROI_PADDING   ROI margin                  default: unset -> the
+#                                                    runner's 0.10 (the contract)
 #   CACHE_ROI_LANDMARKS '' / preset / CSV          default: '' (nose_mouth)
 #   CACHE_CROP_RULE     box shape                   default: 'square'
 #   CACHE_CLIP_SECONDS  window the hull is built for  default: 8

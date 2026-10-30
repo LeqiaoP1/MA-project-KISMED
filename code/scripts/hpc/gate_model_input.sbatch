@@ -57,9 +57,9 @@ SAMPLE_PER_TASK="${SAMPLE_PER_TASK:-0}"
 # silently collapses to '?'. It must be TASK_GROUPS.
 TASK_GROUPS="${TASK_GROUPS:-low=T2,T3,T5;moderate=T1,T4;high=T6,T7,T8,T9,T10}"
 NPERM="${NPERM:-200}"
-# `112` is the model's input_size; `box` is the cached native box with NO resize,
+# `96` is the model's input_size; `box` is the cached native box with NO resize,
 # so the pair separates "the resize destroyed it" from "the representation did".
-SIZES="${SIZES:-112,box}"
+SIZES="${SIZES:-96,box}"
 OUT="${OUT:-notes/eval/tir_resp/gate_model_input.json}"
 
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-32}"
@@ -102,5 +102,5 @@ echo "  * every 'vs motion_x' row MUST read DETECTED, else the pipeline has no"
 echo "    power and no other row means anything;"
 echo "  * a DETECTED 'vs belt' row at raw OR 0.1-0.6 says the pixels carry"
 echo "    respiration -- which would REOPEN the line and justify a loss sweep;"
-echo "  * '112x112' vs 'box' isolates the resize from the representation."
+echo "  * '96x96' vs 'box' isolates the resize from the representation."
 exit "$RC"

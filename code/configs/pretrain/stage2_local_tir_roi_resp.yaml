@@ -92,8 +92,15 @@ temporal_stride: 2                 # decimate INSIDE the window (1=every frame;
                                    # would need <=2.
 seq_len: 0                         # 0 => round(kept_seconds*fs) = 800 samples
 input_size: 64                     # ROI patch side after cv2.resize (16 px patches
-                                   # -> 4x4 spatial grid per frame)
-roi_padding: 0.2                   # landmark-box margin added on EACH side
+                                   # -> 4x4 spatial grid per frame). SMOKE SCALE:
+                                   #   production is 96 + padding 0.10 (see
+                                   #   configs/pretrain/stage2_hpc_tir_roi_resp
+                                   #   .yaml); keep this local Stage-2/Stage-3
+                                   #   pair in step with each other.
+roi_padding: 0.10                  # landmark-box margin added on EACH side. MUST
+                                   #   equal the HPC run: roi_padding is a frozen
+                                   #   CACHE KEY, so 0.20 would miss the shipped
+                                   #   cache and silently fall back to decoding.
 crop_rule: square                  # square the padded box BEFORE the rescale,
                                    #   so ONE scale factor is applied (sx == sy)
                                    #   and the anatomy is never deformed; 'box' is

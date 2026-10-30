@@ -1,11 +1,11 @@
 # Stage 3 -- HPC / FULL-CORPUS: TIR-ROI thermal (visual) -> RESP waveform.
 #
 # HPC twin of configs/finetune/resp_tir_roi_local.yaml, matched to
-# configs/pretrain/stage2_hpc_tir_roi_resp.yaml. The ONLY geometry difference
-# from the local file is input_size 64 -> 112 (the Stage-2 HPC run is 112), which
-# is exactly what the Stage-2/Stage-3 ROI contract enforces. 112x112 is ~1:1 with
-# the ~100x100 px native ROI crop (also the size in
-# notebooks/TirROI_Resp_Guide.md 2.3).
+# configs/pretrain/stage2_hpc_tir_roi_resp.yaml. The geometry differences from
+# the local file are input_size 64 -> 96 plus roi_padding 0.10, which is exactly
+# what the Stage-2/Stage-3 ROI contract enforces. 96 with padding 0.10 is ~1:1
+# with the ~95 px square crop it produces (112 at that padding would be a 1.18x
+# upsample of the same photons).
 #
 # The SAME raw-tree thermal ROI crop the encoder was pre-trained on is the ONLY
 # input (simulated total contact-sensor failure); the whole respiration window is
@@ -33,7 +33,7 @@ target: resp
 data_set: tir_roi_resp             # -> build_tir_roi_finetune_dataset (Stage-3 view)
 # data_path: NOT SET HERE -- submit_waveform_tir_roi.sbatch passes
 #            --data_path "$RAW_DATA_PATH" (the RAW tree). See the header note.
-roi_padding: 0.2                   # MUST equal the Stage-2 run
+roi_padding: 0.10                  # MUST equal the Stage-2 run
 crop_rule: square                  # MUST equal the Stage-2 run: the padded box
                                    #   is squared BEFORE the rescale, so ONE
                                    #   scale factor (sx == sy) is applied
@@ -86,8 +86,8 @@ clip_duration: 8.0
 fps: 25.0
 tubelet: 2,16,16
 temporal_stride: 2
-input_size: 112                    # <== the HPC value (local tir_roi ships 64).
-                                   #   112/16 -> 7x7 = 49 patches/frame -> 2450
+input_size: 96                     # <== the HPC value (local tir_roi ships 64).
+                                   #   96/16 -> 6x6 = 36 patches/frame -> 1800
                                    #   video tokens at 50 temporal steps.
 seq_len: 0                         # 0 => 800 samples = 8 s at fs 100 Hz
 fs: 100

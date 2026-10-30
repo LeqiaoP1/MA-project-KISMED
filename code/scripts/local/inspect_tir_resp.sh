@@ -33,8 +33,10 @@
 #
 # SIZE=112 (default) is the INSPECTION patch size: the native mouth+nose box is
 # ~73x89 px, so 112 up-samples it enough to read in the figure. The TRAINING
-# geometry for the local Stage-2/3 runs is input_size 64 -- pass `SIZE=64`
-# (env) or `--input_size 64` (CLI) to inspect exactly what the model receives.
+# geometry is input_size 96 + roi_padding 0.10 on the HPC lineage (the local
+# Stage-2/3 smoke pair stays at 64) -- pass `SIZE=96 ROI_PADDING=0.1` (env) or
+# `--input_size 96 --roi_padding 0.1` (CLI) to inspect exactly what the model
+# receives.
 # CLIPS is the clip index (or comma list) INSIDE the selection -- not a count and not a
 # timestamp: F001_T1 (1612 frames, 8 s, non-overlapping) has 8 clips, so
 # CLIPS=0,7 is its first and its last window. CLIP_SECONDS is the window length;
@@ -69,6 +71,7 @@ if [ "$#" -gt 0 ]; then
     "$PY" -u runners/run_inspect_tir_resp.py "$@"
 else
     ARGS=(--subject "$SUBJECT" --task "$TASK" --input_size "$SIZE"
+          --roi_padding "${ROI_PADDING:-0.1}"
           --clip_seconds "$CLIP_SECONDS" --clip_index "$CLIPS"
           --norm "$NORM" --video "$VIDEO")
     [ "$CLIP_STRIDE" != "0" ] && ARGS+=(--clip_stride "$CLIP_STRIDE")

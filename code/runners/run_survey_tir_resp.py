@@ -515,7 +515,7 @@ def main(argv=None) -> int:
     p.add_argument('--subjects', default='', help='comma list (empty = all)')
     p.add_argument('--task_groups', default=DEFAULT_TASK_GROUPS)
     p.add_argument('--input_size', type=int, default=112)
-    p.add_argument('--roi_padding', type=float, default=0.2)
+    p.add_argument('--roi_padding', type=float, default=trd.DEFAULT_ROI_PADDING)
     p.add_argument('--crop_rule', default=trd.DEFAULT_CROP_RULE,
                    choices=list(trd.CROP_RULES),
                    help='clip-box shape; must match the runs being described')

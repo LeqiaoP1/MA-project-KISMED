@@ -5,8 +5,10 @@ geometry figure in ``notes/design/ROI_crop_and_rescaling.md``:
 
 * the SQUARE crop side before and after the motion gate (median / p95 / max);
 * the isotropicity ledger: ``sigma = s / side``, and the share of clips that are
-  genuinely downscaled vs upsampled, for ``s in {64, 112, 128}`` and
-  ``p in {0.1, 0.2}``;
+  genuinely downscaled vs upsampled, for ``s in {64, 80, 96, 112, 128}`` and
+  ``p in {0.0, 0.1, 0.15, 0.2}`` -- the SHIPPED pair is ``p = 0.10, s = 96``,
+  since ``sigma`` is a density fixed by ``s / side`` and the two knobs must move
+  together (see the design doc, 4.1);
 * the motion gate's attrition at ``max_sway_px in {30, 40, 60, 100}``: clips,
   sessions and subjects kept, plus the worst task -- the gate CHANGES THE
   CORPUS, so any per-task result must say whether it was computed before or
@@ -49,19 +51,20 @@ if _CODE_DIR not in sys.path:
 
 from data import tir_resp_dataset as trd                     # noqa: E402
 
-#: The published figures (design doc, 2026-10-29, 21 231 clips / 1260 sessions).
+#: The published figures (design doc, 2026-10-30: 21 231 clips / 1260 sessions,
+#: shipped contract `roi_padding 0.10` + `input_size 96`).
 #: Tolerances: +-1 px on percentiles (the integer-bound convention below can
 #: differ from the design's `ceil(side)` by one), +-1 pp on shares.
 EXPECT = {
     'n_clips': 21231,
     'n_sessions': 1260,
     'n_subjects': 138,
-    'side_median': 111,
-    'side_p95': 153,
-    'side_max': 413,
-    'gated40_median': 110,
-    'gated40_p95': 145,
-    'gated40_max': 202,
+    'side_median': 95,
+    'side_p95': 131,
+    'side_max': 353,
+    'gated40_median': 95,
+    'gated40_p95': 125,
+    'gated40_max': 174,
     'kept30': 94.0,
     'kept40': 96.8,
     'kept60': 98.9,
@@ -132,7 +135,11 @@ def measure(clips: Sequence[dict], raw_root: str, fps: float,
         pts = ir[fs:fe][:, idx, :]
         row = {'session': sess, 'subject': c['subject'], 'task': c['task'],
                'frame_start': fs,
-               'sway_px': trd.landmark_sway(pts, np.arange(pts.shape[1]))}
+               'sway_px': trd.landmark_sway(pts, np.arange(pts.shape[1])),
+               # the face at ONE instant, as opposed to the clip-wide envelope:
+               # the gap between the two is the head travel inside the window
+               'face_w': float(np.median(np.ptp(pts[..., 0], axis=1))),
+               'face_h': float(np.median(np.ptp(pts[..., 1], axis=1)))}
         ok = True
         for p in paddings:
             try:
@@ -212,6 +219,47 @@ def sigma_table(rows: Sequence[dict], key: str, sizes: Sequence[int]
     return out
 
 
+def face_sweep(rows: Sequence[dict], paddings: Sequence[float],
+               gates: Sequence[Tuple[float, float]], size: int = 96
+               ) -> List[Dict[str, object]]:
+    """PADDING x GATE: how much of the patch is face, and at what resample cost.
+
+    ``occupancy`` is the area of ONE FRAME's target envelope over the square box,
+    so it separates the three things a loose crop is made of: the face itself, the
+    head travel inside the window, and the padding. ``sigma = size / side`` says
+    whether the extra occupancy is MEASURED or INTERPOLATED -- below 1 the encoder
+    samples the same photons more often, which does not add information.
+
+    :param gates: ``(max_sway_px, padding)`` pairs; ``max_sway_px <= 0`` disables
+        the gate for that row.
+    """
+    out: List[Dict[str, object]] = []
+    for gate, pad in gates:
+        key = f'side_p{pad:.2f}'
+        keep = [r for r in rows if gate <= 0 or r['sway_px'] <= gate]
+        if not keep or key not in keep[0]:
+            continue
+        sides = np.asarray([r[key] for r in keep], dtype=np.float64)
+        occ = np.asarray([100.0 * r['face_w'] * r['face_h'] / max(r[key], 1) ** 2
+                          for r in keep], dtype=np.float64)
+        sigma = size / sides
+        out.append({
+            'max_sway_px': float(gate), 'padding': float(pad),
+            'clips': len(keep),
+            'clips_pct': 100.0 * len(keep) / max(len(rows), 1),
+            'side_median': float(np.median(sides)),
+            'side_p95': float(np.percentile(sides, 95)),
+            'side_max': int(sides.max()),
+            'occupancy_median': float(np.median(occ)),
+            'occupancy_p10': float(np.percentile(occ, 10)),
+            'face_px_at_size': float(np.median(occ)) * size * size / 100.0,
+            'median_sigma': float(np.median(sigma)),
+            'downscaled_pct': float(100.0 * np.mean(sigma < 1.0)),
+            'heavy_upsample_pct': float(100.0 * np.mean(sigma > 1.25)),
+        })
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # report
 # --------------------------------------------------------------------------- #
@@ -236,13 +284,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                                         'entries.json'))
     p.add_argument('--clip_seconds', type=float, default=8.0)
     p.add_argument('--fps', type=float, default=25.0)
-    p.add_argument('--paddings', type=float, nargs='+', default=[0.2, 0.1])
-    p.add_argument('--sizes', type=int, nargs='+', default=[64, 112, 128])
+    p.add_argument('--paddings', type=float, nargs='+',
+                   default=[0.10, 0.15, 0.20, 0.00])
+    p.add_argument('--sizes', type=int, nargs='+', default=[64, 80, 96, 112, 128])
     p.add_argument('--thresholds', type=float, nargs='+',
                    default=[30.0, 40.0, 60.0, 100.0])
     p.add_argument('--width', type=int, default=726)
     p.add_argument('--height', type=int, default=480)
     p.add_argument('--json', default='')
+    p.add_argument('--face_sweep', action='store_true',
+                   help='also sweep PADDING x GATE and report how much of the '
+                        'patch is one frame\'s face, next to sigma = s/side '
+                        '(are the extra pixels MEASURED or INTERPOLATED?)')
     args = p.parse_args(argv)
 
     if not args.raw_root or not os.path.isdir(args.raw_root):
@@ -264,7 +317,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                             args.paddings, args.width, args.height)
     print(f'[ledger] measured {len(rows)} clip(s); unusable: {missing}')
 
-    key = f'side_p{max(args.paddings):.2f}'
+    # the PRODUCTION padding, not the largest one: since 2026-10-30 the shipped
+    # contract is p = 0.10, so picking `max(paddings)` would gate the ledger on a
+    # retired geometry.
+    key = f'side_p{trd.DEFAULT_ROI_PADDING:.2f}'
     report: Dict[str, object] = {
         'raw_root': args.raw_root, 'entries': args.entries,
         'n_clips': len(rows),
@@ -293,7 +349,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     _check('n_subjects', report['n_subjects'], EXPECT['n_subjects'], 0,
            lines, fails)
 
-    main_pad = max(args.paddings)
+    main_pad = trd.DEFAULT_ROI_PADDING
     s0 = report['sides'][f'p{main_pad:.2f}']
     lines.append(f'--- square side, p={main_pad:g}, pre-gate '
                  f'(n={s0.get("n")}) ---')
@@ -345,6 +401,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                          f'{st["downscaled_pct"]:5.1f} %  upsampled '
                          f'{st["upsampled_pct"]:5.1f} %  native '
                          f'{st["native_pct"]:4.1f} %')
+
+    if args.face_sweep:
+        lo = min(args.paddings)
+        gates = [(40.0, main_pad), (30.0, main_pad), (20.0, main_pad),
+                 (40.0, 0.15), (40.0, lo)]
+        sweep = face_sweep(rows, args.paddings, gates, size=96)
+        report['face_sweep'] = sweep
+        lines.append('--- padding x gate: how much of the 96^2 patch is ONE '
+                     'frame\'s face ---')
+        lines.append(f'  {"gate":>5}{"pad":>6}{"clips":>8}{"side":>6}'
+                     f'{"p95":>5}{"max":>5}{"face%":>7}{"p10":>6}'
+                     f'{"facePx":>8}{"sigma":>7}{"down%":>7}{"up>1.25%":>9}')
+        for s in sweep:
+            lines.append(
+                f'  {s["max_sway_px"]:5.0f}{s["padding"]:6.2f}{s["clips"]:8d}'
+                f'{s["side_median"]:6.0f}{s["side_p95"]:5.0f}{s["side_max"]:5d}'
+                f'{s["occupancy_median"]:7.1f}{s["occupancy_p10"]:6.1f}'
+                f'{s["face_px_at_size"]:8.0f}{s["median_sigma"]:7.2f}'
+                f'{s["downscaled_pct"]:7.1f}{s["heavy_upsample_pct"]:9.1f}')
 
     print('\n'.join(lines))
     print(f'\n[ledger] VERDICT: {"PASS" if not fails else "FAIL"} '

@@ -407,7 +407,7 @@ def test_stage3_hpc_config_uses_session_physio_norm():
         cfg = yaml.safe_load(fh)
     assert cfg['physio_norm'] == 'session'
     # the geometry that MUST still mirror the Stage-2 HPC run
-    assert cfg['input_size'] == 112
+    assert cfg['input_size'] == 96
     assert cfg['temporal_stride'] == 2
     assert cfg['sig_kernel'] == 16
     assert cfg['clip_duration'] == pytest.approx(8.0)

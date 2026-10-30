@@ -713,7 +713,7 @@ It reads the **raw** tree (no `prepare_bp4d.py` copy needed):
   `[9,10,11,12,13,20,21,22,23,24,25,26]` = nose bridge 9/20, nostrils 10/21,
   mouth corners 11/22, lips 12/13/23/24, lip centres 25/26) of all 200 frames:
   take the global `(x_min, x_max, y_min, y_max)`, extend each side by
-  `roi_padding * extent` (0.2 -> +40 % overall), then SQUARE the result
+  `roi_padding * extent` (0.10 -> +20 % overall), then SQUARE the result
   (`crop_rule: square`, the default: `side = max(w, h)`, short axis grown about
   the box centre) and translate it into the frame. Crop **all 200 frames with
   that one box** and resize to `input_size` with ONE isotropic scale

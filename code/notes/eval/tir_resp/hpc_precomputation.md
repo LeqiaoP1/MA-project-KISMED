@@ -17,6 +17,18 @@ remains is to ENABLE it in a training run (`ROI_CACHE=<out_root>`). Every number
 below is MEASURED unless explicitly flagged `estimate`. Revised 2026-10-08:
 sections 0, 1.2, 1.4, 2.3-2.6, 3.2, 3.3, 4.2, 5.1, 6, 7, 8, 9, 10.
 
+> **Superseded in part, 2026-10-30.** The ROI contract moved to
+> `roi_padding 0.10` + `input_size 96` (rationale:
+> `notes/design/ROI_crop_and_rescaling.md` §4.1; measurements:
+> `notes/eval/tir_resp/roi_geometry_ledger.md`). The `pad0.20` / 112 px numbers
+> and the shard/GB figures quoted here are therefore historical: both `pad0.20`
+> artifacts (v2 85 GB, v3 97 GiB) were **deleted 2026-10-30**, once the `pad0.10`
+> build had passed `--check` and the parity probe. Only
+> `tirroi_nose_mouth_pad0.10_square_window-hull_clip8s_src726x480_native_v3_fa9f91bdd5`
+> (73.0 GiB) exists now. The design arguments are unaffected: a per-task
+> native-resolution cache is still independent of both the hop and `input_size`,
+> which is why the contract change costs one rebuild and no re-architecture.
+
 ---
 
 ## 0. Answers in brief
@@ -38,7 +50,7 @@ enforced contract. A per-clip cache hard-codes Stage 2's window lattice and
 would be missing half of Stage 3's windows; a **per-task, native-resolution**
 cache stores pixels and is hop-independent, so one **~92 GB** cache (measured;
 section 3.2) serves Stage 2,
-Stage 3, both hops, and both the 112 px and 64 px lineages. That single fact
+Stage 3, both hops, and both the 96 px and 64 px lineages. That single fact
 decides the cache design.
 
 ---
@@ -115,7 +127,7 @@ which is exactly the read-path tuning that open question 2 is about.
    iteration). With decode gone, GPU type and rank count start to pay.
 4. **It makes geometry changes cheap.** Regeneration costs tens of minutes of
    idle CPU capacity, which matters for a project carrying two ROI lineages
-   (64/112 px) and seven tir_roi configs.
+   (64/96 px) and seven tir_roi configs.
 
 ### 1.4 What it does NOT fix
 
@@ -146,13 +158,15 @@ which is exactly the read-path tuning that open question 2 is about.
 ### 2.1 The two configs, key by key
 
 `run_waveform.py` enforces `ROI_CONTRACT_KEYS = ('roi_landmarks', 'roi_padding',
-'input_size')` against the Stage-2 checkpoint. Everything else is
-free to differ -- and one thing does:
+'input_size', 'crop_rule', 'max_sway_px')` against the Stage-2 checkpoint.
+Everything else is free to differ -- and one thing does:
 
 | key | Stage 2 `stage2_hpc_tir_roi_resp` | Stage 3 `resp_tir_roi_hpc` | match |
 |---|---|---|---|
-| `input_size` | 112 | 112 | yes (enforced) |
-| `roi_padding` | 0.2 | 0.2 | yes (enforced) |
+| `input_size` | 96 | 96 | yes (enforced) |
+| `roi_padding` | 0.10 | 0.10 | yes (enforced) |
+| `crop_rule` | `square` | `square` | yes (enforced) |
+| `max_sway_px` | 40 | 40 | yes (enforced) |
 | `roi_landmarks` | `''` (12-point nose+mouth) | `''` | yes (enforced) |
 | `clip_duration` | 8.0 | 8.0 | yes |
 | `temporal_stride` | 2 | 2 | yes |

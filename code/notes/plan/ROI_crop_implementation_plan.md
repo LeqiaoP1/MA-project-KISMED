@@ -75,7 +75,7 @@ and every existing probe on the legacy rule without edits.
 
 1. finite-filter the points, take the unpadded envelope `(xlo, xhi, ylo, yhi)` and
    keep it — I6/I7 are checked against it, not against the padded box;
-2. pad per side by that axis' own extent (unchanged, P1: `p=0.2` ⇒ 1.4x);
+2. pad per side by that axis' own extent (unchanged, P1: `p=0.10` ⇒ 1.2x);
 3. `side = max(x1 - x0, y1 - y0)`; centre `c = ((x0+x1)/2, (y0+y1)/2)`;
 4. `n = max(min_size, ceil(side))` — **one** integer side for both axes;
 5. `ix0 = floor(cx - n/2)`, `ix1 = ix0 + n`; same for `y`. This guarantees
@@ -392,6 +392,7 @@ tirroi_nose_mouth_pad0.20_square_window-hull_clip8s_src726x480_native_v3_adc046c
 The v2 artifact (`..._minmax_..._v2_9d0214aefa`, 85 GB, 1385 shards) stays
 UNTOUCHED beside it; the loader refuses it (`format_version`/`crop_rule` are in
 `COMPARE_KEYS`). Storage came out at 97 GiB, below the ~120 GB estimate.
+**Both this v3 artifact and the v2 one were deleted on 2026-10-30** — see Step 21.
 
 Note: `--check` and the parity probe must run on a compute node (`srun -p deflt
 -n 1 -c 8`), not the login node. Both probes under `notes/eval/tir_resp/` needed
@@ -476,17 +477,83 @@ reproduces the legacy pixels and the legacy corpus exactly. Gate 6 must pass bef
 the existing cache directory is touched. If the square build is abandoned, revert
 the 8 YAMLs and the geometry resolves to the legacy rule without a code revert.
 
+**Step 21 — contract move to `roi_padding 0.10` + `input_size 96` (DONE 2026-10-30).**
+
+Trigger: inspection of `M035_T6` showed the boxed region visibly larger than the
+mouth+nose it is supposed to contain (worst kept clip: 14.5 % occupancy). The
+measurement showed the occupancy was not a gate problem but a padding problem, and
+that **σ is a density fixed by `s / side`, so `roi_padding` and `input_size` are one
+decision**: `0.10` at `s = 112` would upsample 82.3 % of clips (σ 1.18), while
+`0.10` at `s = 96` holds σ at 1.01. Chosen: `0.10 / 96 / 40`.
+
+| surface | change |
+|---|---|
+| `configs/pretrain/*tir_roi*`, `configs/finetune/*tir_roi*` (8 files) | `roi_padding 0.2 -> 0.10`; `input_size 112 -> 96` on the three HPC files, local smoke stays 64 |
+| `runners/run_build_roi_cache.py`, `runners/run_survey_tir_resp.py` | `--roi_padding` default -> `trd.DEFAULT_ROI_PADDING` (was a hardcoded 0.2) |
+| `scripts/hpc/submit_roi_cache.sbatch` | `CACHE_ROI_PADDING` default documents the runner value; lineage 112 -> 96 |
+| `scripts/hpc/submit_inspect_tir_resp.sbatch` | `INSPECT_SIZE` 112 -> 96, `INSPECT_ROI_PADDING` 0.2 -> 0.1 |
+| `scripts/hpc/gate_native.sbatch`, `gate_model_input.sbatch` | probe defaults follow the new contract and write a NEW output file, so the recorded 112 px results stay intact |
+| `notes/eval/tir_resp/roi_geometry_ledger.py` | `EXPECT` re-baselined (side 95/131/353 pre-gate, 95/125/174 at 40 px); the "production" column now keys off `trd.DEFAULT_ROI_PADDING` instead of `max(paddings)` |
+| `notes/eval/tir_resp/cache_parity_probe.py` | `_GEOM['padding']` -> `trd.DEFAULT_ROI_PADDING` |
+| `notes/design/ROI_crop_and_rescaling.md` | §1 token counts, §3.2 P1 + side table, §4.1 pairing table and conclusion (replacing "Therefore `s=112, p=0.2`"), §4.2, §4.5 lineage table + pos-embed rationale, §7 A9, §8 defaults, §9 item 1, §10 ledger row |
+| `notes/eval/tir_resp/hpc_precomputation.md` | supersession note; Stage-2/3 key table |
+
+Verified: `pytest` **413 pass**, `compileall` clean, ledger **PASS 0 mismatches**.
+Occupancy 30.3 % -> **41.1 %** of the patch (p50), clips below 20 % occupancy
+6.8 % -> **0.9 %**, tokens/frame 49 -> **36**.
+
+Cache rebuilt and gated the same day. Key
+`tirroi_nose_mouth_pad0.10_square_window-hull_clip8s_src726x480_native_v3_fa9f91bdd5`
+(job `55785296`, 32 elements):
+
+| gate | result |
+|---|---|
+| array | 32/32 COMPLETED |
+| `--status` | **1385 cached / 15 skipped / 0 missing**, 78.4 GB (73.0 GiB); all 15 skips are `missing_ir_features` |
+| `--index` | manifest written |
+| `--check --hops 1.0 2.0 --input_size 96 --crop_rule square` | **PASS**, 30 clips over 4 sessions x 2 hops |
+| `cache_parity_probe.py --tasks 12 --padding 0.1` | **PASS** T0-T3: 1222 clips contained (0 outside), 8/8 byte-identical, 1600/1600 frames identical |
+| loader attach (Stage-2 geometry) | **PASS**: `[3,200,96,96]` + resp, and **7 ms/sample vs 1425 ms** without the cache |
+
+Consequences: the encoder is re-pretrained from Stage 1 (the front end changed),
+`ROI_CONTRACT_KEYS` aborts any old checkpoint, and the cache was rebuilt; the two
+`pad0.20` artifacts (v2 85 GB, v3 97 GiB) were then **DELETED on 2026-10-30**, so
+the retired geometry is reproducible only from the ledger, not from stored pixels.
+
+**Step 22 — re-run launcher for the 96 px lineage (DONE 2026-10-30).**
+
+`submit_pretrain.sbatch` and `submit_waveform_tir_roi.sbatch` derive the run dir
+from the CONFIG BASENAME, which does not encode geometry, and `run_pretrain.py`
+auto-resumes from `<out_dir>/checkpoints/latest_checkpoint.txt`
+(`utils/checkpoint.py::auto_resume_model`). Relaunching with the shipped defaults
+therefore targets the 112 px tree (`pretrain/stage2_hpc_tir_roi_resp_fold<k>`,
+31 `.pth` each) and either dies on the pos_embed shape (2450 vs 1800 tokens) or
+overwrites it name-for-name once the resume pointer is gone.
+
+| change | purpose |
+|---|---|
+| `scripts/hpc/submit_waveform_tir_roi.sbatch` — new `STAGE2_RUN_NAME` | renames the Stage-2 BASE only, so fold k still pairs with `..._fold<k>`. Default unchanged. (`STAGE2_DIR` applies to EVERY fold — single-fold jobs only.) |
+| `scripts/hpc/chain_lineage96.sh` (new) | submits the chain under `*_96` names: Stage-2 (5 folds) -> Stage-3 (5 folds, `afterok`) -> per-fold eval dumps (one single-GPU job each, `afterok`). Guards: refuses a config that is not 96/0.10, and refuses any run dir that already holds `.pth`. `DRYRUN=1` prints without submitting; `TAG=<x>` isolates a second copy. |
+
+The 112 px pretrain tree, the five Stage-3 fold dirs and their `entries.json` (the
+ledger's population source) all keep their defaults and are not touched.
+
+---
+
 ## Open questions carried into implementation
 
 1. **Motion threshold.** 40 px as designed (96.8 % of clips, T4 80 %) vs 30 px
    (94.0 %, T4 71 %) vs the scale-free `infl <= 1.6` (94.1 %). The plan implements
    40 and prints per-task attrition; the other two stay measurable from the ledger.
-2. **`input_size`.** 112 is sigma ~ 1.01 at the median (native), 128 gives ~1.15
-   and +31 % tokens. Staying at 112 keeps the geometry change single-variable; the
-   64 px local lineage is unaffected.
+2. **`input_size`.** ~~112 is sigma ~ 1.01 at the median (native), 128 gives ~1.15
+   and +31 % tokens.~~ **Resolved 2026-10-30: 96**, paired with `roi_padding 0.10`.
+   The question was mis-framed: 112 is ~1:1 only when the box is 110 px, i.e. at
+   `p = 0.20`. At `p = 0.10` the box is 95 px, so 96 is the 1:1 grid and 112 would
+   be a 1.18x upsample. See Step 21 and design §4.1.
 3. **A/B protocol.** The gate removes 3.2 % of clips, so a new run is not
    comparable clip-for-clip with any earlier one. One fold (legacy vs square) before
    committing to a 5-fold re-run.
-4. **`run_inspect_tir_resp.py --roi_padding` defaults to `0.1`** while every shipped
-   config uses `0.2`. Pre-existing mismatch, not fixed here — but the two new flags
-   must default to the training values so inspection does not drift further.
+4. ~~**`run_inspect_tir_resp.py --roi_padding` defaults to `0.1`** while every shipped
+   config uses `0.2`. Pre-existing mismatch, not fixed here~~ — **resolved
+   2026-10-30**: the configs moved to `0.10`, so the runner default, the module
+   default and every shipped config now agree.

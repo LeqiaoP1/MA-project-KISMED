@@ -1,7 +1,8 @@
 # Feature Design — Landmark ROI Extraction and Rescale to a Fixed Square
 
 **Status**: implemented 2026-10-29 in the TIR lineage (`data/tir_resp_dataset.py`,
-`data/roi_cache.py`). Implementation plan: `code/notes/plan/ROI_crop_implementation_plan.md`.
+`data/roi_cache.py`); contract moved to `roi_padding 0.10` + `input_size 96` on
+2026-10-30 (the pairing argument is §4.1). Implementation plan: `code/notes/plan/ROI_crop_implementation_plan.md`.
 The RGB lineage keeps the legacy geometry and is bound to the same contract when it
 is ported.
 **Owners of the behaviour**: `data/tir_resp_dataset.py` (thermal), `data/rgb_roi_dataset.py` (visible), `data/rgb_features.py` (49-pt track), `data/roi_cache.py` (storage).
@@ -30,8 +31,9 @@ byte-identical to the `IRFeatures` track). Reproduce them with
 The two visual streams of BP4D+ are full-room frames: thermal `726 x 480`, visible
 `1392 x 1040`. The signal of interest (perinasal airflow, lip motion) occupies a
 few percent of the area, and the encoder's token budget is small — at patch 16 and
-`input_size = 112` there are `7 x 7 = 49` spatial tokens per frame, at `64` only
-`4 x 4 = 16`. Feeding the full frame spends most attendable tokens on background.
+`input_size = 96` there are `6 x 6 = 36` spatial tokens per frame, at `64` only
+`4 x 4 = 16`, at `112` 49. Feeding the full frame spends most attendable tokens on
+background.
 
 | ID | Requirement |
 |----|-------------|
@@ -177,9 +179,9 @@ the square into the frame would **cut the landmark envelope**, the clip is dropp
 
 Four properties follow directly and are normative:
 
-* **P1 — `p` is per side.** `p = 0.2` yields **1.4×** the landmark extent (not
-  1.2×). Every shipped config uses `0.2`; documented in those terms so the
-  "expand by 20 %" reading cannot recur. Because the side is $\ell$, the margin
+* **P1 — `p` is per side.** `p = 0.10` yields **1.2×** the landmark extent (not
+  1.1×). Every shipped TIR-ROI config uses `0.10`; documented in those terms so the
+  "expand by 10 %" reading cannot recur. Because the side is $\ell$, the margin
   `p` is realised exactly on the **longer** axis and is larger on the shorter one.
 * **P2 — the crop is square, so the rescale can be isotropic.** Growing the short
   axis adds **background only, never data loss**. Measured cost on 21 231 clips:
@@ -193,10 +195,18 @@ Four properties follow directly and are normative:
   and integer rounding; clamping is an explicit drop, rounding is ⌈·⌉-biased, i.e.
   always outward.
 
-Measured square side (`p = 0.2`, 21 231 clips): median **111**, p95 **153**,
-max **413** px before the motion gate; median **110**, p95 **145**, max **202** px
-after `max_sway_px = 40` — i.e. the gate removes the 2× tail that the rescale would
-otherwise have to absorb.
+Measured square side (21 231 clips), at the shipped `p = 0.10` and at the retired
+`p = 0.20`:
+
+| `roi_padding` | pre-gate median / p95 / max | after `max_sway_px = 40` |
+|---|---|---|
+| **0.10 (shipped)** | **95 / 131 / 353** px | **95 / 125 / 174** px |
+| 0.20 (retired) | 111 / 153 / 413 px | 110 / 145 / 202 px |
+
+The gate removes the 2× tail that the rescale would otherwise have to absorb, in
+both cases. What the smaller padding removes is the *typical* 15 px of margin, which
+lifts the nose+mouth envelope from 30.3 % to **41.1 %** of the patch (p5 25.5 %,
+p95 52.6 %; only 0.9 % of clips below 20 % of the patch, against 6.8 % at `p = 0.20`).
 
 ### 3.3 Granularity decision
 
@@ -312,8 +322,10 @@ That crop is the **square hull**
 > frame.
 
 The rule is exact rather than padded: the hull *is* the bounding box of those boxes,
-so containment holds by construction and no safety margin is needed. Cost: about
-**120 GB** for the 1385-session corpus at native resolution.
+so containment holds by construction and no safety margin is needed. Cost, measured
+on the shipped `p = 0.10` build: **73.0 GiB (78.4 GB)** for 1385 subject-tasks at
+native resolution — the tighter box is ~25 % smaller than the `p = 0.20` artifact
+(97 GiB).
 
 Two invariants make it safe:
 
@@ -355,25 +367,39 @@ $$
 > stable — median 95 × 110 (aspect 0.86), the widest clip 413 × 252 (1.64), and a
 > `nostrils` set 108 × 13 (8.3).
 
-Measured scale on 21 231 clips (median σ / share that is a genuine downscale):
+Measured on the 20 558 clips that survive `max_sway_px = 40`:
 
-| configuration | median σ | downscaled | upsampled |
-|---|---|---|---|
-| **isotropic, `p = 0.2`, `s = 112`** | **1.01** | **45.8 %** | 54.2 % |
-| isotropic, `p = 0.2`, `s = 128` | 1.15 | 18.7 % | 81.3 % |
-| isotropic, `p = 0.1`, `s = 112` | 1.18 | 16 % | 84 % |
-| isotropic, `p = 0.1`, `s = 128` | 1.35 | 6 % | 94 % |
+| `p` | `s` | median $\ell$ | median σ | downscaled | upsample > 1.25 | verdict |
+|---|---|---|---|---|---|---|
+| 0.20 | 112 | 110 | 1.02 | 44.0 % | 6.3 % | retired: 15 px of avoidable margin in every box |
+| 0.20 | 96 | 110 | 0.87 | 82.8 % | 0.1 % | rejected: a 1.15× downsample of nearly every clip |
+| 0.10 | 112 | 95 | 1.18 | 13.7 % | 33.8 % | rejected: 84.9 % of clips upsampled |
+| **0.10** | **96** | **95** | **1.01** | **44.4 %** | **5.3 %** | **shipped** |
+| 0.10 | 64 | 95 | 0.67 | 98.8 % | 0.0 % | rejected: ~1.5× downsample |
 
-**The corpus is natively ~112 px.** With the square rule and the shipped padding,
-`s = 112` lands at σ = 1.01 — the median clip is measured at native resolution.
-`s = 128` would add ~15 % interpolation for the median clip and only help the
-19 % whose box is large. **Therefore: `s = 112`, `p = 0.2`**, and the padding knob
-needs no change (the square already supplies the margin on the short axis).
+**σ is a density, not a size, and it is fixed by the ratio `s / ℓ` — so `roi_padding`
+and `input_size` are ONE decision, not two.** Padding sets $\ell$; `input_size` then
+has to follow it if σ is to stay near 1. The `p = 0.10, s = 112` row is exactly what
+happens when they are moved independently: the box tightens to 95 px while the grid
+stays at 112, so every clip is upsampled 1.18× and a third of the corpus past
+1.25× — the same photons spread over 650 extra tokens.
 
-Residual, stated plainly: **54 % of clips still upsample** at the median (σ ≈
-1.0–1.5), because the native landmark envelope is only 68 × 79 px. Eliminating
-upsampling entirely requires a fixed 1:1 window, which costs anatomy-scale
-normalisation and background share — rejected in §7 (A8), not forgotten.
+**Therefore: `roi_padding = 0.10` with `input_size = 96`.** The median clip lands at
+σ = 1.01 — the same sampling *character* as the retired `0.20 / 112` pair — on a
+smaller box (41.1 % of the patch is face instead of 30.3 %) and 36 tokens instead of
+49 per frame.
+
+Reading the density correctly retires an older claim: the box is "natively ~112 px"
+only in the sense that it *contains* a ~60 px mouse plus head travel plus padding.
+σ measures the density, and at `0.10 / 96` one sensor pixel maps to 1.01 grid points,
+so the mouse spans ~61 grid points either way. Nothing is being resampled to preserve
+a box size that is mostly background.
+
+Residual, stated plainly: ~44 % of clips downsample and ~53 % upsample slightly,
+because the box side still spreads from 79 to 174 px around a single `s`. That spread
+is what a clip-static box costs (§3.3); collapsing it entirely requires a fixed 1:1
+window, rejected in §7 (A8). What the pairing guarantees is that the *median* clip is
+at native resolution and the tail is bounded — 5.3 % of clips pass 1.25× upsampling.
 
 The mapping is **per frame but frame-independent**: the same $(x_0,x_1,y_0,y_1)$
 and the same σ are applied to every frame of the clip. Identity of the sampling
@@ -390,10 +416,11 @@ lineage — and the comparison is against the single side $\ell$:
 | $s > \ell$ | bilinear (`INTER_LINEAR`) | the output is finer than the crop: interpolate smoothly |
 
 Because the crop is static and square, **the kernel and σ are constant over the
-clip** (I4). The policy is deliberately *not* "bilinear always": at the median box
-`112` is ≈1:1 (bilinear), but the 64 px lineages are a >1.5× downsample, where
-bilinear point-samples and aliases the thermal texture. Measured evidence that the
-resample size is not neutral lives in
+clip** (I4). The policy is deliberately *not* "bilinear always": at the shipped
+median box (95 px) `96` is ≈1:1 (bilinear); the 64 px lineage on the same box is a
+0.67× downsample, where point-sampling would alias the thermal texture and
+area-averaging does not. Measured evidence that
+ the resample size is not neutral lives in
 `notes/eval/tir_resp/native_resolution_gate.py` and `gate_model_input.py`.
 
 Two stream-specific notes:
@@ -438,20 +465,27 @@ here (that is a model-side / target-side concern, `physio_norm`).
 ### 4.5 `input_size` lineages and model coupling
 
 `input_size` is not free: with patch 16 it fixes the spatial token grid, it is part
-of the Stage-2/Stage-3 geometry contract, and it is one of `ROI_CONTRACT_KEYS`.
-With **no position-embedding interpolation** in the model (`core/input_adapters.py`
-declares `interpolate_pos_encoding` but never uses it), a different `input_size` is
-a **different model**, not a resize.
+of the Stage-2/Stage-3 geometry contract, and it is one of `ROI_CONTRACT_KEYS`. It is
+also **lineage-locked by the position embedding**: `positions.<stream>.pos_embed` is
+a learned parameter shaped `[1, Gt·Gh·Gw, D]`, initialised from a 3-D sincos grid
+built for *this* model's grid (`core/multimae.py::_init_pos_embeds`). The
+VideoMAE/MAE loader never imports `pos_embed` or `cls_token` from the checkpoint
+(`core/multimae.py::load_pretrained_encoder`), and
+`utils/pos_embed.py::interpolate_pos_embed` exists but is called nowhere. So a
+different `input_size` is a **different model**, not a resize — while the patch
+embed, being a `Conv3d(2,16,16)` convolution, transfers verbatim at any grid.
 
-| Lineage | `input_size` | Grid @ patch 16 | median σ (isotropic, `p=0.2`) | Why |
-|---|---|---|---|---|
-| TIR-ROI local / smoke | 64 | 4 × 4 = 16 | 0.58 | single-GPU prototyping; a strong downsample |
-| **TIR-ROI HPC (Stage 2 → Stage 3)** | **112** | 7 × 7 = 49 | **1.01** | the crop is natively ~112 px, so 112 is 1:1 at the median |
-| TIR-ROI alternative (rejected) | 128 | 8 × 8 = 64 | 1.15 | +31 % tokens and +15 % interpolation; only the 19 % large-box clips gain |
-| RGB-ROI local | 64 | 4 × 4 | — | the all-49-point face box is far larger than 64, so always a downsample |
-| Full-frame (`stage2_multimodal`) | 224 | 14 × 14 | — | *not* an ROI geometry (no landmark crop) |
+| Lineage | `input_size` | Grid @ patch 16 | tokens/frame | median σ | Why |
+|---|---|---|---|---|---|
+| TIR-ROI local / smoke | 64 | 4 × 4 | 16 | 0.67 | single-GPU prototyping; a deliberate 1.5× downsample |
+| **TIR-ROI HPC (Stage 2 → Stage 3)** | **96** | 6 × 6 | **36** | **1.01** | pairs with `p = 0.10` ($\ell$ = 95 px), so the median clip is 1:1 |
+| TIR-ROI HPC, retired | 112 | 7 × 7 | 49 | 1.02 | paired with `p = 0.20`: the same density on a box with 15 px of extra margin |
+| TIR-ROI alternative (rejected) | 112 @ `p=0.10` | 7 × 7 | 49 | 1.18 | σ rises to 1.18: 84.9 % of clips upsampled, nothing bought |
+| TIR-ROI alternative (rejected) | 128 | 8 × 8 | 64 | 1.15 @ `p=0.2` | +78 % tokens over 96 for interpolation only |
+| RGB-ROI local | 64 | 4 × 4 | 16 | — | the all-49-point face box is far larger than 64, so always a downsample |
+| Full-frame (`stage2_multimodal`) | 224 | 14 × 14 | 196 | — | *not* an ROI geometry (no landmark crop) |
 
-Checkpoints are **lineage-locked**: 64, 112 and 128 are different front-ends and
+Checkpoints are **lineage-locked**: 64, 96, 112 and 128 are different front-ends and
 cannot be mixed; the abort is intentional.
 
 ---
@@ -504,7 +538,7 @@ cannot be mixed; the abort is intentional.
 | A6 | **Full-frame centre crop + bigger model** | the token-budget argument for R1; the full-frame path remains available (`stage2_multimodal`) as the reference geometry |
 | A7 | **Pose/roll alignment before cropping** | out of scope by requirement; would add a second interpolation and a second failure mode |
 | A8 | **Fixed `S x S` native window, 1:1, no resampling at all** | satisfies "no resampling" but loses anatomy-scale normalisation (envelope spans 47–295 px), fills only **44 %** of the patch with anatomy (median face width 56 px in a 128 window), and drops 4.8–11.9 % of clips on geometry alone. The ROI's founding purpose — spend tokens on the face — is what it gives up |
-| A9 | **`roi_padding = 0.1`** | with isotropic scaling it *increases* interpolation: median σ goes 1.01 → 1.18 at s=112, and every lineage becomes a heavy upsampler. The square already supplies the short-axis margin, so there is nothing left for a smaller `p` to buy |
+| A9 | **`roi_padding = 0.10` with `input_size` pinned at 112** | with isotropic scaling it *increases* interpolation: median σ goes 1.02 → 1.18 and 84.9 % of clips upsample, so there is nothing to buy. Rejected **in that pairing only** — moving `s` down with `p` (96) restores σ = 1.01, and that pairing *is* the shipped contract (§4.1). The lesson is that `p` and `s` are one decision |
 | A10 | **Drop clips by box width** ("too wide ⇒ too much motion") | width conflates face size with motion (ρ(sway, face width) = +0.15); 17 % of width-based drops are simply large-faced subjects. `sway` / `infl` measure motion directly (§3.4) |
 
 ---
@@ -515,9 +549,9 @@ cannot be mixed; the abort is intentional.
 |---|---|---|---|
 | `roi_landmarks` | which points define the box | `''` = 12-pt `nose_mouth` (TIR); `face` = all 49 (RGB) | must be identical in Stage 2 and Stage 3 |
 | `crop_rule` | `'square'` (grow the short axis to `max(w_b,h_b)`) | `'square'` | frozen cache parameter; `'box'` is the legacy unsquared geometry and exists only for A/B |
-| `roi_padding` | per-side margin, fraction of that axis' extent | `0.2` in every shipped ROI config (`0.1` in the base-class default) | contract constant; part of the cache key; realises the margin exactly on the longer axis (§3.2, P1) |
+| `roi_padding` | per-side margin, fraction of that axis' extent | `0.10` in every shipped TIR-ROI config (and the base-class default); the RGB-ROI configs still ship `0.2` and are contract-locked until ported | contract constant; part of the cache key; realises the margin exactly on the longer axis (§3.2, P1); must be moved **with** `input_size` (§4.1) |
 | `max_sway_px` | motion gate, max head excursion inside a window | 40 (TIR source px) | selection filter — **not** in the cache key, but in `ROI_CONTRACT_KEYS` |
-| `input_size` | square side after rescale | 64 in every shipped ROI config (class defaults: 64 TIR base, 224 RGB base); **112** for the TIR HPC Stage-2/3 lineage | patch-size multiple; part of the geometry contract |
+| `input_size` | square side after rescale | 64 in the local smoke configs; **96** for the TIR HPC Stage-2/3 lineage (class defaults: 64 TIR base, 224 RGB base) | patch-size multiple; part of the geometry contract; must be moved **with** `roi_padding` (§4.1) |
 | `decode_scale` (RGB) | JPEG DCT downscale; box remapped per frame | `1` | a *different front-end*, not a speed-only knob |
 | `clip_seconds` / `clip_stride` | window length and hop (hence the box's temporal span) | class default 8.0 s, non-overlapping unless `clip_stride` is set; shipped: 8.0 s / 1.0 s hop (TIR), 5.0 s (RGB-BP) | **clip length is now in the cache key** (the hull is built for it); the hop still is **not** |
 | `temporal_stride` | decimation *inside* the window | 2 in both shipped Stage-2 configs (local and HPC) | applied **after** the box (I9) |
@@ -527,9 +561,10 @@ cannot be mixed; the abort is intentional.
 
 ## 9. Open items (accepted risks, not decided here)
 
-1. **54 % of clips still upsample** at the median (σ ≈ 1.0–1.5), because the native
-   envelope is 68 × 79 px while the target grid is 112. Removing this entirely
-   requires A8, which costs more than it buys. Recorded, not solved.
+1. **The box side still spreads ~2×** (up to 174 px after the gate) around the single
+   `s = 96`, so ~44 % of clips downsample and ~53 % upsample slightly (5.3 % past
+   1.25×). That is the price of a clip-static box (§3.3); collapsing it requires A8,
+   which costs more than it buys. Recorded, not solved.
 2. **The motion gate is task-biased.** At `max_sway_px = 40` the corpus loses
    3.2 % of clips — but 20 % of T4 and 5–6 % of T1/T6/T7. Any per-task comparison in
    `notes/eval/tir_resp/` must state whether it was computed before or after the
@@ -566,7 +601,7 @@ cannot be mixed; the abort is intentional.
 | Integration | cached vs decoded pixels byte-identical | `notes/eval/tir_resp/cache_parity_probe.py` |
 | Measurement | box size / detection vs region choice | `notes/eval/tir_resp/roi_sweep.py`, `roi_box_impact.py`, `roi_contrast_scan.py` |
 | Measurement | does `input_size` itself attenuate the signal | `native_resolution_gate.py`, `gate_model_input.py` |
-| Measurement | **geometry ledger**: σ distribution, down/upsample share, per-task attrition — promote the scratch probe here with the port | `notes/eval/tir_resp/` (to be added) |
+| Measurement | **geometry ledger**: side distribution, σ / down- vs up-sample share, per-task attrition — a gate (non-zero on drift), not a printout | `notes/eval/tir_resp/roi_geometry_ledger.py` |
 
 ---
 

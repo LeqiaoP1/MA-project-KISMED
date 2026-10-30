@@ -33,6 +33,10 @@
 #               are cached, so the 2 s -> 1 s clip_stride change needs no rebuild).
 #               ROI_CACHE='' disables it. See the note above ARGS below.
 #   RUN_NAME / OUT_ROOT   output dir controls (default: $WORK_SCRATCH)
+#   STAGE2_RUN_NAME       Stage-2 run BASENAME to fine-tune from, paired PER FOLD
+#                         (default: stage2_hpc_tir_roi_resp). Use this -- not
+#                         STAGE2_DIR -- when the Stage-2 lineage was renamed, so
+#                         fold k still pairs with stage2..._fold<k>.
 #   VAL_SUBJECT / TASK_SET / EPOCHS / BATCH_SIZE
 #   Anything after the script name is forwarded to the runner verbatim.
 #SBATCH --job-name=st3_resp_tir
@@ -169,7 +173,11 @@ run_fold() {
     shift          # the rest are runner args forwarded from the submit command
     local run_name="${RUN_NAME}_fold${fold}"
     local out_dir="${OUT_DIR:-$OUT_ROOT/finetune/$run_name}"
-    local stage2_dir="${STAGE2_DIR:-$OUT_ROOT/pretrain/stage2_hpc_tir_roi_resp_fold${fold}}"
+    # STAGE2_RUN_NAME renames the BASE only, so each fold still pairs with ITS OWN
+    # Stage-2 run. An explicit STAGE2_DIR applies to EVERY fold, which would pair
+    # a fold with a Stage-2 model that already saw its test subjects -- use it
+    # only for a single-fold job (FOLDS=<k>).
+    local stage2_dir="${STAGE2_DIR:-$OUT_ROOT/pretrain/${STAGE2_RUN_NAME:-stage2_hpc_tir_roi_resp}_fold${fold}}"
     local finetune="${FINETUNE:-}"
     local args=()
 

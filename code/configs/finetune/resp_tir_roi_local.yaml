@@ -47,7 +47,7 @@ target: resp
 # ---- data: RAW-tree thermal ROI (the Stage-2 input modality) ----
 data_set: tir_roi_resp             # -> build_tir_roi_finetune_dataset (Stage-3 view)
 data_path: ../data/raw/BP4D        # $RAW_DATA_PATH equivalent; NOT the canonical tree
-roi_padding: 0.2                   # per-side ROI margin -- MUST equal the Stage-2 run
+roi_padding: 0.10                  # per-side ROI margin -- MUST equal the Stage-2 run
 crop_rule: square                  # MUST equal the Stage-2 run: the padded box
                                    #   is squared BEFORE the rescale, so ONE
                                    #   scale factor (sx == sy) is applied

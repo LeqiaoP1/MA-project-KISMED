@@ -64,12 +64,14 @@ if [ ! -d "$RAW_ROOT" ]; then
     exit 1
 fi
 
-# The recorded gate's 8 sessions, so the 112/native rows are directly
-# comparable to the recorded 0/8.
+# The recorded gate's 8 sessions. NOTE: the shipped gate_native_112.json was
+# measured under the PREVIOUS contract (roi_padding 0.2 / input_size 112); the
+# defaults below follow the current 0.10 / 96 contract, so a new run writes its
+# own file and the old record stays intact.
 SESSIONS="${SESSIONS:-F001_T1,F001_T3,F002_T1,F003_T2,F004_T2,F004_T3,F004_T9,F004_T8}"
-SIZES="${SIZES:-native,112,64}"
+SIZES="${SIZES:-native,96,64}"
 NPERM="${NPERM:-200}"
-OUT="${OUT:-notes/eval/tir_resp/gate_native_112.json}"
+OUT="${OUT:-notes/eval/tir_resp/gate_native_96.json}"
 
 # Cap the thread pool: the permutation loop is BLAS-bound and would otherwise
 # claim every core on the node.
@@ -92,7 +94,7 @@ python -u notes/eval/tir_resp/native_resolution_gate.py \
     --sessions "$SESSIONS" \
     --sizes "$SIZES" \
     --nperm "$NPERM" \
-    --roi_padding 0.2 \
+    --roi_padding 0.1 \
     --device cpu \
     --out "$OUT"
 RC=$?

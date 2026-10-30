@@ -113,8 +113,8 @@ def test_stage2_hpc_resolves_the_intended_values(monkeypatch):
     a = _stage2(monkeypatch)
     assert a.data_set == 'tir_roi'
     assert a.streams == 'tir,resp'
-    assert a.input_size == 112
-    assert a.roi_padding == pytest.approx(0.2)
+    assert a.input_size == 96
+    assert a.roi_padding == pytest.approx(0.1)
     assert a.min_signal_spread == pytest.approx(0.1)
     assert a.rail_touch_v == pytest.approx(9.90)
     assert a.clip_duration == pytest.approx(8.0)
@@ -182,11 +182,15 @@ def test_stage3_hpc_leaves_the_encoder_to_the_fold_aware_job_script(monkeypatch)
     assert a.max_clips == 0
 
     # ... and the sweep script must actually be fold-aware, or the empty key
-    # above would degrade into "train from random weights".
+    # above would degrade into "train from random weights". The Stage-2 BASE
+    # name is a knob (STAGE2_RUN_NAME, added for the 96 px lineage so a renamed
+    # Stage-2 run still pairs fold-for-fold), but the default must remain the
+    # shipped Stage-2 run and the pairing must stay PER FOLD.
     with open(os.path.join(CODE_DIR, 'scripts', 'hpc',
                            'submit_waveform_tir_roi.sbatch')) as fh:
         script = fh.read()
-    assert 'stage2_hpc_tir_roi_resp_fold${fold}' in script
+    assert 'STAGE2_RUN_NAME:-stage2_hpc_tir_roi_resp}' in script
+    assert '_fold${fold}' in script
     assert '--n_folds "$N_FOLDS"' in script
     assert '--fold "$fold"' in script
 

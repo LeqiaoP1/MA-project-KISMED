@@ -72,7 +72,7 @@ Box = Tuple[int, int, int, int]
 #: still cannot drift from the writer's parameters -- the writer keys its cache
 #: on exactly these fields.
 _GEOM: Dict[str, object] = {
-    'padding': 0.2,
+    'padding': trd.DEFAULT_ROI_PADDING,
     'crop_rule': trd.DEFAULT_CROP_RULE,
     'clip_seconds': trd.DEFAULT_CLIP_SECONDS,
     'fps': trd.DEFAULT_FPS,
