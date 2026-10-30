@@ -4,11 +4,10 @@ Draws, for one clip of one session, WHAT THE MODEL WILL ACTUALLY RECEIVE and
 checks that it is what the ROI strategy promises:
 
 * **TIR + clip-static ROI** -- the clip's first thermal frame with the single
-  crop box that is applied to ALL 200 frames, the 12 target landmarks of the
-  mouth + nose (1-indexed user-guide labels 9, 10, 11, 12, 13, 20, 21, 22, 23,
-  24, 25, 26) drawn colour-coded by region, and the same target points of every
-  frame scattered faintly behind them -- the points that min/max produced the
-  box, so the "one box per clip, no per-frame jitter" claim is visible.
+  crop box that is applied to ALL 200 frames, the target landmarks of the
+  mouth + nose drawn colour-coded by region, and the same target points of every
+  frame scattered faintly behind them -- the points the box was built from, so
+  the "one box per clip, no per-frame jitter" claim is visible.
 * **ROI patch** -- exactly the ``[3, T, H, W]`` tensor slice the dataset
   returns (first frame), NOT a re-crop: if the tensor and the box disagreed,
   this panel would show it. The SAME 12 landmarks are drawn again, mapped into
@@ -46,7 +45,14 @@ Usage (from ``code/``)::
     python runners/run_inspect_tir_resp.py --list
     python runners/run_inspect_tir_resp.py --subject F001 --task T1 --clip_index 0
     python runners/run_inspect_tir_resp.py --subject F001 --task T1 --clip_index 0,1,7
+    python runners/run_inspect_tir_resp.py --subject F001 --task T1 --t_start 12
     python runners/run_inspect_tir_resp.py --input_size 64 --no-plot
+
+``--clip_index`` addresses the ENTRY list, which the motion gate renumbers: an
+index means a different window before and after a geometry change. ``--t_start``
+(seconds) / ``--frame_start`` (frames) address the WINDOW itself and override
+``--clip_index``; if the window is not in the entry list the tool re-applies the
+gates and reports which one dropped it, exiting non-zero.
 
 Paths default to ``$RAW_DATA_PATH`` (raw BP4D root) and
 ``$OUTPUT_DIR/inspect_data/tir_resp`` (see ``scripts/env_local.sh``); without the
@@ -70,10 +76,11 @@ _REPO_DIR = os.path.dirname(_CODE_DIR)
 FIG_TAG = 'clip'
 
 #: Inspection default ROI-patch side. ``trd.DEFAULT_INPUT_SIZE`` (64) is the
-#: TRAINING geometry -- a DOWN-sample of the ~73x89 px native box, which is
-#: too small to read in the figure. 112 up-samples the same crop so the patch
-#: starts to look like the face it is; it does NOT change what the model sees
-#: (pass ``--input_size 64`` to inspect the training geometry exactly).
+#: LOCAL/smoke training geometry -- a DOWN-sample of the ~73x89 px native box,
+#: which is too small to read in the figure. 112 is both the HPC Stage-2/3
+#: lineage's ``input_size`` and an up-sample that starts to look like the face
+#: it is; it does NOT change what the model sees (pass ``--input_size 64`` to
+#: inspect the local training geometry exactly).
 DEFAULT_INSPECT_INPUT_SIZE = 112
 
 #: the 12 ROI landmarks split by region, for the colours in panel 1
@@ -159,13 +166,17 @@ def _plot_clip(ds, index: int, path: str, box, lm, frame0, tir, resp):
     patch = tir[:, 0].permute(1, 2, 0).numpy()
     ax['patch'].imshow(np.clip(patch, 0.0, 1.0), interpolation='nearest',
                        aspect='equal')
-    # The SAME 12 landmarks, re-expressed in PATCH pixels: the crop is the box
-    # stretched to input_size, so x_patch = (x - x0) * S / (x1 - x0), likewise
-    # y_patch. Drawn for every frame faintly, then the clip's first frame
-    # colour-coded exactly like panel 1 (no second legend -- panel 1 has it).
+    # The SAME landmarks, re-expressed in PATCH pixels. The crop is rescaled with
+    # ONE factor sigma = S / side: with crop_rule='square' the box is square, so
+    # sx == sy and the anatomy is not deformed. A per-axis factor here would
+    # draw a mapping the pipeline does not perform.
     s_px = float(ds.input_size)
-    px = (p[..., 0] - x0) * (s_px / float(max(x1 - x0, 1)))
-    py = (p[..., 1] - y0) * (s_px / float(max(y1 - y0, 1)))
+    if getattr(ds, 'crop_rule', 'box') == 'square' and (x1 - x0) != (y1 - y0):
+        raise ValueError(f'crop_rule=square but the box is '
+                         f'{x1 - x0}x{y1 - y0} (invariant I6 violated)')
+    sigma = s_px / float(max(x1 - x0, 1))
+    px = (p[..., 0] - x0) * sigma
+    py = (p[..., 1] - y0) * sigma
     ax['patch'].scatter(px.ravel(), py.ravel(), s=3.0, c='#00e5ff',
                         alpha=0.45, lw=0)
     for labels, colour in ((_NOSE, '#ffe600'), (_MOUTH, '#ff3df2')):
@@ -232,10 +243,9 @@ def _write_video(ds, index: int, stem: str, box, lm, frames, tir, resp,
     p = np.asarray(lm)[:, np.asarray(want) - 1, :]
     x0, x1, y0, y1 = box
     s_px = float(ds.input_size)
-    sx = s_px / float(max(x1 - x0, 1))
-    sy = s_px / float(max(y1 - y0, 1))
-    px = (p[..., 0] - x0) * sx
-    py = (p[..., 1] - y0) * sy
+    sigma = s_px / float(max(x1 - x0, 1))      # ONE scale: the box is square
+    px = (p[..., 0] - x0) * sigma
+    py = (p[..., 1] - y0) * sigma
     nose_sel = [want.index(lab) for lab in _NOSE if lab in want]
     mouth_sel = [want.index(lab) for lab in _MOUTH if lab in want]
 
@@ -355,6 +365,33 @@ def _write_video(ds, index: int, stem: str, box, lm, frames, tir, resp,
 # --------------------------------------------------------------------------- #
 # report
 # --------------------------------------------------------------------------- #
+def _coverage(box, lm, target_idx, src_h: int, src_w: int) -> dict:
+    """Square/coverage metrics of one clip's box, over the TARGET landmarks.
+
+    Pure arithmetic on (box, landmark track, frame size) so it can be checked
+    without a decode. The box is built from the TARGET points only, so the
+    coverage metrics must use exactly those: taking the span of all 28 landmarks
+    once reported ``envelope_frac_of_patch = 1.36`` (eyes and ears are far wider
+    than the nose+mouth box) and silently disabled the coverage flag.
+    """
+    x0, x1, y0, y1 = box
+    side = max(x1 - x0, y1 - y0)
+    tgt = np.asarray(lm)[:, np.asarray(target_idx), :]
+    tx0, tx1 = float(np.nanmin(tgt[..., 0])), float(np.nanmax(tgt[..., 0]))
+    ty0, ty1 = float(np.nanmin(tgt[..., 1])), float(np.nanmax(tgt[..., 1]))
+    return {
+        'side_px': int(side),
+        'is_square': bool((x1 - x0) == (y1 - y0)),
+        'envelope_frac_of_patch': float((tx1 - tx0) * (ty1 - ty0)
+                                       / float(max(side * side, 1))),
+        'area_frac_of_frame': float((side * side)
+                                    / float(max(src_w * src_h, 1))),
+        'target_span_px': [tx0, tx1, ty0, ty1],
+        'targets_inside': bool(x0 <= tx0 and tx1 < x1
+                               and y0 <= ty0 and ty1 < y1),
+    }
+
+
 def _clip_report(ds, index: int, box, fails) -> dict:
     entry = ds.entries[index]
     item = ds[index]
@@ -362,6 +399,27 @@ def _clip_report(ds, index: int, box, fails) -> dict:
     raw = ds.respiration_clip(index, normalized=False)
     lm = ds.clip_landmarks(index)
     x0, x1, y0, y1 = box
+    src_h, src_w = ds._source_hw(entry)
+    crop_rule = str(getattr(ds, 'crop_rule', 'box'))
+    max_sway = float(getattr(ds, 'max_sway_px', 0.0))
+    # The gate statistic of THIS window, whether or not the gate is enabled: on
+    # a kept clip it is the only observable of how close the window came to
+    # being dropped, and how much of the patch is actually face.
+    sway = trd.landmark_sway(lm, ds.target_idx)
+    cov = _coverage(box, lm, ds.target_idx, src_h, src_w)
+    flags = []
+    if not cov['is_square']:
+        flags.append('box_not_square')
+    if not cov['targets_inside']:
+        flags.append('targets_outside_box')
+    if max_sway > 0.0 and (not np.isfinite(sway) or sway > 0.8 * max_sway):
+        flags.append('near_gate')
+    if cov['area_frac_of_frame'] > 0.4:
+        flags.append('box_gt_40pct_frame')
+    if cov['envelope_frac_of_patch'] < 0.25:
+        flags.append('envelope_lt_25pct_patch')
+    dropped_motion = int(ds.sessions.get(entry['session'], {})
+                         .get('clips_dropped_motion', 0) or 0)
     return {
         'index': int(index),
         'session': entry['session'],
@@ -378,7 +436,18 @@ def _clip_report(ds, index: int, box, fails) -> dict:
             'box_px': [int(v) for v in box],
             'width_px': int(x1 - x0),
             'height_px': int(y1 - y0),
+            'side_px': cov['side_px'],
+            'is_square': cov['is_square'],
+            'crop_rule': crop_rule,
             'padding': float(ds.roi_padding),
+            'max_sway_px': max_sway,
+            'sway_px': float(sway),
+            'gate_margin_px': float(max_sway - sway) if max_sway > 0 else None,
+            'clips_dropped_motion': dropped_motion,
+            'source_hw': [int(src_h), int(src_w)],
+            'area_frac_of_frame': cov['area_frac_of_frame'],
+            'envelope_frac_of_patch': cov['envelope_frac_of_patch'],
+            'target_span_px': cov['target_span_px'],
             'landmarks_1based': list(ds.target_landmarks),
             'landmarks_0based': [int(i) for i in ds.target_idx],
             'static_over_frames': int(ds.clip_frames),
@@ -387,6 +456,7 @@ def _clip_report(ds, index: int, box, fails) -> dict:
                                  float(np.nanmin(lm[..., 1])),
                                  float(np.nanmax(lm[..., 1]))],
         },
+        'flags': flags,
         'tir_video': {
             'shape': list(tir.shape),
             'dtype': str(tir.dtype),
@@ -470,6 +540,124 @@ def list_sessions(raw_root: str) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# why is a window absent?
+# --------------------------------------------------------------------------- #
+def _diagnose_window(ds, frame_start: int, max_sessions: int = 5
+                     ) -> tuple:
+    """Why is ``[frame_start, frame_start + clip_frames)`` not an entry?
+
+    Re-applies the gates in the SAME order the ENTRY BUILDER does -- session
+    gates, sentinel, motion, rail, flat -- and, separately, the box geometry the
+    LOADER applies (``RoiBoxOutOfFrame``). This is the only way to review a clip
+    the gate removed: a dropped window is not in ``ds.entries``, so no index can
+    address it.
+
+    :returns: ``(lines, reasons)`` -- human-readable detail plus a short tag list
+        (``sentinel`` / ``motion`` / ``rail`` / ``flat`` / ``envelope`` /
+        ``beyond_usable`` / session-skip reasons).
+    """
+    cf = ds.clip_frames
+    lines: list = []
+    reasons: list = []
+    if frame_start < 0:
+        return [f'frame_start {frame_start} is negative'], ['negative']
+    if any(int(e['frame_start']) == frame_start for e in ds.entries):
+        return ([f'frame_start {frame_start} IS in the entry list -- nothing to '
+                 f'diagnose'], ['present'])
+    if ds.stride_frames > 1 and frame_start % ds.stride_frames:
+        lines.append(f'NOT on the clip hop grid: stride is '
+                     f'{ds.stride_frames} frames, so the emitted windows start '
+                     f'at multiples of it')
+
+    used = sorted(ds.sessions)
+    skipped = {s['session']: s['reason'] for s in ds.skipped}
+    names = used + [k for k in sorted(skipped) if k not in ds.sessions]
+    if not names:
+        return ['no session in the selection'], ['no_session']
+
+    n_shown = 0
+    for sess in names:
+        if n_shown >= max_sessions:
+            lines.append(f'... and {len(names) - n_shown} more session(s) in the '
+                         f'selection; narrow with --subject/--task')
+            break
+        if sess in skipped:
+            lines.append(f'{sess}: session dropped whole ({skipped[sess]})')
+            reasons.append('session_skip')
+            n_shown += 1
+            continue
+        spec = ds.sessions[sess]
+        n_avail = min(int(spec['n_frames']),
+                      int(spec['resp_start_limit']) + cf)
+        if frame_start + cf > n_avail:
+            lines.append(f'{sess}: window ends at frame {frame_start + cf}, '
+                         f'beyond the {n_avail} usable frame(s)')
+            reasons.append('beyond_usable')
+            n_shown += 1
+            continue
+        ir = ds._landmarks(sess)
+        if trd.missing_frame_mask(ir[frame_start:frame_start + cf],
+                                  ds.target_idx).any():
+            lines.append(f'{sess}: window overlaps a (0,0)/unparseable '
+                         f'target landmark -> dropped as SENTINEL')
+            reasons.append('sentinel')
+            n_shown += 1
+            continue
+        if ds.max_sway_px > 0.0:
+            sway = trd.landmark_sway(ir[frame_start:frame_start + cf],
+                                     ds.target_idx)
+            if sway > ds.max_sway_px:
+                lines.append(f'{sess}: head sway {sway:.1f} px > '
+                             f'max_sway_px={ds.max_sway_px:g} -> dropped by the '
+                             f'MOTION gate')
+                reasons.append('motion')
+                n_shown += 1
+                continue
+        try:
+            frames = ds._frames({'session': sess, 'video': spec['video'],
+                                 'frame_start': frame_start,
+                                 'frame_end': frame_start + cf})
+            h, w = int(frames.shape[1]), int(frames.shape[2])
+            trd.roi_box_from_landmarks(
+                ir[frame_start:frame_start + cf][:, ds.target_idx, :], w, h,
+                ds.roi_padding, crop_rule=ds.crop_rule)
+        except trd.RoiBoxOutOfFrame as exc:
+            lines.append(f'{sess}: GEOMETRY -- {exc}')
+            reasons.append('envelope')
+            n_shown += 1
+            continue
+        except Exception as exc:                     # undecodable, short read
+            lines.append(f'{sess}: could not decode the window ({exc})')
+            reasons.append('decode')
+            n_shown += 1
+            continue
+        window = ds._resp_clip({'session': sess,
+                                't_start': frame_start / ds.fps})
+        if ds.rail_touch_v > 0.0 and window.size and \
+                bool(np.any(np.abs(window) >= ds.rail_touch_v)):
+            lines.append(f'{sess}: window touches the recorder rail '
+                         f'(|x| >= {ds.rail_touch_v:g} V) -> dropped as RAIL')
+            reasons.append('rail')
+        elif ds.min_signal_spread > 0.0 and \
+                float(window.max() - window.min()) < ds.min_signal_spread:
+            lines.append(f'{sess}: window spread '
+                         f'{float(window.max() - window.min()):.3f} V < '
+                         f'min_signal_spread={ds.min_signal_spread:g} V '
+                         f'-> dropped as FLAT')
+            reasons.append('flat')
+        else:
+            lines.append(f'{sess}: PASSES every filter it can be checked '
+                         f'against -- the window exists but its frame_start is '
+                         f'{frame_start}, which is not on this run\'s hop grid '
+                         f'({ds.stride_frames} frames); try '
+                         f'--frame_start {frame_start - frame_start % ds.stride_frames}'
+                         f'.')
+            reasons.append('off_grid')
+        n_shown += 1
+    return lines, sorted(set(reasons))
+
+
+# --------------------------------------------------------------------------- #
 # main
 # --------------------------------------------------------------------------- #
 def main(argv=None) -> int:
@@ -496,6 +684,21 @@ def main(argv=None) -> int:
                         'TRAINING geometry is 64 -- pass 64 to inspect exactly '
                         'what the model receives)')
     p.add_argument('--roi_padding', type=float, default=trd.DEFAULT_ROI_PADDING)
+    p.add_argument('--crop_rule', default=trd.DEFAULT_CROP_RULE,
+                   choices=list(trd.CROP_RULES),
+                   help="how the padded landmark box becomes a crop: 'square' "
+                        "(default) squares it before the rescale, so ONE "
+                        "scale factor is applied and the anatomy is not "
+                        "deformed; 'box' is the legacy per-axis geometry. "
+                        'Must match the run whose input you are inspecting.')
+    p.add_argument('--max_sway_px', type=float,
+                   default=trd.DEFAULT_MAX_SWAY_PX,
+                   help='motion gate of the run being inspected: a clip whose '
+                        'target-landmark centroid travels further than this '
+                        'many source pixels from its own median is NOT in the '
+                        'entry list (0 = gate disabled). Must match that run; '
+                        'the reported sway_px is the window statistic for the '
+                        'clip you asked for.')
     p.add_argument('--roi_landmarks', default='',
                    help='the landmarks whose bounding box IS the ROI: a preset '
                         'name (nose_mouth | nostrils | nostril_mouth | '
@@ -523,6 +726,15 @@ def main(argv=None) -> int:
                         'with --physio_norm clip/session.')
     p.add_argument('--clip_index', default='0',
                    help='comma list of clip indices in the selection')
+    p.add_argument('--frame_start', default='',
+                   help='comma list of WINDOW start frames; OVERRIDES '
+                        '--clip_index. A window address is stable across a '
+                        'geometry change (the motion gate renumbers the entry '
+                        'list), and a window that is NOT in the entry list is '
+                        'reported together with the gate that dropped it.')
+    p.add_argument('--t_start', default='',
+                   help='comma list of WINDOW start times in SECONDS, converted '
+                        'with --fps; an alternative to --frame_start')
     p.add_argument('--max_entries', type=int, default=0, help='0 = no cap')
     p.add_argument('--output_dir', default=default_output_dir())
     p.add_argument('--no-plot', dest='plot', action='store_false',
@@ -553,6 +765,7 @@ def main(argv=None) -> int:
         task_set=args.task_set, clip_seconds=args.clip_seconds,
         clip_stride=args.clip_stride, fps=args.fps, resp_fs=args.resp_fs,
         input_size=args.input_size, roi_padding=args.roi_padding,
+        crop_rule=args.crop_rule, max_sway_px=args.max_sway_px,
         target_landmarks=trd.resolve_roi_landmarks(args.roi_landmarks),
         min_signal_spread=args.min_signal_spread,
         rail_touch_v=args.rail_touch_v,
@@ -569,26 +782,71 @@ def main(argv=None) -> int:
     with open(os.path.join(args.output_dir, 'dataset_summary.json'), 'w') as fh:
         json.dump(ds.stats, fh, indent=2)
 
-    wanted = [int(v) for v in str(args.clip_index).split(',') if v.strip()]
-    rows, n_fail = [], 0
-    for index in wanted:
-        if not 0 <= index < len(ds):
-            print(f'[skip] clip {index}: out of range (0..{len(ds) - 1})')
-            continue
+    # A request is either an ENTRY index or an absolute WINDOW start. The window
+    # form survives a geometry change; the index form does not (the motion gate
+    # renumbers entries), so the window form is the one to cite in a report.
+    requests = []
+    if str(args.frame_start).strip():
+        requests += [('frame_start', int(v)) for v in
+                     str(args.frame_start).split(',') if v.strip()]
+    if str(args.t_start).strip():
+        requests += [('frame_start', int(round(float(v) * args.fps))) for v in
+                     str(args.t_start).split(',') if v.strip()]
+    if not requests:
+        requests = [('index', int(v)) for v in
+                    str(args.clip_index).split(',') if v.strip()]
+
+    rows, n_fail, n_skipped, n_absent = [], 0, 0, 0
+    by_frame_start = {int(e['frame_start']): i
+                      for i, e in enumerate(ds.entries)}
+    for kind, value in requests:
+        if kind == 'index':
+            if not 0 <= value < len(ds):
+                print(f'[skip] clip {value}: out of range (0..{len(ds) - 1}). '
+                      f'NOTE the motion gate renumbers the entry list, so an '
+                      f'index is only meaningful for the SAME geometry that '
+                      f'produced it -- prefer --t_start/--frame_start.')
+                n_skipped += 1
+                continue
+            index = value
+        else:
+            index = by_frame_start.get(int(value))
+            if index is None:
+                n_absent += 1
+                print(f'[absent] frame_start {value}: no such window in the '
+                      f'entry list ({len(ds)} clip(s) in the selection)')
+                lines, reasons = _diagnose_window(ds, int(value))
+                for line in lines:
+                    print(f'       - {line}')
+                rows.append({'frame_start': int(value), 'absent': True,
+                             'reasons': reasons, 'diagnosis': lines,
+                             'checks_failed': [f'window absent: {reasons}']})
+                continue
+            print(f'[resolve] frame_start {value} -> clip index {index}')
         entry = ds.entries[index]
-        lm = ds.clip_landmarks(index)
-        box = ds.clip_roi_box(index)
-        frames = ds._frames(entry)
-        fails = trd._check_clip(ds, index)
-        rep = _clip_report(ds, index, box, fails)
+        # Everything below can raise a CONTRACT error (a clip box escaping the
+        # cache hull, a square box that cannot be placed, a decode that gives
+        # up). That must land in the report as a FAIL, not as a traceback that
+        # loses the JSON for the clips that were fine.
+        try:
+            lm = ds.clip_landmarks(index)
+            box = ds.clip_roi_box(index)
+            frames = ds._frames(entry)
+            item = ds[index]
+            fails = trd._check_clip(ds, index)
+            rep = _clip_report(ds, index, box, fails)
+        except Exception as exc:
+            fails = [f'{type(exc).__name__}: {exc}']
+            rep = {'index': int(index), 'session': entry['session'],
+                   'checks_failed': list(fails)}
+            lm = box = frames = item = None
         if fails:
             n_fail += 1
 
         out_dir = os.path.join(args.output_dir, entry['session'])
         os.makedirs(out_dir, exist_ok=True)
         stem = os.path.join(out_dir, f'{FIG_TAG}_{index:04d}')
-        item = ds[index]
-        if args.plot:
+        if args.plot and item is not None:
             try:
                 _plot_clip(ds, index, stem + '.png', box, lm, frames[0],
                            item['tir_video'], item['resp_signal'])
@@ -609,22 +867,25 @@ def main(argv=None) -> int:
         with open(stem + '.json', 'w') as fh:
             json.dump(rep, fh, indent=2)
 
-        roi = rep['roi']
+        roi = rep.get('roi') or {}
         tag = 'FAIL' if fails else 'ok'
         print(f'[{tag}] clip {index} {entry["session"]} '
               f'frames {entry["frame_start"]}-{entry["frame_end"] - 1} '
               f'({entry["t_start"]:.2f}-{entry["t_end"]:.2f} s) '
-              f'roi {roi["width_px"]}x{roi["height_px"]} px -> '
-              f'{tuple(rep["tir_video"]["shape"])} + resp '
-              f'{tuple(rep["resp_signal"]["shape"])}')
+              f'roi {roi.get("width_px", "?")}x{roi.get("height_px", "?")} px '
+              f'sway {roi.get("sway_px", "?")} px '
+              f'-> {(rep.get("tir_video") or {}).get("shape", "?")} + resp '
+              f'{(rep.get("resp_signal") or {}).get("shape", "?")}')
         for f in fails:
             print(f'       - {f}')
         rows.append({'session': entry['session'], 'clip_index': index,
                      'figure': rep.get('figure'), 'videos': rep.get('videos'),
                      'json': stem + '.json',
-                     'roi_box_px': roi['box_px'],
-                     'tir_shape': rep['tir_video']['shape'],
-                     'resp_shape': rep['resp_signal']['shape'],
+                     'roi_box_px': roi.get('box_px'),
+                     'sway_px': roi.get('sway_px'),
+                     'flags': rep.get('flags'),
+                     'tir_shape': (rep.get('tir_video') or {}).get('shape'),
+                     'resp_shape': (rep.get('resp_signal') or {}).get('shape'),
                      'checks_failed': fails})
 
     if rows:
@@ -633,9 +894,19 @@ def main(argv=None) -> int:
         print(f'wrote {len(rows)} clip report(s) -> {args.output_dir}')
         print(f'index: {idx_path}')
     print('-' * 76)
-    print(f'{"FAIL" if n_fail else "PASS"}: {len(rows) - n_fail}/{len(rows)} '
-          f'clip(s) checked, {len(ds)} clip(s) in the selection')
-    return 1 if n_fail else 0
+    if not rows:
+        # Nothing was inspected: reporting PASS here would be a lie (a stale or
+        # gate-renumbered --clip_index used to do exactly that).
+        print(f'FAIL: 0/{len(requests)} window(s) inspected '
+              f'({n_skipped} index/indices out of range), '
+              f'{len(ds)} clip(s) in the selection')
+        return 1
+    print(f'{"FAIL" if (n_fail or n_absent) else "PASS"}: '
+          f'{len(rows) - n_fail - n_absent}/{len(rows)} window(s) checked, '
+          f'{len(ds)} clip(s) in the selection'
+          + (f', {n_absent} absent from the entry list' if n_absent else '')
+          + (f', {n_skipped} index/indices skipped' if n_skipped else ''))
+    return 1 if (n_fail or n_absent) else 0
 
 
 if __name__ == '__main__':

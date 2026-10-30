@@ -112,7 +112,8 @@ def _fft_window_advisory(kept, band_lo, output_len, fs=100.0):
 #: IN THE CHECKPOINT -- ``utils.checkpoint.save_model`` stores the whole
 #: namespace -- and a mismatch ABORTS the run unless ``--allow_roi_mismatch``
 #: declares it deliberate.
-ROI_CONTRACT_KEYS = ('roi_landmarks', 'roi_padding', 'input_size')
+ROI_CONTRACT_KEYS = ('roi_landmarks', 'roi_padding', 'input_size',
+                     'crop_rule', 'max_sway_px')
 
 
 def _parse_recorded_groups(ns):
@@ -163,6 +164,8 @@ def check_stage2_roi_contract(args, stage2_args, allow_mismatch=False):
                 return resolve_roi_landmarks(raw)
             except Exception:
                 return f'<unresolved {raw!r}>'
+        if key == 'crop_rule':
+            return str(raw).strip().lower()
         return int(raw) if key == 'input_size' else float(raw)
 
     rows, mismatch = [], []
@@ -178,6 +181,21 @@ def check_stage2_roi_contract(args, stage2_args, allow_mismatch=False):
         print('[stage3] ROI contract: the Stage-2 checkpoint recorded none of '
               f'{list(ROI_CONTRACT_KEYS)} -> nothing to compare.')
         return {}
+
+    # A checkpoint recorded BEFORE the square-crop / motion-gate contract carries
+    # none of the newer keys, so the comparison above cannot say anything about
+    # them. Say THAT out loud: a square Stage-3 run on an encoder pre-trained
+    # with the legacy geometry looks perfectly healthy otherwise.
+    missing = [k for k in ('crop_rule', 'max_sway_px')
+               if getattr(stage2_args, k, None) is None]
+    if missing:
+        print('[stage3] WARNING: the Stage-2 checkpoint records none of '
+              f'{missing} -- it predates the square-crop / motion-gate '
+              f'contract. This run crops with crop_rule='
+              f'{getattr(args, "crop_rule", "?")!r}, max_sway_px='
+              f'{getattr(args, "max_sway_px", "?")!r} and therefore feeds the '
+              'encoder pixels it was NOT pre-trained on. Re-pretrain with this '
+              'geometry, or pass --allow_roi_mismatch to acknowledge it.')
 
     print('[stage3] ROI contract (Stage-2 checkpoint vs this run):')
     for key, stage2, stage3, same in rows:
@@ -420,6 +438,24 @@ def get_args():
     parser.add_argument('--roi_padding', default=0.2, type=float,
                         help='per-side ROI margin for the thermal-ROI path '
                              '(data_set: tir_roi*); must mirror the Stage-2 run')
+    parser.add_argument('--crop_rule', default='square',
+                        choices=['box', 'square'], type=str,
+                        help="thermal-ROI path: how the padded landmark box "
+                             "becomes a crop. 'square' (default) squares it "
+                             "first, so the rescale has ONE scale factor and "
+                             "the anatomy is never deformed; 'box' is the "
+                             'legacy per-axis geometry (A/B only). Changes WHICH '
+                             'PIXELS reach the encoder -> must mirror Stage 2.')
+    parser.add_argument('--max_sway_px', default=40.0, type=float,
+                        help='thermal-ROI path: DROP a clip whose target-'
+                             'landmark centroid travels further than this many '
+                             'SOURCE pixels from its own within-clip median '
+                             '(0 = gate disabled; the study value is 40). A '
+                             'selection filter: it changes WHICH CLIPS EXIST, '
+                             'never a stored pixel, so it is not in the cache '
+                             'key -- but it must mirror the Stage-2 run. The '
+                             'gate is task-biased (T4 keeps 80 % at 40 px), so '
+                             'a per-task result must state how it was gated.')
     parser.add_argument('--roi_landmarks', default='', type=str,
                         help="ROI landmark set for the ROI paths. For the "
                              "thermal-ROI path (data_set: tir_roi*): a preset "

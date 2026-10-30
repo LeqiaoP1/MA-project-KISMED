@@ -99,7 +99,10 @@ _DECODE_BACKOFF_S = float(os.environ.get('VIDEO_DECODE_BACKOFF_S', '1.0'))
 
 __all__ = ['NUM_LANDMARKS', 'TARGET_LANDMARKS', 'TARGET_LANDMARK_IDX',
            'TARGET_LANDMARK_NAMES', 'DEFAULT_CLIP_SECONDS', 'DEFAULT_FPS',
-           'DEFAULT_RESP_FS', 'parse_ir_features', 'missing_frame_mask',
+           'DEFAULT_RESP_FS', 'DEFAULT_INPUT_SIZE', 'DEFAULT_ROI_PADDING',
+           'CROP_RULE_BOX', 'CROP_RULE_SQUARE', 'CROP_RULES',
+           'DEFAULT_CROP_RULE', 'DEFAULT_MAX_SWAY_PX', 'RoiBoxOutOfFrame',
+           'parse_ir_features', 'missing_frame_mask', 'landmark_sway',
            'roi_box_from_landmarks', 'discover_sessions', 'find_thermal_video',
            'find_ir_features', 'find_resp_file', 'default_raw_root',
            'ROI_LANDMARK_PRESETS', 'resolve_roi_landmarks',
@@ -132,6 +135,28 @@ DEFAULT_FPS = 25.0
 DEFAULT_RESP_FS = 1000.0
 DEFAULT_INPUT_SIZE = 64
 DEFAULT_ROI_PADDING = 0.1
+
+#: How the padded landmark box becomes a crop (``--crop_rule``).
+#:
+#: ``'box'``    -- the padded box, resized per axis with its own scale. The
+#:                aspect ratio is NOT preserved (a wide box is squashed); kept
+#:                because the RGB lineage and the older probes still run it, and
+#:                for an A/B of the square rule.
+#: ``'square'`` -- the padded box squared about its centre
+#:                (``side = max(w_b, h_b)``), so the rescale has exactly ONE
+#:                scale factor and the anatomy is never deformed.
+CROP_RULE_BOX = 'box'
+CROP_RULE_SQUARE = 'square'
+CROP_RULES = (CROP_RULE_BOX, CROP_RULE_SQUARE)
+#: The DATASET default. ``roi_box_from_landmarks`` itself defaults to ``'box'``,
+#: so every caller that does not opt in keeps its current geometry.
+DEFAULT_CROP_RULE = CROP_RULE_SQUARE
+
+#: Max head excursion INSIDE a clip window, in source pixels
+#: (``--max_sway_px``); ``0`` disables the gate. 40 px keeps 96.8 % of the
+#: corpus clips and 138/138 subjects (T4 the worst task at 80 %) while removing
+#: the crop-size tail the rescale would otherwise have to absorb.
+DEFAULT_MAX_SWAY_PX = 40.0
 
 #: Named 1-indexed landmark sets for the ROI box (``--roi_landmarks``).
 #: ``nose_mouth`` is the historical default; ``nostrils`` is the thermally
@@ -367,6 +392,69 @@ def missing_frame_mask(ir: np.ndarray,
     return ~finite | all_zero | tgt_sentinel
 
 
+class RoiBoxOutOfFrame(ValueError):
+    """The ROI crop cannot be placed without cutting the landmark envelope.
+
+    Raised by :func:`roi_box_from_landmarks` for ``crop_rule='square'`` when the
+    square side does not fit the source frame, or when the only box that fits
+    would exclude a target landmark. An INTEGRITY error, not a corpus filter:
+    the frame size is only known at load time (the entry builder probes
+    ``num_frames``/``fps``, never a pixel), so there is no build-time counter for
+    it. An all-``(0,0)`` or non-finite frame cannot reach this point -- the clip
+    validity gate drops those windows first (:func:`missing_frame_mask`).
+    """
+
+
+def _square_box(x0: float, x1: float, y0: float, y1: float,
+                ex0: float, ex1: float, ey0: float, ey1: float,
+                width: int, height: int, min_size: int = 2
+                ) -> Tuple[int, int, int, int]:
+    """Integer SQUARE box around the padded centre (invariants I6/I7).
+
+    :param x0, x1, y0, y1: the PADDED float bounds (``padding`` already applied
+        per side).
+    :param ex0, ex1, ey0, ey1: the UNPADDED landmark envelope, which the result
+        must still contain.
+    :param width, height: source frame size.
+    :returns: ``(ix0, ix1, iy0, iy1)``, half-open, with
+        ``ix1 - ix0 == iy1 - iy0`` exactly.
+    :raises RoiBoxOutOfFrame: the side does not fit the frame, or the box that
+        fits would cut the envelope.
+
+    ONE integer side for both axes. Rounding each axis separately
+    (``floor``/``ceil + 1``) would leave the sides 1-2 px apart, i.e. a
+    per-axis scale at the resize -- exactly what the square rule exists to
+    prevent. The box is TRANSLATED to fit the frame, never shrunk: growing the
+    short axis only adds background, whereas shrinking would drop data.
+
+    Worked in INTEGER space on purpose. The legacy convention is
+    ``[floor(low), ceil(high) + 1)``, so a padded envelope of exactly
+    ``100..220`` needs rows ``100..220`` INCLUSIVE, i.e. 121 rows; sizing the
+    square from the float extent (120) and re-rounding clips the last row --
+    precisely the I7 failure this function must not have.
+    """
+    ix_lo, ix_hi = int(math.floor(x0)), int(math.ceil(x1)) + 1
+    iy_lo, iy_hi = int(math.floor(y0)), int(math.ceil(y1)) + 1
+    w_b, h_b = ix_hi - ix_lo, iy_hi - iy_lo
+    n = max(int(min_size), w_b, h_b)
+    if n > width or n > height:
+        raise RoiBoxOutOfFrame(
+            f'square ROI side {n} px does not fit a {width}x{height} frame')
+    # grow the SHORT axis about the padded box centre (integer: <= 1 px skew)
+    ix0 = ix_lo - (n - w_b) // 2
+    iy0 = iy_lo - (n - h_b) // 2
+    # then translate the square INTO the frame at its own size
+    ix0 = min(max(0, ix0), width - n)
+    iy0 = min(max(0, iy0), height - n)
+    ix1, iy1 = ix0 + n, iy0 + n
+    if not (ix0 <= math.floor(ex0) and ix1 >= math.ceil(ex1) + 1
+            and iy0 <= math.floor(ey0) and iy1 >= math.ceil(ey1) + 1):
+        raise RoiBoxOutOfFrame(
+            f'square ROI {ix0, ix1, iy0, iy1} would cut the landmark envelope '
+            f'x {ex0:.1f}..{ex1:.1f}, y {ey0:.1f}..{ey1:.1f}')
+    return ix0, ix1, iy0, iy1
+
+
 def _clamp_box(a: int, b: int, limit: int, min_size: int = 2) -> Tuple[int, int]:
     """Clamp half-open ``[a, b)`` into ``[0, limit)`` with a minimum size."""
     a = max(0, min(int(a), limit - 1))
@@ -381,7 +469,8 @@ def _clamp_box(a: int, b: int, limit: int, min_size: int = 2) -> Tuple[int, int]
 
 def roi_box_from_landmarks(pts: np.ndarray, width: int, height: int,
                            padding: float = DEFAULT_ROI_PADDING,
-                           min_size: int = 2
+                           min_size: int = 2,
+                           crop_rule: str = CROP_RULE_BOX
                            ) -> Tuple[int, int, int, int]:
     """Clip-level STATIC ROI box ``(x0, x1, y0, y1)`` (half-open slice bounds).
 
@@ -391,6 +480,11 @@ def roi_box_from_landmarks(pts: np.ndarray, width: int, height: int,
     :param padding: fraction of the box EXTENT added on EACH side, so
         ``0.2`` grows the box by 40 % overall (``0.1`` would give exactly the
         1.2x reading of "expand by 20 %").
+    :param crop_rule: ``'box'`` (default) returns the padded box, which the
+        caller resizes per axis; ``'square'`` returns a SQUARE box so the caller
+        uses ONE isotropic scale. See :data:`CROP_RULE_BOX` /
+        :data:`CROP_RULE_SQUARE`.
+    :raises RoiBoxOutOfFrame: ``'square'`` only -- see :class:`RoiBoxOutOfFrame`.
 
     The box is the MIN/MAX of the landmark cloud. An outlier-robust PERCENTILE
     variant (``roi_quantile``) existed until 2026-10-08 and was removed unused:
@@ -398,24 +492,69 @@ def roi_box_from_landmarks(pts: np.ndarray, width: int, height: int,
     fragile part of a min/max is a single corrupt frame, and that is guarded
     UPSTREAM rather than here -- a clip overlapping ANY missing or ``(0,0)``
     target landmark is dropped entirely (:func:`missing_frame_mask`), so no clip
-    box can be stretched to the image corner. For what the removed knob would
-    have bought (and the 2026-09-26 head-motion/jitter measurement that
-    motivated it) see ``notes/eval/tir_resp/roi_box_impact.py``.
+    box can be stretched to the image corner. For what an outlier-robust rule
+    was meant to buy see ``notes/eval/tir_resp/roi_box_impact.py``.
+
+    ``'square'`` grows the SHORT axis about the padded box centre instead of
+    letting the caller stretch it: a near-collinear landmark set (``nostrils``,
+    ~108 x 13 px) becomes a square rather than an 8x vertical stretch, which is
+    why the old ``min_extent`` guard has no job left.
     """
+    if crop_rule not in CROP_RULES:
+        raise ValueError(f'crop_rule must be one of {list(CROP_RULES)}, got '
+                         f'{crop_rule!r}')
     p = np.asarray(pts, dtype=np.float64).reshape(-1, 2)
     p = p[np.isfinite(p).all(axis=1)]
     if p.size == 0:
         raise ValueError('no finite landmark coordinates in this clip')
-    x0, x1 = float(p[:, 0].min()), float(p[:, 0].max())
-    y0, y1 = float(p[:, 1].min()), float(p[:, 1].max())
-    w, h = x1 - x0, y1 - y0
-    x0 -= padding * w
-    x1 += padding * w
-    y0 -= padding * h
-    y1 += padding * h
+    ex0, ex1 = float(p[:, 0].min()), float(p[:, 0].max())
+    ey0, ey1 = float(p[:, 1].min()), float(p[:, 1].max())
+    w, h = ex1 - ex0, ey1 - ey0
+    x0, x1 = ex0 - padding * w, ex1 + padding * w
+    y0, y1 = ey0 - padding * h, ey1 + padding * h
+    if crop_rule == CROP_RULE_SQUARE:
+        return _square_box(x0, x1, y0, y1, ex0, ex1, ey0, ey1,
+                           int(width), int(height), min_size)
     ix0, ix1 = _clamp_box(math.floor(x0), math.ceil(x1) + 1, int(width), min_size)
     iy0, iy1 = _clamp_box(math.floor(y0), math.ceil(y1) + 1, int(height), min_size)
     return ix0, ix1, iy0, iy1
+
+
+def landmark_sway(pts: np.ndarray,
+                  target_idx: Sequence[int] = TARGET_LANDMARK_IDX) -> float:
+    """Largest excursion of the target-landmark CENTROID inside one clip (px).
+
+    :param pts: ``[T, 28, 2]`` landmark track of ONE clip.
+    :param target_idx: 0-INDEXED landmark indices whose centroid is tracked.
+    :returns: ``max_t ||c_t - median_tau(c_tau)||_2`` in source pixels, ``inf``
+        when a target landmark is non-finite (an unusable window).
+
+    This is the motion gate's statistic, and it is deliberately NOT the box
+    width: width conflates FACE SIZE (a subject close to the camera) with
+    motion, and the two are nearly independent (Spearman(sway, per-frame face
+    width) = +0.15), so a width rule discards large-faced subjects. The
+    scale-free alternative ``infl = box side / median per-frame envelope side``
+    correlates rho = +0.86 with this one -- the same filter in units of face
+    size, so pick one and do not stack them.
+
+    It reads the landmark track only: no decode, no pixels, no cache. Inside a
+    live clip every target landmark is finite (the clip validity gate drops
+    every window touching a sentinel/unparseable frame), so the non-finite
+    branch is defensive.
+    """
+    p = np.asarray(pts, dtype=np.float64)
+    if p.ndim == 2:
+        p = p[None, ...]
+    if p.ndim != 3 or p.shape[-1] != 2:
+        raise ValueError(f'expected (frames, landmarks, 2), got {p.shape}')
+    idx = np.asarray(list(target_idx), dtype=np.int64)
+    c = p[:, idx, :].mean(axis=1)                 # [T, 2] per-frame centroid
+    if not np.isfinite(c).all():
+        return float('inf')
+    if c.shape[0] < 2:
+        return 0.0
+    med = np.median(c, axis=0)                    # component-wise median
+    return float(np.max(np.linalg.norm(c - med, axis=1)))
 
 
 # --------------------------------------------------------------------------- #
@@ -490,6 +629,19 @@ class BP4DPlusTIRRespDataset(Dataset):
     :param clip_stride: clip hop in SECONDS (``None``/``0`` -> non-overlapping,
         i.e. ``clip_stride = clip_seconds``).
     :param roi_padding: per-side ROI margin, see :func:`roi_box_from_landmarks`.
+    :param crop_rule: how the padded box becomes a crop. ``'square'`` (default)
+        squares it about its centre FIRST, so the rescale uses one scale factor
+        and the anatomy is never deformed; ``'box'`` is the legacy per-axis
+        (squashing) geometry, kept for A/B runs and for the RGB lineage. Part of
+        the Stage-2/Stage-3 ROI contract.
+    :param max_sway_px: DROP a clip whose target-landmark centroid travels
+        further than this many SOURCE pixels from its own within-clip median,
+        i.e. the static box would become mostly background (``0`` = disabled;
+        the shipped value is 40). A SELECTION filter: it changes which clips
+        exist, never a stored pixel, so it is not in the ROI-cache key -- but it
+        must match between Stage 2 and Stage 3. Task-biased by construction (T4
+        keeps 80 % at 40 px), so any per-task result must state whether it was
+        computed before or after the gate.
     :param target_landmarks: 1-indexed landmark labels forming the ROI.
     :param min_signal_spread: DROP a clip whose respiration window is
         (near-)constant, i.e. ``max(window) - min(window) < min_signal_spread``
@@ -556,6 +708,8 @@ class BP4DPlusTIRRespDataset(Dataset):
                  input_size: int = DEFAULT_INPUT_SIZE,
                  clip_stride: Optional[float] = None,
                  roi_padding: float = DEFAULT_ROI_PADDING,
+                 crop_rule: str = DEFAULT_CROP_RULE,
+                 max_sway_px: float = DEFAULT_MAX_SWAY_PX,
                  target_landmarks: Sequence[int] = TARGET_LANDMARKS,
                  min_signal_spread: float = 0.0,
                  rail_touch_v: float = 0.0,
@@ -581,6 +735,14 @@ class BP4DPlusTIRRespDataset(Dataset):
                               else max(1, int(round(float(clip_stride) * self.fps))))
         self.input_size = int(input_size)
         self.roi_padding = float(roi_padding)
+        if crop_rule not in CROP_RULES:
+            raise ValueError(f'crop_rule must be one of {list(CROP_RULES)}, '
+                             f'got {crop_rule!r}')
+        self.crop_rule = str(crop_rule)
+        self.max_sway_px = float(max_sway_px)
+        if self.max_sway_px < 0.0:
+            raise ValueError(f'max_sway_px must be >= 0 (source px); got '
+                             f'{max_sway_px!r} (0 = gate disabled)')
         self.target_landmarks = tuple(int(l) for l in target_landmarks)
         self.target_idx = np.asarray([l - 1 for l in self.target_landmarks],
                                     dtype=np.int64)
@@ -657,6 +819,7 @@ class BP4DPlusTIRRespDataset(Dataset):
         n_dropped_zero = 0
         n_dropped_flat = 0
         n_dropped_rail = 0
+        n_dropped_motion = 0
         for spec in discovered:
             sess, subj, task = spec['session'], spec['subject'], spec['task']
 
@@ -717,12 +880,24 @@ class BP4DPlusTIRRespDataset(Dataset):
             y_raw = _load_1d(spec['resp_file']) if needs_series else None
 
             # --- 4. slice clips (requirement 2: any sentinel line drops the clip)
-            kept, dropped, dropped_flat, dropped_rail, starts = 0, 0, 0, 0, []
+            kept, dropped, dropped_flat, dropped_rail, dropped_motion = (
+                0, 0, 0, 0, 0)
+            starts: List[int] = []
             for start in range(0, n_avail - self.clip_frames + 1,
                                self.stride_frames):
                 if bad[start:start + self.clip_frames].any():
                     dropped += 1
                     continue
+                # MOTION GATE, placed BEFORE the respiration rules: it needs no
+                # interpolation of the signal, and the order fixes which rule
+                # gets credit when a window fails several -- the same reasoning
+                # that already puts the rail test before the flat one.
+                if self.max_sway_px > 0.0:
+                    sway = landmark_sway(ir[start:start + self.clip_frames],
+                                         self.target_idx)
+                    if sway > self.max_sway_px:
+                        dropped_motion += 1
+                        continue
                 if y_raw is not None:
                     # raw window on the respiration grid, exactly as
                     # _resp_clip() would build it (interp over the file)
@@ -751,8 +926,12 @@ class BP4DPlusTIRRespDataset(Dataset):
             n_dropped_zero += dropped
             n_dropped_flat += dropped_flat
             n_dropped_rail += dropped_rail
+            n_dropped_motion += dropped_motion
             if not starts:
                 why = [f'{dropped} window(s) contain a (0,0) sentinel line']
+                if dropped_motion:
+                    why.append(f'{dropped_motion} exceed max_sway_px='
+                               f'{self.max_sway_px:g} px')
                 if dropped_flat:
                     why.append(f'{dropped_flat} have a (near-)constant '
                                f'respiration window (< {self.min_signal_spread:g} V)')
@@ -767,7 +946,8 @@ class BP4DPlusTIRRespDataset(Dataset):
                                        resp_start_limit=start_limit,
                                        clips_dropped_sentinel=dropped,
                                        clips_dropped_flat=dropped_flat,
-                                       clips_dropped_rail=dropped_rail)
+                                       clips_dropped_rail=dropped_rail,
+                                       clips_dropped_motion=dropped_motion)
             for start in starts:
                 self.entries.append(self._make_entry(spec, start))
                 if max_entries and len(self.entries) >= max_entries:
@@ -803,6 +983,9 @@ class BP4DPlusTIRRespDataset(Dataset):
             'clips_dropped_sentinel': n_dropped_zero,
             'clips_dropped_flat': n_dropped_flat,
             'clips_dropped_rail': n_dropped_rail,
+            'clips_dropped_motion': n_dropped_motion,
+            'max_sway_px': self.max_sway_px,
+            'crop_rule': self.crop_rule,
             'min_signal_spread': self.min_signal_spread,
             'rail_touch_v': self.rail_touch_v,
             'rail_v': RESP_RAIL_V,
@@ -912,7 +1095,8 @@ class BP4DPlusTIRRespDataset(Dataset):
             from data import roi_cache as rc
         corpus = discover_sessions(self.raw_root)
         want = rc.loader_params(self.raw_root, corpus, self.target_landmarks,
-                                self.roi_padding)
+                                self.roi_padding, crop_rule=self.crop_rule,
+                                clip_seconds=self.clip_seconds, fps=self.fps)
         root = rc.find_cache(out_root, want)
         params = rc.read_params(root)
         self.roi_cache_root = str(root)
@@ -926,7 +1110,9 @@ class BP4DPlusTIRRespDataset(Dataset):
         print(f'[data]   src {self._cache_src_hw[1]}x{self._cache_src_hw[0]}, '
               f'landmarks {params["roi_landmarks_name"]} '
               f'({len(params["roi_landmarks"])} pts), padding '
-              f'{params["roi_padding"]}, format v{params["format_version"]}')
+              f'{params["roi_padding"]}, crop {params.get("crop_rule", "?")}, '
+              f'clip {params.get("clip_seconds", float("nan")):g} s, '
+              f'format v{params["format_version"]}')
 
     def _shard(self, session: str) -> Optional[dict]:
         """One cached shard, LRU-cached.
@@ -1047,7 +1233,8 @@ class BP4DPlusTIRRespDataset(Dataset):
         ir = self._landmarks(entry['session'])
         pts = ir[entry['frame_start']:entry['frame_end']][:, self.target_idx, :]
         h, w = self._source_hw(entry)
-        return roi_box_from_landmarks(pts, w, h, self.roi_padding)
+        return roi_box_from_landmarks(pts, w, h, self.roi_padding,
+                                      crop_rule=self.crop_rule)
 
     def clip_landmarks(self, index: int) -> np.ndarray:
         """All 28 landmarks of the clip's frames -> ``[T, 28, 2]`` (source px)."""
@@ -1079,6 +1266,19 @@ class BP4DPlusTIRRespDataset(Dataset):
         ox, oy = int(origin[0]), int(origin[1])
         x0, x1, y0, y1 = (int(box[0]) - ox, int(box[1]) - ox,
                           int(box[2]) - oy, int(box[3]) - oy)
+        # I2 -- CONTAINMENT, stated as such. With a cache attached, ``frames`` IS
+        # the stored hull, so a clip box outside ``origin + frames.shape`` means
+        # the shard was built for a different clip length or crop rule. The
+        # numeric test below would catch it too, but it would read as an
+        # array-bounds accident rather than a broken contract.
+        hull = (ox, ox + int(frames.shape[2]), oy, oy + int(frames.shape[1]))
+        if not (hull[0] <= box[0] and box[1] <= hull[1]
+                and hull[2] <= box[2] and box[3] <= hull[3]):
+            raise IndexError(
+                f'{entry["session"]} clip box {tuple(box)} is not inside the '
+                f'stored hull {hull} -- the cache was built for a different '
+                f'clip length or crop rule (I2). Refusing to clamp, wrap or '
+                f'fall back to a decode.')
         if min(x0, y0) < 0 or x1 > frames.shape[2] or y1 > frames.shape[1]:
             raise IndexError(
                 f'{entry["session"]} frames {entry.get("frame_start")}..'
@@ -1087,7 +1287,17 @@ class BP4DPlusTIRRespDataset(Dataset):
                 f'{origin} (local {x0, x1, y0, y1}). The cached union box does '
                 f'NOT contain this clip box -- refusing to wrap the index.')
         s = self.input_size
-        interp = (cv2.INTER_AREA if s <= min(x1 - x0, y1 - y0)
+        ext_x, ext_y = x1 - x0, y1 - y0
+        if self.crop_rule == CROP_RULE_SQUARE and ext_x != ext_y:
+            raise ValueError(
+                f'{entry["session"]} clip at frame {entry.get("frame_start")}: '
+                f'crop_rule=\'square\' but the box {tuple(box)} is '
+                f'{ext_x}x{ext_y} -- resizing it to {s}x{s} would apply a '
+                f'PER-AXIS scale (invariant I6).')
+        # One side == one scale factor: with a square crop there is no
+        # anisotropy to choose between, so the kernel comes from the geometry
+        # alone and `sx == sy == s / side` for every frame of the clip (I4/I5).
+        interp = (cv2.INTER_AREA if s <= min(ext_x, ext_y)
                   else cv2.INTER_LINEAR)
         out = np.empty((frames.shape[0], s, s, 3), np.uint8)
         for i in range(frames.shape[0]):
@@ -1104,7 +1314,8 @@ class BP4DPlusTIRRespDataset(Dataset):
 
         frames, origin = self._clip_frames(entry)
         h, w = self._source_hw(entry)
-        box = roi_box_from_landmarks(pts, w, h, self.roi_padding)
+        box = roi_box_from_landmarks(pts, w, h, self.roi_padding,
+                                     crop_rule=self.crop_rule)
         patches = self._roi_patches(entry, frames, box, origin)  # [T, s, s, 3]
 
         # [T, H, W, C] uint8 RGB -> [C, T, H, W] float in [0, 1]
@@ -1148,7 +1359,9 @@ class BP4DPlusTIRRespDataset(Dataset):
             f'{s["sessions_discovered"]} found / {s["sessions_skipped"]} skipped',
             f'clips           : {s["clips"]} '
             f'({s["clips_dropped_sentinel"]} window(s) dropped for a (0,0) '
-            f'sentinel line, {s["clips_dropped_flat"]} for a (near-)constant '
+            f'sentinel line, {s["clips_dropped_motion"]} for head sway > '
+            f'{s["max_sway_px"]:g} px, {s["clips_dropped_flat"]} for a '
+            f'(near-)constant '
             f'respiration window at min_signal_spread={s["min_signal_spread"]:g} V, '
             f'{s["clips_dropped_rail"]} for touching the rail '
             f'(|x| >= {s["rail_touch_v"]:g} V; the recorder clamps at '
@@ -1157,7 +1370,9 @@ class BP4DPlusTIRRespDataset(Dataset):
             f'frames @ {s["fps"]:g} fps, stride {s["clip_stride_frames"]} '
             f'frames; resp {s["resp_len"]} samples @ {s["resp_fs"]:g} Hz',
             f'roi             : landmarks {list(self.target_landmarks)} '
-            f'padding {s["roi_padding"]:g} -> {self.input_size}x{self.input_size}',
+            f'padding {s["roi_padding"]:g} crop_rule {s["crop_rule"]} '
+            f'max_sway_px {s["max_sway_px"]:g} '
+            f'-> {self.input_size}x{self.input_size}',
             f'roi_cache       : {s["roi_cache"] or "off (decoding .wmv)"}',
             f'norm            : {s["norm"]}',
             f'task selection  : {self.task_selection.describe()}',
@@ -1239,6 +1454,8 @@ class TirRoiRespPretrainDataset(Dataset):
                  tubelet_t: int = 2,
                  input_size: int = DEFAULT_INPUT_SIZE,
                  roi_padding: float = DEFAULT_ROI_PADDING,
+                 crop_rule: str = DEFAULT_CROP_RULE,
+                 max_sway_px: float = DEFAULT_MAX_SWAY_PX,
                  target_landmarks: Sequence[int] = TARGET_LANDMARKS,
                  min_signal_spread: float = 0.0,
                  rail_touch_v: float = 0.0,
@@ -1301,6 +1518,7 @@ class TirRoiRespPretrainDataset(Dataset):
             clip_seconds=self.clip_duration,
             fps=self.fps, resp_fs=self.resp_fs, input_size=self.input_size,
             clip_stride=clip_stride, roi_padding=self.roi_padding,
+            crop_rule=crop_rule, max_sway_px=max_sway_px,
             target_landmarks=target_landmarks, norm=self.physio_norm,
             min_signal_spread=min_signal_spread,
             rail_touch_v=rail_touch_v,
@@ -1426,6 +1644,8 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
                  tubelet_t: int = 2,
                  input_size: int = DEFAULT_INPUT_SIZE,
                  roi_padding: float = DEFAULT_ROI_PADDING,
+                 crop_rule: str = DEFAULT_CROP_RULE,
+                 max_sway_px: float = DEFAULT_MAX_SWAY_PX,
                  resp_fs: float = DEFAULT_RESP_FS,
                  fps: float = DEFAULT_FPS,
                  target_landmarks: Sequence[int] = TARGET_LANDMARKS,
@@ -1529,6 +1749,7 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
             clip_duration=clip_duration, clip_stride=clip_stride,
             temporal_stride=temporal_stride, tubelet_t=tubelet_t,
             input_size=input_size, roi_padding=roi_padding,
+            crop_rule=crop_rule, max_sway_px=max_sway_px,
             target_landmarks=target_landmarks, resp_fs=resp_fs,
             min_signal_spread=min_signal_spread,
             rail_touch_v=rail_touch_v,
@@ -1688,6 +1909,8 @@ def build_tir_roi_finetune_dataset(is_train: bool, test_mode: bool,
         tubelet_t=int(tubelet[0]),
         input_size=int(getattr(args, 'input_size', DEFAULT_INPUT_SIZE)),
         roi_padding=float(getattr(args, 'roi_padding', DEFAULT_ROI_PADDING)),
+        crop_rule=str(getattr(args, 'crop_rule', DEFAULT_CROP_RULE)),
+        max_sway_px=float(getattr(args, 'max_sway_px', DEFAULT_MAX_SWAY_PX)),
         target_landmarks=resolve_roi_landmarks(
             getattr(args, 'roi_landmarks', None)),
         resp_fs=float(getattr(args, 'resp_fs', DEFAULT_RESP_FS)),
@@ -1731,6 +1954,8 @@ def build_tir_roi_pretrain_dataset(args) -> TirRoiRespPretrainDataset:
         tubelet_t=int(tubelet[0]),
         input_size=getattr(args, 'input_size', DEFAULT_INPUT_SIZE),
         roi_padding=float(getattr(args, 'roi_padding', DEFAULT_ROI_PADDING)),
+        crop_rule=str(getattr(args, 'crop_rule', DEFAULT_CROP_RULE)),
+        max_sway_px=float(getattr(args, 'max_sway_px', DEFAULT_MAX_SWAY_PX)),
         target_landmarks=resolve_roi_landmarks(
             getattr(args, 'roi_landmarks', None)),
         min_signal_spread=float(getattr(args, 'min_signal_spread', 0.0) or 0.0),
@@ -1812,38 +2037,67 @@ def _check_clip(ds: BP4DPlusTIRRespDataset, index: int) -> List[str]:
     pts = ir[entry['frame_start']:entry['frame_end']][:, ds.target_idx, :]
     frames = ds._frames(entry)
     h, w = frames.shape[1], frames.shape[2]
-    box = roi_box_from_landmarks(pts, w, h, ds.roi_padding)
+    try:
+        box = roi_box_from_landmarks(pts, w, h, ds.roi_padding,
+                                     crop_rule=getattr(ds, 'crop_rule',
+                                                       CROP_RULE_BOX))
+    except RoiBoxOutOfFrame as exc:
+        fails.append(f'ROI box raised RoiBoxOutOfFrame: {exc}')
+        return fails
     x0, x1, y0, y1 = box
-    if not (0 <= x0 < x1 <= w and 0 <= y0 < y1 <= h):
-        fails.append(f'ROI box {box} outside the {w}x{h} frame')
-    fx, fy = pts[..., 0].ravel(), pts[..., 1].ravel()
+    fx = pts[..., 0].ravel().astype(np.float64)
+    fy = pts[..., 1].ravel().astype(np.float64)
+    ok = np.isfinite(fx) & np.isfinite(fy)
+    if not ok.all():
+        fails.append(f'clip holds {int((~ok).sum())} non-finite target '
+                     f'landmark(s) -- the clip validity gate should have '
+                     f'dropped it')
+        return fails
     # The box is the min/max of the landmark cloud, so the containment test and
-    # the independent recomputation below must use exactly those bounds.
+    # the independent recomputation below use exactly those bounds.
     xlo, xhi = float(fx.min()), float(fx.max())
     ylo, yhi = float(fy.min()), float(fy.max())
-    band = (fx >= xlo) & (fx <= xhi) & (fy >= ylo) & (fy <= yhi)
-    if band.any() and not (x0 <= fx[band].min() and fx[band].max() < x1
-                           and y0 <= fy[band].min() and fy[band].max() < y1):
+    if not (0 <= x0 < x1 <= w and 0 <= y0 < y1 <= h):
+        fails.append(f'ROI box {box} outside the {w}x{h} frame')
+    if not (x0 <= xlo and xhi < x1 and y0 <= ylo and yhi < y1):
         fails.append('ROI box does not contain every target landmark')
     # A mouth+nose box that swallowed most of the frame means the landmarks are
     # not what we think they are (the clip would carry no ROI localisation).
     if (x1 - x0) * (y1 - y0) > 0.5 * w * h:
         fails.append(f'ROI box {box} covers >50% of the {w}x{h} frame')
 
-    # --- independent recomputation of the padded box (guards _clamp_box)
+    # --- independent recomputation of the BOX ALGEBRA (I6/I7)
     sw, sh = xhi - xlo, yhi - ylo
-    nx0 = math.floor(xlo - ds.roi_padding * sw)
-    nx1 = math.ceil(xhi + ds.roi_padding * sw) + 1
-    ny0 = math.floor(ylo - ds.roi_padding * sh)
-    ny1 = math.ceil(yhi + ds.roi_padding * sh) + 1
-    if 0 < nx0 and nx1 < w and 0 < ny0 and ny1 < h:
+    nx0 = int(math.floor(xlo - ds.roi_padding * sw))
+    nx1 = int(math.ceil(xhi + ds.roi_padding * sw)) + 1
+    ny0 = int(math.floor(ylo - ds.roi_padding * sh))
+    ny1 = int(math.ceil(yhi + ds.roi_padding * sh)) + 1
+    if getattr(ds, 'crop_rule', CROP_RULE_BOX) == CROP_RULE_SQUARE:
+        side = max(2, nx1 - nx0, ny1 - ny0)
+        if (x1 - x0) != (y1 - y0):
+            fails.append(f'square ROI box {box} has unequal sides '
+                         f'{x1 - x0}x{y1 - y0} (I6)')
+        elif (x1 - x0) != side:
+            fails.append(f'square ROI box {box} is {x1 - x0} px, expected the '
+                         f'{side} px side of the padded envelope')
+        if not (x0 <= math.floor(xlo) and x1 >= math.ceil(xhi) + 1
+                and y0 <= math.floor(ylo) and y1 >= math.ceil(yhi) + 1):
+            fails.append('square ROI box does not contain the landmark '
+                         'envelope (I7)')
+    elif 0 < nx0 and nx1 < w and 0 < ny0 and ny1 < h:
         if (x0, x1, y0, y1) != (nx0, nx1, ny0, ny1):
             fails.append(f'ROI box {box} != the padded landmark box '
                          f'{(nx0, nx1, ny0, ny1)}')
 
-    # --- the returned tensor IS the crop of that box (not a centred re-crop)
+    # --- the returned tensor IS the crop of that box (not a centred re-crop),
+    # rescaled with ONE scale factor: sx == sy == s / side (I4, I5).
     cv2 = _cv2()
-    interp = (cv2.INTER_AREA if ds.input_size <= min(x1 - x0, y1 - y0)
+    side_x, side_y = x1 - x0, y1 - y0
+    if getattr(ds, 'crop_rule', CROP_RULE_BOX) == CROP_RULE_SQUARE \
+            and side_x != side_y:
+        fails.append(f'crop resized anisotropically: {side_x}x{side_y} box '
+                     f'stretched to {ds.input_size}x{ds.input_size}')
+    interp = (cv2.INTER_AREA if ds.input_size <= min(side_x, side_y)
               else cv2.INTER_LINEAR)
     expect = cv2.resize(frames[0][y0:y1, x0:x1], (ds.input_size, ds.input_size),
                         interpolation=interp)

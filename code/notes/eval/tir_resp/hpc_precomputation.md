@@ -609,6 +609,16 @@ above exactly (q=0.05 -> x0.835, q=0.10 -> x0.713, q=0.20 -> x0.536).
 
 ## 9. Settled design for implementation (2026-10-08)
 
+> **Superseded in part, 2026-10-29.** The STORED CROP is no longer the
+> padded-envelope union box of the whole task: it is the **square hull** over the
+> sentinel-valid clip windows (`roi_cache.hull_box`), so `crop_rule`,
+> `clip_seconds` and `fps` joined the frozen key and `CACHE_FORMAT_VERSION` is
+> **3**. Everything else below (key philosophy, what stays OUT of the key, chunked
+> decode, shard schema, `--check` gate) still holds, and the measured numbers are
+> the v2 record. Contract of record:
+> `code/notes/design/ROI_crop_and_rescaling.md` §3.5; build order:
+> `code/notes/plan/ROI_crop_implementation_plan.md`.
+
 Everything needed to write the cache without re-deciding anything. Sections
 2.3-2.5 are the rationale; this is the specification.
 

@@ -269,33 +269,27 @@ patch from the returned tensor — so those need no edit. The rest does:
 * fix the `DEFAULT_INSPECT_INPUT_SIZE` comment: 64 is the local/smoke geometry,
   the HPC Stage-2/3 lineage trains at 112 (design §4.5).
 
-**Step 10c — outlier review, which the tool cannot do today.** `_check_clip` is a
+**Step 10c — outlier review (implemented 2026-10-30).** `_check_clip` is a
 *conformance* check (tensor == resize(crop), box in frame and over the landmarks,
 respiration aligned) with exactly one quality bound, `box area > 50 % of the frame`;
 the largest measured box is 413 x 252 = 30 % of the 726 x 480 frame, so a
-pathological clip still reports `[ok]` and exits 0. Three gaps, all of which bite the
-moment the motion gate exists:
+pathological clip still reports `[ok]`. The tool therefore reports MEASUREMENTS and
+keeps the binary verdict for conformance only:
 
-* **Indices are not stable.** The gate renumbers `ds.entries`, so `--clip_index 3`
-  addresses a *different* window before and after the port — "go back and look at
-  the clip I flagged" stops being expressible. Add `--frame_start` / `--t_start`
-  selection alongside the index.
-* **An absent window must explain itself.** A clip dropped by the motion or envelope
-  gate is not in `entries` at all; today an out-of-range index prints `[skip] … out
-  of range` and the run still prints `PASS: 0/0 clip(s) checked` and returns **0**.
-  Re-evaluate the requested window against the gates and report which one dropped it
-  (`sentinel` / `envelope` / `motion` / `rail` / `flat`), exiting non-zero.
-* **Report measurements, not just a verdict.** Add `sway_px`,
-  `gate_margin_px = max_sway_px - sway`, `box_side_px`, `area_frac_of_frame` and
-  `envelope_frac_of_patch` (how much of the patch the landmark envelope covers —
-  the direct "how much of this is face" measure), plus a `flags` list
-  (`near_gate`, `box_gt_40pct_frame`, `envelope_lt_25pct_patch`). Keep the binary
-  FAIL for contract conformance only: mixing quality thresholds into `_check_clip`
-  would destroy the meaning of its FAIL.
-
-Also make the loop exception-safe: a contract violation raised from `ds[index]`
-(e.g. a box escaping the hull under I2) currently surfaces as a traceback instead of
-a FAIL, losing the JSON report.
+* `--frame_start` / `--t_start` address a WINDOW instead of an entry index. This
+  is required, not cosmetic: the motion gate renumbers `ds.entries`, so
+  `--clip_index 3` means a different window before and after a geometry change.
+* A window that is absent is DIAGNOSED (`_diagnose_window`): session gates,
+  sentinel, motion (with the measured sway), envelope (`RoiBoxOutOfFrame`), rail
+  and flat are re-applied in the entry builder's order, plus a note when the value
+  is off the clip-hop grid. The run exits NON-ZERO and the diagnosis lands in
+  `tir_resp_index.json` — the old behaviour was `PASS: 0/0`.
+* The clip JSON carries `sway_px`, `gate_margin_px`, `box_side_px`,
+  `area_frac_of_frame`, `envelope_frac_of_patch` and a `flags` list (`near_gate`,
+  `box_gt_40pct_frame`, `envelope_lt_25pct_patch`, `box_not_square`).
+* The loop is exception-safe: a contract violation raised from `ds[index]` (e.g. a
+  box escaping the hull under I2) becomes a FAIL with a written report instead of
+  a traceback.
 
 Adding `--roi_cache` to the inspector is optional and separate: it would make the
 cached path visually auditable, but `cache_parity_probe.py` (step 19) is the gate
@@ -361,27 +355,48 @@ Baseline is 345 tests; the two new modules add ~15–20. Run
 
 ## Phase 6 — measurement, rebuild, docs
 
-**Step 18 — geometry ledger.** Promote the probe that produced the design's numbers
-to `code/notes/eval/tir_resp/roi_geometry_ledger.py`, with a short note
-`code/notes/eval/tir_resp/roi_geometry_ledger.md`. It emits side percentiles
-(median/p95/max, before and after the gate), the sigma distribution and
-down/upsample share at `s in {64, 112, 128}` for `p in {0.1, 0.2}`, and **per-task
-clip attrition** at `max_sway_px in {30, 40, 60, 100}`. It reads the raw
-`IRFeatures` tree, not the cache, so it runs before the rebuild.
+**Step 18 — geometry ledger (implemented 2026-10-30, PASS).**
+`notes/eval/tir_resp/roi_geometry_ledger.py` (+ `roi_geometry_ledger.md`) reads the
+five Stage-3 fold `entries.json` dumps for the clip population and the raw
+`IRFeatures` tracks for the geometry -- no decode, no cache, 31 s. It emits side
+percentiles (pre/post gate), the sigma ledger and per-task attrition, and exits
+NON-ZERO when a published figure stops matching.
 
-Acceptance: reproduces the design's ledger — median side 111 / p95 153 / max 413 px
-pre-gate, 110 / 145 / 202 px at 40 px; 96.8 % of clips kept, 1238/1260 sessions,
-138/138 subjects, T4 the worst task at 80 %.
+Acceptance (all reproduced exactly, 0 mismatches): median side 111 / p95 153 / max
+413 px pre-gate, 110 / 145 / 202 px at 40 px; 96.83 % of clips kept, 1238/1260
+sessions, 138/138 subjects, T4 the worst task at 80.2 %; sigma 1.01 at
+`s=112, p=0.2` with 45.8 % downscaled.
 
-**Step 19 — HPC rebuild and gates** (`scripts/hpc/submit_roi_cache.sbatch`):
+```bash
+python notes/eval/tir_resp/roi_geometry_ledger.py --raw_root "$RAW_DATA_PATH" \
+    --json ../output/eval/tir_resp/roi_geometry_ledger.json
+```
 
-1. build -> `--status` (expect 1385 cached / 15 skipped, ~120 GB);
-2. `--index` -> `manifest.json` carries the new key;
-3. `--check --hops 1.0,2.0 --clip_seconds 8 --input_size 112` -> PASS;
-4. `notes/eval/tir_resp/cache_parity_probe.py --tasks 12` -> `VERDICT PASS`
-   (T2 byte-identical cached-vs-decoded, T3 frame-identical);
-5. one smoke train: `--max_sessions 2 --max_entries 8 --epochs 1 --warmup_epochs 0`
-   reading the new cache.
+**Step 19 — HPC rebuild and gates (DONE 2026-10-30).**
+
+Built key (source `726x480`, corpus `21436483f2408ec7n1400`):
+
+```text
+tirroi_nose_mouth_pad0.20_square_window-hull_clip8s_src726x480_native_v3_adc046c944
+```
+
+| gate | result |
+|---|---|
+| array `55775666` (32 elements) | ~9 min wall |
+| `--status` | **1385 cached / 15 skipped / 0 missing**, 97 GiB (104.1 GB); all 15 skips are `missing_ir_features` |
+| `--index` | manifest written, 2.5 min |
+| `--check --hops 1.0 2.0 --input_size 112 --crop_rule square` | **PASS**, 30 clips over 4 sessions x 2 hops, cached == live byte-for-byte |
+| `cache_parity_probe.py --tasks 12` | **PASS** T0-T3: frame size MATCH, 1222 clips contained (0 outside), 8/8 clips byte-identical, 1600/1600 frames identical |
+| data-path smoke (Stage-2 geometry, cache) | **PASS**: `[3,100,112,112]` + `[1,800]`, ~35 ms/sample vs ~1 s decoding; the gate fires on real data (3 windows dropped in `F001_T1`) |
+
+The v2 artifact (`..._minmax_..._v2_9d0214aefa`, 85 GB, 1385 shards) stays
+UNTOUCHED beside it; the loader refuses it (`format_version`/`crop_rule` are in
+`COMPARE_KEYS`). Storage came out at 97 GiB, below the ~120 GB estimate.
+
+Note: `--check` and the parity probe must run on a compute node (`srun -p deflt
+-n 1 -c 8`), not the login node. Both probes under `notes/eval/tir_resp/` needed
+their `sys.path` bootstrap fixed to four directory levels so they can be invoked
+directly.
 
 **Step 20 — docs.**
 
@@ -389,7 +404,7 @@ pre-gate, 110 / 145 / 202 px at 40 px; 96.8 % of clips kept, 1238/1260 sessions,
 |---|---|
 | `code/notes/design/ROI_crop_and_rescaling.md` | status header -> implemented (dated); add one line that the RGB lineage is bound to this contract |
 | `code/scripts/project/write_specs.py:244,256` | embedded ROI text gains the square rule + motion gate; then regenerate |
-| `code/notes/spec/01_data_pipeline.md` §3.2–3.3 | regenerate with `python scripts/project/write_specs.py`, then **diff for lost hand edits** (the script overwrites) |
+| `code/notes/spec/01_data_pipeline.md` §3.2–3.3 | hand-applied, NOT regenerated: `write_specs.py` is stale for the split policy, `physio_norm`, the RGB zip source and `rail_touch_v`, so running it reverts four hand edits (verified by diff on 2026-10-29). Its ROI paragraph WAS updated, so a future regeneration keeps the new text. |
 | `code/notes/eval/tir_resp/hpc_precomputation.md` §9 | the hull contract, the three key fields, the rebuild cost |
 | `code/data/rgb_features.py` | delete the dead `roi_box_2d` wrapper (214–240), drop it from `__all__` (60–62) and the `min_extent` mention at 89 |
 | `code/README.md` | one line if it lists the ROI knobs |

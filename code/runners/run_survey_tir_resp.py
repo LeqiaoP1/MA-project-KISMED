@@ -106,6 +106,7 @@ def _survey_subject(args: dict) -> dict:
             raw_root=args['raw_root'], subjects=[subj], tasks=None,
             task_groups=args['task_groups'], task_set=None,
             input_size=args['input_size'], roi_padding=args['roi_padding'],
+            crop_rule=args['crop_rule'], max_sway_px=args['max_sway_px'],
             clip_seconds=args['clip_seconds'], clip_stride=args['clip_stride'],
             min_signal_spread=0.0,          # keep every window; we classify below
             norm='none', allow_empty=True, verbose=False)
@@ -515,6 +516,14 @@ def main(argv=None) -> int:
     p.add_argument('--task_groups', default=DEFAULT_TASK_GROUPS)
     p.add_argument('--input_size', type=int, default=112)
     p.add_argument('--roi_padding', type=float, default=0.2)
+    p.add_argument('--crop_rule', default=trd.DEFAULT_CROP_RULE,
+                   choices=list(trd.CROP_RULES),
+                   help='clip-box shape; must match the runs being described')
+    p.add_argument('--max_sway_px', type=float,
+                   default=trd.DEFAULT_MAX_SWAY_PX,
+                   help='motion gate of the runs being described (0 = off); '
+                        'this runner keeps every window, so the number only '
+                        'sets the reported clips_dropped_motion baseline')
     p.add_argument('--clip_seconds', type=float, default=DEFAULT_CLIP_SECONDS)
     p.add_argument('--clip_stride', type=float, default=DEFAULT_CLIP_STRIDE,
                    help='window hop in SECONDS. The survey MUST use the same '
@@ -554,7 +563,9 @@ def main(argv=None) -> int:
     task_groups = trd.tgrp.parse_task_groups(args.task_groups)
     payload = [{'subject': s, 'raw_root': args.raw_root,
                 'task_groups': args.task_groups, 'input_size': args.input_size,
-                'roi_padding': args.roi_padding, 'rail_v': args.rail_v,
+                'roi_padding': args.roi_padding,
+                'crop_rule': args.crop_rule, 'max_sway_px': args.max_sway_px,
+                'rail_v': args.rail_v,
                 'clip_seconds': args.clip_seconds,
                 'clip_stride': args.clip_stride,
                 'flat_spread': args.flat_spread,

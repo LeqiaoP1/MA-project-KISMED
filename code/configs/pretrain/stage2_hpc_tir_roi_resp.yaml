@@ -96,6 +96,15 @@ input_size: 112                    # ROI patch side. 112/16 -> a 7x7 grid =
                                    #   Stage-3 twin with input_size 112 is
                                    #   required (same roi_* keys).
 roi_padding: 0.2                   # landmark-box margin on EACH side
+crop_rule: square                  # square the padded box BEFORE the rescale,
+                                   #   so ONE scale factor is applied (sx == sy)
+                                   #   and the anatomy is never deformed; 'box' is
+                                   #   the legacy per-axis geometry (A/B only)
+max_sway_px: 40                    # DROP a clip whose target-landmark centroid
+                                   #   travels further than this many source px
+                                   #   from its own within-clip median (0 = off).
+                                   #   Corpus shift: -3.2 % of clips, T4 worst
+                                   #   (80 % kept). MUST mirror in Stage 3.
 roi_landmarks: ''                  # '' = the historical 12-point nose+mouth set
 min_signal_spread: 0.1              # VOLTS: DROP a window whose spread
                                    #   (max-min) is below this. 0.1 V catches the

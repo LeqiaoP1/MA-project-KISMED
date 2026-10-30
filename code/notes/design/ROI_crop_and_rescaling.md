@@ -1,6 +1,9 @@
 # Feature Design — Landmark ROI Extraction and Rescale to a Fixed Square
 
-**Status**: approved design (2026-10-29). Implementation plan: `code/notes/plan/ROI_crop_implementation_plan.md`.
+**Status**: implemented 2026-10-29 in the TIR lineage (`data/tir_resp_dataset.py`,
+`data/roi_cache.py`). Implementation plan: `code/notes/plan/ROI_crop_implementation_plan.md`.
+The RGB lineage keeps the legacy geometry and is bound to the same contract when it
+is ported.
 **Owners of the behaviour**: `data/tir_resp_dataset.py` (thermal), `data/rgb_roi_dataset.py` (visible), `data/rgb_features.py` (49-pt track), `data/roi_cache.py` (storage).
 **Contract of record**: `notes/spec/01_data_pipeline.md` §3.2–3.3.
 **Measured behaviour**: `notes/eval/tir_resp/` (`roi_sweep.py`, `roi_box_impact.py`, `frame_argmax.py`, `native_resolution_gate.py`).
@@ -16,8 +19,9 @@ Paths are relative to `code/`, except `notebooks/…`, which is repo-root relati
 Numbers quoted here are measured over the **21 231 emitted clips** (union of the
 five subject-disjoint Stage-3 fold dumps = 1260 sessions / 138 subjects), recomputed
 with the production box function on the cache's landmark tracks (verified
-byte-identical to the `IRFeatures` track). The probe that produced them is promoted
-to `notes/eval/tir_resp/` with the port, so the ledger stays reproducible.
+byte-identical to the `IRFeatures` track). Reproduce them with
+`notes/eval/tir_resp/roi_geometry_ledger.py` (verdict and tables documented in
+`notes/eval/tir_resp/roi_geometry_ledger.md`).
 
 ---
 
@@ -544,7 +548,9 @@ cannot be mixed; the abort is intentional.
    question, not a preprocessing bug.
 6. **No per-frame fallback.** If a subject's tracker drifts but stays finite and
    slow, the motion gate passes and the box is wrong by an unknown amount. Only
-   offline inspection (`run_inspect_thermal.py`, ROI overlays) can catch it.
+   offline inspection (`run_inspect_tir_resp.py`, ROI overlays) can catch it —
+   address the window with `--t_start`/`--frame_start`, not by entry index, since
+   the gate renumbers the entry list.
 
 ---
 

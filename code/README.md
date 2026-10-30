@@ -332,7 +332,8 @@ Consequences to keep in mind:
 * `clip_stride` decides **which windows exist**, so it is a corpus choice:
   `run_waveform.py` prints a note when Stage 3 differs from the Stage-2
   checkpoint's value, next to `rail_touch_v`. It is NOT part of the ENFORCED ROI
-  contract (`roi_landmarks` / `roi_padding` / `input_size` are);
+  contract (`roi_landmarks` / `roi_padding` / `input_size` / `crop_rule` /
+  `max_sway_px` are);
 * consecutive clips stay strongly correlated, so the *effective* sample size is
   much smaller than the clip count — read a per-clip metric count as a count of
   WINDOWS, not of independent observations;
@@ -392,7 +393,8 @@ Two guards make a silently-off rule impossible:
   `clip_stride`: `2.0` in the HPC Stage-2 run, `1.0` elsewhere).
 
 **The Stage-3 ROI contract is now ENFORCED (2026-10-01).** The ROI keys
-(`roi_landmarks`, `roi_padding`, `input_size`) decide *which
+(`roi_landmarks`, `roi_padding`, `input_size`, `crop_rule`, `max_sway_px`)
+decide *which
 pixels* reach the encoder while leaving **every tensor shape unchanged**: a
 Stage-3 run with a different landmark set builds a perfectly shaped input, the
 checkpoint loads with all 150 encoder tensors matching, and the run fine-tunes
@@ -706,19 +708,24 @@ It reads the **raw** tree (no `prepare_bp4d.py` copy needed):
   recorded (`ds.skipped`, `ds.stats['clips_dropped_sentinel']`) instead of
   being swallowed, and a file whose lines do NOT all carry 56 values raises,
   because then line/frame alignment can no longer be trusted.
-* **ROI = one CLIP-STATIC box.** For the 12 mouth+nose landmarks (1-indexed
-  user-guide labels `[9,10,11,12,13,20,21,22,23,24,25,26]` = nose bridge 9/20,
-  nostrils 10/21, mouth corners 11/22, lips 12/13/23/24, lip centres 25/26) of
-  all 200 frames: take the global `(x_min, x_max, y_min, y_max)`, extend each
-  side by `roi_padding * extent` (0.2 -> +40 % overall), clamp to the frame, and
-  crop **all 200 frames with that one box**, each resized to `input_size` with
-  `cv2.resize`. A per-clip (not per-frame) box means the patch cannot jitter
-  spatially -- the visible cost is that a moving head is covered by a slightly
-  loose box (measured over F001_T1's 8 clips: 84x98 .. 125x111 px, i.e. 2.5-4.5x
-  the mouth+nose area of a single frame, except the last clip where the subject
-  turns away and it reaches 118x162 px = 7.5x, out of 726x480), which is what
-  the padding is for. Reduce `roi_padding` (0 = the tight union) or shorten the
-  clip to tighten it.
+* **ROI = one CLIP-STATIC SQUARE box.** For the target landmarks (default: the
+  12 mouth+nose points, 1-indexed user-guide labels
+  `[9,10,11,12,13,20,21,22,23,24,25,26]` = nose bridge 9/20, nostrils 10/21,
+  mouth corners 11/22, lips 12/13/23/24, lip centres 25/26) of all 200 frames:
+  take the global `(x_min, x_max, y_min, y_max)`, extend each side by
+  `roi_padding * extent` (0.2 -> +40 % overall), then SQUARE the result
+  (`crop_rule: square`, the default: `side = max(w, h)`, short axis grown about
+  the box centre) and translate it into the frame. Crop **all 200 frames with
+  that one box** and resize to `input_size` with ONE isotropic scale
+  (`sx == sy`), so the anatomy is scaled and never deformed; `crop_rule: box`
+  keeps the legacy per-axis (squashing) geometry for A/B. A box that cannot be
+  placed without cutting a landmark raises `RoiBoxOutOfFrame` instead of
+  silently clipping. A per-clip (not per-frame) box means the patch cannot
+  jitter spatially -- the visible cost is that a moving head is covered by a
+  slightly loose box, which is what the padding is for; if the head travels
+  further than `max_sway_px` (40 source px, 0 = off) inside the window, the
+  clip is DROPPED (counted in `stats['clips_dropped_motion']`) rather than
+  absorbed into a mostly-background crop.
 * **Alignment is by TIME, not a hand-tuned offset.** A clip starting at frame
   `f` covers `[f/25, (f+T)/25)` s and the respiration slice is that window on
   the `[L] = clip_seconds * 1000` grid; at the corpus' nominal rates the mapping

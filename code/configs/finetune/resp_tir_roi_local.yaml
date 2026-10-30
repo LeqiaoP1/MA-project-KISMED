@@ -48,6 +48,12 @@ target: resp
 data_set: tir_roi_resp             # -> build_tir_roi_finetune_dataset (Stage-3 view)
 data_path: ../data/raw/BP4D        # $RAW_DATA_PATH equivalent; NOT the canonical tree
 roi_padding: 0.2                   # per-side ROI margin -- MUST equal the Stage-2 run
+crop_rule: square                  # MUST equal the Stage-2 run: the padded box
+                                   #   is squared BEFORE the rescale, so ONE
+                                   #   scale factor (sx == sy) is applied
+max_sway_px: 40                    # MUST equal the Stage-2 run: clips whose
+                                   #   landmark centroid travels further than
+                                   #   this many source px are not in the corpus
 roi_landmarks: ''                  # '' = the historical 12-point nose+mouth set;
                                    #   a preset (nose_tip preferred) or a CSV.
                                    #   MUST equal the Stage-2 run.

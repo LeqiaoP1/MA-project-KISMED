@@ -29,6 +29,17 @@ RAW = '/fake/raw'
 SESSIONS = [{'session': 'S001_T1'}, {'session': 'S002_T1'}]
 W, H, PAD = 726, 480, 0.2
 
+#: A 4-FRAME clip window at 1 fps, so `_cloud()`'s default 6 frames span two
+#: overlapping windows and the hull is exercised over real WINDOWS (the shipped
+#: 8 s x 25 fps = 200-frame window would swallow any synthetic track).
+CLIP_S, FPS = 4.0, 1.0
+
+
+def _hull(pts, labels=LABELS, padding=PAD, crop_rule=trd.DEFAULT_CROP_RULE):
+    """`hull_box` for the test geometry."""
+    return rc.hull_box(pts, labels, padding, W, H, crop_rule=crop_rule,
+                       clip_seconds=CLIP_S, fps=FPS)
+
 
 def _cloud(n=6, seed=0):
     """A plausible nose+mouth cloud: all 28 landmarks in a face-sized box."""
@@ -117,11 +128,12 @@ def test_valid_rows_keeps_a_partially_degenerate_frame_out_of_the_box():
     clean = _cloud()
     dirty = clean.copy()
     dirty[2, IDX[1], :] = 0.0
-    x0, x1, y0, y1 = rc.union_box(dirty, LABELS, PAD, W, H)
+    x0, x1, y0, y1 = _hull(dirty)
     assert x0 > 0 and y0 > 0, 'a (0,0) target must not reach the image corner'
     keep = [i for i in range(len(clean)) if i != 2]
     expect = trd.roi_box_from_landmarks(
-        clean[keep][:, IDX, :].reshape(-1, 2), W, H, PAD)
+        clean[keep][:, IDX, :].reshape(-1, 2), W, H, PAD,
+        crop_rule=trd.DEFAULT_CROP_RULE)
     assert (x0, x1, y0, y1) == expect
 
 
@@ -158,48 +170,72 @@ def test_missing_frame_mask_raises_on_a_wrong_shape():
 
 
 # --------------------------------------------------------------------------- #
-# union_box
+# hull_box -- the STORAGE box
 # --------------------------------------------------------------------------- #
-def test_union_box_is_the_padded_minmax_of_the_valid_rows():
-    pts = _cloud(n=4)
-    pts[0] = 0.0                              # excluded from the box
-    box = rc.union_box(pts, LABELS, PAD, W, H)
-    expect = trd.roi_box_from_landmarks(
-        rc.valid_rows(pts, LABELS).reshape(-1, 2), W, H, PAD)
+def test_hull_box_is_the_clip_box_of_a_single_window():
+    pts = _cloud(n=4)                          # exactly one 4-frame window
+    box = _hull(pts)
+    expect = trd.roi_box_from_landmarks(pts[:, IDX, :].reshape(-1, 2), W, H, PAD,
+                                        crop_rule=trd.DEFAULT_CROP_RULE)
     assert box == expect
+    assert box[1] - box[0] == box[3] - box[2], 'the stored window box is square'
 
 
-def test_union_box_hardcoded_small_case():
-    """Two distinct target points -> a box of exactly 100x100 px, padded 0.2."""
-    pts = np.zeros((1, trd.NUM_LANDMARKS, 2), np.float32)
-    pts[0, IDX[0], :] = (100.0, 200.0)
-    pts[0, IDX[1], :] = (200.0, 300.0)
-    pts[0, IDX[2], :] = (200.0, 300.0)
-    # every other target sits on the same corner so the cloud is those two
-    for i in IDX[3:]:
-        pts[0, i, :] = (200.0, 300.0)
-    assert rc.union_box(pts, LABELS, 0.2, W, H) == (80, 221, 180, 321)
+def test_hull_box_hardcoded_small_case():
+    """A 100 x 50 px cloud: legacy keeps the aspect, square grows the short axis."""
+    pts = np.zeros((4, trd.NUM_LANDMARKS, 2), np.float32)
+    for i in IDX:
+        pts[:, i, :] = (200.0, 250.0)
+    pts[:, IDX[0], :] = (100.0, 200.0)
+    # clip_seconds/fps make ONE 4-frame window -> the padded min/max box
+    assert _hull(pts, crop_rule='box') == (80, 221, 190, 261)
+    # ... and the square rule grows the 71 px height to the 141 px width
+    sq = _hull(pts, crop_rule='square')
+    assert sq == (80, 221, 155, 296)
+    assert sq[1] - sq[0] == sq[3] - sq[2] == 141
+    assert rc.box_contains(sq, (80, 221, 190, 261))
 
 
-def test_union_box_is_none_when_every_row_is_unusable():
+def test_hull_box_is_none_when_every_row_is_unusable():
     pts = _cloud(n=3)
     pts[:] = 0.0
-    assert rc.union_box(pts, LABELS, PAD, W, H) is None
+    assert _hull(pts) is None
 
 
-def test_union_box_contains_every_kept_clip_box():
-    """The invariant the whole cache rests on: a sub-crop cannot clip the ROI."""
+def test_hull_box_contains_every_kept_clip_box_at_every_stride():
+    """The invariant the whole cache rests on (I2): any hop, any window.
+
+    The loader may ask for ANY start offset, so containment is checked at stride
+    1 -- the stride the hull is built at -- and the windows that overlap a
+    sentinel frame are skipped exactly as the dataset skips them.
+    """
     pts = _cloud(n=20, seed=3)
     pts[6] = 0.0
     pts[11, IDX[2], :] = 0.0
-    ub = rc.union_box(pts, LABELS, PAD, W, H)
-    ds_keep = ~trd.missing_frame_mask(pts, IDX)
-    for start in range(0, 20, 4):             # every 4-frame clip window
-        win = pts[start:start + 4][ds_keep[start:start + 4]]
-        if win.shape[0] == 0:
+    hub = _hull(pts)
+    bad = trd.missing_frame_mask(pts, IDX)
+    n_checked = 0
+    for start in range(0, len(pts) - int(CLIP_S * FPS) + 1):
+        if bad[start:start + int(CLIP_S * FPS)].any():
             continue
-        cb = trd.roi_box_from_landmarks(win[:, IDX, :].reshape(-1, 2), W, H, PAD)
-        assert rc.box_contains(ub, cb)
+        cb = trd.roi_box_from_landmarks(
+            pts[start:start + int(CLIP_S * FPS)][:, IDX, :].reshape(-1, 2),
+            W, H, PAD, crop_rule=trd.DEFAULT_CROP_RULE)
+        n_checked += 1
+        assert rc.box_contains(hub, cb), f'window at {start} escapes {hub}'
+    assert n_checked > 4, 'the sweep must actually cover several windows'
+
+
+def test_hull_box_is_the_same_for_every_hop():
+    """Hop-independence: the hull is built at stride 1, so a hop is a subset."""
+    pts = _cloud(n=20, seed=5)
+    hub = _hull(pts)
+    for hop in (1, 2, 3):
+        for start in range(0, len(pts) - int(CLIP_S * FPS) + 1, hop):
+            cb = trd.roi_box_from_landmarks(
+                pts[start:start + int(CLIP_S * FPS)][:, IDX, :].reshape(-1, 2),
+                W, H, PAD, crop_rule=trd.DEFAULT_CROP_RULE)
+            assert rc.box_contains(hub, cb)
 
 
 def test_box_contains_and_shift_box():
@@ -222,14 +258,26 @@ def test_build_params_is_stable_and_names_the_landmark_set():
 
 def test_cache_key_changes_when_a_frozen_field_changes():
     base = rc.cache_key(rc.build_params(RAW, SESSIONS, LABELS, PAD, W, H))
-    assert base.startswith('tirroi_nose_mouth_pad0.20_minmax_src726x480_native_v2_')
+    assert base.startswith('tirroi_nose_mouth_pad0.20_square_window-hull_'
+                           'clip8s_src726x480_native_v3_')
     variants = [
         rc.build_params(RAW, SESSIONS, LABELS, 0.1, W, H),         # padding
         rc.build_params(RAW, SESSIONS, (10, 21), PAD, W, H),       # landmarks
         rc.build_params(RAW, SESSIONS, LABELS, PAD, 640, H),       # src width
         rc.build_params('/other/raw', SESSIONS, LABELS, PAD, W, H),  # corpus
+        rc.build_params(RAW, SESSIONS, LABELS, PAD, W, H,
+                        crop_rule='box'),                           # geometry
+        rc.build_params(RAW, SESSIONS, LABELS, PAD, W, H,
+                        clip_seconds=4.0),                          # window length
+        rc.build_params(RAW, SESSIONS, LABELS, PAD, W, H, fps=12.5),  # window length
     ]
     assert all(rc.cache_key(v) != base for v in variants)
+
+
+def test_input_size_and_clip_stride_stay_out_of_the_key():
+    """I3: they select or rescale, they never change a stored pixel."""
+    p = rc.build_params(RAW, SESSIONS, LABELS, PAD, W, H)
+    assert 'input_size' not in p and 'clip_stride' not in p
 
 
 def test_loader_params_covers_exactly_the_comparable_keys():

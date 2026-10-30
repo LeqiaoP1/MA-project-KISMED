@@ -253,7 +253,7 @@ The session name encodes subject (`'F001_T1'.rsplit('_', 1)[0]` -> `'F001'`), en
 | `TirRoiRespPretrainDataset` | Stage 2 | `{'tir': [C,T,H,W], 'resp': [1,S]}` |
 | `TirRoiRespFinetuneDataset` | Stage 3 | `(tir_crop [C,T,H,W], target [output_len])` |
 
-**ROI crop pipeline**: `IRFeatures` landmarks -> `roi_box_from_landmarks` + `roi_padding`. Clips with all-(0,0) sentinel rows dropped. Optional `min_signal_spread` rejects near-constant (railed) respiration windows.
+**ROI crop pipeline**: `IRFeatures` landmarks -> `roi_box_from_landmarks(..., crop_rule)` + `roi_padding`. With `crop_rule: square` (the default) the padded box is squared about its centre FIRST, so the rescale applies ONE scale factor (`sx == sy`) and the anatomy is never deformed; `crop_rule: box` keeps the legacy per-axis geometry for A/B. A box that cannot be placed without cutting the landmark envelope raises `RoiBoxOutOfFrame`. Clips whose target-landmark centroid travels further than `max_sway_px` (40 source px; 0 = off) inside the window are DROPPED, and clips touching a (0,0) sentinel row are dropped whole. Optional `min_signal_spread` rejects near-constant (railed) respiration windows.
 
 **Task groups** (`data/task_groups.py`): the shipped tiers (v2, 2026-10-24) are `low=[T2,T3,T5]`, `moderate=[T1,T4]`, `high=[T6,T7,T8,T9,T10]` -- a PARTITION of `T1`..`T10`, canonical form `data.task_groups.SHIPPED_TASK_GROUPS`, pinned by `tests/test_task_group_configs.py`. Stage-2 and Stage-3 must use **identical** `task_groups` / `task_set`.
 

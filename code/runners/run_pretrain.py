@@ -109,6 +109,27 @@ def get_args():
                         help='tir_roi/rgb_roi only: fraction of the landmark-box '
                              'extent added on EACH side before the crop '
                              '(0.2 = +40%% overall)')
+    parser.add_argument('--crop_rule', default='square', type=str,
+                        choices=['box', 'square'],
+                        help="tir_roi/rgb_roi: how the padded landmark box "
+                             "becomes a crop. 'square' (default for tir_roi) "
+                             "squares it about its centre FIRST, so the rescale "
+                             "has ONE scale factor and the anatomy is never "
+                             "deformed; 'box' is the legacy per-axis (squashing) "
+                             "geometry, kept for A/B runs. It changes WHICH "
+                             "PIXELS reach the encoder while leaving every "
+                             "tensor shape unchanged -> a Stage-3 run must "
+                             "mirror it.")
+    parser.add_argument('--max_sway_px', default=40.0, type=float,
+                        help='tir_roi only: DROP a clip whose target-landmark '
+                             'centroid travels further than this many SOURCE '
+                             'pixels from its own within-clip median (0 = '
+                             'gate disabled; study value 40). A static box over '
+                             'a large head sweep is mostly background, so the '
+                             'clip is excluded rather than absorbed into a '
+                             'bigger crop. Changes WHICH CLIPS EXIST, not any '
+                             'pixel -> mirror it in Stage 3. Task-biased: T4 '
+                             'keeps 80 % at 40 px.')
     parser.add_argument('--min_signal_spread', default=0.0, type=float,
                         help='tir_roi only: DROP a clip whose respiration '
                              'window spread (max-min) is below this many VOLTS '

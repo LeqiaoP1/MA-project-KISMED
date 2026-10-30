@@ -23,11 +23,20 @@
 #
 # Env-style overrides (propagated by sbatch's default --export=ALL). NOTE: every
 # one of these changes the cache KEY, so --init and --build must agree on them:
-#   CACHE_OUT_ROOT     destination                default: $WORK_SCRATCH/tir_roi_cache
-#   CACHE_ROI_PADDING  ROI margin                  default: 0.2
+#   CACHE_OUT_ROOT      destination                default: $WORK_SCRATCH/tir_roi_cache
+#   CACHE_ROI_PADDING   ROI margin                  default: 0.2
 #   CACHE_ROI_LANDMARKS '' / preset / CSV          default: '' (nose_mouth)
-#   CACHE_SUBJECTS     comma list ('' = all)
-#   CACHE_LIMIT        first N subject-tasks (0 = all)
+#   CACHE_CROP_RULE     box shape                   default: 'square'
+#   CACHE_CLIP_SECONDS  window the hull is built for  default: 8
+#   CACHE_FPS           frames per second             default: 25
+#   CACHE_SUBJECTS      comma list ('' = all)
+#   CACHE_LIMIT         first N subject-tasks (0 = all)
+#
+# The stored crop is now the SQUARE HULL over clip-sized windows, so the key
+# carries crop_rule / clip_seconds / fps and the built directory gets a new name
+# NEXT TO the previous one (the parent root does not change; find_cache matches
+# by key). A previous-format cache is not reusable -- keep it until --check
+# passes on the new one.
 # Anything after the script name is forwarded to the runner verbatim.
 #SBATCH --job-name=roicache
 #SBATCH --partition=deflt             # CPU-only; 1 day max ('deflt_short' = 30 min)
@@ -72,6 +81,9 @@ mkdir -p "$OUT_ROOT" "$CODE_DIR/logs"
 ARGS=(--raw_root "$RAW_DATA_PATH" --out_root "$OUT_ROOT")
 [ -n "${CACHE_ROI_PADDING:-}" ]   && ARGS+=(--roi_padding "$CACHE_ROI_PADDING")
 [ -n "${CACHE_ROI_LANDMARKS:-}" ] && ARGS+=(--roi_landmarks "$CACHE_ROI_LANDMARKS")
+ARGS+=(--crop_rule "${CACHE_CROP_RULE:-square}")
+ARGS+=(--clip_seconds "${CACHE_CLIP_SECONDS:-8}")
+ARGS+=(--fps "${CACHE_FPS:-25}")
 [ -n "${CACHE_SUBJECTS:-}" ]      && ARGS+=(--subjects "$CACHE_SUBJECTS")
 [ -n "${CACHE_LIMIT:-}" ]         && ARGS+=(--limit "$CACHE_LIMIT")
 [ -n "${CACHE_COMPRESS:-}" ]      && ARGS+=(--compress)

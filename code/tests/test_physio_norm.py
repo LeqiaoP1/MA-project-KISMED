@@ -316,7 +316,8 @@ def test_roi_box_is_computed_per_clip(tmp_path):
     e = ds.entries[1]
     pts = ir[e['frame_start']:e['frame_end']][:, ds.base.target_idx, :]
     expect = trd.roi_box_from_landmarks(pts, W_FRAME, H_FRAME,
-                                        ds.base.roi_padding)
+                                        ds.base.roi_padding,
+                                        crop_rule=ds.base.crop_rule)
     assert b1 == expect
 
 

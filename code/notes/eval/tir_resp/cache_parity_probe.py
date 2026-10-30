@@ -48,8 +48,11 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__)))))
+# ``code/notes/eval/tir_resp`` -> ``code``: FOUR levels, so the probe works when
+# invoked directly (`python notes/eval/tir_resp/cache_parity_probe.py`) and not
+# only with PYTHONPATH/cwd already set to `code/`.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))))))
 
 from data import roi_cache as rc                                # noqa: E402
 from data import tir_resp_dataset as trd                        # noqa: E402
@@ -64,22 +67,34 @@ SRC_W, SRC_H = 726, 480
 TGT = trd.TARGET_LANDMARK_IDX
 Box = Tuple[int, int, int, int]
 
+#: Geometry the WRITER would use. ``main`` fills it from the CLI and both box
+#: helpers below read it, so their signatures stay (track, size) while the probe
+#: still cannot drift from the writer's parameters -- the writer keys its cache
+#: on exactly these fields.
+_GEOM: Dict[str, object] = {
+    'padding': 0.2,
+    'crop_rule': trd.DEFAULT_CROP_RULE,
+    'clip_seconds': trd.DEFAULT_CLIP_SECONDS,
+    'fps': trd.DEFAULT_FPS,
+}
+
 
 # --------------------------------------------------------------------------- #
 # geometry helpers
 # --------------------------------------------------------------------------- #
-def _union_box(ir: np.ndarray, padding: float, w: int, h: int
-               ) -> Optional[Box]:
+def _hull_box(ir: np.ndarray, padding: float, w: int, h: int
+              ) -> Optional[Box]:
     """The box the cache WRITER would store for one subject-task.
 
-    DELEGATES to ``roi_cache.union_box`` -- the writer's OWN helper -- so this
-    probe cannot agree with a bug in a re-implementation. It used to carry a
-    verbatim copy of the writer's valid-row predicate, which made the T1
-    containment check vacuous with respect to that predicate: both sides were
-    wrong together. (The copy also used ``.all()`` where the dataset uses
-    ``.any()``; see ``roi_cache.valid_rows``.)
+    DELEGATES to ``roi_cache.hull_box`` -- the writer's OWN helper -- so this
+    probe cannot agree with a bug in a re-implementation: a verbatim copy of the
+    writer's predicate once made the T1 containment check vacuous with respect
+    to that predicate (both sides wrong together).
     """
-    return rc.union_box(ir, trd.TARGET_LANDMARKS, padding, w, h)
+    return rc.hull_box(ir, trd.TARGET_LANDMARKS, padding, w, h,
+                       crop_rule=str(_GEOM['crop_rule']),
+                       clip_seconds=float(_GEOM['clip_seconds']),
+                       fps=float(_GEOM['fps']))
 
 
 def _clip_box(ir: np.ndarray, start: int, end: int, padding: float,
@@ -87,7 +102,8 @@ def _clip_box(ir: np.ndarray, start: int, end: int, padding: float,
     """The clip box -- exactly what ``BP4DPlusTIRRespDataset.clip_roi_box``
     computes, minus its decode (which exists only to learn ``w, h``)."""
     pts = np.asarray(ir)[start:end][:, TGT, :]
-    return trd.roi_box_from_landmarks(pts, w, h, padding)
+    return trd.roi_box_from_landmarks(pts, w, h, padding,
+                                      crop_rule=str(_GEOM['crop_rule']))
 
 
 def _contains(outer: Box, inner: Box) -> bool:
@@ -154,7 +170,7 @@ def test_containment(base, hops: Sequence[float], w: int, h: int,
         for i, e in enumerate(ds.entries):
             sess = e['session']
             ir = ds._landmarks(sess)
-            ub = _union_box(ir, padding, w, h)
+            ub = _hull_box(ir, padding, w, h)
             if ub is None:
                 continue
             cb = _clip_box(ir, e['frame_start'], e['frame_end'], padding, w, h)
@@ -241,7 +257,7 @@ def test_pixel_parity(base, n_clips: int, padding: float, seed: int) -> Dict:
         h, w = int(frames.shape[1]), int(frames.shape[2])
         out['frame_shape'] = [h, w, int(frames.shape[3])]
         ir = base._landmarks(e['session'])
-        ub = _union_box(ir, padding, w, h)
+        ub = _hull_box(ir, padding, w, h)
         if ub is None:
             continue
         cb = _clip_box(ir, e['frame_start'], e['frame_end'], padding, w, h)
@@ -392,6 +408,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument('--temporal_stride', type=int, default=2)
     p.add_argument('--input_size', type=int, default=112)
     p.add_argument('--padding', type=float, default=0.2)
+    p.add_argument('--crop_rule', default=trd.DEFAULT_CROP_RULE,
+                   choices=list(trd.CROP_RULES),
+                   help='clip-box shape; must match the cache being probed')
+    p.add_argument('--fps', type=float, default=trd.DEFAULT_FPS)
     p.add_argument('--cleaning', action='store_true',
                    help='enable the shipped rail/spread rules (0.1 V / 9.9 V); '
                         'slower, and only REMOVES clips')
@@ -411,10 +431,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
               f'or set $RAW_DATA_PATH', file=sys.stderr)
         return 2
 
+    _GEOM.update(padding=args.padding, crop_rule=args.crop_rule,
+                 clip_seconds=args.clip_seconds, fps=args.fps)
     print(f'[probe] raw_root : {args.raw_root}')
     print(f'[probe] hops     : {args.hops} s; clip {args.clip_seconds}s; '
           f'input_size {args.input_size}; padding {args.padding}; '
-          f'cleaning {"ON" if args.cleaning else "off"}')
+          f'crop {args.crop_rule}; cleaning {"ON" if args.cleaning else "off"}')
 
     subs = _select_subjects(args.raw_root, args.tasks, args.subjects)
     print(f'[probe] subjects : {len(subs) if subs else "ALL"}')

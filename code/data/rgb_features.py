@@ -59,7 +59,7 @@ except ImportError:                           # direct script execution
 
 __all__ = ['NUM_LANDMARKS_2D', 'GROUP_RANGES', 'ROI_LANDMARKS_2D',
            'find_2d_features', 'parse_2d_features', 'jpg_index_of',
-           'roi_box_2d', 'resolve_roi_landmarks_2d']
+           'roi_box_from_landmarks', 'resolve_roi_landmarks_2d']
 
 #: 49 (x, y) points per frame in the 2DFeatures track (user-guide Figure 1).
 NUM_LANDMARKS_2D = 49
@@ -86,8 +86,9 @@ GROUP_RANGES = (
 #:
 #: NB ``nostrils`` / ``nose_tip`` are nearly COLLINEAR rows (the five nose-base
 #: points span ~9 px vertically but ~108 px horizontally), so their min/max box
-#: is a thin strip -- pass ``min_extent`` to :func:`roi_box_2d` (or the runner's
-#: equivalent) or the 64x64 resize stretches a 13-px band into pure interpolation.
+#: is a thin strip. The square crop rule handles that structurally: a near-
+#: collinear set is grown to a square instead of being stretched to 64x64 --
+#: ``roi_box_from_landmarks(..., crop_rule='square')``.
 ROI_LANDMARKS_2D = {
     # thermal 9,10,11,12,13 / 20..26  ->  lower bridge + nose base + mouth
     'nose_mouth': (13, 14) + tuple(range(15, 20)) + tuple(range(32, 50)),
@@ -209,37 +210,6 @@ def jpg_index_of(frame_value: int) -> int:
     so index and rank can diverge in other sessions -- prefer this mapping.
     """
     return int(frame_value) - 1
-
-
-def roi_box_2d(pts: np.ndarray, width: int, height: int,
-               padding: float = 0.2, min_extent: int = 0,
-               quantile: float = 0.0) -> Tuple[int, int, int, int]:
-    """Clip-level static ROI box ``(x0, x1, y0, y1)`` for a 2D landmark clip.
-
-    Thin wrapper over :func:`data.tir_resp_dataset.roi_box_from_landmarks` that
-    additionally grows the SHORTER side to ``min_extent`` pixels about the box
-    centre. Without it a collinear landmark set (``nostrils`` / ``nose_tip``,
-    ~108 x 13 px) yields a strip, and resizing that to 64x64 fabricates ~5x
-    vertical upsampling.
-
-    :param pts: ``(T, 49, 2)`` (or any ``(..., 2)``) landmark coordinates.
-    :param min_extent: 0 disables the guard (thermal behaviour).
-    """
-    x0, x1, y0, y1 = roi_box_from_landmarks(pts, width, height,
-                                            padding=padding, quantile=quantile)
-    if min_extent and min_extent > 0:
-        me = int(min_extent)
-        for short, lo, hi, lim in (('x', x0, x1, width), ('y', y0, y1, height)):
-            if hi - lo < me:
-                grow = me - (hi - lo)
-                a = lo - grow // 2
-                a = max(0, min(a, lim - me))
-                b = min(lim, a + me)
-                if short == 'x':
-                    x0, x1 = a, b
-                else:
-                    y0, y1 = a, b
-    return x0, x1, y0, y1
 
 
 def _self_test(raw_root: Optional[str] = None) -> int:

@@ -129,7 +129,9 @@ def make_params(args, corpus_sessions) -> Dict:
                          f'Set VIDEO_BACKEND / check the reader.')
     params = rc.build_params(args.raw_root, corpus_sessions,
                              resolve_landmarks(args.roi_landmarks),
-                             args.roi_padding, w, h)
+                             args.roi_padding, w, h,
+                             crop_rule=args.crop_rule,
+                             clip_seconds=args.clip_seconds, fps=args.fps)
     print(f'[cache] source frame  : {w}x{h}x{c} (probed on {", ".join(names)})')
     return params
 
@@ -184,7 +186,10 @@ def mode_build(args, corpus, sessions) -> int:
         payload, reason = rc.build_task(spec, resolve_landmarks(args.roi_landmarks),
                                         args.roi_padding,
                                         with_landmarks=not args.no_landmarks,
-                                        max_task_bytes=int(args.max_task_gb * 1e9))
+                                        max_task_bytes=int(args.max_task_gb * 1e9),
+                                        crop_rule=args.crop_rule,
+                                        clip_seconds=args.clip_seconds,
+                                        fps=args.fps)
         if payload is None:
             rc.write_skip(root, session, reason or 'unknown')
             n_skip += 1
@@ -272,7 +277,8 @@ def mode_check(args, corpus, sessions) -> int:
             raw_root=args.raw_root, streams=('tir', 'resp'),
             clip_duration=args.clip_seconds, clip_stride=hop,
             temporal_stride=2, tubelet_t=2, input_size=args.input_size,
-            roi_padding=args.roi_padding,
+            roi_padding=args.roi_padding, crop_rule=args.crop_rule,
+            target_landmarks=resolve_landmarks(args.roi_landmarks),
             min_signal_spread=0.0, rail_touch_v=0.0, physio_norm='session',
             subjects=None, verbose=False)
         base = ds.base
@@ -359,11 +365,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument('--limit', type=int, default=0,
                    help='first N discovered subject-tasks (0 = all; smoke tests)')
 
-    # ROI CONTRACT -- these two are part of the cache key
+    # ROI CONTRACT -- every field below is part of the cache key
     p.add_argument('--roi_padding', type=float, default=0.2)
     p.add_argument('--roi_landmarks', default='',
                    help="'' or a preset name (nose_mouth, nostrils, "
                         "nostril_mouth, nose_tip) or an explicit CSV of indices")
+    p.add_argument('--crop_rule', default=trd.DEFAULT_CROP_RULE,
+                   choices=list(trd.CROP_RULES),
+                   help="how a clip box is shaped before the rescale: 'square' "
+                        "(default) squares the padded landmark box so the "
+                        "rescale has ONE scale factor; 'box' is the legacy "
+                        "per-axis geometry. The stored crop is the hull over "
+                        "the CLIP boxes, so this changes the stored pixels "
+                        "and therefore the key.")
+    p.add_argument('--clip_seconds', type=float,
+                   default=trd.DEFAULT_CLIP_SECONDS,
+                   help='clip length the hull is built for (the hull is the '
+                        'union over clip-sized windows, so a clip-length change '
+                        'needs a rebuild; the HOP does not -- stride 1 is used)')
+    p.add_argument('--fps', type=float, default=trd.DEFAULT_FPS,
+                   help='frame rate that turns clip_seconds into clip frames '
+                        '(25 for BP4D thermal)')
 
     # array partition
     p.add_argument('--array_index', type=int, default=-1,
@@ -389,7 +411,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     # check options
     p.add_argument('--hops', type=float, nargs='+', default=[2.0, 1.0])
-    p.add_argument('--clip_seconds', type=float, default=8.0)
     p.add_argument('--input_size', type=int, default=112)
     p.add_argument('--check_sessions', type=int, default=4)
     p.add_argument('--check_clips', type=int, default=4)

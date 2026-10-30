@@ -61,16 +61,22 @@ Box = Tuple[int, int, int, int]
 
 #: Bump when a change alters the STORED PIXELS or the shard schema.
 #:
-#: v1 -> v2 (2026-10-08): the union box was computed from 1-indexed landmark
-#: LABELS used as numpy indices, selecting 9..13/20..26 instead of 8..12/19..25.
-#: The key is a hash of PARAMETERS, not of the code, so a stale v1 cache would
-#: otherwise collide with a correct v2 build and be silently reused. Bumping is
-#: what makes the collision impossible; ``--check`` is what would have caught it.
-CACHE_FORMAT_VERSION = 2
+#: v2 -> v3: the stored crop is no longer the padded-envelope union box of the
+#: whole task but the SQUARE HULL over the sentinel-valid clip windows, and the
+#: hull depends on the clip LENGTH and on ``crop_rule``. The rectangles change
+#: SHAPE, so older shards are unusable rather than merely differently padded.
+#:
+#: The key is a hash of PARAMETERS, not of the code, so the version field is what
+#: makes a stale cache impossible to reuse silently; ``--check`` is what catches
+#: a mistake that got past it.
+CACHE_FORMAT_VERSION = 3
 
-#: The box rule. ``roi_quantile`` was removed 2026-10-08, so min/max is the only
-#: rule in production; it stays a named field because it is part of the key.
-BOX_RULE = 'minmax'
+#: The STORAGE rule: the stored rectangle is the bounding box over the box of
+#: every sentinel-valid stride-1 window (see :func:`hull_box`). It is EXACT --
+#: the hull is the union of exactly those boxes -- so containment (I2) holds by
+#: construction and no safety margin is needed. ``crop_rule`` is a separate field
+#: because it decides the SHAPE of each window box.
+BOX_RULE = 'window-hull'
 
 #: Tracker ``(0,0)`` sentinel rows are EXCLUDED from the union box. Safe because
 #: a clip overlapping any sentinel/missing target landmark is dropped entirely by
@@ -189,11 +195,21 @@ def landmark_indices(target_labels: Sequence[int]) -> Tuple[int, ...]:
 
 def build_params(raw_root: str, sessions: Sequence[dict],
                  target_landmarks: Sequence[int], roi_padding: float,
-                 src_w: int, src_h: int) -> Dict:
+                 src_w: int, src_h: int,
+                 crop_rule: str = trd.DEFAULT_CROP_RULE,
+                 clip_seconds: float = trd.DEFAULT_CLIP_SECONDS,
+                 fps: float = trd.DEFAULT_FPS) -> Dict:
     """The FROZEN parameter set. Everything here changes stored pixels.
 
     ``target_landmarks`` are 1-INDEXED labels, i.e. exactly what
     ``resolve_roi_landmarks`` returns and what the configs carry.
+
+    ``crop_rule``, ``clip_seconds`` and ``fps`` join the set because the stored
+    crop is now the hull over CLIP-SIZED windows: the geometry of each window box
+    (``crop_rule``) and the length of those windows (``clip_seconds * fps``)
+    decide which pixels the hull spans. ``input_size``, ``clip_stride``,
+    ``task_set``, ``temporal_stride`` and the cleaning filters stay OUT -- they
+    select or rescale, they never change a stored pixel (I3).
     """
     return {
         'format_version': CACHE_FORMAT_VERSION,
@@ -203,7 +219,10 @@ def build_params(raw_root: str, sessions: Sequence[dict],
         'roi_landmarks_name': landmark_set_name(target_landmarks),
         'roi_landmarks': [int(i) for i in target_landmarks],
         'roi_padding': float(roi_padding),
+        'crop_rule': str(crop_rule),
         'box_rule': BOX_RULE,
+        'clip_seconds': float(clip_seconds),
+        'fps': float(fps),
         'valid_frame_rule': VALID_FRAME_RULE,
         'src_w': int(src_w),
         'src_h': int(src_h),
@@ -218,7 +237,9 @@ def cache_key(params: Dict) -> str:
     body = json.dumps(params, sort_keys=True, default=str)
     slug = (f'tirroi_{params["roi_landmarks_name"]}'
             f'_pad{float(params["roi_padding"]):.2f}'
+            f'_{params["crop_rule"]}'
             f'_{params["box_rule"]}'
+            f'_clip{float(params["clip_seconds"]):g}s'
             f'_src{params["src_w"]}x{params["src_h"]}'
             f'_{params["store_resolution"]}'
             f'_v{params["format_version"]}')
@@ -249,12 +270,15 @@ def read_params(root: Path) -> Dict:
 #: key, so a cache built by a different decoder still lands in a different
 #: directory, but the loader cannot prove it was not tampered with.
 COMPARE_KEYS = ('format_version', 'corpus', 'roi_landmarks_name', 'roi_landmarks',
-                'roi_padding', 'box_rule', 'valid_frame_rule', 'pixel_format',
-                'store_resolution')
+                'roi_padding', 'crop_rule', 'box_rule', 'clip_seconds', 'fps',
+                'valid_frame_rule', 'pixel_format', 'store_resolution')
 
 
 def loader_params(raw_root: str, corpus_sessions: Sequence[dict],
-                  target_landmarks: Sequence[int], roi_padding: float) -> Dict:
+                  target_landmarks: Sequence[int], roi_padding: float,
+                  crop_rule: str = trd.DEFAULT_CROP_RULE,
+                  clip_seconds: float = trd.DEFAULT_CLIP_SECONDS,
+                  fps: float = trd.DEFAULT_FPS) -> Dict:
     """The subset of the frozen parameters a loader can compute on its own.
 
     ``corpus_sessions`` MUST be the UNFILTERED discovery: the cache key is a
@@ -263,7 +287,8 @@ def loader_params(raw_root: str, corpus_sessions: Sequence[dict],
     second cache identity.
     """
     full = build_params(raw_root, corpus_sessions, target_landmarks,
-                        roi_padding, 0, 0)
+                        roi_padding, 0, 0, crop_rule=crop_rule,
+                        clip_seconds=clip_seconds, fps=fps)
     return {k: full[k] for k in COMPARE_KEYS}
 
 
@@ -392,21 +417,63 @@ def valid_rows(landmarks: np.ndarray, target_labels: Sequence[int]) -> np.ndarra
     return pts[keep][:, idx, :]
 
 
-def union_box(landmarks: np.ndarray, target_labels: Sequence[int],
-              padding: float, w: int, h: int) -> Optional[Box]:
-    """The STORAGE box: min/max over a task's valid rows, + padding, clamped.
+def hull_box(landmarks: np.ndarray, target_labels: Sequence[int],
+             padding: float, w: int, h: int,
+             crop_rule: str = trd.DEFAULT_CROP_RULE,
+             clip_seconds: float = trd.DEFAULT_CLIP_SECONDS,
+             fps: float = trd.DEFAULT_FPS) -> Optional[Box]:
+    """The STORAGE box: bounding box over every valid window's CLIP box.
 
     ``target_labels`` are 1-INDEXED labels (see :func:`valid_rows`).
 
-    This is the smallest fixed rectangle that provably contains every clip box
-    any future config could ask for (any hop, any ``task_set``, any cleaning
-    setting), which is what makes the cache hop-independent. It never reaches the
-    encoder: the loader recomputes the per-clip box and sub-crops from here.
+    The stored crop must contain the box of EVERY clip the loader can emit, for
+    any hop and any ``task_set``. Because each clip box is built from a
+    ``clip_seconds``-long window (and, with ``crop_rule='square'``, is centred on
+    that window's own padded envelope), the union over the WINDOWS at stride 1 is
+    the exact answer: it is the union of the very boxes the loader will ask for.
+    Merging the whole track instead (one padded box over every valid frame) is
+    both larger and not guaranteed to contain a window box near a session edge.
+
+    Windows overlapping a sentinel/missing frame are SKIPPED, exactly as the
+    dataset would drop them -- the keep predicate is the dataset's own
+    :func:`tir_resp_dataset.missing_frame_mask`, not a copy of it. Windows whose
+    box cannot be placed (``RoiBoxOutOfFrame``) are skipped for the same reason:
+    the loader can never ask for them.
+
+    :returns: ``(x0, x1, y0, y1)`` in SOURCE pixels, or ``None`` when the task has
+        no usable landmark row at all. A task shorter than one clip falls back to
+        its whole valid track (it emits no clip, so anything covering the track is
+        a superset of the empty request set).
     """
-    rows = valid_rows(landmarks, target_labels)
-    if rows.size == 0:
-        return None
-    return trd.roi_box_from_landmarks(rows, int(w), int(h), float(padding))
+    pts = np.asarray(landmarks)
+    idx = np.asarray(landmark_indices(target_labels), dtype=np.int64)
+    tgt = pts[:, idx, :]
+    bad = trd.missing_frame_mask(pts, idx)
+    n = int(tgt.shape[0])
+    cf = max(1, int(round(float(clip_seconds) * float(fps))))
+
+    boxes: List[Box] = []
+    for start in range(0, max(0, n - cf) + 1):
+        if bad[start:start + cf].any():
+            continue
+        try:
+            boxes.append(trd.roi_box_from_landmarks(
+                tgt[start:start + cf], int(w), int(h), float(padding),
+                crop_rule=crop_rule))
+        except trd.RoiBoxOutOfFrame:
+            continue
+    if not boxes:
+        rows = valid_rows(landmarks, target_labels)
+        if rows.size == 0:
+            return None
+        try:
+            return trd.roi_box_from_landmarks(rows, int(w), int(h),
+                                              float(padding),
+                                              crop_rule=crop_rule)
+        except trd.RoiBoxOutOfFrame:
+            return None
+    return (min(b[0] for b in boxes), max(b[1] for b in boxes),
+            min(b[2] for b in boxes), max(b[3] for b in boxes))
 
 
 def box_contains(outer: Box, inner: Box) -> bool:
@@ -426,7 +493,10 @@ def shift_box(box: Box, origin_xy: Tuple[int, int]) -> Box:
 # build one task
 # --------------------------------------------------------------------------- #
 def build_task(spec: dict, target_labels: Sequence[int], padding: float,
-               with_landmarks: bool = True, max_task_bytes: int = 0
+               with_landmarks: bool = True, max_task_bytes: int = 0,
+               crop_rule: str = trd.DEFAULT_CROP_RULE,
+               clip_seconds: float = trd.DEFAULT_CLIP_SECONDS,
+               fps: float = trd.DEFAULT_FPS
                ) -> Tuple[Optional[Dict], Optional[str]]:
     """Decode ONE subject-task and return its shard payload.
 
@@ -483,7 +553,8 @@ def build_task(spec: dict, target_labels: Sequence[int], padding: float,
     if n_frames <= 0:
         return None, 'no_common_frames'
     ir = ir[:n_frames]
-    box = union_box(ir, target_labels, padding, fw, fh)
+    box = hull_box(ir, target_labels, padding, fw, fh,
+                   crop_rule=crop_rule, clip_seconds=clip_seconds, fps=fps)
     if box is None:
         return None, 'no_valid_landmark_rows'
     x0, x1, y0, y1 = box
