@@ -274,8 +274,54 @@ prediction dumps can be re-grouped offline with the eval runners'
 `--task_groups 'low=T2|T3|T5;moderate=T1|T4;high=T6|T7|T8|T9|T10'` flag (no
 re-training; the JSON records `task_group_source` / `task_levels`).
 
+**Respiration label cache (`--resp_cache`, 2026-10-31).** The TIR-ROI lineage
+can read its label from an offline artefact instead of re-reading
+`Resp_Volts.txt` every epoch: `data/resp_preprocess.py` decides validity ONCE on
+the raw signal (a saturation EVENT at `|V| > 9.95` lasting `>= 1 s`, a flatline
+window of `5 s` with `ptp < 0.3 V`, a valid run shorter than `8 s`), removes the
+DC offset PER RUN and anti-alias resamples onto one fixed output grid;
+`data/resp_cache.py` stores the result as `signal` (NaN where invalid) + `mask` +
+`cause` per session. Build it once (whole corpus ≈ 0.4 min, 42 MB):
+
+```
+python runners/run_build_resp_cache.py --init --build \
+    --out_root "$WORK_SCRATCH/resp_cache" --raw_root "$RAW_DATA_PATH"
+python runners/run_build_resp_cache.py --status --index --check 20 \
+    --out_root "$WORK_SCRATCH/resp_cache" --raw_root "$RAW_DATA_PATH"
+```
+
+Then pass `--resp_cache <out_root>` (or export `RESP_CACHE`; the HPC/local
+drivers do it for you). Semantics that matter:
+
+* **`--resp_fs` IS the artefact's output rate** and must equal `--fs` (100). The
+  drivers and `build_tir_roi_*_dataset` derive it from `--fs` for you; the
+  dataset ABORTS on a grid mismatch with a field-by-field diff.
+* `--rail_touch_v` / `--min_signal_spread` must be **0** with a cache: the stored
+  per-sample mask is the ONLY validity rule, and a non-zero value raises rather
+  than filtering the same content twice. The six shipped TIR-ROI configs still
+  carry `9.9` / `0.1`; the sbatch drivers pass explicit zeros when the cache is
+  active (`RESP_CACHE=''` restores the legacy path).
+* The **label space changes** (raw whole-file volts → run-mean-removed volts), so
+  every earlier number is a different lineage and a retrain needs a new run
+  prefix. The cache directory name is recorded as `resp_cache_key` in the
+  checkpoint args; Stage 3 re-checks it (WARN, never abort, for a checkpoint that
+  predates it).
+* The evaluation runners accept the same `--resp_cache`, so the REFERENCE comes
+  from the same artefact as the labels and its mask restricts scoring.
+* `runners/run_inspect_tir_resp.py --resp_cache ... --resp_fs 100 --mask_runs`
+  prints each session's usable stretches and holes with their cause, and
+  `--t_start`/`--frame_start` on a dropped window reports which gate (mask cause,
+  motion, sentinel) removed it.
+
+Contract: `notes/design/RESP_session_preprocess.md`; build order:
+`notes/plan/RESP_session_preprocess_implementation_plan.md`; measured impact:
+`notes/eval/tir_resp/resp_preprocess_impact.md`.
+
 **TIR-ROI corpus hygiene + ROI knobs (2026-10-01).** Three additions to the
-thermal-ROI path, all also exposed on `run_inspect_tir_resp.py`:
+thermal-ROI path, all also exposed on `run_inspect_tir_resp.py`. The two
+window-content knobs below belong to the **legacy raw path**; with
+`--resp_cache` they are refused (set both to 0) and the cache's per-sample mask
+decides validity instead.
 
 * `--rail_touch_v` (volts, default `0.0` = off; **the cleaning knob**): DROPs a
   clip whose respiration window contains **ANY** sample that **touched the

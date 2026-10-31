@@ -35,7 +35,21 @@ echo "[waveform_local] interpreter = $PY"
 echo "[waveform_local] TARGET      = $TARGET"
 echo "[waveform_local] config      = $CONFIG"
 
+# Optional RESPIRATION-GRID cache (TIR-ROI lineage only). Empty by default, so
+# this local RGB-oriented script keeps its current behaviour; set
+# RESP_CACHE=<out_root> to reuse an artefact built by
+# `runners/run_build_resp_cache.py --init --build`. The cache is the ONLY
+# validity rule, so the legacy window thresholds are forced off.
+RESP_CACHE="${RESP_CACHE-}"
+EXTRA_ARGS=()
+if [ -n "$RESP_CACHE" ]; then
+    echo "[waveform_local] resp_cache  = $RESP_CACHE"
+    EXTRA_ARGS+=(--resp_cache "$RESP_CACHE" --min_signal_spread 0
+                 --rail_touch_v 0)
+fi
+
 # Criterion: WaveformJointLoss = alpha*L1 + beta*(1-Pearson) + gamma*MR-STFT
 # Masking: none (the sensor-failure protocol feeds RGB only, and the 1-D target
 # is the label, never an input).
-NUM_WORKERS="${NUM_WORKERS:-4}" "$PY" -u runners/run_waveform.py -c "$CONFIG" "$@"
+NUM_WORKERS="${NUM_WORKERS:-4}" "$PY" -u runners/run_waveform.py -c "$CONFIG" \
+    "${EXTRA_ARGS[@]}" "$@"

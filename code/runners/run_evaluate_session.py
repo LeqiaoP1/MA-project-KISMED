@@ -55,7 +55,8 @@ from evaluation.assemble import (affine_calibrate, assemble_session,
                                  group_entries)
 from evaluation.report import plot_session_waveform, save_json
 
-__all__ = ['main', 'read_reference', 'read_raw_series', 'smooth_band']
+__all__ = ['main', 'read_reference', 'read_raw_series', 'smooth_band',
+           'read_reference_from_cache']
 
 
 def read_raw_series(path, raw_fs, fs):
@@ -97,6 +98,41 @@ def read_reference(path, name, fs=None, raw_fs=None):
         if cand in header:
             return data[:, header.index(cand)].astype(float)
     raise ValueError(f'{path}: no {name!r} column (header: {header})')
+
+
+def read_reference_from_cache(resp_cache_root, session, fs=100.0,
+                              cache_key=''):
+    """The reference waveform from the SAME respiration artefact as the labels.
+
+    Design C8: the legacy route re-read ``Resp_Volts.txt`` at ``--raw_fs`` and
+    resampled it with ``np.interp``, i.e. a DIFFERENT preprocessing than the
+    label the model was trained on (raw whole-file volts vs run-mean-removed,
+    anti-aliased grid). With both sides in artefact space those differences can
+    no longer masquerade as reference error.
+
+    :returns: ``(t, y, mask, root)``. ``y`` carries ``NaN`` exactly where the
+        artefact says invalid; ``mask`` is that per-sample validity and MUST be
+        applied on top of the clip-coverage mask before scoring (a reference
+        hole is not a zero). ``root`` is the resolved cache DIRECTORY; its NAME
+        is the machine-independent cache key.
+    """
+    from data import resp_cache as respc
+
+    key = str(cache_key or '').strip()
+    if key:
+        root = os.path.join(str(resp_cache_root), key)
+        if not os.path.isfile(os.path.join(root, respc.PARAMS_NAME)):
+            raise FileNotFoundError(
+                f'--resp_cache_key {key!r}: no params.json under {root}')
+    else:
+        root = str(respc.find_cache(str(resp_cache_root),
+                                    respc.eval_params(fs_out=float(fs)),
+                                    keys=respc.EVAL_COMPARE_KEYS,
+                                    require_session=str(session)))
+    sh = respc.read_shard(respc.shard_path(root, str(session)))
+    y = np.asarray(sh['signal'], dtype=float)
+    t = np.arange(y.size, dtype=float) / float(fs)
+    return t, y, np.asarray(sh['mask'], dtype=bool), str(root)
 
 
 def smooth_band(x, fs, band, order=4):
@@ -248,6 +284,16 @@ def get_args():
     p.add_argument('--raw_fs', default=1000.0, type=float,
                    help='native rate of a raw one-value-per-line reference '
                         '(Resp_Volts.txt); ignored for signals.csv')
+    p.add_argument('--resp_cache', default='', type=str,
+                   help='OUT_ROOT of the offline respiration cache '
+                        '(data/resp_cache.py). When set, the reference is read '
+                        'from the SAME artefact as the training labels (one '
+                        'preprocessing on both sides, design C8), and scoring '
+                        'is restricted to its per-sample validity mask. Empty '
+                        '(default) = the legacy raw Resp_Volts.txt route.')
+    p.add_argument('--resp_cache_key', default='', type=str,
+                   help='pin the cache DIRECTORY name (machine-independent) '
+                        'instead of resolving it by the grid contract.')
     p.add_argument('--smooth', default='', type=str,
                    help="zero-phase Butterworth band applied to BOTH the "
                         "prediction and the reference before scoring, e.g. "
@@ -291,9 +337,17 @@ def main(args):
     group_levels = _tgrp.parse_task_groups(getattr(args, 'task_groups', ''))
     group_override = (_tgrp.levels_by_task(group_levels) if group_levels
                       else None)
+    resp_cache_root = str(getattr(args, 'resp_cache', '') or '').strip()
+    if resp_cache_root and args.waveform != 'resp':
+        raise SystemExit(
+            '--resp_cache supplies the RESPIRATION reference (data/resp_cache '
+            'py); it cannot be used with --waveform bp. Omit it for a BP run.')
     print(f'[session-eval] {preds.shape[0]} clips, {len(entries)} entries, '
           f'waveform={args.waveform}, fs={args.fs:g}, band={band}, '
           f'smooth={smooth}, tiers={tiers}')
+    if resp_cache_root:
+        print(f'[session-eval] reference <- resp_cache {resp_cache_root} '
+              f'(key {getattr(args, "resp_cache_key", "") or "auto"})')
 
     # per-clip (macro) needs the per-clip targets, when they were dumped
     per_clip = {}
@@ -322,27 +376,52 @@ def main(args):
         sig_file = entries[rows[0]].get('signals_file') or ''
         rec = {'n_clips': len(rows), 'duration_s': float(t[-1]) if t.size else 0.0,
                'signals_file': sig_file}
-        if not sig_file or not os.path.isfile(sig_file):
-            rec['error'] = f'reference signals.csv not found: {sig_file!r}'
-            sessions[name] = rec
-            continue
-        ref_full = read_reference(sig_file, args.waveform,
-                                  fs=args.fs, raw_fs=args.raw_fs)
+        ref_mask = None
+        if resp_cache_root:
+            # Design C8: reference and label are the SAME artefact.
+            try:
+                _, ref_full, ref_mask, resolved = read_reference_from_cache(
+                    resp_cache_root, name, fs=args.fs,
+                    cache_key=getattr(args, 'resp_cache_key', ''))
+            except (FileNotFoundError, ValueError) as exc:
+                rec['error'] = f'resp_cache reference unavailable: {exc}'
+                sessions[name] = rec
+                continue
+            rec['reference_source'] = 'resp_cache'
+            rec['resp_cache'] = resolved
+            rec['resp_cache_key'] = os.path.basename(resolved)
+        else:
+            rec['reference_source'] = (
+                'raw_resp_volts' if str(sig_file).lower().endswith('.txt')
+                else 'signals_csv')
+            if not sig_file or not os.path.isfile(sig_file):
+                rec['error'] = f'reference signals.csv not found: {sig_file!r}'
+                sessions[name] = rec
+                continue
+            ref_full = read_reference(sig_file, args.waveform,
+                                      fs=args.fs, raw_fs=args.raw_fs)
         # Score ONLY the samples a clip actually covers (see
         # evaluation.assemble): uncovered samples are ``nan``, and letting them
         # run through as zeros corrupts every metric for the sessions whose
-        # first surviving clip starts after t=0.
+        # first surviving clip starts after t=0. With a cache the reference
+        # adds a SECOND restriction: its own invalid stretches are holes, not
+        # zeros, so they are never scored either.
         n = min(y.size, ref_full.size)
-        cov = cov[:n]
-        rec['coverage'] = float(cov.mean()) if cov.size else 0.0
-        rec['scored_samples'] = int(cov.sum())
-        if not cov.any():
+        scored = np.asarray(cov[:n], dtype=bool).copy()
+        if ref_mask is not None:
+            ref_mask = np.asarray(ref_mask[:n], dtype=bool)
+            rec['reference_coverage'] = (float(ref_mask.mean())
+                                         if ref_mask.size else 0.0)
+            scored &= ref_mask
+        rec['coverage'] = float(scored.mean()) if scored.size else 0.0
+        rec['scored_samples'] = int(scored.sum())
+        if not scored.any():
             rec['error'] = 'no covered samples (every clip starts past the end '
             sessions[name] = rec
             continue
-        ref = ref_full[:n][cov]
-        yh = y[:n][cov]
-        t = t[:n][cov]
+        ref = ref_full[:n][scored]
+        yh = y[:n][scored]
+        t = t[:n][scored]
         rec['t_scored'] = [float(t[0]), float(t[-1])] if t.size else []
         if smooth is not None:
             ref = smooth_band(ref, args.fs, smooth)
@@ -436,6 +515,10 @@ def main(args):
            'smooth': (list(smooth) if smooth is not None else None),
            'tiers': sorted(tiers), 'n_clips': int(preds.shape[0]),
            'n_sessions': len(sessions), 'per_clip_macro': per_clip,
+           'resp_cache': (resp_cache_root or None),
+           'resp_cache_key': (getattr(args, 'resp_cache_key', '') or None),
+           'reference_source': ('resp_cache' if resp_cache_root
+                                else 'raw_reference'),
            'task_group_source': ('cli' if group_override is not None
                                  else 'entries'),
            'task_groups': {k: list(v) for k, v in group_levels.items()},

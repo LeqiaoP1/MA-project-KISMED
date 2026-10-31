@@ -37,6 +37,7 @@ from evaluation import metrics as _metrics
 from evaluation.assemble import affine_calibrate, assemble_session, group_entries
 from evaluation.report import plot_session_waveform, save_json
 from runners.run_evaluate_session import (_task_of_name, read_reference,
+                                          read_reference_from_cache,
                                           smooth_band)
 
 __all__ = ['main', 'subject_of', 'aggregate_subjects']
@@ -145,24 +146,38 @@ def _figure_metrics(rec):
 
 
 def _evaluate_session(name, groups, entries, preds, fs, band, smooth, raw_fs,
-                      waveform, rate_window_s=0.0, rate_tol=0.10):
+                      waveform, rate_window_s=0.0, rate_tol=0.10,
+                      resp_cache='', resp_cache_key=''):
     """Assemble + score ONE session. Returns ``(rec, t, ref, yh)`` or ``None``."""
     pairs = groups[name]
     rows = [i for i, _ in pairs]
     offs = [o for _, o in pairs]
     t, y, cov = assemble_session(preds[rows], offs, fs)
-    sig = entries[rows[0]].get('signals_file') or ''
-    if not sig or not os.path.isfile(sig):
-        return None
-    ref_full = read_reference(sig, waveform, fs=fs, raw_fs=raw_fs)
-    # Score ONLY the samples a clip actually covers (see evaluation.assemble).
+    ref_mask = None
+    if resp_cache:
+        # Design C8: reference and label share ONE artefact.
+        try:
+            _, ref_full, ref_mask, _root = read_reference_from_cache(
+                resp_cache, name, fs=fs, cache_key=resp_cache_key)
+        except (FileNotFoundError, ValueError):
+            return None
+    else:
+        sig = entries[rows[0]].get('signals_file') or ''
+        if not sig or not os.path.isfile(sig):
+            return None
+        ref_full = read_reference(sig, waveform, fs=fs, raw_fs=raw_fs)
+    # Score ONLY the samples a clip actually covers (see evaluation.assemble);
+    # with a cache the reference adds a SECOND restriction (its own holes are
+    # not zeros and must never be scored).
     n = min(y.size, ref_full.size)
-    cov = cov[:n]
+    scored = np.asarray(cov[:n], dtype=bool).copy()
+    if ref_mask is not None:
+        scored &= np.asarray(ref_mask[:n], dtype=bool)
     duration_s = float(t[-1]) if t.size else 0.0
-    if not cov.any():
+    if not scored.any():
         return None
-    ref, yh = ref_full[:n][cov].copy(), y[:n][cov].copy()
-    t = t[:n][cov]
+    ref, yh = ref_full[:n][scored].copy(), y[:n][scored].copy()
+    t = t[:n][scored]
     if smooth is not None:
         ref = smooth_band(ref, fs, smooth)
         yh = smooth_band(yh, fs, smooth)
@@ -170,7 +185,10 @@ def _evaluate_session(name, groups, entries, preds, fs, band, smooth, raw_fs,
     rec['subject'] = subject_of(name)
     rec['task'] = entries[rows[0]].get('task') or _task_of_name(name)
     rec['n_clips'] = len(rows)
-    rec['coverage'] = float(cov.mean())
+    rec['coverage'] = float(scored.mean())
+    if ref_mask is not None:
+        rec['reference_coverage'] = float(np.asarray(ref_mask[:n]).mean())
+        rec['reference_source'] = 'resp_cache'
     rec['duration_s'] = duration_s
     if rate_window_s and float(rate_window_s) > 0:
         pw, tw = _window_rates(yh, ref, fs, band, rate_window_s)
@@ -227,6 +245,13 @@ def get_args():
     p.add_argument('--entries_path', default='', type=str)
     p.add_argument('--waveform', default='resp', choices=['bp', 'resp'])
     p.add_argument('--fs', default=100.0, type=float)
+    p.add_argument('--resp_cache', default='', type=str,
+                   help='OUT_ROOT of the offline respiration cache. When set, '
+                        'the REFERENCE is read from the same artefact as the '
+                        'training labels (design C8) and its per-sample mask '
+                        'restricts scoring. Empty = legacy raw Resp_Volts.txt.')
+    p.add_argument('--resp_cache_key', default='', type=str,
+                   help='pin the cache DIRECTORY name instead of resolving it.')
     p.add_argument('--band', default=None, type=str,
                    help='band-limited metric band "lo,hi" (default resp '
                         '0.1,0.6 / bp 1.0,2.5)')
@@ -305,7 +330,9 @@ def main(args):
     for name in names:
         out = _evaluate_session(name, groups, entries, preds, args.fs, band,
                                 smooth, args.raw_fs, args.waveform,
-                                args.rate_window_s, args.rate_tol)
+                                args.rate_window_s, args.rate_tol,
+                                resp_cache=args.resp_cache,
+                                resp_cache_key=args.resp_cache_key)
         if out is None:
             print(f'[subject-eval] {name}: skip (no reference found)')
             continue
@@ -345,7 +372,9 @@ def main(args):
             pick = _median_session(pairs)
             out = _evaluate_session(pick, groups, entries, preds, args.fs, band,
                                     smooth, args.raw_fs, args.waveform,
-                                    args.rate_window_s, args.rate_tol)
+                                    args.rate_window_s, args.rate_tol,
+                                    resp_cache=args.resp_cache,
+                                    resp_cache_key=args.resp_cache_key)
             if out is None:
                 continue
             rec, t, ref, yh = out

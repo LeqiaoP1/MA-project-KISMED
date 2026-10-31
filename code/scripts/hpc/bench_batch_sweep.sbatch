@@ -67,6 +67,7 @@ STEPS="${STEPS:-30}"
 WORKERS="${WORKERS:-8}"
 RANKS="${SLURM_NTASKS:-4}"
 CACHE_ROOT="${CACHE_ROOT:-${WORK_SCRATCH:-$OUTPUT_DIR}/tir_roi_cache}"
+RESP_CACHE="${RESP_CACHE-${WORK_SCRATCH:-$OUTPUT_DIR}/resp_cache}"
 SWEEP_ROOT="${SWEEP_ROOT:-${WORK_SCRATCH:-$OUTPUT_DIR}/batch_sweep}"
 
 # ---- the arms ------------------------------------------------------------ #
@@ -79,6 +80,7 @@ ENTRIES=$((STEPS * BATCH * RANKS))   # every arm runs the same STEP count
 
 OUT_DIR="$SWEEP_ROOT/arm_${IDX}_b${BATCH}_cache${CACHE}"
 mkdir -p "$OUT_DIR" "$CODE_DIR/logs"
+echo "[bench] resp_cache: ${RESP_CACHE:-<disabled>}"
 
 if [ ! -f "$CONFIG" ]; then
     echo "ERROR: config not found: $CONFIG (run from $CODE_DIR)" >&2
@@ -86,6 +88,10 @@ if [ ! -f "$CONFIG" ]; then
 fi
 if [ "$CACHE" = "on" ] && [ ! -d "$CACHE_ROOT" ]; then
     echo "ERROR: CACHE_ROOT not found: $CACHE_ROOT (build it with submit_roi_cache.sbatch)" >&2
+    exit 1
+fi
+if [ -n "$RESP_CACHE" ] && [ ! -d "$RESP_CACHE" ]; then
+    echo "ERROR: RESP_CACHE not found: $RESP_CACHE (use RESP_CACHE='' to disable)" >&2
     exit 1
 fi
 
@@ -101,6 +107,9 @@ ARGS=(-c "$CONFIG"
       --num_workers "$WORKERS"
       --max_entries "$ENTRIES")
 [ "$CACHE" = "on" ] && ARGS+=(--roi_cache "$CACHE_ROOT")
+if [ -n "$RESP_CACHE" ]; then
+    ARGS+=(--resp_cache "$RESP_CACHE" --min_signal_spread 0 --rail_touch_v 0)
+fi
 ARGS+=("$@")
 
 export MASTER_ADDR="${MASTER_ADDR:-$(scontrol show hostname "$SLURM_JOB_NODELIST" | head -n1)}"

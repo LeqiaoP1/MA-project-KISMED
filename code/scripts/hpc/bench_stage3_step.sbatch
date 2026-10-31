@@ -80,6 +80,7 @@ WORKERS="${WORKERS:-8}"
 ENTRIES="${ENTRIES:-6400}"            # 6400 / (16 x 4 ranks) = 100 optimizer steps
 STAGE2_RUN="${STAGE2_RUN:-${WORK_SCRATCH:-$OUTPUT_DIR}/pretrain/stage2_hpc_tir_roi_resp}"
 CACHE_ROOT="${CACHE_ROOT:-${WORK_SCRATCH:-$OUTPUT_DIR}/tir_roi_cache}"
+RESP_CACHE="${RESP_CACHE-${WORK_SCRATCH:-$OUTPUT_DIR}/resp_cache}"
 # Checkpoints are ~1.2-1.3 GB and BOTH arms write one (epoch 0 % save_ckpt_freq
 # == 0), so this MUST be a real file system -- node-local /tmp is too small.
 OUT_ROOT="${OUT_ROOT:-${WORK_SCRATCH:-${LOCAL_TMP:-/tmp}}}"
@@ -102,6 +103,10 @@ for f in "$CONFIG_S2" "$CONFIG_S3"; do
 done
 if [ ! -d "$CACHE_ROOT" ]; then
     echo "ERROR: ROI_CACHE=$CACHE_ROOT does not exist (both arms must use it)." >&2
+    exit 1
+fi
+if [ -n "$RESP_CACHE" ] && [ ! -d "$RESP_CACHE" ]; then
+    echo "ERROR: RESP_CACHE=$RESP_CACHE does not exist (use RESP_CACHE='' to disable)." >&2
     exit 1
 fi
 if [ -z "${FINETUNE:-}" ]; then
@@ -129,6 +134,7 @@ echo "[bench_ab] world    : ${SLURM_NTASKS} rank(s), ${SLURM_CPUS_PER_TASK:-?} c
 echo "[bench_ab] batch    : $BATCH_SIZE per rank -> $((BATCH_SIZE * SLURM_NTASKS)) global"
 echo "[bench_ab] entries  : $ENTRIES -> ~$((ENTRIES / (BATCH_SIZE * SLURM_NTASKS))) optimizer steps/rank"
 echo "[bench_ab] cache    : $CACHE_ROOT"
+echo "[bench_ab] respcache: ${RESP_CACHE:-<disabled>}"
 echo "[bench_ab] finetune : $FINETUNE"
 echo "[bench_ab] output   : $OUT_DIR"
 echo
@@ -147,6 +153,10 @@ ARGS_COMMON=(--num_workers "$WORKERS"
              --epochs 1
              --warmup_epochs 0
              --roi_cache "$CACHE_ROOT")
+if [ -n "$RESP_CACHE" ]; then
+    ARGS_COMMON+=(--resp_cache "$RESP_CACHE" --min_signal_spread 0
+                  --rail_touch_v 0)
+fi
 
 run_arm () {           # run_arm <label> <runner.py> <config> <outdir> [extra...]
     local label="$1" runner="$2" cfg="$3" out="$4"; shift 4

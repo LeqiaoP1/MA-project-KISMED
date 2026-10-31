@@ -192,3 +192,77 @@ missing_resp_volts 1`.
   short by accident.
 - Thin subjects are legitimate but their per-subject medians rest on few clips:
   M003 and F024 keep 3 sessions, M005 and F038 keep 4, F043 and F049 keep 5.
+
+## Re-measured under the respiration validity mask (2026-10-31)
+
+Dated block -- the numbers above are the LEGACY raw path and stay as the record
+of that lineage. The TIR-ROI label now comes from the cached whole-session grid
+(`data/resp_preprocess.py`, `data/resp_cache.py`), i.e. the 8 s / 2 s hop over the
+same corpus, `--resp_cache` attached, `rail_touch_v` / `min_signal_spread`
+retired. Full write-up: `eval/tir_resp/resp_preprocess_impact.md`.
+
+| metric | legacy (2026-10-25) | validity mask (2026-10-31) |
+|---|---|---|
+| subjects | 138 | **139** |
+| sessions | 1260 | **1291** |
+| clips | 21 231 | **22 144** |
+| `all_clips_dropped` | 118 | **87** |
+| `missing_ir_features` | 15 | 15 |
+| `resp_too_short` | 6 | 6 |
+| missing `Resp_Volts.txt` | 1 | 1 |
+
+**F004 is no longer excluded**: six of its sessions now survive with 51 clips
+(T8 fully clean, T9 keeps 42 % of its timeline). **M049** remains absent (no
+`IRFeatures` track at all), which is why the subject count is 139, not 140.
+
+Window-level drops on the new path: 1148 sentinel, 835 head sway, 677 saturation
+hole, 837 flatline hole, 317 short run, 0 non-finite. The two directions are
+structural: short rail grazes return to the corpus, genuine >= 2 s saturation
+holes remove every window covering them.
+
+## Re-measured again under the REVISED validity contract (2026-10-31)
+
+The design revised two knobs the same day: `sat_min_s` 2 s -> **1 s** and
+`flat_ptp_v` 0.05 V -> **0.5 V**. Same corpus, same 8 s / 2 s hop:
+
+| metric | legacy raw | mask 2 s / 0.05 V | mask 1 s / 0.5 V (current) |
+|---|---|---|---|
+| subjects | 138 | 139 | **132** |
+| sessions | 1260 | 1291 | **1146** |
+| clips | 21 231 | 22 144 | **18 575** |
+| `all_clips_dropped` | 118 | 87 | **232** |
+
+Window-level drops now: 1148 sentinel, 835 head sway, 1008 saturation,
+**3714 flatline**, 678 short run. `F004` still returns but with **6 sessions /
+26 clips** (51 before), `F004_T9` keeping only 12.5 % of its timeline.
+
+The 0.5 V flatline probe is responsible for the net loss: **145 sessions that
+were fully valid (1.000) under 2 s / 0.05 V are now fully invalid**, and 191
+sessions are all-invalid overall. Full comparison, including the shallow-
+breathing caveat: `eval/tir_resp/resp_preprocess_impact.md` §1.2.
+
+## Final contract: `flat_ptp_v` 0.3 V (2026-10-31)
+
+The 0.5 V probe was measured to remove genuine shallow breathing, so the decision
+was taken to sit at **0.3 V** (saturation unchanged at 1 s). Same corpus, same
+8 s / 2 s hop, cache key
+`respgrid_src1000_fs100_sat9.95-1s_flat0.3-5s_run8s_v2_24852055a5`.
+
+| metric | legacy raw | mask 2 s / 0.05 V | mask 1 s / 0.5 V | mask 1 s / 0.3 V (final) |
+|---|---|---|---|---|
+| subjects | 138 | 139 | 132 | **133** |
+| sessions | 1260 | 1291 | 1146 | **1191** |
+| clips | 21 231 | 22 144 | 18 575 | **19 769** |
+| `all_clips_dropped` | 118 | 87 | 232 | **187** |
+
+Window-level drops: 1148 sentinel, 835 head sway, 1022 saturation, 2624 flatline,
+560 short run, 0 non-finite. `resp_valid_fraction` over the used sessions 0.849.
+Clips per task: T1 1201, T2 1135, T3 3830, T4 354, T5 1226, T6 2269, T7 1354,
+T8 2466, T9 5400, T10 534.
+
+Against the 0.5 V build, 42 sessions return from fully invalid, every wiped-out
+subject comes back (`M058` 152 clips / 9 sessions, `M037` 186, `M055` 107,
+`M026` 37), and `F024` returns with 3 clips. Six subjects still have no usable
+8 s clip: `F010`, `F023`, `M017`, `M025` (empty mask) and `F021`, `F027`
+(fragmented valid stretches). `F004` stays at 6 sessions / 26 clips. Full
+reasoning: `eval/tir_resp/resp_preprocess_impact.md` §1.2.

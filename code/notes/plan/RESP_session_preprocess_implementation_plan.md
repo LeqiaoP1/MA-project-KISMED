@@ -1,6 +1,19 @@
 # Respiration Session Preprocessing — Implementation Plan
 
-Status: **PLANNED** (no code landed; this file is the build order).
+Status: **IMPLEMENTED (2026-10-31)** — phases 0–7 landed; the gates below were run
+on Lichtenberg (`G1` suite green, `G2` analytic, `G3` `--check 20` PASS, `G4`
+1399 shards / 1 skipped, `G5` data path `[3,100,112,112]` + `[1,800]`, `G6`
+fail-loudly diff covered by tests). Measured numbers and the accounting delta:
+`code/notes/eval/tir_resp/resp_preprocess_impact.md`. No GPU time was spent: this
+plan ends at "data pipeline verified", as planned.
+
+> **Validity parameters revised by the design on 2026-10-31** — `sat_min_s`
+> 2 s → **1 s** and `flat_ptp_v` 0.05 V → **0.5 V**, then **0.3 V** the same day
+> after measuring what 0.5 V removed. The numbers in this file and in the code
+> follow the final revision (1 s / 0.3 V); what each step cost (0.5 V:
+> 145 sessions fully invalidated, 7 subjects lost; 0.3 V: 103 and 6, with 42
+> sessions rescued) is in the impact note §1.2. All superseded artefacts are
+> still on scratch for A/B.
 Scope: the **TIR-ROI / RESP lineage** only — `data/tir_resp_dataset.py`, a new
 `data/resp_preprocess.py` + `data/resp_cache.py`, a new
 `runners/run_build_resp_cache.py`, the 8 `configs/*/…tir_roi*.yaml` runs and the TIR
@@ -12,7 +25,8 @@ document and the shipped code disagree, **the design wins** — the conflicts ar
 enumerated in §2 so nothing is retired by accident.
 Upstream spec: `code/notes/spec/01_data_pipeline.md` §3 (hand-apply, see §10).
 Measured baseline: `code/notes/eval/tir_resp/resp_data_quality.md`,
-`…/resp_rail_touch_filter_results.md`, `…/corpus_accounting_140_vs_138.md`.
+`…/resp_rail_touch_filter_results.md`, and
+`code/notes/eval/dataset_inspection/corpus_accounting_140_vs_138.md`.
 
 Paths are relative to `code/` unless they start with `code/`.
 
@@ -34,7 +48,7 @@ Two consequences worth stating up front: (a) the label space changes (volts are
 replaced by run-mean-removed volts), so **every existing number is a different
 lineage** and any retrain needs a new run prefix; (b) the *selection* rule becomes
 strictly more permissive (a brief rail graze no longer drops a window) and strictly
-more local (a ≥ 2 s saturation hole drops any window covering it).
+more local (a ≥ 1 s saturation hole drops any window covering it).
 
 ---
 
@@ -42,8 +56,8 @@ more local (a ≥ 2 s saturation hole drops any window covering it).
 
 | # | topic | shipped (`data/tir_resp_dataset.py`) | design (`RESP_session_preprocess.md`) | action |
 |---|---|---|---|---|
-| C1 | rail rule | `rail_touch_v` (shipped `9.9`): **one** sample at `abs(x) >= 9.9 V` drops the whole window | validity is **per sample**; a sample is invalid only when it sits in a **saturation event of ≥ 2 s** at `abs(V) > 9.95` | replace in the ROI lineage; keep the old flag for the legacy path (§4 D6) |
-| C2 | flat rule | `min_signal_spread` (shipped `0.1 V`): window `ptp < 0.1 V` drops the window | a sample is invalid when it lies in **any 5 s window with `ptp < 0.05 V`** | replace; the artefact records the cause per sample |
+| C1 | rail rule | `rail_touch_v` (shipped `9.9`): **one** sample at `abs(x) >= 9.9 V` drops the whole window | validity is **per sample**; a sample is invalid only when it sits in a **saturation event of ≥ 1 s** at `abs(V) > 9.95` | replace in the ROI lineage; keep the old flag for the legacy path (§4 D6) |
+| C2 | flat rule | `min_signal_spread` (shipped `0.1 V`): window `ptp < 0.1 V` drops the window | a sample is invalid when it lies in **any 5 s window with `ptp < 0.3 V`** | replace; the artefact records the cause per sample |
 | C3 | unit of validity | a *window* is valid/invalid (recomputed per hop, per run) | a *sample* is valid/invalid, decided once on raw volts | the window test becomes `mask[s:s+n].all()` |
 | C4 | DC | none; raw volts kept, `physio_norm: session` z-scores over the **whole file** (railed seconds dominate the mean) | per **run** mean subtracted before resampling; nothing estimated across a break | base dataset returns run-mean-removed values; session stats computed on valid samples only |
 | C5 | resampling | `_resp_clip` → `np.interp` to 1000 Hz, then `TirRoiResp*.__getitem__` → `np.interp` to `fs` — **point sampling, no anti-alias** | one anti-aliased resample to the output grid at build time | aliasing (30 Hz noise folding into 0.1–0.6 Hz) disappears; per-epoch interpolation becomes an integer slice |
@@ -70,9 +84,9 @@ the session name `<SUBJECT>_<TASK>`.
 | `fs_in` | `1000` | source grid (nominal, see risk R4) |
 | `fs_out` | `100` | output grid — **must equal the run's `--fs`** |
 | `sat_v` | `9.95` | rail threshold (volts, magnitude) |
-| `sat_min_s` | `2.0` | a saturation event shorter than this is **kept** |
+| `sat_min_s` | `1.0` | a saturation event shorter than this is **kept** |
 | `flat_window_s` | `5.0` | flatline probe length |
-| `flat_ptp_v` | `0.05` | flatline peak-to-peak threshold |
+| `flat_ptp_v` | `0.3` | flatline peak-to-peak threshold |
 | `min_run_s` | `8.0` | valid runs shorter than this are holes |
 | `resample` | `poly` (`half_taps`) | filter shape → the stored values |
 | `mask_rule` | `conservative-support` | §3.4 |
@@ -91,7 +105,7 @@ That is what lets ONE artefact serve Stage 2 (2.0 s hop) and Stage 3 (1.0 s hop)
 Directory name (mirrors `tirroi_…_v3_<hash>`):
 
 ```
-respgrid_src1000_fs100_sat9.95-2s_flat0.05-2s_run8s_v1_<sha1(params)[:10]>
+respgrid_src1000_fs100_sat9.95-1s_flat0.3-5s_run8s_v2_<sha1(params)[:10]>
     params.json            # the frozen parameters (--init)
     tasks/F001_T1.npz      # THE SOURCE OF TRUTH (≈0.3 MB mean)
     skipped/F082_T1.json   # {"session","reason"} — missing/unreadable only
@@ -156,7 +170,7 @@ thermal frame f  ->  respiration sample round((f / fps) * fs_out)
 | D2 | artefact is one step of the pipeline | it decides "which volts are trustworthy at which instant" and nothing else — no window, hop, split, normalisation or clip length may enter it |
 | D3 | one validity statement | the mask is the ONLY validity rule in the ROI lineage; the dataset never re-tests a window's content |
 | D4 | NaN, not 0 | an unmasked read must fail loudly; `np.isnan(signal) == ~mask` is asserted in both the writer and the loader |
-| D5 | saturation is event-based | `abs(V) > 9.95` sustained **≥ 2 s**; shorter contacts are kept (measured impact differs from `rail_touch_v 9.9` — gate G4) |
+| D5 | saturation is event-based | `abs(V) > 9.95` sustained **≥ 1 s**; shorter contacts are kept (measured impact differs from `rail_touch_v 9.9` — gate G4) |
 | D6 | `rail_touch_v` / `min_signal_spread` | kept as args and on the **legacy raw path only**; with `resp_cache` attached a non-zero value **raises** (silent double filtering is the failure mode) |
 | D7 | `resp_fs` semantics | with a cache, `resp_fs` IS `fs_out` (100) and is verified against `--fs`; without a cache it stays the legacy 1000 Hz nominal path, unchanged |
 | D8 | cache key identity, not path | `run_waveform` compares the cache **directory name** (`resp_cache_key`, machine-independent hash), never the absolute path |
@@ -193,7 +207,7 @@ enters the artefact"). This docstring is the code-side copy of the design; the
 design stays the authority.
 
 **Step 2 — fixtures.** No binary fixture in the repo: a helper builds a synthetic
-session (0.3 Hz sine + a 3 s rail block + a 2 s flat block + a 40 ms gap) so every
+session (0.3 Hz sine + a 1.5 s rail block + a 6 s flat block + a 40 ms gap) so every
 threshold and boundary is exact and the test states its own intent. Real
 `Resp_Volts.txt` files are used only by the `--check` parity gate.
 
@@ -204,7 +218,7 @@ threshold and boundary is exact and the test states its own intent. Real
 ```python
 FS_IN = 1000.0; FS_OUT = 100.0
 SAT_V = 9.95; SAT_MIN_S = 2.0
-FLAT_WINDOW_S = 5.0; FLAT_PTP_V = 0.05
+FLAT_WINDOW_S = 5.0; FLAT_PTP_V = 0.5
 MIN_RUN_S = 8.0
 RESAMPLE_HALF_TAPS = 20          # x up/down, applied on both run edges
 CAUSE_VALID, CAUSE_SAT, CAUSE_FLAT, CAUSE_SHORT, CAUSE_NONFINITE = 0, 1, 2, 3, 4
@@ -214,7 +228,7 @@ CAUSE_VALID, CAUSE_SAT, CAUSE_FLAT, CAUSE_SHORT, CAUSE_NONFINITE = 0, 1, 2, 3, 4
 2–4. Two implementation notes to keep in the docstring:
 
 * the saturation grouping must use maximal contiguous runs of `|x| > sat_v`, NOT a
-  rolling duration — a 2 s *total* rail fraction spread over the file is not an
+  rolling duration — a 1 s *total* rail fraction spread over the file is not an
   event (`resp_data_quality.md` §3.1 shows files with 40–80 % rail fraction made of
   many short grazes);
 * the flatline window statistic is `minimum_filter1d`/`maximum_filter1d`
@@ -350,9 +364,10 @@ note); `_figure_metrics` keeps printing `pearson`, `psd_mae`, `mae_aff_V`.
 `--check 20`.
 
 **Step 22** — corpus accounting: dataset over all 140 subjects (8 s / 2 s hop) →
-sessions / clips / drop-cause table vs `corpus_accounting_140_vs_138.md`
+sessions / clips / drop-cause table vs
+`eval/dataset_inspection/corpus_accounting_140_vs_138.md`
 (138 subjects / 1260 sessions / 21 231 clips). Report the **delta** honestly; the
-two directions are structural, not a bug: brief grazes return to the corpus, ≥2 s
+two directions are structural, not a bug: brief grazes return to the corpus, ≥1 s
 holes remove windows. `F004` is the test case — its 40–80 % rail fraction is made
 of many short grazes, so it may now yield clips; if it does, that is a data-quality
 finding for `notes/eval/`, not a success criterion.
@@ -378,9 +393,9 @@ New files:
 
 | file | cases |
 |---|---|
-| `tests/test_resp_preprocess.py` | saturation event < 2 s kept; ≥ 2 s invalidates exactly the event; 0.06 V ripple stays valid, 0.04 V over 2 s does not; the `minimum_filter1d` implementation equals a brute-force window loop; run < 8 s becomes a hole; per-run mean removed to `< 1e-6` V; 0.3 Hz amplitude within 1 %; 30 Hz tone attenuated ≥ 40 dB; a 40 ms invalid gap leaves ≥ 1 `False` on the 100 Hz grid and no window straddles it; `np.isnan(signal) == ~mask`; second call is bit-identical |
+| `tests/test_resp_preprocess.py` | saturation event < 1 s kept; ≥ 1 s invalidates exactly the event; 0.6 V ripple stays valid, 0.4 V over 2 s does not; the `minimum_filter1d` implementation equals a brute-force window loop; run < 8 s becomes a hole; per-run mean removed to `< 1e-6` V; 0.3 Hz amplitude within 1 %; 30 Hz tone attenuated ≥ 40 dB; a 40 ms invalid gap leaves ≥ 1 `False` on the 100 Hz grid and no window straddles it; `np.isnan(signal) == ~mask`; second call is bit-identical |
 | `tests/test_resp_cache.py` | key changes iff a frozen field changes; `clip_stride`/`clip_seconds`/`physio_norm`/`input_size` do NOT; `find_cache` diff message + ambiguous refusal; shard round-trip incl. `cause`; atomic write leaves no temp; `write_skip` on a missing file; **every session with a readable file gets a shard, including an all-invalid one**; `--check` parity |
-| `tests/test_resp_window_contract.py` | window inside a valid run kept; window over a saturation hole dropped with the right counter; 1.5 s graze kept (C1 headline); `fs_out != --fs` raises; `min_signal_spread>0` with a cache raises; missing resp shard raises with the builder hint; `skipped/` session excluded quietly; intersection accounting |
+| `tests/test_resp_window_contract.py` | window inside a valid run kept; window over a saturation hole dropped with the right counter; 0.5 s graze kept (C1 headline); `fs_out != --fs` raises; `min_signal_spread>0` with a cache raises; missing resp shard raises with the builder hint; `skipped/` session excluded quietly; intersection accounting |
 
 Updated: `tests/test_tir_resp_rail_filter.py` (retarget at the **legacy** path only,
 marked as such so it does not imply the ROI rule), `tests/test_rail_rule_plumbing.py`
@@ -412,7 +427,7 @@ Run: `cd code && ../.env/bin/python -m pytest -q` (HPC venv is `.env`, not `.ven
 
 | # | item | treatment |
 |---|---|---|
-| R1 | `sat_min_s` semantics ("invalid if it touches the rail **and lasts 2 s**") is ambiguous between "the sample" and "the event" | **Resolved in design**: D5 fixes it as event-based; a sample is invalid only when it sits in a saturation alarm window lasting at least 2 seconds. |
+| R1 | `sat_min_s` semantics ("invalid if it touches the rail **and lasts 2 s**") is ambiguous between "the sample" and "the event" | **Resolved in design**: D5 fixes it as event-based; a sample is invalid only when it sits in a saturation alarm window lasting at least 1 second. |
 | R2 | a 0.05 Hz (very slow) breath can trip the 2 s flatline probe | **Resolved in design**: flatline window increased to 5 seconds to safely clear 0.05 Hz breaths. |
 | R3 | run-edge filter transient | edge replication + the G2 analytic gate; if the gradient at a run edge exceeds 1e-3 V, add a `half_taps/decim` invalid guard at the run edges and note the deviation from the design |
 | R4 | the corpus is not exactly 1000 Hz (F001_T1: 64 597 samples / 64.48 s = 1001.8 Hz) | keep the nominal `fs_in = 1000` (the frame↔sample mapping is a corpus-wide convention); record `fs_in_measured` per session in the manifest and WARN above 0.5 % — changing it would re-define alignment with the thermal frames and is a separate lineage |
@@ -458,7 +473,7 @@ python runners/run_evaluate_session.py --pred_dir <OUT_DIR> --resp_cache "$WORK_
 | `code/notes/spec/04_configs_and_execution.md` | `rail_touch_v` row → "legacy path only, superseded by the resp validity mask" |
 | `code/notes/eval/tir_resp/resp_preprocess_impact.md` | **new**: artefact statistics, accounting delta, G2 analytic table |
 | `code/README.md` | data section: `--resp_cache`, `--resp_fs` semantics |
-| `code/notes/eval/tir_resp/corpus_accounting_140_vs_138.md` | add a dated "re-measured under the validity mask" block rather than overwriting the old numbers |
+| `code/notes/eval/dataset_inspection/corpus_accounting_140_vs_138.md` | add a dated "re-measured under the validity mask" block rather than overwriting the old numbers |
 
 ---
 
@@ -466,16 +481,16 @@ python runners/run_evaluate_session.py --pred_dir <OUT_DIR> --resp_cache "$WORK_
 
 **Feature 1: Saturation Event Masking**
 *   **Given** a raw respiration signal sampled at 1000 Hz
-*   **And** the signal contains a continuous block of values `> 9.95 V` lasting for `1.5` seconds
-*   **And** the signal contains another continuous block of values `< -9.95 V` lasting for `2.5` seconds
+*   **And** the signal contains a continuous block of values `> 9.95 V` lasting for `0.5` seconds
+*   **And** the signal contains another continuous block of values `< -9.95 V` lasting for `1.5` seconds
 *   **When** the validity mask is computed
-*   **Then** the samples in the `1.5`-second block are marked as **valid** (cause `0`)
-*   **And** the samples in the `2.5`-second block are marked as **invalid** (cause `1` - saturation)
+*   **Then** the samples in the `0.5`-second block are marked as **valid** (cause `0`)
+*   **And** the samples in the `1.5`-second block are marked as **invalid** (cause `1` - saturation)
 
 **Feature 2: Flatline Detection**
 *   **Given** a raw respiration signal sampled at 1000 Hz
-*   **And** the signal contains a 6-second stretch where the peak-to-peak amplitude is `0.03 V`
-*   **When** the validity mask is computed with a `5.0` second flatline window and `0.05 V` threshold
+*   **And** the signal contains a 6-second stretch where the peak-to-peak amplitude is `0.3 V`
+*   **When** the validity mask is computed with a `5.0` second flatline window and `0.3 V` threshold
 *   **Then** the samples within that 6-second stretch are marked as **invalid** (cause `2` - flatline)
 *   **And** the invalid mask is dilated to cover any 5-second window that overlaps this stretch
 

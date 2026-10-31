@@ -73,6 +73,7 @@ Clips are non-overlapping by default (``clip_stride=None`` -> one clip per
 split here -- subject-disjoint splitting is the caller's job.
 """
 import collections
+import json
 import math
 import os
 import re
@@ -86,11 +87,13 @@ from torch.utils.data import Dataset
 try:                                          # `python -m data.tir_resp_dataset`
     from . import video_io as vio
     from . import task_groups as tgrp
+    from . import resp_preprocess as rpp
 except ImportError:                           # `python data/tir_resp_dataset.py`
     import sys as _sys
     _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from data import video_io as vio
     from data import task_groups as tgrp
+    from data import resp_preprocess as rpp
 
 #: Decode attempts for ONE clip (``_frames``); see the retry note there.
 _DECODE_ATTEMPTS = max(1, int(os.environ.get('VIDEO_DECODE_ATTEMPTS', '3')))
@@ -720,6 +723,8 @@ class BP4DPlusTIRRespDataset(Dataset):
                  allow_empty: bool = False,
                  roi_cache: Optional[str] = None,
                  roi_cache_lru: int = 2,
+                 resp_cache: Optional[str] = None,
+                 resp_cache_lru: int = 8,
                  verbose: bool = False):
         if norm not in ('clip', 'session', 'none'):
             raise ValueError(f"norm must be 'clip', 'session' or 'none', got {norm!r}")
@@ -780,6 +785,20 @@ class BP4DPlusTIRRespDataset(Dataset):
         if roi_cache:
             self._attach_cache(str(roi_cache))
 
+        # ---- optional respiration-granularity cache (data/resp_cache.py) --
+        # Holds ONE whole-session DC-removed signal grid + validity mask at the
+        # OUTPUT rate (``resp_fs`` == the model's ``fs``). With a cache the
+        # label read is an INTEGER SLICE and the ONLY validity rule is the
+        # stored mask (design D3); the legacy per-window ``rail_touch_v`` /
+        # ``min_signal_spread`` rules are refused (design D6).
+        self.resp_cache_root: Optional[str] = None
+        self._resp_params: Dict[str, object] = {}
+        self._resp_shard_lru = max(1, int(resp_cache_lru))
+        self._resp_shards: 'collections.OrderedDict[str, dict]' = \
+            collections.OrderedDict()
+        if resp_cache:
+            self._attach_resp_cache(str(resp_cache))
+
         # Named task GROUPS ("distortion levels") -> explicit task labels. The
         # DEFINITIONS come from the YAML config (nothing is hardcoded); the
         # selection is UNIONED with the explicit ``tasks`` list and the result
@@ -820,6 +839,12 @@ class BP4DPlusTIRRespDataset(Dataset):
         n_dropped_flat = 0
         n_dropped_rail = 0
         n_dropped_motion = 0
+        n_dropped_sat = 0
+        n_dropped_short = 0
+        n_dropped_nonfinite = 0
+        n_without_roi = 0
+        n_without_resp = 0
+        resp_valid_fracs: List[float] = []
         for spec in discovered:
             sess, subj, task = spec['session'], spec['subject'], spec['task']
 
@@ -834,11 +859,41 @@ class BP4DPlusTIRRespDataset(Dataset):
                 continue
             n_ir = int(ir.shape[0])
 
-            # --- 2. respiration stream
-            if spec['resp_file'] is None:
-                self._skip(spec, 'missing_resp_volts')
-                continue
-            n_sig = _count_samples(spec['resp_file'])
+            # --- 1b. cache coverage (plan D10): when BOTH caches are attached
+            # the run uses their INTERSECTION. A ``skipped/`` entry is a
+            # legitimate exclusion for that session; a MISSING shard is an
+            # incomplete build and must fail loudly rather than shrink the
+            # corpus silently.
+            if self.roi_cache_root is not None and \
+                    self.resp_cache_root is not None:
+                roi_skip = self._cache_skip_reason(self.roi_cache_root, sess)
+                if roi_skip is not None:
+                    self._skip(spec, f'roi_cache_skipped: {roi_skip}')
+                    n_without_roi += 1
+                    continue
+                if not self._cache_shard_exists(self.roi_cache_root, sess):
+                    self._raise_incomplete_cache(self.roi_cache_root, sess,
+                                                 'roi_cache')
+
+            # --- 2. respiration stream (cached grid, or the legacy raw file)
+            mask = cause = None
+            if self.resp_cache_root is not None:
+                resp_skip = self._cache_skip_reason(self.resp_cache_root, sess)
+                if resp_skip is not None:
+                    self._skip(spec, f'resp_cache_skipped: {resp_skip}')
+                    n_without_resp += 1
+                    continue
+                sh = self._resp_shard(sess)          # raises when incomplete
+                n_sig = int(np.asarray(sh['signal']).size)
+                mask, cause = sh['mask'], sh['cause']
+                if sh.get('resp_file'):
+                    spec = dict(spec, resp_file=str(sh['resp_file']))
+                resp_valid_fracs.append(float(sh['valid_frac']))
+            else:
+                if spec['resp_file'] is None:
+                    self._skip(spec, 'missing_resp_volts')
+                    continue
+                n_sig = _count_samples(spec['resp_file'])
             start_limit = _resp_start_limit(n_sig, self.resp_fs, self.fps,
                                             self.resp_len)
             if start_limit < 0:
@@ -874,14 +929,17 @@ class BP4DPlusTIRRespDataset(Dataset):
                 continue
 
             bad = missing_frame_mask(ir, self.target_idx)
-            # read the raw series when EITHER window-content rule is active
-            needs_series = (self.min_signal_spread > 0.0
-                            or self.rail_touch_v > 0.0)
-            y_raw = _load_1d(spec['resp_file']) if needs_series else None
+            # legacy path: read the raw series when EITHER window rule is ON
+            y_raw = None
+            if mask is None and (self.min_signal_spread > 0.0
+                                 or self.rail_touch_v > 0.0):
+                y_raw = _load_1d(spec['resp_file'])
 
             # --- 4. slice clips (requirement 2: any sentinel line drops the clip)
             kept, dropped, dropped_flat, dropped_rail, dropped_motion = (
                 0, 0, 0, 0, 0)
+            dropped_sat = dropped_short = dropped_nonfinite = 0
+            dropped_mask = 0
             starts: List[int] = []
             for start in range(0, n_avail - self.clip_frames + 1,
                                self.stride_frames):
@@ -898,7 +956,32 @@ class BP4DPlusTIRRespDataset(Dataset):
                     if sway > self.max_sway_px:
                         dropped_motion += 1
                         continue
-                if y_raw is not None:
+                if mask is not None:
+                    # THE validity statement of the cache lineage (design D3):
+                    # a window is usable iff every mask sample under it is
+                    # True. The cause of the rejection is taken from the first
+                    # non-zero cause in the window, so the run log keeps the
+                    # per-rule accounting it always had.
+                    s = int(round((start / self.fps) * self.resp_fs))
+                    w_mask = mask[s:s + self.resp_len]
+                    if w_mask.size != self.resp_len or not bool(w_mask.all()):
+                        code = 0
+                        if cause is not None:
+                            c = cause[s:s + self.resp_len]
+                            nz = c[c != 0]
+                            code = int(nz[0]) if nz.size else 0
+                        if code == rpp.CAUSE_SAT:
+                            dropped_sat += 1
+                        elif code == rpp.CAUSE_FLAT:
+                            dropped_flat += 1
+                        elif code == rpp.CAUSE_SHORT:
+                            dropped_short += 1
+                        elif code == rpp.CAUSE_NONFINITE:
+                            dropped_nonfinite += 1
+                        else:
+                            dropped_mask += 1
+                        continue
+                elif y_raw is not None:
                     # raw window on the respiration grid, exactly as
                     # _resp_clip() would build it (interp over the file)
                     s0 = (start / self.fps) * self.resp_fs
@@ -927,12 +1010,28 @@ class BP4DPlusTIRRespDataset(Dataset):
             n_dropped_flat += dropped_flat
             n_dropped_rail += dropped_rail
             n_dropped_motion += dropped_motion
+            n_dropped_sat += dropped_sat
+            n_dropped_short += dropped_short
+            n_dropped_nonfinite += dropped_nonfinite
             if not starts:
                 why = [f'{dropped} window(s) contain a (0,0) sentinel line']
                 if dropped_motion:
                     why.append(f'{dropped_motion} exceed max_sway_px='
                                f'{self.max_sway_px:g} px')
-                if dropped_flat:
+                if mask is not None:
+                    if dropped_sat:
+                        why.append(f'{dropped_sat} cross a saturation hole')
+                    if dropped_flat:
+                        why.append(f'{dropped_flat} cross a flatline hole')
+                    if dropped_short:
+                        why.append(f'{dropped_short} cross a run shorter than '
+                                   f'{self._resp_params.get("min_run_s", 0):g} s')
+                    if dropped_nonfinite:
+                        why.append(f'{dropped_nonfinite} cross non-finite '
+                                   f'samples')
+                    if dropped_mask:
+                        why.append(f'{dropped_mask} cross an unusable region')
+                if dropped_flat and mask is None:
                     why.append(f'{dropped_flat} have a (near-)constant '
                                f'respiration window (< {self.min_signal_spread:g} V)')
                 if dropped_rail:
@@ -941,13 +1040,20 @@ class BP4DPlusTIRRespDataset(Dataset):
                 self._skip(spec, 'all_clips_dropped: ' + '; '.join(why))
                 continue
 
-            self.sessions[sess] = dict(spec, n_frames=n_common, n_ir=n_ir,
-                                       n_vid=n_vid, n_resp=n_sig,
-                                       resp_start_limit=start_limit,
-                                       clips_dropped_sentinel=dropped,
-                                       clips_dropped_flat=dropped_flat,
-                                       clips_dropped_rail=dropped_rail,
-                                       clips_dropped_motion=dropped_motion)
+            self.sessions[sess] = dict(
+                spec, n_frames=n_common, n_ir=n_ir,
+                n_vid=n_vid, n_resp=n_sig,
+                resp_start_limit=start_limit,
+                clips_dropped_sentinel=dropped,
+                clips_dropped_flat=dropped_flat,
+                clips_dropped_rail=dropped_rail,
+                clips_dropped_motion=dropped_motion,
+                clips_dropped_invalid_sat=dropped_sat,
+                clips_dropped_invalid_flat=dropped_flat if mask is not None else 0,
+                clips_dropped_invalid_short=dropped_short,
+                clips_dropped_invalid_nonfinite=dropped_nonfinite,
+                resp_valid_frac=(float(np.mean(mask)) if mask is not None
+                                 else None))
             for start in starts:
                 self.entries.append(self._make_entry(spec, start))
                 if max_entries and len(self.entries) >= max_entries:
@@ -984,6 +1090,11 @@ class BP4DPlusTIRRespDataset(Dataset):
             'clips_dropped_flat': n_dropped_flat,
             'clips_dropped_rail': n_dropped_rail,
             'clips_dropped_motion': n_dropped_motion,
+            'clips_dropped_invalid_sat': n_dropped_sat,
+            'clips_dropped_invalid_flat': n_dropped_flat if self.resp_cache_root
+            else 0,
+            'clips_dropped_invalid_short': n_dropped_short,
+            'clips_dropped_invalid_nonfinite': n_dropped_nonfinite,
             'max_sway_px': self.max_sway_px,
             'crop_rule': self.crop_rule,
             'min_signal_spread': self.min_signal_spread,
@@ -999,6 +1110,15 @@ class BP4DPlusTIRRespDataset(Dataset):
             'input_size': self.input_size,
             'roi_padding': self.roi_padding,
             'roi_cache': self.roi_cache_root,
+            'resp_cache': self.resp_cache_root,
+            # the DIRECTORY NAME, not the path: machine-independent identity
+            # (design D8), so a checkpoint note can compare two hosts.
+            'resp_cache_key': (os.path.basename(self.resp_cache_root.rstrip(os.sep))
+                               if self.resp_cache_root else None),
+            'resp_valid_fraction': (float(np.mean(resp_valid_fracs))
+                                    if resp_valid_fracs else None),
+            'sessions_without_roi': n_without_roi,
+            'sessions_without_resp': n_without_resp,
             'target_landmarks': list(self.target_landmarks),
             'norm': self.norm,
             'tasks': (list(self.task_selection.tasks)
@@ -1050,6 +1170,22 @@ class BP4DPlusTIRRespDataset(Dataset):
         return self._ir_cache[session]
 
     def _resp_full(self, session: str) -> np.ndarray:
+        """Whole-session respiration values on the CONSUMER's grid.
+
+        With a respiration cache attached this is the stored signal at
+        ``fs_out == resp_fs``; invalid samples are ``NaN`` by construction. The
+        ``norm == 'session'`` statistics are then taken over the VALID samples
+        only (``nanmean``/``nanstd``, design C4) instead of over a whole file
+        whose mean a railed baseline would dominate.
+        """
+        if self.resp_cache_root is not None:
+            sh = self._resp_shard(session)
+            if self.norm == 'session' and session not in self._norm_cache:
+                y = np.asarray(sh['signal'], dtype=np.float64)
+                sd = float(np.nanstd(y)) if np.isfinite(y).any() else 0.0
+                mu = float(np.nanmean(y)) if np.isfinite(y).any() else 0.0
+                self._norm_cache[session] = (mu, sd)
+            return sh['signal']
         if session not in self._resp_cache:
             y = _load_1d(self.sessions[session]['resp_file'])
             if self.norm == 'session':
@@ -1059,7 +1195,22 @@ class BP4DPlusTIRRespDataset(Dataset):
         return self._resp_cache[session]
 
     def _resp_clip(self, entry: dict) -> np.ndarray:
-        """Resample the clip's respiration window onto the ``[L]`` target grid."""
+        """The clip's respiration window on the ``[L]`` target grid.
+
+        With a cache this is an INTEGER SLICE of the stored grid (no
+        per-epoch ``np.interp``); without one it is the legacy resampling of
+        the raw 1000 Hz file, unchanged.
+        """
+        if self.resp_cache_root is not None:
+            y = self._resp_full(entry['session'])
+            s = int(round(float(entry['t_start']) * self.resp_fs))
+            out = np.asarray(y[s:s + self.resp_len], dtype=np.float32)
+            if out.size != self.resp_len:
+                raise IndexError(
+                    f'{entry["session"]}: resp grid slice [{s}:{s + self.resp_len}] '
+                    f'is {out.size} of {self.resp_len} samples -- the entry is '
+                    f'outside the cached session (N_out {y.size}).')
+            return out
         y = self._resp_full(entry['session'])
         src_fs = float(self.resp_fs)          # one sample per 1/1000 s, nominal
         idx = (entry['t_start'] + np.arange(self.resp_len) / self.resp_fs) * src_fs
@@ -1113,6 +1264,117 @@ class BP4DPlusTIRRespDataset(Dataset):
               f'{params["roi_padding"]}, crop {params.get("crop_rule", "?")}, '
               f'clip {params.get("clip_seconds", float("nan")):g} s, '
               f'format v{params["format_version"]}')
+
+    def _attach_resp_cache(self, out_root: str) -> None:
+        """Point this dataset at an offline RESPIRATION-GRID cache.
+
+        The same fail-loudly gate as the ROI cache (``resp_cache.find_cache``):
+        the loader's half of the key is ``(corpus, fs_in=1000, fs_out=resp_fs)``
+        plus the DEFAULT validity knobs, so a run pointed at a cache built with
+        a different ``fs_out`` / ``sat_min_s`` aborts with a field-by-field diff
+        instead of training on a different label space (plan G6).
+
+        With a cache, ``resp_fs`` IS the artefact's output rate and must equal
+        the model's ``--fs`` (design D7); the wrapper classes verify that. The
+        legacy per-window cleaning knobs must be OFF (design D6): a non-zero
+        value would silently filter the same content twice.
+        """
+        try:
+            from . import resp_cache as respc
+            from . import resp_preprocess as rpp
+        except ImportError:                 # `python data/tir_resp_dataset.py`
+            from data import resp_cache as respc
+            from data import resp_preprocess as rpp
+        if self.min_signal_spread > 0.0 or self.rail_touch_v > 0.0:
+            raise ValueError(
+                f'resp_cache: {out_root} is attached but the legacy window '
+                f'filters are ON (min_signal_spread={self.min_signal_spread:g}, '
+                f'rail_touch_v={self.rail_touch_v:g}). The cache already '
+                f'decides validity per sample; set both to 0 so the same '
+                f'content is not filtered twice (design D6).')
+        corpus = discover_sessions(self.raw_root)
+        want = respc.loader_params(self.raw_root, corpus, fs_in=rpp.FS_IN,
+                                   fs_out=self.resp_fs)
+        root = respc.find_cache(out_root, want)
+        params = respc.read_params(root)
+        fs_out = int(params['fs_out'])
+        if fs_out != int(round(self.resp_fs)):
+            raise ValueError(
+                f'resp_cache: {root} stores a {fs_out} Hz grid but this run '
+                f'reads at resp_fs={self.resp_fs:g}. With a cache, resp_fs IS '
+                f'the artefact rate: pass --resp_fs {fs_out} (and --fs {fs_out}).')
+        if self.clip_seconds > float(params['min_run_s']) + 1e-9:
+            raise ValueError(
+                f'resp_cache: clip_seconds={self.clip_seconds:g} s exceeds the '
+                f'cache min_run_s={params["min_run_s"]:g} s, so a whole clip '
+                f'could not fit inside one valid run. Rebuild with '
+                f'`runners/run_build_resp_cache.py --min_run_s '
+                f'{self.clip_seconds:g}` or shorten the clip.')
+        self.resp_cache_root = str(root)
+        self._resp_params = params
+        print(f'[data] resp_cache: {root}')
+        print(f'[data]   grid {params["fs_in"]} -> {params["fs_out"]} Hz, '
+              f'sat |V|>{params["sat_v"]:g} for >= {params["sat_min_s"]:g} s, '
+              f'flat ptp<{params["flat_ptp_v"]:g} V over '
+              f'{params["flat_window_s"]:g} s, runs < '
+              f'{params["min_run_s"]:g} s are holes, format '
+              f'v{params["format_version"]}')
+
+    def _resp_shard(self, session: str) -> dict:
+        """One cached respiration shard, LRU-cached.
+
+        A MISSING shard is an ERROR (an incomplete build), a ``skipped/`` entry
+        is a legitimate exclusion handled in :meth:`_build_entries`.
+        """
+        if session in self._resp_shards:
+            self._resp_shards.move_to_end(session)
+            return self._resp_shards[session]
+        try:
+            from . import resp_cache as respc
+        except ImportError:
+            from data import resp_cache as respc
+        root = self.resp_cache_root
+        path = respc.shard_path(root, session)
+        if not path.is_file():
+            raise FileNotFoundError(
+                f'{session}: no respiration shard in {root} -- the cache is '
+                f'INCOMPLETE. Run `runners/run_build_resp_cache.py --status` '
+                f'then --build (or --index to see the reasons).')
+        sh = respc.read_shard(path)
+        self._resp_shards[session] = sh
+        while len(self._resp_shards) > self._resp_shard_lru:
+            self._resp_shards.popitem(last=False)
+        return sh
+
+    @staticmethod
+    def _cache_skip_reason(root: str, session: str) -> Optional[str]:
+        """Reason recorded in ``skipped/<session>.json``, or ``None``.
+
+        A skip file is a LEGITIMATE exclusion (the builder could not read the
+        session at all); a missing shard without one is an incomplete build.
+        """
+        path = os.path.join(str(root), 'skipped', f'{session}.json')
+        if not os.path.isfile(path):
+            return None
+        try:
+            with open(path) as fh:
+                return str(json.load(fh).get('reason') or 'unknown')
+        except Exception:
+            return 'unknown'
+
+    @staticmethod
+    def _cache_shard_exists(root: str, session: str) -> bool:
+        return os.path.isfile(os.path.join(str(root), 'tasks',
+                                           f'{session}.npz'))
+
+    @staticmethod
+    def _raise_incomplete_cache(root: str, session: str, kind: str) -> None:
+        raise FileNotFoundError(
+            f'{session}: no shard in {root} -- the {kind} is INCOMPLETE (no '
+            f'``skipped/`` entry either, so this is not a legitimate '
+            f'exclusion). Rebuild it with the matching '
+            f'``runners/run_build_{"roi" if kind == "roi_cache" else "resp"}'
+            f'_cache.py --status`` then ``--build``.')
 
     def _shard(self, session: str) -> Optional[dict]:
         """One cached shard, LRU-cached.
@@ -1353,19 +1615,30 @@ class BP4DPlusTIRRespDataset(Dataset):
     def describe(self) -> str:
         """Human-readable summary (also the source of the JSON report fields)."""
         s = self.stats
+        if s.get('resp_cache'):
+            clip_drops = (
+                f'{s["clips_dropped_sentinel"]} window(s) dropped for a (0,0) '
+                f'sentinel line, {s["clips_dropped_motion"]} for head sway > '
+                f'{s["max_sway_px"]:g} px, '
+                f'{s["clips_dropped_invalid_sat"]} cross a saturation hole, '
+                f'{s["clips_dropped_invalid_flat"]} a flatline hole, '
+                f'{s["clips_dropped_invalid_short"]} a too-short run, '
+                f'{s["clips_dropped_invalid_nonfinite"]} non-finite samples')
+        else:
+            clip_drops = (
+                f'{s["clips_dropped_sentinel"]} window(s) dropped for a (0,0) '
+                f'sentinel line, {s["clips_dropped_motion"]} for head sway > '
+                f'{s["max_sway_px"]:g} px, {s["clips_dropped_flat"]} for a '
+                f'(near-)constant '
+                f'respiration window at min_signal_spread={s["min_signal_spread"]:g} V, '
+                f'{s["clips_dropped_rail"]} for touching the rail '
+                f'(|x| >= {s["rail_touch_v"]:g} V; the recorder clamps at '
+                f'{s["rail_v"]:g} V)')
         lines = [
             f'raw_root        : {s["raw_root"]}',
             f'sessions        : {s["sessions_used"]} used / '
             f'{s["sessions_discovered"]} found / {s["sessions_skipped"]} skipped',
-            f'clips           : {s["clips"]} '
-            f'({s["clips_dropped_sentinel"]} window(s) dropped for a (0,0) '
-            f'sentinel line, {s["clips_dropped_motion"]} for head sway > '
-            f'{s["max_sway_px"]:g} px, {s["clips_dropped_flat"]} for a '
-            f'(near-)constant '
-            f'respiration window at min_signal_spread={s["min_signal_spread"]:g} V, '
-            f'{s["clips_dropped_rail"]} for touching the rail '
-            f'(|x| >= {s["rail_touch_v"]:g} V; the recorder clamps at '
-            f'{s["rail_v"]:g} V)',
+            f'clips           : {s["clips"]} ({clip_drops})',
             f'clip            : {s["clip_seconds"]:g} s = {s["clip_frames"]} '
             f'frames @ {s["fps"]:g} fps, stride {s["clip_stride_frames"]} '
             f'frames; resp {s["resp_len"]} samples @ {s["resp_fs"]:g} Hz',
@@ -1374,9 +1647,19 @@ class BP4DPlusTIRRespDataset(Dataset):
             f'max_sway_px {s["max_sway_px"]:g} '
             f'-> {self.input_size}x{self.input_size}',
             f'roi_cache       : {s["roi_cache"] or "off (decoding .wmv)"}',
-            f'norm            : {s["norm"]}',
-            f'task selection  : {self.task_selection.describe()}',
+            f'resp_cache      : {s["resp_cache"] or "off (raw Resp_Volts.txt)"}',
         ]
+        if s.get('resp_cache'):
+            p = self._resp_params
+            vf = s.get('resp_valid_fraction')
+            lines.append(
+                'resp validity   : mask on the raw grid -- sat |V|>'
+                f'{p["sat_v"]:g} for >= {p["sat_min_s"]:g} s, flat ptp<'
+                f'{p["flat_ptp_v"]:g} V over {p["flat_window_s"]:g} s, runs < '
+                f'{p["min_run_s"]:g} s are holes'
+                + (f'; valid_frac {vf:.3f}' if vf is not None else ''))
+        lines.append(f'norm            : {s["norm"]}')
+        lines.append(f'task selection  : {self.task_selection.describe()}')
         if s['clips_per_level']:
             lines.append('clips per level : ' + ', '.join(
                 f'{k}={s["clips_per_level"][k]} clip(s)/'
@@ -1467,6 +1750,8 @@ class TirRoiRespPretrainDataset(Dataset):
                  max_entries: Optional[int] = None,
                  roi_cache: Optional[str] = None,
                  roi_cache_lru: int = 2,
+                 resp_cache: Optional[str] = None,
+                 resp_cache_lru: int = 8,
                  allow_empty: bool = False,
                  verbose: bool = False):
         self.streams = tuple(str(s).strip() for s in streams if str(s).strip())
@@ -1500,6 +1785,12 @@ class TirRoiRespPretrainDataset(Dataset):
         self.temporal_stride = max(1, int(temporal_stride))
         self.tubelet_t = max(1, int(tubelet_t))
         self.resp_fs = float(resp_fs)
+        if resp_cache and abs(self.resp_fs - self.fs) > 1e-9:
+            raise ValueError(
+                f'resp_cache: with a respiration cache resp_fs IS the artefact\'s '
+                f'output rate and must equal the model fs; got resp_fs='
+                f'{self.resp_fs:g} vs fs={self.fs:g}. Pass --resp_fs {self.fs:g} '
+                f'(design D7).')
         self.input_size = int(input_size)
         self.roi_padding = float(roi_padding)
 
@@ -1525,6 +1816,7 @@ class TirRoiRespPretrainDataset(Dataset):
             max_clips_per_session=max_clips_per_session,
             max_entries=max_entries,
             roi_cache=roi_cache, roi_cache_lru=roi_cache_lru,
+            resp_cache=resp_cache, resp_cache_lru=resp_cache_lru,
             allow_empty=allow_empty,
             verbose=verbose)
         self.entries = self.base.entries
@@ -1659,6 +1951,8 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
                  max_entries: Optional[int] = None,
                  roi_cache: Optional[str] = None,
                  roi_cache_lru: int = 2,
+                 resp_cache: Optional[str] = None,
+                 resp_cache_lru: int = 8,
                  verbose: bool = False):
         if target != 'resp':
             raise ValueError(
@@ -1735,6 +2029,7 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
             self.skipped = []
             self.stats = {'rail_touch_v': rail_touch_v,
                           'min_signal_spread': min_signal_spread,
+                          'resp_cache': None,
                           'empty_reason': self._empty_reason}
             print(f'[data] tir_roi_resp {self.split_role} view is EMPTY: '
                   f'{self._empty_reason}')
@@ -1762,6 +2057,7 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
             max_clips_per_session=max_clips_per_session,
             max_entries=max_entries,
             roi_cache=roi_cache, roi_cache_lru=roi_cache_lru,
+            resp_cache=resp_cache, resp_cache_lru=resp_cache_lru,
             # A held-out subject may lose EVERY clip to the rail/sentinel
             # rules (locally F004's respiration is rail-saturated). That is a
             # data fact, not a split error: the scored folds must stay usable
@@ -1858,12 +2154,22 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
 def _log_corpus_cleaning(stats: dict, stage: str) -> None:
     """Print the cleaning knobs a run ACTUALLY used (never silent).
 
-    Both knobs are opt-in (``0.0`` = off) and are threaded from the YAML/CLI, so
-    a config or entry point that forgets ``rail_touch_v`` would train on
-    rail-valued respiration targets without saying anything. This line makes the
-    effective policy visible in the log of EVERY stage that goes through a
-    builder (Stage 2, Stage 3, classification runs, ...).
+    Both legacy knobs are opt-in (``0.0`` = off) and are threaded from the
+    YAML/CLI, so a config or entry point that forgets ``rail_touch_v`` would
+    train on rail-valued respiration targets without saying anything. This line
+    makes the effective policy visible in the log of EVERY stage that goes
+    through a builder (Stage 2, Stage 3, classification runs, ...).
+
+    With a respiration cache attached the policy is different and printed as
+    such: validity is the STORED per-sample mask and the two window rules must
+    be off (they are refused at construction otherwise, design D6).
     """
+    if stats.get('resp_cache'):
+        print(f'[data] {stage} corpus cleaning: resp_cache '
+              f'{stats.get("resp_cache_key")} -- validity is the per-sample '
+              f'mask on the raw signal (saturation event / flatline / short '
+              f'run); rail_touch_v and min_signal_spread are OFF')
+        return
     touch = float(stats.get('rail_touch_v') or 0.0)
     spread = float(stats.get('min_signal_spread') or 0.0)
     if touch > 0.0:
@@ -1890,6 +2196,12 @@ def build_tir_roi_finetune_dataset(is_train: bool, test_mode: bool,
     val_subject = getattr(args, 'val_subject', None)
     if isinstance(val_subject, (list, tuple)):
         val_subject = val_subject[0] if val_subject else None
+    resp_cache = (str(getattr(args, 'resp_cache', '') or '').strip() or None)
+    # Design D7: with a cache, resp_fs IS the artefact's output rate and must
+    # equal the model fs -- so derive it from --fs instead of the 1000 Hz raw
+    # nominal rate. The dataset then verifies it against the cache key.
+    resp_fs = (float(getattr(args, 'fs', 100.0)) if resp_cache
+               else float(getattr(args, 'resp_fs', DEFAULT_RESP_FS)))
     ds = TirRoiRespFinetuneDataset(
         raw_root=(getattr(args, 'raw_root', None)
                   or getattr(args, 'data_path', None) or None),
@@ -1913,7 +2225,7 @@ def build_tir_roi_finetune_dataset(is_train: bool, test_mode: bool,
         max_sway_px=float(getattr(args, 'max_sway_px', DEFAULT_MAX_SWAY_PX)),
         target_landmarks=resolve_roi_landmarks(
             getattr(args, 'roi_landmarks', None)),
-        resp_fs=float(getattr(args, 'resp_fs', DEFAULT_RESP_FS)),
+        resp_fs=resp_fs,
         fps=float(getattr(args, 'fps', DEFAULT_FPS)),
         physio_norm=str(getattr(args, 'physio_norm', 'zscore')),
         min_signal_spread=float(getattr(args, 'min_signal_spread', 0.0) or 0.0),
@@ -1925,6 +2237,7 @@ def build_tir_roi_finetune_dataset(is_train: bool, test_mode: bool,
         max_clips_per_session=getattr(args, 'max_clips', None),
         max_entries=getattr(args, 'max_entries', None),
         roi_cache=(str(getattr(args, 'roi_cache', '') or '').strip() or None),
+        resp_cache=resp_cache,
         verbose=bool(getattr(args, 'verbose', False)))
     _log_corpus_cleaning(ds.stats, 'stage3')
     return ds
@@ -1941,6 +2254,11 @@ def build_tir_roi_pretrain_dataset(args) -> TirRoiRespPretrainDataset:
     for every ROI lineage, so there is no second knob to keep in sync.
     """
     tubelet = str(getattr(args, 'tubelet', '2,16,16')).split(',')
+    resp_cache = (str(getattr(args, 'resp_cache', '') or '').strip() or None)
+    # Design D7 (see build_tir_roi_finetune_dataset): a cache means resp_fs IS
+    # the artefact's output rate == the model fs, not the raw 1000 Hz nominal.
+    resp_fs = (float(getattr(args, 'fs', 100.0)) if resp_cache
+               else float(getattr(args, 'resp_fs', DEFAULT_RESP_FS)))
     ds = TirRoiRespPretrainDataset(
         raw_root=getattr(args, 'raw_root', None) or default_raw_root(),
         streams=tuple(s.strip() for s in
@@ -1961,13 +2279,15 @@ def build_tir_roi_pretrain_dataset(args) -> TirRoiRespPretrainDataset:
         min_signal_spread=float(getattr(args, 'min_signal_spread', 0.0) or 0.0),
         rail_touch_v=float(getattr(args, 'rail_touch_v', 0.0) or 0.0),
         physio_norm=str(getattr(args, 'physio_norm', 'none') or 'none'),
+        resp_fs=resp_fs,
         subjects=getattr(args, 'subjects', None),
         tasks=getattr(args, 'tasks', None),
         task_groups=getattr(args, 'task_groups', None),
         task_set=getattr(args, 'task_set', None),
         max_clips_per_session=getattr(args, 'max_clips', None),
         max_entries=getattr(args, 'max_entries', None),
-        roi_cache=(str(getattr(args, 'roi_cache', '') or '').strip() or None))
+        roi_cache=(str(getattr(args, 'roi_cache', '') or '').strip() or None),
+        resp_cache=resp_cache)
     _log_corpus_cleaning(ds.stats, 'stage2')
     return ds
 
@@ -2105,16 +2425,31 @@ def _check_clip(ds: BP4DPlusTIRRespDataset, index: int) -> List[str]:
     if expect.shape != got.shape or not np.allclose(expect, got, atol=1.0):
         fails.append('tir_video[:, 0] is not the resize of the ROI crop')
 
-    # --- respiration alignment: frames x (resp_fs/fps) == the raw-file slice
-    ratio = ds.resp_fs / ds.fps
-    if abs(ratio - round(ratio)) < 1e-9:
-        y_full = _load_1d(entry['resp_file'])
-        s0 = entry['frame_start'] * int(round(ratio))
-        brute = y_full[s0:s0 + ds.resp_len]
-        raw = ds.respiration_clip(index, normalized=False)
-        if brute.shape != raw.shape or not np.allclose(brute, raw, atol=1e-3):
-            fails.append(f'resp window != raw[{s0}:{s0 + ds.resp_len}] of '
-                         f'{os.path.basename(entry["resp_file"])}')
+    # --- respiration alignment: frames x (resp_fs/fps) == the label slice
+    # With a respiration cache the label IS the stored grid slice, so the only
+    # meaningful check is against the SHARD: the raw file has a different sample
+    # axis (1 kHz vs fs_out) AND a different DC/normalisation (raw volts vs
+    # run-mean-removed), so comparing the two would fail by construction.
+    if getattr(ds, 'resp_cache_root', None) is not None:
+        sh = ds._resp_shard(entry['session'])
+        s0 = int(round(entry['t_start'] * ds.resp_fs))
+        want = np.asarray(sh['signal'][s0:s0 + ds.resp_len], dtype=np.float32)
+        got = ds.respiration_clip(index, normalized=False)
+        if want.shape != got.shape or not np.allclose(
+                want, got, rtol=0, atol=0, equal_nan=True):
+            fails.append(f'resp window != cached grid[{s0}:'
+                         f'{s0 + ds.resp_len}] of {entry["session"]}')
+    else:
+        ratio = ds.resp_fs / ds.fps
+        if abs(ratio - round(ratio)) < 1e-9:
+            y_full = _load_1d(entry['resp_file'])
+            s0 = entry['frame_start'] * int(round(ratio))
+            brute = y_full[s0:s0 + ds.resp_len]
+            raw = ds.respiration_clip(index, normalized=False)
+            if brute.shape != raw.shape or not np.allclose(brute, raw,
+                                                           atol=1e-3):
+                fails.append(f'resp window != raw[{s0}:{s0 + ds.resp_len}] of '
+                             f'{os.path.basename(entry["resp_file"])}')
 
     # --- temporal alignment: the seek must land on the right frame
     fresh = ds._frames(entry)

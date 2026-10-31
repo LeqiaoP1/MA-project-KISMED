@@ -67,11 +67,20 @@ production ROI crop (square hull, `CACHE_FORMAT_VERSION` in the key) and measure
 **11.7×** epoch speed-up at equal batch (`eval/tir_resp/hpc_precomputation.md`,
 `eval/batch_size_sweep.md`). Build it with `runners/run_build_roi_cache.py`.
 
-The label side gets its own artefact (`data/resp_cache.py`, built by
-`runners/run_build_resp_cache.py`) once the session preprocessing of
-`design/RESP_session_preprocess.md` lands: a whole-session grid plus validity mask,
-so a clip is an integer slice instead of a per-epoch resample. The two caches have
-disjoint keys and versions and are joined on `<S>_<T>`.
+The label side gets its own artefact (`data/resp_preprocess.py`, `data/resp_cache.py`,
+built by `runners/run_build_resp_cache.py`), **landed 2026-10-31**: a whole-session
+run-mean-removed grid plus a per-sample validity mask, so a clip is an integer
+slice instead of a per-epoch resample. Built corpus-wide in 0.4 min (1399 shards +
+1 skip, 42 MB); `--check 20` bit-identical. The two caches have disjoint keys and
+versions and are joined on `<S>_<T>`. Accounting at 8 s / 2 s under the contract in
+force (`sat_min_s 1 s`, `flat_ptp_v 0.3 V`) is **1191 sessions / 133 subjects /
+19 769 clips**, down from the legacy path's 1260 / 138 / 21 231 and from the first
+mask build's 1291 / 139 / 22 144. See `eval/tir_resp/resp_preprocess_impact.md`
+§1.2 before reading that as an improvement or a regression: the flatline probe
+also removes genuinely shallow breathing, and 0.5 V was measurably too
+aggressive (42 sessions and 1 subject come back at 0.3 V). The label space is a
+NEW lineage (run-mean-removed volts), so any comparable number needs a retrain
+with a new run prefix.
 
 ---
 
@@ -89,7 +98,7 @@ disjoint keys and versions and are joined on `<S>_<T>`.
 | metrics | `evaluation/metrics.py` (band-limited Pearson, single-tone template, amplitude, rate, `hf_power_rel`, bootstrap CI) |
 | assembly | `evaluation/assemble.py` (Hann OLA, `affine_calibrate`) |
 | runners | `run_pretrain`, `run_waveform`, `run_evaluate_kfold`, `run_evaluate_subject`, `run_evaluate_session`, `run_survey_tir_resp`, `run_inspect_tir_resp` |
-| tests | `test_tir_resp_sentinel`, `test_tir_resp_rail_filter`, `test_roi_square_rule`, `test_roi_motion_gate`, `test_roi_cache`, `test_kfold_splits`, `test_physio_norm`, `test_assemble_session`, `test_evaluation_*` |
+| tests | `test_tir_resp_sentinel`, `test_tir_resp_rail_filter`, `test_resp_preprocess`, `test_resp_cache`, `test_resp_window_contract`, `test_resp_eval_reference`, `test_roi_square_rule`, `test_roi_motion_gate`, `test_roi_cache`, `test_kfold_splits`, `test_physio_norm`, `test_assemble_session`, `test_evaluation_*` |
 
 ---
 
@@ -210,6 +219,7 @@ lines).
 | ROI square box / rescale / motion gate — build order | `code/notes/plan/ROI_crop_implementation_plan.md` |
 | respiration label contract (validity mask, per-run DC, grid) | `design/RESP_session_preprocess.md` |
 | respiration label build order | `code/notes/plan/RESP_session_preprocess_implementation_plan.md` |
+| respiration label artefact — measured impact + accounting delta | `eval/tir_resp/resp_preprocess_impact.md` |
 | task-tier regrouping | `code/notes/plan/task_tiers_regroup_plan.md` |
 | k-fold rollout | `code/notes/plan/subject_kfold_plan.md` |
 | AMP rollout | `code/notes/plan/hpc_AMP_implementation.md` |

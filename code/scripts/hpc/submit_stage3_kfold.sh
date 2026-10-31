@@ -99,6 +99,7 @@ GPUS="${GPUS:-4}"
 PARTITION="${CALLER_PARTITION:-acc}"
 TIME="${CALLER_TIME:-10:00:00}"
 ROI_CACHE="${ROI_CACHE-${WORK_SCRATCH:-$OUTPUT_DIR}/tir_roi_cache}"
+RESP_CACHE="${RESP_CACHE-${WORK_SCRATCH:-$OUTPUT_DIR}/resp_cache}"
 
 fail() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -108,6 +109,9 @@ mkdir -p logs             || fail "cannot create logs/"
 [ -d "$STAGE2_ROOT" ]     || fail "Stage-2 root not found: $STAGE2_ROOT"
 if [ -n "$ROI_CACHE" ] && [ ! -d "$ROI_CACHE" ]; then
     fail "ROI_CACHE=$ROI_CACHE does not exist (set ROI_CACHE='' to decode .wmv)."
+fi
+if [ -n "$RESP_CACHE" ] && [ ! -d "$RESP_CACHE" ]; then
+    fail "RESP_CACHE=$RESP_CACHE does not exist (set RESP_CACHE='' to read Resp_Volts.txt)."
 fi
 
 PY="${VENV:-}/bin/python"
@@ -121,6 +125,7 @@ echo "  stage2 root : $STAGE2_ROOT   (dir pattern: ${STAGE2_NAME}_fold<k>)"
 echo "  result root : $FIN_ROOT   (dir pattern: ${RUN_NAME}_fold<k>)"
 echo "  folds       : $FOLDS  (of $N_FOLDS)"
 echo "  roi_cache   : ${ROI_CACHE:-<disabled>}"
+echo "  resp_cache  : ${RESP_CACHE:-<disabled>}"
 echo "  gres        : gpu:${GPU_TYPE}:${GPUS}   partition=$PARTITION  time=$TIME"
 echo "  budget      : ~8h40 measured for 150 epochs on 4x rtx6000 (+~2 min startup)"
 echo "  mode        : $([ "$SUBMIT" -eq 1 ] && echo SUBMIT || echo 'DRY RUN (pass --submit)')"
@@ -212,7 +217,7 @@ for fold in "${READY[@]}"; do
     cmd=(env "SBATCH_PARTITION=$PARTITION" "SBATCH_TIMELIMIT=$TIME"
          "SBATCH_JOB_NAME=st3_resp_tir_fold${fold}"
          "GPU_TYPE=$GPU_TYPE" "GPUS=$GPUS" "FOLDS=$fold"
-         "OUT_DIR=$out_dir")
+         "OUT_DIR=$out_dir" "RESP_CACHE=$RESP_CACHE")
     [ -n "${EPOCHS:-}" ] && cmd+=("EPOCHS=$EPOCHS")
     cmd+=(bash scripts/hpc/submit.sh "$JOB_SCRIPT")
     echo "fold $fold -> $out_dir"

@@ -51,7 +51,8 @@ from data import task_groups as _tgrp
 from evaluation import metrics as _metrics
 from evaluation.assemble import affine_calibrate, assemble_session, group_entries
 from evaluation.report import save_json
-from runners.run_evaluate_session import _task_of_name, read_reference
+from runners.run_evaluate_session import (_task_of_name, read_reference,
+                                          read_reference_from_cache)
 from runners.run_evaluate_subject import _window_rates, subject_of
 
 __all__ = ['main', 'get_args', 'score_fold', 'aggregate_kfold']
@@ -80,7 +81,8 @@ def _fold_dir(root, prefix, k):
 
 
 def score_fold(pred_dir, fs, raw_fs, band, waveform, rate_window_s, rate_tol,
-               fold, max_sessions=0, group_override=None):
+               fold, max_sessions=0, group_override=None,
+               resp_cache='', resp_cache_key=''):
     """Score every session of ONE fold.
 
     :param group_override: optional ``{task: (group, ...)}``
@@ -116,18 +118,30 @@ def score_fold(pred_dir, fs, raw_fs, band, waveform, rate_window_s, rate_tol,
         pairs = groups[name]
         rows = [i for i, _ in pairs]
         offs = [o for _, o in pairs]
-        sig = entries[rows[0]].get('signals_file') or ''
-        if not sig or not os.path.isfile(sig):
-            print(f'[kfold] fold {fold} {name}: skip (no reference)')
-            continue
+        ref_mask = None
         t, y, cov = assemble_session(preds[rows], offs, fs)
-        ref_full = read_reference(sig, waveform, fs=fs, raw_fs=raw_fs)
+        if resp_cache:
+            # Design C8: reference and label share ONE artefact.
+            try:
+                _, ref_full, ref_mask, _root = read_reference_from_cache(
+                    resp_cache, name, fs=fs, cache_key=resp_cache_key)
+            except (FileNotFoundError, ValueError) as exc:
+                print(f'[kfold] fold {fold} {name}: skip (resp_cache: {exc})')
+                continue
+        else:
+            sig = entries[rows[0]].get('signals_file') or ''
+            if not sig or not os.path.isfile(sig):
+                print(f'[kfold] fold {fold} {name}: skip (no reference)')
+                continue
+            ref_full = read_reference(sig, waveform, fs=fs, raw_fs=raw_fs)
         n = int(min(y.size, ref_full.size))
-        cov = cov[:n]
-        if not cov.any():
+        scored = np.asarray(cov[:n], dtype=bool).copy()
+        if ref_mask is not None:
+            scored &= np.asarray(ref_mask[:n], dtype=bool)
+        if not scored.any():
             print(f'[kfold] fold {fold} {name}: skip (no covered sample)')
             continue
-        ref, yh = ref_full[:n][cov].copy(), y[:n][cov].copy()
+        ref, yh = ref_full[:n][scored].copy(), y[:n][scored].copy()
 
         task_label = entries[rows[0]].get('task') or _task_of_name(name)
         rec = {
@@ -140,8 +154,11 @@ def score_fold(pred_dir, fs, raw_fs, band, waveform, rate_window_s, rate_tol,
             'fold': int(fold),
             'n_clips': len(rows),
             'duration_s': float(t[-1]) if t.size else 0.0,
-            'coverage': float(cov.mean()),
+            'coverage': float(scored.mean()),
         }
+        if ref_mask is not None:
+            rec['reference_coverage'] = float(np.asarray(ref_mask[:n]).mean())
+            rec['reference_source'] = 'resp_cache'
         # --- pearson -------------------------------------------------------
         yh2 = np.atleast_2d(yh)
         ref2 = np.atleast_2d(ref)
@@ -292,6 +309,13 @@ def get_args():
                    help='CSV of fold indices to pool')
     p.add_argument('--waveform', default='resp', choices=['bp', 'resp'])
     p.add_argument('--fs', default=100.0, type=float)
+    p.add_argument('--resp_cache', default='', type=str,
+                   help='OUT_ROOT of the offline respiration cache. When set, '
+                        'the REFERENCE is read from the same artefact as the '
+                        'training labels (design C8) and its per-sample mask '
+                        'restricts scoring. Empty = legacy raw Resp_Volts.txt.')
+    p.add_argument('--resp_cache_key', default='', type=str,
+                   help='pin the cache DIRECTORY name instead of resolving it.')
     p.add_argument('--raw_fs', default=1000.0, type=float,
                    help='native rate of a raw one-value-per-line reference')
     p.add_argument('--band', default=None, type=str,
@@ -335,7 +359,8 @@ def main(args):
         recs, (pw, tw) = score_fold(
             d, args.fs, args.raw_fs, band, args.waveform,
             args.rate_window_s, args.rate_tol, k, args.max_sessions,
-            group_override=group_override)
+            group_override=group_override,
+            resp_cache=args.resp_cache, resp_cache_key=args.resp_cache_key)
         records.extend(recs)
         summaries.append(_fold_summary(k, recs, n_entries))
         pw_all.append(pw)

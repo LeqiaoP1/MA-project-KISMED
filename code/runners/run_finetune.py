@@ -58,6 +58,15 @@ def get_args():
                              'recorder rail, i.e. abs(x) >= this many VOLTS '
                              '(0.0 = off; the study value is 9.90, the '
                              'recorder clamps at +/-10 V)')
+    parser.add_argument('--resp_cache', default=env_or('RESP_CACHE', ''),
+                        type=str,
+                        help='TIR-ROI only: OUT_ROOT of an offline respiration '
+                             'cache (data/resp_cache.py). Empty (default, or '
+                             '$RESP_CACHE) = read Resp_Volts.txt as before. '
+                             'With a cache, --resp_fs IS the artefact rate and '
+                             'must equal --fs; --rail_touch_v and '
+                             '--min_signal_spread must be 0 (the stored mask is '
+                             'the only validity rule).')
     # training
     parser.add_argument('--batch_size', default=64, type=int)
     parser.add_argument('--epochs', default=100, type=int)

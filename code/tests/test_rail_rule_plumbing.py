@@ -93,15 +93,18 @@ def _write_raw(root, resp: np.ndarray) -> str:
 
 
 def _resp_with_rail_in_the_first_second() -> np.ndarray:
-    """Healthy breathing plus a 1 s rail stretch at t=0.
+    """Healthy breathing plus a 0.5 s rail stretch at t=0.
 
     With an 8 s window and a 1 s hop the windows start at 0..8 s, so the stretch
-    is inside the FIRST window only -> exactly 1 of the 9 clips is dropped, and
-    the count itself proves the hop is 1 s (a 4 s hop would give 3 windows).
+    is inside the FIRST window only -> exactly 1 of the 9 clips is dropped by the
+    LEGACY touch rule, and the count itself proves the hop is 1 s (a 4 s hop
+    would give 3 windows). 0.5 s is also BELOW the respiration cache's 1 s
+    saturation alarm, so the cache path keeps all 9 windows -- which is what
+    distinguishes the two lineages in the tests below.
     """
     y = np.full(N_RESP, -4.0)
     y += 3.0 * np.sin(2 * np.pi * 0.3 * np.arange(N_RESP) / RESP_FS)
-    y[:int(1.0 * RESP_FS)] = RAIL
+    y[:int(0.5 * RESP_FS)] = RAIL
     return y
 
 
@@ -180,6 +183,41 @@ def test_every_entry_point_exposes_the_flag(runner):
     assert "'--rail_touch_v'" in src, f'{runner} cannot set --rail_touch_v'
 
 
+@pytest.mark.parametrize('runner', RAIL_ENTRY_POINTS)
+def test_every_entry_point_exposes_the_resp_cache_flag(runner):
+    """The respiration-cache lineage must be selectable from every stage.
+
+    ``--resp_cache`` is env/CLI only (like ``--roi_cache``), so an entry point
+    that cannot declare it silently pins that stage to the legacy raw path --
+    and the Stage-2/Stage-3 label spaces would then differ with no error.
+    """
+    with open(os.path.join(CODE_DIR, 'runners', runner)) as fh:
+        src = fh.read()
+    assert "'--resp_cache'" in src, f'{runner} cannot set --resp_cache'
+
+
+def test_stage2_dispatch_threads_the_resp_cache(tmp_path):
+    """``build_pretraining_dataset`` attaches the cache and derives resp_fs."""
+    from runners import run_build_resp_cache as rb
+
+    root = _write_raw(tmp_path, _resp_with_rail_in_the_first_second())
+    out = tmp_path / 'resp_cache'
+    assert rb.main(['--init', '--build', '--out_root', str(out),
+                    '--raw_root', root]) == 0
+    ds = build_pretraining_dataset(
+        _args(root, resp_cache=str(out), rail_touch_v=0.0,
+              min_signal_spread=0.0, pretrain_split='all'))
+    assert ds.stats['resp_cache'] is not None
+    assert ds.stats['resp_cache_key']
+    # D7: with a cache resp_fs IS the model fs, not the 1000 Hz raw nominal
+    assert ds.stats['resp_fs'] == pytest.approx(100.0)
+    assert ds.base.resp_len == 800
+    # the 0.5 s rail contact is shorter than the cache's 1 s saturation alarm ->
+    # kept, so all windows survive (the legacy 9.9 V touch rule dropped one)
+    assert len(ds) == 9
+    assert ds.stats['clips_dropped_rail'] == 0
+
+
 def test_the_tir_configs_use_the_strict_rule_and_a_consistent_hop():
     """Every TIR-ROI/RESP config: the touch rule ON, an 8 s window, and the
     DOCUMENTED window hop (the HPC Stage-2/Stage-3 runs use 2 s, the rest 1 s).
@@ -207,3 +245,41 @@ def test_the_dataset_builders_forward_the_rule():
         src = __import__('inspect').getsource(fn)
         assert "getattr(args, 'rail_touch_v'" in src, fn.__name__
         assert '_log_corpus_cleaning' in src, fn.__name__
+
+
+def test_waveform_preflight_resolves_the_resp_cache_key(tmp_path):
+    """The Stage-2/Stage-3 contract check needs the identity BEFORE the data."""
+    from runners import run_build_resp_cache as rb
+    from runners.run_waveform import resolve_resp_cache_key
+
+    root = _write_raw(tmp_path, _resp_with_rail_in_the_first_second())
+    out = tmp_path / 'resp_cache'
+    assert rb.main(['--init', '--build', '--out_root', str(out),
+                    '--raw_root', root]) == 0
+    sessions = trd.discover_sessions(root)
+    params = rb.respc.build_params(root, sessions)
+    assert resolve_resp_cache_key(_args(root, resp_cache=str(out))) == \
+        rb.respc.cache_root(out, rb.respc.cache_key(params)).name
+
+
+def test_stage3_contract_compares_the_resp_cache_key(capsys):
+    """A cache-key mismatch WARNS (never aborts); a pre-cache checkpoint warns too."""
+    from runners.run_waveform import check_stage2_roi_contract
+
+    common = dict(roi_landmarks='', roi_padding=0.1, input_size=64,
+                  crop_rule='square', max_sway_px=40.0, task_set='', tasks='',
+                  clip_stride=1.0, task_groups='')
+    s3 = argparse.Namespace(data_set='tir_roi_resp', resp_cache='out',
+                            resp_cache_key='respgrid_A', min_signal_spread=0.0,
+                            rail_touch_v=0.0, **common)
+    s2_old = argparse.Namespace(**common)                    # no cache key
+    check_stage2_roi_contract(s3, s2_old, allow_mismatch=True)
+    out = capsys.readouterr().out
+    assert 'resp_cache_key' in out and 'retrain' in out
+
+    s2_new = argparse.Namespace(resp_cache_key='respgrid_B',
+                                min_signal_spread=0.0, rail_touch_v=0.0,
+                                **common)
+    check_stage2_roi_contract(s3, s2_new, allow_mismatch=True)
+    out = capsys.readouterr().out
+    assert 'resp_cache_key differs' in out

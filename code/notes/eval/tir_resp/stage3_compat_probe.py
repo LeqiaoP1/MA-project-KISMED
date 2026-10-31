@@ -67,8 +67,14 @@ ROI_KEYS = ('roi_landmarks', 'roi_padding', 'input_size')
 GEOM_KEYS = ('model', 'tubelet', 'fps', 'temporal_stride',
              'clip_duration', 'input_size', 'fs', 'seq_len', 'sig_kernel',
              'head_hidden')
-CORPUS_KEYS = ('task_set', 'tasks', 'min_signal_spread', 'rail_touch_v',
-               'clip_stride', 'physio_norm', 'spectral_fft_sizes')
+#: 2026-10-31: ``min_signal_spread`` / ``rail_touch_v`` are retired on the
+#: respiration-cache lineage (the stored per-sample mask is the only validity
+#: rule), so they no longer belong to the corpus contract; ``resp_cache_key``
+#: (the cache DIRECTORY name, machine-independent) replaces them. It is env/CLI
+#: only -- a config carries no value -- so the comparison below is skipped when
+#: the Stage-3 side has none, and the note right after says so.
+CORPUS_KEYS = ('task_set', 'tasks', 'clip_stride', 'physio_norm',
+               'spectral_fft_sizes', 'resp_cache_key')
 
 OK, BAD, WARN = '  OK  ', 'FAIL  ', ' WARN '
 
@@ -198,6 +204,20 @@ def main(argv: Optional[List[str]] = None) -> int:
                 if not same:
                     (blockers if marker == BAD else warnings).append(
                         f'{label} {key}: {s2!r} -> {s3!r}')
+
+        # ``resp_cache_key`` is env/CLI only, so a config never carries it: say
+        # out loud which lineage the checkpoint was trained on instead of
+        # silently skipping the comparison.
+        s2_cache = getattr(s2_args, 'resp_cache_key', None)
+        if s2_cache is None:
+            print(f'[{WARN}] resp_cache_key: the Stage-2 checkpoint records '
+                  f'none -- it predates the respiration-cache lineage. Its '
+                  f'LABEL SPACE is the old raw/whole-file one, so a comparable '
+                  f'number needs a retrain.')
+            warnings.append('resp_cache_key absent from the Stage-2 checkpoint')
+        else:
+            print(f'[{WARN}] resp_cache_key: stage2={s2_cache} '
+                  f'stage3=<env/CLI only -- pass RESP_CACHE to compare>')
 
         # Stage-2's spectral windows live under a different key name.
         s2_fft = getattr(s2_args, 'spectral_fft_sizes', None)

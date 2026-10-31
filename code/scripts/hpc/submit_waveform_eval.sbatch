@@ -110,6 +110,13 @@ if [ -n "$ROI_CACHE" ] && [ ! -d "$ROI_CACHE" ]; then
     exit 1
 fi
 
+RESP_CACHE="${RESP_CACHE-${WORK_SCRATCH:-$OUTPUT_DIR}/resp_cache}"
+if [ -n "$RESP_CACHE" ] && [ ! -d "$RESP_CACHE" ]; then
+    echo "ERROR: RESP_CACHE=$RESP_CACHE does not exist (use RESP_CACHE='' to disable)." >&2
+    echo "       Build it with:  python runners/run_build_resp_cache.py --init --build" >&2
+    exit 1
+fi
+
 ARGS=(-c "$CONFIG"
       --data_path "$RAW_DATA_PATH"
       --output_dir "$OUT_DIR"
@@ -122,6 +129,9 @@ ARGS=(-c "$CONFIG"
 [ -n "${BATCH_SIZE:-}" ]  && ARGS+=(--batch_size "$BATCH_SIZE")
 [ -n "${NUM_WORKERS:-}" ] && ARGS+=(--num_workers "$NUM_WORKERS")
 [ -n "$ROI_CACHE" ]      && ARGS+=(--roi_cache "$ROI_CACHE")
+if [ -n "$RESP_CACHE" ]; then
+    ARGS+=(--resp_cache "$RESP_CACHE" --min_signal_spread 0 --rail_touch_v 0)
+fi
 ARGS+=("$@")
 
 if [ "${SLURM_NTASKS:-1}" != "1" ]; then
@@ -142,6 +152,7 @@ echo "[submit_waveform_eval] config   : $CONFIG"
 echo "[submit_waveform_eval] raw_root : $RAW_DATA_PATH"
 echo "[submit_waveform_eval] finetune : ${FINETUNE:-<none: ROI check skipped>}"
 echo "[submit_waveform_eval] roi_cache: ${ROI_CACHE:-<disabled: decode .wmv>}"
+echo "[submit_waveform_eval] resp_cache: ${RESP_CACHE:-<disabled: read Resp_Volts.txt>}"
 echo "[submit_waveform_eval] output   : $OUT_DIR"
 echo "[submit_waveform_eval] world    : ${SLURM_NTASKS} task(s) on $(hostname)"
 echo "[submit_waveform_eval] gres     : $(scontrol show job -o "$SLURM_JOB_ID" 2>/dev/null | grep -oE 'gres/gpu[a-z0-9/]*=[0-9]+' | tr '\n' ' ')"

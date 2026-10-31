@@ -27,6 +27,7 @@ with ``samples = [B, 3, T, H, W]`` (``use_tir`` off) or ``[B, 6, T, H, W]``.
 import argparse
 import os
 import sys
+from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -221,8 +222,19 @@ def check_stage2_roi_contract(args, stage2_args, allow_mismatch=False):
     # is legitimate often enough that it only WARNS. ``clip_stride`` belongs to
     # this class too: with 1 s hops 7/8 of consecutive windows overlap, so it
     # decides WHICH windows exist (it does not change any tensor shape).
-    for key in ('task_set', 'tasks', 'min_signal_spread', 'rail_touch_v',
-                'clip_stride'):
+    #
+    # The respiration-cache lineage REPLACES the two window-content knobs: with
+    # a cache the validity statement is the stored per-sample mask and the
+    # legacy thresholds are refused, so comparing them would warn about knobs
+    # that no longer have any effect.
+    uses_resp_cache = bool(str(getattr(args, 'resp_cache', '') or '').strip()
+                           or getattr(args, 'resp_cache_key', None))
+    corpus_keys = ['task_set', 'tasks', 'clip_stride']
+    if uses_resp_cache:
+        corpus_keys.append('resp_cache_key')
+    else:
+        corpus_keys += ['min_signal_spread', 'rail_touch_v']
+    for key in corpus_keys:
         stage2 = getattr(stage2_args, key, None)
         stage3 = getattr(args, key, None)
         if stage2 is None or stage3 is None:
@@ -231,6 +243,11 @@ def check_stage2_roi_contract(args, stage2_args, allow_mismatch=False):
             print(f'[stage3] note: {key} differs from the Stage-2 run '
                   f'({stage2!r} -> {stage3!r}) -> this run is not evaluated '
                   f'on exactly the pre-trained corpus (allowed).')
+    if uses_resp_cache and getattr(stage2_args, 'resp_cache_key', None) is None:
+        print('[stage3] WARNING: the Stage-2 checkpoint records no '
+              'resp_cache_key -- it predates the respiration-cache lineage, '
+              'so its LABEL SPACE is the old raw/whole-file one. The run '
+              'continues, but a comparable number needs a retrain.')
 
     # ``task_groups`` belongs to the same hazard class, but ONLY when a group is
     # actually SELECTED. With ``task_set`` and ``tasks`` both empty the mapping
@@ -252,6 +269,28 @@ def check_stage2_roi_contract(args, stage2_args, allow_mismatch=False):
 
     return {key: {'stage2': stage2, 'stage3': stage3, 'match': same}
             for key, stage2, stage3, same in rows}
+
+
+def resolve_resp_cache_key(args) -> Optional[str]:
+    """The respiration cache DIRECTORY NAME, without building the dataset.
+
+    The Stage-2/Stage-3 contract check runs BEFORE the data loaders exist, so
+    the identity has to come from the cache itself. ``None`` when no cache is
+    configured. Raises (with the field-by-field diff) on a grid mismatch -- a
+    run must never train against a different label space silently.
+    """
+    root_in = str(getattr(args, 'resp_cache', '') or '').strip()
+    if not root_in:
+        return None
+    from data import resp_cache as respc
+    from data import resp_preprocess as rpp
+    from data import tir_resp_dataset as trd
+    raw = (getattr(args, 'raw_root', None) or getattr(args, 'data_path', None)
+           or trd.default_raw_root())
+    corpus = trd.discover_sessions(raw)
+    want = respc.loader_params(raw, corpus, fs_in=rpp.FS_IN,
+                               fs_out=float(getattr(args, 'fs', 100.0)))
+    return respc.find_cache(root_in, want).name
 
 
 def check_stage2_fold_contract(args, stage2_args) -> dict:
@@ -476,6 +515,19 @@ def get_args():
                              'reading slightly wrong pixels. Shares ONE artifact '
                              'with the Stage-2 run it fine-tunes from (2 s vs 1 s '
                              'hop is irrelevant: the cache is hop-independent).')
+    parser.add_argument('--resp_cache', default=env_or('RESP_CACHE', ''),
+                        type=str,
+                        help='tir_roi_resp only: OUT_ROOT of an offline '
+                             'respiration cache (data/resp_cache.py), i.e. the '
+                             'parent of the <CACHE_KEY>/ directories. Empty '
+                             '(default, or $RESP_CACHE) = read Resp_Volts.txt '
+                             'as before. Matched by KEY; the run ABORTS on a '
+                             'mismatch. With a cache, --resp_fs IS the '
+                             "artefact's output rate and must equal --fs, and "
+                             '--rail_touch_v / --min_signal_spread must be 0: '
+                             'the stored per-sample validity mask is the only '
+                             'rule, so the label space is run-mean-removed '
+                             'volts (a DIFFERENT lineage -- retrain).')
     parser.add_argument('--allow_roi_mismatch', action='store_true',
                         default=False,
                         help='run even when the ROI keys (roi_landmarks / '
@@ -635,6 +687,16 @@ def main(args):
                 f'--use_tir.')
 
     # ----- model: Stage-2 encoder + waveform regression head --------------- #
+    # Resolve the respiration cache IDENTITY before the Stage-2 contract check:
+    # it is a corpus-level contract (the LABEL SPACE) and that check runs before
+    # the datasets are built.
+    if str(getattr(args, 'resp_cache', '') or '').strip():
+        try:
+            args.resp_cache_key = resolve_resp_cache_key(args)
+            print(f'[data] resp_cache_key (pre-flight) = {args.resp_cache_key}')
+        except Exception as exc:
+            raise SystemExit(f'[stage3] --resp_cache could not be resolved: '
+                             f'{exc}')
     _fold_check: dict = {}
     use_multimae = str(args.model).startswith('project_multimae')
     if use_multimae:
@@ -749,6 +811,19 @@ def main(args):
         data_loader_train = make_data_loader(args, dataset_train, shuffle=True)
         # fail fast + name the cause instead of crashing later in the logger
         check_loader_not_empty(data_loader_train, 'train', args)
+
+    # Record the respiration cache IDENTITY (directory name, machine-
+    # independent) on the args so the checkpoint carries it: corpus-level
+    # contract, never a tensor shape -- see the CORPUS_KEYS note above.
+    _stats = getattr(dataset_train if dataset_train is not None
+                     else dataset_val, 'stats', {}) or {}
+    if _stats.get('resp_cache_key'):
+        args.resp_cache_key = _stats['resp_cache_key']
+        print(f'[data] resp_cache_key = {args.resp_cache_key} '
+              f'(recorded in the checkpoint; Stage 3 re-checks it)')
+    elif str(getattr(args, 'resp_cache', '') or '').strip():
+        print('[data] WARNING: --resp_cache was passed but the dataset '
+              'reports no resp_cache_key (not a TIR-ROI dataset?)')
 
     model_without_ddp = model
     if args.distributed:

@@ -55,7 +55,7 @@ sys.path.insert(0, str(_CODE_DIR))
 from evaluation.assemble import assemble_session, group_entries  # noqa: E402
 from evaluation.metrics import band_limited_pearson  # noqa: E402
 from runners.run_evaluate_session import (  # noqa: E402
-    _task_of_name, read_reference)
+    _task_of_name, read_reference, read_reference_from_cache)
 from runners.run_evaluate_subject import subject_of  # noqa: E402
 
 __all__ = ['collect', 'pick_representatives', 'write_svg', 'main']
@@ -80,7 +80,9 @@ def collect(root: str,
             waveform: str,
             band: Tuple[float, float],
             max_seconds: float = 0.0,
-            signals_root: str = '') -> Dict[str, dict]:
+            signals_root: str = '',
+            resp_cache: str = '',
+            resp_cache_key: str = '') -> Dict[str, dict]:
     """Assemble every session of ``task``; keep the longest one per subject.
 
     ``signals_root`` rewrites the reference path: ``entries.json`` stores
@@ -119,21 +121,32 @@ def collect(root: str,
             if signals_root:
                 sig = os.path.join(signals_root, str(name),
                                    os.path.basename(sig) or 'signals.csv')
-            if not sig or not os.path.isfile(sig):
-                print(f'[waves] {name}: skip (no reference at {sig!r})')
-                continue
+            ref_mask = None
+            if resp_cache:
+                try:
+                    _, ref_full, ref_mask, _root = read_reference_from_cache(
+                        resp_cache, name, fs=fs, cache_key=resp_cache_key)
+                except (FileNotFoundError, ValueError) as exc:
+                    print(f'[waves] {name}: skip (resp_cache: {exc})')
+                    continue
+            else:
+                if not sig or not os.path.isfile(sig):
+                    print(f'[waves] {name}: skip (no reference at {sig!r})')
+                    continue
+                ref_full = read_reference(sig, waveform, fs=fs, raw_fs=raw_fs)
 
             rows = [i for i, _ in pairs]
             offs = [o for _, o in pairs]
             t, y, cov = assemble_session(preds[rows], offs, fs)
-            ref_full = read_reference(sig, waveform, fs=fs, raw_fs=raw_fs)
             n = int(min(y.size, ref_full.size))
-            cov = cov[:n]
-            if not cov.any():
+            scored = np.asarray(cov[:n], dtype=bool).copy()
+            if ref_mask is not None:
+                scored &= np.asarray(ref_mask[:n], dtype=bool)
+            if not scored.any():
                 print(f'[waves] {name}: skip (nothing covered)')
                 continue
 
-            sel = np.flatnonzero(cov)
+            sel = np.flatnonzero(scored)
             if max_seconds and max_seconds > 0:
                 sel = sel[:int(round(max_seconds * fs))]
             tt = t[:n][sel]
@@ -409,6 +422,12 @@ def get_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument('--waveform', default='resp', choices=['bp', 'resp'])
     p.add_argument('--fs', default=100.0, type=float)
     p.add_argument('--raw_fs', default=1000.0, type=float)
+    p.add_argument('--resp_cache', default='', type=str,
+                   help='OUT_ROOT of the offline respiration cache; the '
+                        'reference AND its validity mask then come from the '
+                        'same artefact as the training labels (design C8).')
+    p.add_argument('--resp_cache_key', default='', type=str,
+                   help='pin the cache DIRECTORY name instead of resolving it.')
     p.add_argument('--signals_root', default='',
                    help='local dataset root (e.g. ../data/processed/bp4d_canonical);'
                         ' rewrites entries.json signals_file to'
@@ -444,7 +463,8 @@ def main(argv: Optional[Sequence[str]] = None) -> str:
 
     per_subject = collect(args.root, args.run_prefix, folds, args.task, args.fs,
                           args.raw_fs, args.waveform, band, args.max_seconds,
-                          args.signals_root)
+                          args.signals_root, resp_cache=args.resp_cache,
+                          resp_cache_key=args.resp_cache_key)
     panels = pick_representatives(per_subject, quant, forced or None)
     for p in panels:
         print(f'[waves] {p["subject"]:>6s} {p["session"]:<12s}'

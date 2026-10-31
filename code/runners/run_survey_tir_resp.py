@@ -108,6 +108,8 @@ def _survey_subject(args: dict) -> dict:
             input_size=args['input_size'], roi_padding=args['roi_padding'],
             crop_rule=args['crop_rule'], max_sway_px=args['max_sway_px'],
             clip_seconds=args['clip_seconds'], clip_stride=args['clip_stride'],
+            resp_fs=args.get('resp_fs', trd.DEFAULT_RESP_FS),
+            resp_cache=args.get('resp_cache') or None,
             min_signal_spread=0.0,          # keep every window; we classify below
             norm='none', allow_empty=True, verbose=False)
     except Exception as exc:                                 # pragma: no cover
@@ -542,6 +544,18 @@ def main(argv=None) -> int:
                         'dropped by the rule (the survey always builds '
                         'unfiltered) and the retained corpus is clips - that '
                         'count')
+    p.add_argument('--resp_cache', default='', type=str,
+                   help='OUT_ROOT of an offline respiration cache '
+                        '(data/resp_cache.py). Empty (default) = the survey '
+                        'reads the RAW Resp_Volts.txt windows, which is what '
+                        'its rail/spread classification is defined on. With a '
+                        'cache the windows are the DC-removed grid, so the '
+                        'raw-volts columns become meaningless -- for provenance '
+                        'only.')
+    p.add_argument('--resp_fs', type=float, default=trd.DEFAULT_RESP_FS,
+                   help='respiration rate of the dataset: 1000 (raw) by '
+                        'default; with --resp_cache it must be the '
+                        "artefact's output rate (100) and equal the run --fs")
     p.add_argument('--rail_touch_sweep', default=DEFAULT_RAIL_TOUCH_SWEEP,
                    help='comma list of VOLTS: candidate rail thresholds for '
                         'the trade-off curve (empty = skip the sweep)')
@@ -570,6 +584,8 @@ def main(argv=None) -> int:
                 'clip_stride': args.clip_stride,
                 'flat_spread': args.flat_spread,
                 'rail_touch_v': args.rail_touch_v,
+                'resp_cache': str(args.resp_cache or '').strip(),
+                'resp_fs': args.resp_fs,
                 'rail_touch_sweep': _float_list(args.rail_touch_sweep),
                 'spread_sweep': _float_list(args.spread_sweep)} for s in subjects]
 

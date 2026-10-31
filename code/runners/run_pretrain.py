@@ -178,6 +178,19 @@ def get_args():
                              'pixels. It stores NATIVE union crops, so ONE cache '
                              'serves the 2 s and 1 s hops and both the 112 px '
                              'and 64 px lineages.')
+    parser.add_argument('--resp_cache', default=env_or('RESP_CACHE', ''),
+                        type=str,
+                        help='tir_roi* only: OUT_ROOT of an offline respiration '
+                             'cache (data/resp_cache.py), i.e. the parent of '
+                             "the <CACHE_KEY>/ directories. Empty (default, or "
+                             '$RESP_CACHE) = read Resp_Volts.txt per epoch as '
+                             'before. Matched by KEY (corpus, fs_in/fs_out and '
+                             'the validity knobs), and the run ABORTS on a '
+                             'mismatch. With a cache, --resp_fs IS the '
+                             "artefact's output rate and must equal --fs; "
+                             'rail_touch_v / min_signal_spread must be 0 (the '
+                             'stored per-sample mask is the only validity '
+                             'rule).')
     parser.add_argument('--decode_scale', default=1, type=int,
                         choices=[1, 2, 4, 8],
                         help='rgb_roi only: JPEG decode scale. 1 = native full '
@@ -523,6 +536,18 @@ def main(args):
     # Implement code/data/datasets.py::build_pretraining_dataset first.
     from data import build_pretraining_dataset
     dataset_train = build_pretraining_dataset(args)
+    # Record the respiration cache IDENTITY (directory name, machine-
+    # independent) on the args so the checkpoint carries it: it is a corpus-
+    # level contract like clip_stride -- it changes the LABEL SPACE, never a
+    # tensor shape, so Stage 3 cannot detect a mismatch downstream.
+    _stats = getattr(dataset_train, 'stats', {}) or {}
+    if _stats.get('resp_cache_key'):
+        args.resp_cache_key = _stats['resp_cache_key']
+        print(f'[data] resp_cache_key = {args.resp_cache_key} '
+              f'(recorded in the checkpoint)')
+    elif str(getattr(args, 'resp_cache', '') or '').strip():
+        print('[data] WARNING: --resp_cache was passed but the dataset '
+              'reports no resp_cache_key (not a TIR-ROI dataset?)')
     # the task/group selection lives in the dataset -> make it visible in the
     # run log (a Stage-2 run has no entries.json of its own)
     _describe = getattr(dataset_train, 'describe', None)

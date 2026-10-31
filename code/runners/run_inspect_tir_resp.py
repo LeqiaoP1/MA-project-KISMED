@@ -540,6 +540,60 @@ def list_sessions(raw_root: str) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# respiration validity overview (cached grid)
+# --------------------------------------------------------------------------- #
+def _resp_runs(ds, session: str) -> list:
+    """``[(t0, t1, 'valid'|'INVALID', cause)]`` of one session's cached mask.
+
+    This is the per-sample statement the cache stores (design §3): the stretches
+    a consumer may slice into and the holes it must not cross. The runs are
+    reported in SECONDS on the output grid.
+    """
+    from data import resp_preprocess as rpp
+
+    sh = ds._resp_shard(session)
+    mask, cause = sh['mask'], sh['cause']
+    fs = float(sh['fs_out'])
+    code_of = {name: code for code, name in rpp.CAUSE_NAMES.items()}
+    out = [(s / fs, e / fs, 'valid', '')
+           for s, e in rpp.contiguous_runs(np.asarray(mask, dtype=bool))]
+    for s, e in rpp.contiguous_runs(~np.asarray(mask, dtype=bool)):
+        c = np.asarray(cause)[s:e]
+        counts = {name: int((c == code).sum())
+                  for name, code in code_of.items()
+                  if code != rpp.CAUSE_VALID and (c == code).any()}
+        if not counts:
+            label = 'unknown'
+        else:
+            dom = max(counts, key=counts.get)
+            rest = [n for n in counts if n != dom]
+            label = dom + (('+' + '+'.join(rest)) if rest else '')
+        out.append((s / fs, e / fs, 'INVALID', label))
+    return sorted(out)
+
+
+def _print_resp_runs(ds, max_runs: int = 20) -> None:
+    """Print each session's valid / invalid stretches (``--mask_runs``)."""
+    if getattr(ds, 'resp_cache_root', None) is None:
+        print('[resp runs] no respiration cache attached -- re-run with '
+              '--resp_cache to see the validity mask')
+        return
+    for sess in sorted(ds.sessions):
+        runs = _resp_runs(ds, sess)
+        n_bad = sum(1 for r in runs if r[2] == 'INVALID')
+        dur = runs[-1][1] if runs else 0.0
+        vf = ds.sessions[sess].get('resp_valid_frac')
+        print(f'[resp runs] {sess}: {dur:.2f} s, valid_frac '
+              f'{vf if vf is None else f"{vf:.3f}"}, {n_bad} invalid '
+              f'stretch(es)')
+        for t0, t1, kind, name in runs[:max_runs]:
+            label = name.upper() if kind == 'INVALID' else 'valid'
+            print(f'    {t0:8.2f} -> {t1:8.2f} s  {t1 - t0:7.2f} s  {label}')
+        if len(runs) > max_runs:
+            print(f'    ... {len(runs) - max_runs} more stretch(es)')
+
+
+# --------------------------------------------------------------------------- #
 # why is a window absent?
 # --------------------------------------------------------------------------- #
 def _diagnose_window(ds, frame_start: int, max_sessions: int = 5
@@ -547,7 +601,9 @@ def _diagnose_window(ds, frame_start: int, max_sessions: int = 5
     """Why is ``[frame_start, frame_start + clip_frames)`` not an entry?
 
     Re-applies the gates in the SAME order the ENTRY BUILDER does -- session
-    gates, sentinel, motion, rail, flat -- and, separately, the box geometry the
+    gates, sentinel, motion, then the respiration rule (the cached per-sample
+    MASK when ``--resp_cache`` is set, else the legacy rail/flat tests) -- and,
+    separately, the box geometry the
     LOADER applies (``RoiBoxOutOfFrame``). This is the only way to review a clip
     the gate removed: a dropped window is not in ``ds.entries``, so no index can
     address it.
@@ -611,6 +667,41 @@ def _diagnose_window(ds, frame_start: int, max_sessions: int = 5
                              f'max_sway_px={ds.max_sway_px:g} -> dropped by the '
                              f'MOTION gate')
                 reasons.append('motion')
+                n_shown += 1
+                continue
+        if getattr(ds, 'resp_cache_root', None) is not None:
+            # The cache lineage's ONLY respiration rule: every sample of the
+            # window must be usable. Reporting the stretch and its cause is what
+            # makes a mixed-validity session reviewable.
+            from data import resp_preprocess as rpp
+
+            sh = ds._resp_shard(sess)
+            gmask, gcause = sh['mask'], sh['cause']
+            s0 = int(round(frame_start / ds.fps * ds.resp_fs))
+            w_mask = gmask[s0:s0 + ds.resp_len]
+            if w_mask.size != ds.resp_len or not bool(w_mask.all()):
+                bad = np.flatnonzero(~np.asarray(w_mask, dtype=bool))
+                c = np.asarray(gcause)[s0:s0 + ds.resp_len]
+                code_of = {n: k for k, n in rpp.CAUSE_NAMES.items()}
+                counts = {n: int((c == k).sum()) for n, k in code_of.items()
+                          if k != rpp.CAUSE_VALID and (c == k).any()}
+                name = max(counts, key=counts.get) if counts else 'unknown'
+                mix = ('' if len(counts) <= 1 else
+                       ' (+' + '+'.join(n for n in counts if n != name) + ')')
+                if bad.size:
+                    t0 = (s0 + int(bad[0])) / ds.resp_fs
+                    t1 = (s0 + int(bad[-1]) + 1) / ds.resp_fs
+                    lines.append(
+                        f'{sess}: respiration MASK rejects the window -- '
+                        f'{bad.size} of {w_mask.size} invalid sample(s) in '
+                        f'{t0:.2f}-{t1:.2f} s (cause: {name}{mix}; cached '
+                        f'grid, mask[s:s+n] not all True)')
+                else:                  # window runs past the session grid
+                    lines.append(
+                        f'{sess}: respiration MASK rejects the window -- it '
+                        f'needs samples {s0}..{s0 + ds.resp_len - 1} but the '
+                        f'stored grid has {int(np.asarray(gmask).size)}')
+                reasons.append(f'mask_{name}')
                 n_shown += 1
                 continue
         try:
@@ -717,6 +808,20 @@ def main(argv=None) -> int:
                         'sample that touched the rail, i.e. abs(x) >= this '
                         'many VOLTS (0.0 = off; the study value is 9.90). Must '
                         'match the run being inspected.')
+    p.add_argument('--resp_cache', default='', type=str,
+                   help='OUT_ROOT of an offline respiration cache '
+                        '(data/resp_cache.py). Empty (default) = read '
+                        'Resp_Volts.txt as before. With a cache, --resp_fs IS '
+                        "the artefact's output rate (100 for the shipped "
+                        'grid) and --rail_touch_v / --min_signal_spread must be '
+                        '0.')
+    p.add_argument('--mask_runs', action='store_true',
+                   help='print, per session, the cached validity RUNS: the '
+                        'usable stretches and the holes with their cause '
+                        '(saturation / flatline / short run / non-finite). '
+                        'Requires --resp_cache. A window whose span crosses a '
+                        'hole is absent from the entry list; diagnose it with '
+                        '--t_start/--frame_start.')
     p.add_argument('--norm', default='none', type=str,
                    choices=['none', 'clip', 'session'],
                    help="respiration scale of resp_signal: 'none' (default) = "
@@ -769,6 +874,7 @@ def main(argv=None) -> int:
         target_landmarks=trd.resolve_roi_landmarks(args.roi_landmarks),
         min_signal_spread=args.min_signal_spread,
         rail_touch_v=args.rail_touch_v,
+        resp_cache=(str(args.resp_cache).strip() or None),
         norm=args.norm,
         max_entries=args.max_entries or None)
 
@@ -777,6 +883,9 @@ def main(argv=None) -> int:
     print('=' * 76)
     print(ds.describe())
     print('-' * 76)
+    if args.mask_runs:
+        _print_resp_runs(ds)
+        print('-' * 76)
 
     os.makedirs(args.output_dir, exist_ok=True)
     with open(os.path.join(args.output_dir, 'dataset_summary.json'), 'w') as fh:

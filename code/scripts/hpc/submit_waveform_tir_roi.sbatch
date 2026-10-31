@@ -32,6 +32,11 @@
 #               The cache is SHARED with Stage 2 (same key: it is the PIXELS that
 #               are cached, so the 2 s -> 1 s clip_stride change needs no rebuild).
 #               ROI_CACHE='' disables it. See the note above ARGS below.
+#   RESP_CACHE  offline RESPIRATION-grid cache OUT_ROOT (default:
+#               $WORK_SCRATCH/resp_cache). Shared with the Stage-2 run only when
+#               BOTH used it; the label space differs (run-mean-removed volts).
+#               RESP_CACHE='' reads Resp_Volts.txt as before. When active it also
+#               forces --min_signal_spread 0 / --rail_touch_v 0.
 #   RUN_NAME / OUT_ROOT   output dir controls (default: $WORK_SCRATCH)
 #   STAGE2_RUN_NAME       Stage-2 run BASENAME to fine-tune from, paired PER FOLD
 #                         (default: stage2_hpc_tir_roi_resp). Use this -- not
@@ -158,6 +163,15 @@ if [ -n "$ROI_CACHE" ] && [ ! -d "$ROI_CACHE" ]; then
     exit 1
 fi
 
+# ---- respiration-grid cache (optional; empty disables) -------------------- #
+RESP_CACHE="${RESP_CACHE-${WORK_SCRATCH:-$OUTPUT_DIR}/resp_cache}"
+if [ -n "$RESP_CACHE" ] && [ ! -d "$RESP_CACHE" ]; then
+    echo "ERROR: RESP_CACHE=$RESP_CACHE does not exist." >&2
+    echo "       Build it with:  python runners/run_build_resp_cache.py --init --build" >&2
+    echo "       Or set RESP_CACHE='' to read Resp_Volts.txt as before." >&2
+    exit 1
+fi
+
 mkdir -p "$CODE_DIR/logs"
 
 # Port derived from the job id: a hardcoded 29501 collides whenever two jobs land
@@ -215,6 +229,10 @@ run_fold() {
     [ -n "${BATCH_SIZE:-}" ]  && args+=(--batch_size "$BATCH_SIZE")
     [ -n "${NUM_WORKERS:-}" ] && args+=(--num_workers "$NUM_WORKERS")
     [ -n "$ROI_CACHE" ]       && args+=(--roi_cache "$ROI_CACHE")
+    if [ -n "$RESP_CACHE" ]; then
+        args+=(--resp_cache "$RESP_CACHE" --min_signal_spread 0 \
+               --rail_touch_v 0)
+    fi
     args+=("$@")
 
     echo
@@ -223,6 +241,7 @@ run_fold() {
     echo "[fold $fold] raw_root : $RAW_DATA_PATH"
     echo "[fold $fold] finetune : $finetune"
     echo "[fold $fold] roi_cache: ${ROI_CACHE:-<disabled: decode .wmv>}"
+    echo "[fold $fold] resp_cache: ${RESP_CACHE:-<disabled: read Resp_Volts.txt>}"
     echo "[fold $fold] output   : $out_dir"
     echo "[fold $fold] world    : ${SLURM_NTASKS} task(s) on $(hostname)"
     echo "[fold $fold] command  : python -u runners/run_waveform.py ${args[*]}"
