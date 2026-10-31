@@ -67,6 +67,12 @@ production ROI crop (square hull, `CACHE_FORMAT_VERSION` in the key) and measure
 **11.7×** epoch speed-up at equal batch (`eval/tir_resp/hpc_precomputation.md`,
 `eval/batch_size_sweep.md`). Build it with `runners/run_build_roi_cache.py`.
 
+The label side gets its own artefact (`data/resp_cache.py`, built by
+`runners/run_build_resp_cache.py`) once the session preprocessing of
+`design/RESP_session_preprocess.md` lands: a whole-session grid plus validity mask,
+so a clip is an integer slice instead of a per-epoch resample. The two caches have
+disjoint keys and versions and are joined on `<S>_<T>`.
+
 ---
 
 ## 4. Code map
@@ -74,7 +80,8 @@ production ROI crop (square hull, `CACHE_FORMAT_VERSION` in the key) and measure
 | concern | symbol |
 |---|---|
 | dataset, ROI algebra, clip validity | `data/tir_resp_dataset.py` (`roi_box_from_landmarks`, `missing_frame_mask`, `BP4DPlusTIRRespDataset`, `TirRoiResp{Pretrain,Finetune}Dataset`) |
-| cache | `data/roi_cache.py` (`hull_box`, `cache_key`, `find_cache`) |
+| cache (pixels) | `data/roi_cache.py` (`hull_box`, `cache_key`, `find_cache`) |
+| cache (label) | `data/resp_preprocess.py` (validity mask, per-run DC, resample), `data/resp_cache.py` (`cache_key`, `find_cache`) — see `plan/RESP_session_preprocess_implementation_plan.md` |
 | task rotation | `data/task_groups.py` (`SHIPPED_TASK_GROUPS`, `resolve_task_selection`) |
 | folds | `utils/splits.py::subject_folds` |
 | masking | `core/multimae.py::_tube_mask`, `_span_mask`, `make_masks`, `parse_fft_sizes` |
@@ -201,6 +208,8 @@ lines).
 |---|---|
 | this plan | `code/notes/plan/TirROI_Resp_plan.md` |
 | ROI square box / rescale / motion gate — build order | `code/notes/plan/ROI_crop_implementation_plan.md` |
+| respiration label contract (validity mask, per-run DC, grid) | `design/RESP_session_preprocess.md` |
+| respiration label build order | `code/notes/plan/RESP_session_preprocess_implementation_plan.md` |
 | task-tier regrouping | `code/notes/plan/task_tiers_regroup_plan.md` |
 | k-fold rollout | `code/notes/plan/subject_kfold_plan.md` |
 | AMP rollout | `code/notes/plan/hpc_AMP_implementation.md` |

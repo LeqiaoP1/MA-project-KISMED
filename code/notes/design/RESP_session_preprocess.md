@@ -11,8 +11,8 @@ Sensor detachments, cable unclips and the recorder's $\pm 10\text{ V}$ clamp cor
 ## 2. Fundamental workflow
 
 1. **Decide validity** (raw signal, source rate). 
-    - Saturation: A sample is invalid if it touches the rail ($|V| \gt 9.95\text{ V}$) and last for 2 seconds (significant saturation event).
-    - Flatline: A sample is invalid if it is in 2s-window whose peak-to-peak spread is $< 0.05\text{ V}$ (disfunctioning or fronzen sensor). 
+    - Saturation: A sample is invalid if it touches the rail ($|V| \gt 9.95\text{ V}$) as saturation alarm and within a saturation alarm window lasting at least for 2 seconds.
+    - Flatline: A sample is invalid if it is in 5s-window whose peak-to-peak spread is $< 0.05\text{ V}$ (disfunctioning or fronzen sensor). 
     
     The result is one boolean mask per session, and that mask alone defines validity.
 
