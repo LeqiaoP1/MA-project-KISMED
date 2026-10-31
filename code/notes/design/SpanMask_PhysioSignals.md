@@ -14,16 +14,15 @@ be reproduced. The empirical question the ladder poses — *does the encoder sta
 using the video once the interpolation shortcut is gone?* — is still OPEN; the
 implementation only makes it askable.
 
-**Relationship to the other docs.** The plan already prescribes this masking
-policy — `ImplementationPlan.md` §2.2 ("Physio: contiguous span masking, not
-scattered dropout … use contiguous spans of >=1.5-2 s, `n_spans` 1-2, and ramp
-the ratio 0.9 -> 1.0"), `simplifiedPlan.md` §4/§10 (`mask_span_s: 2.0`) and §11
-item 5 ("contiguous **span** masking for the 1-D streams | `core/multimae.py`
-(new `_span_mask`) | scattered dropout is locally solvable"). What was missing is
-the implementation and the evidence. This document supplies the evidence
-(§1-§3), the implementation contract (§4) and the answer to "why would the
-spectral loss help then?" (§5-§6). The measured negative result for adding the
-STFT term to the *current* scattered mask is in `TirROI_Resp_plan.md` §9.
+**Relationship to the other docs.** This note is the design source for the
+masking policy: the evidence (§1-§3), the implementation contract (§4) and the
+answer to "why would the spectral loss help then?" (§5-§6). The policy is
+implemented in `core/multimae.py` (`_span_mask`, `physio_mask`, `mask_span_s`)
+and selected per run by the config; whether it changes the outcome is measured by
+the experiment ladder in §6 and judged by the Stage-3 criteria of
+`code/notes/plan/TirROI_Resp_plan.md` §6. The measured negative result for adding
+the STFT term to a scattered mask is recorded in
+`code/notes/eval/tir_resp/resp_5fold_cv.md`.
 
 ---
 
@@ -42,7 +41,8 @@ STFT term to the *current* scattered mask is in `TirROI_Resp_plan.md` §9.
    respiration.
 3. **The STFT term cannot fix that**, and did not: its optimum is already
    attained by that same interpolator, and at the weights tried it produced
-   `spec_resp 3.7e8` and destroyed the model (`TirROI_Resp_plan.md` §7).
+   `spec_resp 3.7e8` and destroyed the model (measured in the first real
+   Stage-2 run).
 4. **Span masking removes the shortcut.** Measured: with a single 4 s
    contiguous span, the no-video interpolator becomes *worse than a constant*
    (`mse 1.459` vs `0.976`), and its spectrum degrades 2.4x
@@ -345,8 +345,8 @@ parameters.** Three things have to be separated.
    previous session). The ratio therefore decides *whether the physio stream
    trains the encoder at all*.
 2. **How close the run sits to the Stage-3 condition** ("full sensor failure"),
-   which is why the plan ramps it (`ImplementationPlan.md` §2.2: "ramp the ratio
-   0.9 -> 1.0, since the downstream task is the fully-masked case").
+   which is why the ramp of the ratio toward 1.0 belongs to this design: the
+   downstream task is the fully-masked case.
 
 **(b) What it stops doing.** The ratio alone no longer determines the
 *difficulty*. Measured at the same `ratio 0.5` (all rows mask 4.0 s of 8 s):
@@ -572,10 +572,9 @@ Unit/self-test for the masking invariants (silent failures otherwise):
    shipped `fft_sizes 64,128,256`) — this is the number that tells you the
    reconstruction has the right *content*, not just the right amplitude.
 3. The **encoder gate** improves: pooled `h` from the unmasked encoder varies
-   across clips by more than the previously measured collapsed value
-   (`ImplementationPlan.md` §4; the VideoMAE-init reference and the failing
-   anchor are recorded there). This is the criterion that actually predicts
-   Stage-3 usefulness.
+   across clips by more than the collapsed value measured for the shipped
+   Stage-2 run (a constant, clip-independent code). This is the criterion that
+   actually predicts Stage-3 usefulness.
 4. Only then is a Stage-3 thermal->resp fine-tune worth launching.
 
 **Falsification of the spectral term (E4 vs E2):** if adding `spectral_weight`
@@ -591,10 +590,10 @@ it has learned to produce a chord across the gap — a degenerate solution that
 the *interpolation* baseline already characterises, and the next lever is then
 not the loss but the **video side**: whether the TIR ROI (mouth/nose, 64 px,
 mask 0.9) carries enough information to infer respiration at all. The measured
-pipeline fact to check first is the Stage-3-era probe that found the pulse is
-present in the RGB green channel (`ImplementationPlan.md` §4.7): the analogous
+pipeline fact to check first is the probe that found the cardiac pulse present
+in the facial RGB signal (`code/notes/eval/rgb_bp/FINDINGS.md`): the analogous
 question for thermal/respiration is whether the ROI's temporal intensity tracks
-the breathing cycle.
+the breathing cycle (`code/notes/eval/tir_resp/FINDINGS.md`).
 
 ## 8. Provenance of the measurements
 
@@ -607,7 +606,7 @@ All numbers from the shipped TIR-ROI + RESP geometry
 python /tmp/probe_mask_solvability.py    # §1: no-video floor, scattered mask
 python /tmp/probe_span_baselines.py      # §4.2: scattered vs 1/2/4 spans
 python /tmp/probe_loss_sensitivity.py    # §3: what MSE vs MR-STFT see
-python /tmp/probe_stft_grad.py           # TirROI_Resp_plan.md §9.1: gradient split
+python /tmp/probe_stft_grad.py           # §3: gradient split of MSE vs MR-STFT
 ```
 
 These are throwaway scripts; if the span work goes ahead they should be promoted

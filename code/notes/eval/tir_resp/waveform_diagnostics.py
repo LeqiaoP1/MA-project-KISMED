@@ -1,7 +1,7 @@
 """Diagnostics for the Stage-3 TIR-ROI -> RESP predictions (the CLOSED line).
 
 Persisted copy (2026-10-01) of the /tmp diagnostics that produced the numbers in
-``code/notes/plan/TirROI_Resp_plan.md`` §12. It reads only the saved arrays of a finished
+``code/notes/eval/tir_resp/FINDINGS.md``. It reads only the saved arrays of a finished
 run, so it needs no model, no GPU and no repo imports:
 
     python notes/eval/tir_resp/waveform_diagnostics.py                 # all sections

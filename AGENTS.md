@@ -63,7 +63,7 @@ environment profiles in `code/scripts/`:
 `spec/` (what it must be) -> `design/` (how, plus the review verdict) -> implementation in `code/` -> `code/tests/` -> `eval/` (measurement and verdict).
 
 - One file per topic in `code/notes/`. Delete a superseded file instead of keeping a second copy; do not create `archive/`, `STATUS.md` or index files.
-- Authority when docs disagree: `eval/` measurements are facts; for plans, `code/notes/plan/simplifiedPlan.md` wins over `code/notes/plan/ImplementationPlan.md`.
+- Authority when docs disagree: `eval/` measurements are facts; `design/` wins on intent; each study has exactly one plan in `code/notes/plan/` (`RGB_BP_plan.md`, `TirROI_Resp_plan.md`), which wins on code placement.
 - Any doc a code comment or config points at **must exist** at the referenced path. If you delete or rename one, fix every reference in the same commit (`grep -rn "code/notes/" code/`).
 
 ## 6. PyTorch Engineering & Guardrails

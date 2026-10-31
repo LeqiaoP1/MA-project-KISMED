@@ -4,13 +4,12 @@
 > downstream track**: two Stage-3 fine-tuning runs, one per target waveform (`bp`,
 > `resp`), executed on the local dev GPU over the 11 canonical sessions.
 >
-> **Relationship to the other docs.** `simplifiedPlan.md` stays authoritative for the
-> **thesis-scale 224 px lineage** (clip 8.0 s, `temporal_stride 2`, `sig_kernel 16`,
-> `input_size 224`, `seq_len 800`). This file covers the **separate 64 px lineage**
-> that the existing Stage-2 checkpoint belongs to; it supersedes nothing in
-> `simplifiedPlan.md` / `ImplementationPlan.md`. The two lineages are **not
-> checkpoint-compatible** (`positions.<s>.pos_embed` shape), so nothing here may be
-> silently mixed with the 224 px configs.
+> **Relationship to the other docs.** `code/notes/plan/RGB_BP_plan.md` is the plan of
+> record for the whole study and lists every lineage it supports (§3.1). This file is
+> the setup record for **one** of them: the 64 px canonical lineage that the existing
+> Stage-2 checkpoint belongs to. It supersedes nothing in `RGB_BP_plan.md`. Lineages
+> are **not checkpoint-compatible** (`positions.<s>.pos_embed` shape), so nothing here
+> may be silently mixed with the 224 px configs.
 
 ---
 
@@ -23,11 +22,11 @@
 | 3 | code scope | configs + launcher **plus the cheap-correctness set**: Stage-2 `heads.<target>` → `waveform_head` transfer, subject-disjoint split, LR schedule + `--resume` in `run_waveform.py` |
 | 4 | evaluation | per-clip Tier-1/2 **and** session-level assembly + Tier-1/2/3 (`evaluation/assemble.py`, new `runners/run_evaluate_session.py`, Tier-3 ≥ 30 s guard, `neurokit2` install) |
 
-**Explicitly out of scope** (the 224 px thesis-scale track): `simplifiedPlan.md` §2/§10
-geometry (224 px, clip 8 s, stride 2, `sig_kernel` 16, `seq_len` 800) and §11 items
-1, 2, 3, 4, 5, 6, 7, 9, 10 (npy frame store, SDPA, query-based decoder, mask-ratio 1.0
-and per-step ratio, 1-D span masking, per-session z-score target, zero-init modality
-embeddings + weight-decay groups, xavier conv init, Stage-3 masking mixture). Also out
+**Explicitly out of scope** (the 224 px thesis-scale track): the `input_size: 224`
+lineage geometry and its dedicated work items (npy frame store, query-based decoder,
+mask-ratio 1.0 and per-step ratio, 1-D span masking, per-session z-score target,
+zero-init modality embeddings + weight-decay groups, xavier conv init) — all of them
+are tracked in `code/notes/plan/RGB_BP_plan.md` §3 and §7. Also out
 of scope: HPC submission wiring (`env_hpc.sh` placeholders; the cluster tree has no
 `2D+3D/` RGB folder that `prepare_bp4d.py` requires), the TIR stream and the EDA
 branch.
@@ -69,7 +68,9 @@ base geometry).
    **full** clip and `core/blocks.py::Attention` materialises the score matrix
    (`:117`), so 9 800 tokens costs ~4.6 GB per sample per decoder block in fp32 and the
    encoder path ~0.5 GB/batch-16 per block — unusable at `batch_size: 16` and marginal
-   at batch 1 without SDPA. That is `simplifiedPlan.md` §11 item 2.
+   at batch 1 without SDPA. `core/blocks.py::Attention` now dispatches to
+   `F.scaled_dot_product_attention`, so this is a memory limit rather than a
+   feasibility one.
 
 **`resp` needs no extra Stage-2 work.** The local pair was trained with
 `streams: rgb,bp,resp`, so `heads.resp` exists next to `heads.bp`; the "there is NO
@@ -180,8 +181,8 @@ MLP case (`:149-152`) copy only what has a counterpart and say so. Also add the 
 
 `data/paired_dataset.py` splits sessions with `sessions[:n_train]` / `sessions[n_train:]`
 (:211-217), i.e. **per session**, which lets one subject straddle train and val — the
-Stage-3 protocol requires subject-disjoint (see the plan record in
-`ImplementationPlan.md` §4).
+Stage-3 protocol requires subject-disjoint (see the acceptance gates in
+`code/notes/plan/RGB_BP_plan.md` §6).
 
 Change: add `split_by: str = 'session'` to `PairedSessionDataset.__init__`
 (:140-155) and group at the split block with a module-level `_subject_of(session)`
@@ -220,9 +221,10 @@ predicted window at its start offset on the session timeline, accumulate
 window·prediction and accumulate window, then divide by the accumulated weight
 (Hann overlap-add with weight-sum normalisation; never crop `D - stride` per clip).
 
-**Offset convention — correction to `simplifiedPlan.md` §9:** the 1-D target is *not*
-decimated by `temporal_stride` (only the video is), so a clip that starts at `t_start`
-occupies signal samples `round(t_start·fs) … + seq_len`. Derive offsets with the same
+**Offset convention — correcting the assembly step as first written:** the 1-D target
+is *not* decimated by `temporal_stride` (only the video is), so a clip that starts at
+`t_start` occupies signal samples `round(t_start·fs) … + seq_len`. Derive offsets with
+the same
 helper the dataset uses (`data/alignment.py::sample_indices` :26-30 /
 `slice_1d` :33-48) so the assembly can never desync from training.
 
@@ -356,7 +358,7 @@ combination makes the weight transfer exact (150 tensors, and `heads.resp` ->
 `waveform_head` verbatim). Launch it with
 `python -u runners/run_waveform.py -c configs/finetune/resp_tir_roi_local.yaml`;
 for the leave-one-subject-out sweep add `--val_subject F001|F002|F003|F004` and a
-per-fold `--output_dir`. Full record: `TirROI_Resp_plan.md` §10.
+per-fold `--output_dir`. Full record: `TirROI_Resp_plan.md` §3 and §8.
 | `configs/pretrain/stage2_local_pretrained.yaml` | geometry source of truth (`stage2_local_scratch.yaml` = twin) |
 | `scripts/local/waveform_local.sh` | **new** launcher (`TARGET` switch) |
 | `core/waveform_model.py` | `MultiModalWaveformRegressor` (:75-155), `build_waveform_model` (:253-298), `load_stage2_encoder` (:301-390) → head transfer |

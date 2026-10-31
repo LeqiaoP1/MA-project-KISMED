@@ -1,9 +1,9 @@
 # Thesis codebase — scaffold
 
-Target (ImplementationPlan.md): contactless **2D RGB + Thermal-IR video →
-1D BP / RESP / EDA waveform** recovery via a 3-stage progressive pipeline
-(ImageNet init -> multimodal masked pre-training on BP4D+ -> three task-specific
-waveform fine-tuning branches).
+Target (`code/notes/plan/RGB_BP_plan.md`, `code/notes/plan/TirROI_Resp_plan.md`):
+contactless **2D RGB / Thermal-IR video → 1D BP / RESP waveform** recovery via a
+3-stage progressive pipeline (space-time init -> multimodal masked pre-training on
+BP4D+ -> task-specific waveform fine-tuning branches).
 
 Layout merging best practices from **MultiMAE** (`tmp/MultiMAE`) and
 **VideoMAE** (`tmp/videomae`).
@@ -158,10 +158,12 @@ masked MSE) and `losses` (weighted contributions); `loss = Σ losses`.
 > `spectral_weight: 0.0`, and a positive Stage-2 weight now prints a warning.
 > Two measured reasons: as a masked-reconstruction term it is satisfied by
 > within-modality interpolation (a linear interpolator of the visible resp
-> beats the trained model on the very spectral metric — `TirROI_Resp_plan.md`
-> §9), and it was the spike trigger (a railed `-10 V` respiration window
-> z-scores to *exactly* zero, so the scale-invariant `‖P−T‖/(‖T‖+ε)` term
-> divides by ~0 → `spec_resp 4.3e10` — §7.5). The mechanism is kept for
+> beats the trained model on the very spectral metric —
+> `code/notes/design/SpanMask_PhysioSignals.md` §1–§3), and it was the spike
+> trigger (a railed `-10 V` respiration window z-scores to *exactly* zero, so
+> the scale-invariant `‖P−T‖/(‖T‖+ε)` term divides by ~0 → `spec_resp 4.3e10`;
+> the corpus rule is in `code/notes/eval/tir_resp/resp_rail_touch_filter_results.md`).
+> The mechanism is kept for
 > ablation runs, and `MultiResolutionSTFTLoss` now guards against
 > zero-variance targets.
 
@@ -469,12 +471,13 @@ clip-level by design). (RESP/EDA streams in Stage 2 *are* implemented — the
 local configs now train all five streams, see the flexible-modalities
 subsection above.)
 
-## Thesis plan alignment (ImplementationPlan.md)
+## Thesis plan alignment (`code/notes/plan/RGB_BP_plan.md`)
 
 > **ADD-ON (not a pipeline stage):** the *AU-occurrence probe* (semantic
 > representation quality, `runners/run_au_probe.py`) is a separate diagnostic
 > on the Stage-2 encoder — it is not part of the three-stage pipeline above.
-> See the dedicated AU-probe subsection below and `code/notes/plan/ImplementationPlan.md` §5.
+> See the dedicated AU-probe subsection below and
+> `code/notes/spec/02_model_architecture.md` §9.
 
 | Plan stage                                                                            | Supported here                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Still to port (thesis work)                                                                                                                                                                                                                                                                                                                           |
 | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -565,17 +568,25 @@ reports `psd_skipped 4` and its `psd_mae` moved 0.3157 → 0.3103.
 **`psd_skipped` / `psd_mae` can therefore also differ from pre-2026-10-01 runs
 for that second reason.**
 
-**The verdict of the TIR-ROI → RESP waveform line is recorded in
-`TirROI_Resp_plan.md` §12 (2026-10-01) — the line is CLOSED.** Four independent
-measurements: the pixel-level positive-control gate is 0/8 sessions while the
-same pipeline catches head motion 8/8 at p<0.005 (so the negative is the data,
-not the test); the ridge probe is exactly chance across subjects (−0.019) and
-+0.217 for unseen clips within a subject; all three Stage-3 arms lose to the
-constant-0 baseline (0.7545); and the γ=0 arm's output is indistinguishable from
-one waveform broadcast to every clip (|r| 0.217 vs 0.229, cross-clip correlation
-0.49) and sits BELOW its own anti-phase floor (0.365), while the belt is
-0.638-describable by a single sinusoid. §12.5 records what would reopen it (a new
-input that first passes the gate).
+**The physical gate for the TIR-ROI → RESP waveform line is recorded in
+`code/notes/eval/tir_resp/FINDINGS.md`: the thermal face ROI does not carry
+respiration phase.** Four independent measurements: the pixel-level
+positive-control gate is 0/8 sessions while the same pipeline catches head motion
+8/8 at p<0.005 (so the negative is the data, not the test); the ridge probe is
+exactly chance across subjects (−0.019) and +0.217 for unseen clips within a
+subject; all three Stage-3 arms of that first corpus lose to the constant-0
+baseline (0.7545); and the γ=0 arm's output is indistinguishable from one waveform
+broadcast to every clip (|r| 0.217 vs 0.229, cross-clip correlation 0.49) and
+sits BELOW its own anti-phase floor (0.365), while the belt is
+0.638-describable by a single sinusoid. FINDINGS records what would reopen it (a
+new input that first passes the gate).
+
+**The corpus-scale Stage-3 outcome (5-fold, 138 subjects) is in
+`code/notes/eval/tir_resp/resp_5fold_cv.md`:** per-subject band-limited Pearson
+**+0.307**, i.e. below the single-tone template (**+0.535**, beaten on only 18 %
+of subjects), amplitude ~3x under-scaled, rate MAE 4.6 BPM. The acceptance
+criteria and the stop rule derived from those numbers are in
+`code/notes/plan/TirROI_Resp_plan.md` §6.
 
 ### Recorded data layout (asymmetric RGB jpg-seq + TIR .wmv)
 
@@ -876,7 +887,7 @@ independent, self-contained module that re-uses the Stage-2 shared encoder
   `engines/au_probe.py` (BCE train + per-AU F1 eval),
   `runners/run_au_probe.py`, configs `configs/finetune/au_local{,_pretrained}.yaml`,
   launcher `scripts/local/au_smoke.sh`. Details & status:
-  `code/notes/plan/ImplementationPlan.md` §5.
+  `code/notes/spec/02_model_architecture.md` §9.
 
 ```bash
 # AU probe (linear, Stage-2 ckpt); local smoke via scripts/local/au_smoke.sh

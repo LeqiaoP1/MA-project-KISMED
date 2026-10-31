@@ -18,7 +18,7 @@ The shipped Stage-2 SSL is a **shared-encoder** masked autoencoder
 concatenated into one ViT sequence, and each stream is then reconstructed by a
 shared self-attention decoder built from *its own* visible tokens plus `mask_token`s.
 
-Measured consequence (see `TirROI_Resp_plan.md` §9 and the repo memory notes):
+Measured consequence (see `code/notes/design/SpanMask_PhysioSignals.md` §1-§3):
 respiration at 100 Hz with content in 0.16–0.4 Hz is oversampled ~30–60×
 (`sig_kernel 16` = 16 samples per token). Under a **scattered** mask every masked
 resp token has visible resp neighbours 0.16–0.32 s away, so the resp loss is

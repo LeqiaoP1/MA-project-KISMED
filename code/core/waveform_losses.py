@@ -1,7 +1,8 @@
 """Stage-3 waveform supervision losses (Spatio-Temporal-Spectral joint loss).
 
-Implements the unified loss from the implementation plan
-(``code/notes/plan/ImplementationPlan.md``):
+Implements the unified loss of the Stage-3 design
+(``code/notes/design/SolutionC_EarlyTokenMixing_stage3.md``; plan entry in
+``code/notes/plan/RGB_BP_plan.md`` §4):
 
     L_joint = alpha * L_time + beta * L_Pearson + gamma * L_MR-STFT
 
@@ -97,7 +98,7 @@ class StdLoss(nn.Module):
 
     * It stops charging for a point-wise TIME SHIFT, which is the one error the
       model cannot remove: the visual pulse lags the pressure trace by the pulse
-      transit time (``code/notes/plan/refined_RGB_BP_study.md`` §8). A PERFECT waveform delayed
+      transit time (``code/notes/eval/rgb_bp/FINDINGS.md`` §8). A PERFECT waveform delayed
       by 0.20 s (~1/4 cardiac cycle at 1.2 Hz) cost the old L1 ``1.2868`` and now
       costs ``0.0000`` -- L1 was pushing the optimiser toward a compromise shape
       for an error it could never fix.
@@ -164,7 +165,7 @@ class MultiResolutionSTFTLoss(nn.Module):
         flat target     ||T||   0 /   0 /   0   sc 2.8e10 / 4.0e10 / 5.9e10
 
     ONE such sample in a batch of 4 produced ``4.3e10`` of loss and a pre-clip
-    ``grad_norm`` of ~2.5e9 (``TirROI_Resp_plan.md`` §7.5), which is fatal
+    ``grad_norm`` of ~2.5e9, which is fatal
     without gradient clipping. Samples whose target has (near-)zero energy are
     therefore EXCLUDED from the term, and when none qualify the term contributes
     0 instead of a garbage value. For any batch in which every sample is valid
@@ -226,6 +227,8 @@ class MultiResolutionSTFTLoss(nn.Module):
             total = total + sc + lm
         if n_skipped and not self._warned_degenerate:
             self._warned_degenerate = True
+            # NOTE: message text is frozen so runtime output is byte-identical;
+            # the current pointer is eval/tir_resp/resp_rail_touch_filter_results.md.
             print(f'[stft] WARNING: {n_skipped} sample-window(s) with a '
                   f'(near-)constant target excluded from the MR-STFT term '
                   f'(||T|| ~ 0 makes the scale-invariant ratio undefined; a '

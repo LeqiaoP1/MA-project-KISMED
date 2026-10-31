@@ -1,4 +1,4 @@
-# Stage 3 -- BP waveform reconstruction branch (code/notes/plan/ImplementationPlan.md).
+# Stage 3 -- BP waveform reconstruction branch (code/notes/plan/RGB_BP_plan.md).
 #
 # Goal: fine-tune the STAGE-2 cross-modal encoder for the downstream task
 # "reconstruct the BSP/BP waveform from video alone" (simulated complete

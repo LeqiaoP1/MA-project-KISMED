@@ -1,4 +1,4 @@
-# Stage 3 -- EDA regression branch (code/notes/plan/ImplementationPlan.md)
+# Stage 3 -- EDA regression branch (code/notes/plan/RGB_BP_plan.md)
 #
 # NOTE (2026-09): the Stage-2 configs currently pre-train on streams `rgb,bp`
 # only, so there is NO Stage-2 encoder for the EDA target. Either add `eda` to

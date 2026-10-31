@@ -2,7 +2,7 @@
 
 Why this exists
 ---------------
-``simplifiedPlan.md`` locks ONE visual front-end for BOTH stages: the encoder
+``code/notes/plan/RGB_BP_plan.md`` §3 locks ONE visual front-end for BOTH stages: the encoder
 must see the identical input distribution at Stage-2 pre-training and at Stage-3
 fine-tuning, so the RGB preprocessing is a *contract*, not a per-stage choice.
 The stock path (:mod:`data.paired_dataset` + :mod:`data.video_io`) serves the

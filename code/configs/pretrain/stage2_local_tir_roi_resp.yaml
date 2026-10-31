@@ -194,8 +194,8 @@ spectral_weight: 0.0               # DECISION 2026-09-26 (user): the spectral
                                    #     interpolation, so a linear interpolator
                                    #     of the visible resp BEATS the trained
                                    #     model on the very spectral metric
-                                   #     (0.98 vs ~5.0) -- TirROI_Resp_plan.md
-                                   #     §9, SpanMask_PhysioSignals.md §5;
+                                   #     (0.98 vs ~5.0) --
+                                   #     SpanMask_PhysioSignals.md §1-§3, §5;
                                    # (2) it was the SPIKE TRIGGER: spec_resp
                                    #     3.7e8-4.3e10 in single steps with
                                    #     pre-clip grad_norm ~5e8. With
@@ -204,8 +204,8 @@ spectral_weight: 0.0               # DECISION 2026-09-26 (user): the spectral
                                    #     mse_resp 556017). ROOT CAUSE: a railed
                                    #     (-10 V) respiration window z-scores to
                                    #     EXACTLY zero, so the scale-invariant
-                                   #     ||P-T||/(||T||+eps) divides by ~0 ->
-                                   #     TirROI_Resp_plan.md §7.5.
+                                   #     ||P-T||/(||T||+eps) divides by ~0 (see
+                                   #     eval/tir_resp/resp_rail_touch_filter_results.md).
                                    # The code path is KEPT for ablation runs
                                    # (0.0 is also the runner default), but a
                                    # Stage-2 run with a positive weight now

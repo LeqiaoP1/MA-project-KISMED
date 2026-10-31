@@ -41,7 +41,7 @@ class ProjectViT(nn.Module):
     :param output_len: if > 0, build a regression head that maps the [CLS]
         token to a 1D sequence of ``output_len`` samples (Stage-3 waveform
         head baseline). Use a lightweight conv decoder instead for better
-        temporal resolution (see code/notes/plan/ImplementationPlan.md Stage 3).
+        temporal resolution (see design/SolutionC_EarlyTokenMixing_stage3.md).
     :param embed_dim / depth / num_heads / mlp_ratio: transformer geometry
     :param patch_size / input_size: patchify geometry (2D)
     """
@@ -142,7 +142,7 @@ class ProjectViT(nn.Module):
 
         NOTE: a single [CLS]-token linear head is a *baseline*; prefer a
         lightweight decoder over all patch tokens for fine-grained signals
-        (see code/notes/plan/ImplementationPlan.md Stage 3).
+        (see design/SolutionC_EarlyTokenMixing_stage3.md).
         """
         return self.forward(x)
 

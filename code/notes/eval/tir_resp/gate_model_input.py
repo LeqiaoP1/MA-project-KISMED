@@ -3,7 +3,7 @@
 
 WHY THIS EXISTS
 ---------------
-The recorded gate (`TirROI_Resp_plan.md` section 12, 2026-09-26) found respiration
+The recorded gate (`code/notes/eval/tir_resp/FINDINGS.md`, 2026-09-26) found respiration
 undetectable in the thermal ROI, which closed the TIR-ROI -> RESP line. Two things
 weaken that conclusion for the CURRENT setup:
 

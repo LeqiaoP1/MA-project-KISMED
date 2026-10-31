@@ -7,7 +7,7 @@ datasets here following these references:
 - **BP4D+ (target of this thesis)**: multimodal RGB + Thermal-IR video with
   synchronised 1D physiological streams (BP / RESP / EDA). Register it, e.g.
   ``@register_dataset('bp4d+')``, and implement the paired (visual, signal,
-  mask) collation described in code/notes/plan/ImplementationPlan.md.
+  mask) collation described in code/notes/plan/RGB_BP_plan.md §3.2.
 - VideoMAE   ``tmp/videomae/datasets.py`` + ``kinetics.py`` + ``ssv2.py``
             (video; yields ``(samples, labels, index, bool_masked_pos)``)
 - MultiMAE  ``tmp/MultiMAE/utils/datasets.py``,

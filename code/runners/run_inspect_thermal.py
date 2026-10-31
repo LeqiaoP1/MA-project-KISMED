@@ -9,10 +9,9 @@ is a FLAT per-subject directory of ``<task>.wmv`` files.)
 
 and reports, per session:
 
-* **file** -- size and md5. The md5 is not decoration: ImplementationPlan.md
-  S1.1 claims the raw file and the canonical ``tir.wmv`` are byte-identical, and
-  the quoted hash (``ae2d0247c921662a4b322e62f040143f`` for F001/T1, verified
-  2026-09-16) can be reproduced here.
+* **file** -- size and md5. The md5 is not decoration: the raw file and the
+  canonical ``tir.wmv`` are byte-identical, and the quoted hash
+  (``ae2d0247c921662a4b322e62f040143f`` for F001/T1) can be reproduced here.
 * **container / stream** -- container format, codec, profile, pixel format,
   resolution, frame rate, time base, bit rate and the container's frame count,
   from PyAV *and* from OpenCV, side by side: the two decoders do not always
@@ -34,7 +33,8 @@ and reports, per session:
   When the decoder cannot expose planes the RGB number is all there is, and it
   is NOT comparable to the documented range -- the report says so.
 * **luma / auto-range** -- per-frame luma statistics plus a scan for global
-  auto-range STEP changes (``ImplementationPlan.md`` S4.5 asks for this scan).
+  auto-range STEP changes (the false-colour rendering caveat in
+  ``code/notes/eval/tir_resp/FINDINGS.md`` motivates this scan).
   The test is deliberately conservative: a step must be a sustained shift of
   the per-frame luma percentiles over a ~1 s window, in the same direction at
   both ends, and larger than both a 4-code floor and 10x the MAD of the frame
@@ -835,8 +835,8 @@ def autorange_steps(p1, p99, fps: float, window_s: float = AUTORANGE_WINDOW_S,
     """Sustained shifts of the luma percentiles = auto-range step candidates.
 
     The camera's auto-range re-scales the palette, which shows up as a step in
-    the global luma extremes rather than in the content
-    (``ImplementationPlan.md`` S4.5 asks for exactly this scan).
+    the global luma extremes rather than in the content (see the rendering
+    caveat in ``code/notes/eval/tir_resp/FINDINGS.md``).
 
     Deliberately conservative, because the naive version is useless: a
     per-frame threshold of ``max(2 codes, 8x median increment)`` fires on 79 of

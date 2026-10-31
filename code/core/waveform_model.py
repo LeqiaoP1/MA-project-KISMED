@@ -1,6 +1,7 @@
 """Stage-3 downstream model: waveform regression on top of the Stage-2 encoder.
 
-``code/notes/plan/ImplementationPlan.md`` Stage 3 simulates a COMPLETE 1-D sensor failure:
+``code/notes/design/SolutionC_EarlyTokenMixing_stage3.md`` and
+``code/notes/plan/RGB_BP_plan.md`` §1: Stage 3 simulates a COMPLETE 1-D sensor failure:
 no BP/RESP/EDA is fed, only the visual stream(s) drive the prediction. This
 module therefore
 

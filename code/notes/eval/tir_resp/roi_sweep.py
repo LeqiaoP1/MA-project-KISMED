@@ -4,7 +4,7 @@ carries respiration?
 
 WHY THIS EXISTS
 ---------------
-`TirROI_Resp_plan.md` section 12 closed the line on the 12-point NOSE+MOUTH
+`code/notes/eval/tir_resp/FINDINGS.md` closed the line on the 12-point NOSE+MOUTH
 landmark union. But that box is a box on SKIN, and the strongest thermal
 respiration signal is the EXHALED-AIR PLUME (37 C air against ~22 C ambient),
 which lives in the AIR -- often against the BACKGROUND, and in projection

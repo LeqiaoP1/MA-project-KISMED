@@ -5,7 +5,7 @@ WHY THIS EXISTS
 The recorded gate (``POSITIVE-CONTROL-GATE-result``, 2026-09-26) found
 respiration undetectable in the thermal ROI -- 0/8 sessions, observed best |r|
 BELOW the null median -- while the SAME pipeline detects head motion 8/8 at
-p < 0.005. That closed the line (``TirROI_Resp_plan.md`` §12).
+p < 0.005. That closed the line (``code/notes/eval/tir_resp/FINDINGS.md``).
 
 But that gate ran at the MODEL's input resolution: the recorded statistic was
 "max over 4096 ROI pixels" = 64x64. Measured on this corpus, the dataset's own

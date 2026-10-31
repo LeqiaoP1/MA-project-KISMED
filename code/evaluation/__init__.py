@@ -1,4 +1,4 @@
-"""Post-processing evaluation (code/notes/plan/ImplementationPlan.md).
+"""Post-processing evaluation (code/notes/design/Evaluation_RespWaveform_protocol.md).
 
 Tier 1 -- temporal alignment:   MAE, RMSE, Pearson r
 Tier 2 -- spectral fidelity:    Welch PSD consistency, MR-STFT tracking

@@ -84,7 +84,7 @@ spectral_weight: 0.0               # RETIRED FROM STAGE 2 (decision 2026-09-26):
                                    # used 0.1 in BOTH twins, so a re-run with
                                    # this file is not comparable on the
                                    # spect_* columns.
-                                   # See TirROI_Resp_plan.md §7.5 + §9;
+                                   # See SpanMask_PhysioSignals.md §1-§3, §5;
                                    # keep this line identical to the SSV2 twin
                                    # (stage2_local_pretrained_ssv2.yaml).
 spectral_fft_sizes: 64,128,256     # fs=100 Hz -> 1.56 / 0.78 / 0.39 Hz bins

@@ -1028,8 +1028,8 @@ def parse_mask_span(spec) -> Dict[str, float]:
 #: Stage 2 and Stage 3 instead of the single global window set Stage 2 used to
 #: force on every stream.
 #:
-#: Rationale (see ``code/notes/plan/TirROI_Resp_plan.md`` §9 and
-#: ``code/notes/design/SpanMask_PhysioSignals.md`` §4.1): a window must span at least ONE
+#: Rationale (see
+#: ``code/notes/design/SpanMask_PhysioSignals.md`` §4.1 and §5): a window must span at least ONE
 #: period of the band it is meant to police, otherwise the magnitude term
 #: measures local waveform shape rather than rate. At fs = 100 Hz:
 #:   bp   1.0-2.5 Hz  -> period 0.4-1.0 s   -> 64/128/256 (1.56/0.78/0.39 Hz bins)
@@ -1346,6 +1346,10 @@ def build_pretraining_model(args):
             spectral_weights = dict(zip(streams, vals))
     if spectral_weight > 0 or any(w > 0
                                   for w in (spectral_weights or {}).values()):
+        # NOTE: the message text below is deliberately unchanged so that runtime
+        # output is byte-identical. Current evidence pointers: design/
+        # SpanMask_PhysioSignals.md §1-§3, §5 and eval/tir_resp/
+        # resp_rail_touch_filter_results.md.
         print(
             '[spectral] WARNING: Stage-2 pre-training is not supposed to use '
             'the MR-STFT periodicity term (decision 2026-09-26: the spectral '
@@ -2041,8 +2045,8 @@ def spectral_self_test(verbose: bool = True) -> int:
 
     # ---- the SHARED loss's degenerate-target guard (Stage 3 uses it too) --- #
     # A z-scored target that is CONSTANT is exactly zero -> ||T|| = 0 -> the
-    # scale-invariant ratio explodes. Measured 4.3e10 on a real railed clip
-    # (TirROI_Resp_plan.md §7.5); these checks pin the guard.
+    # scale-invariant ratio explodes. Measured 4.3e10 on a real railed clip;
+    # these checks pin the guard.
     stft = MultiResolutionSTFTLoss(fft_sizes=(32, 64), hop_ratio=0.25)
     torch.manual_seed(0)
     p_probe = torch.randn(4, 256)

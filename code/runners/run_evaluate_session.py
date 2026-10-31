@@ -119,7 +119,7 @@ def smooth_band(x, fs, band, order=4):
     miss and silently catastrophic for anyone who smooths with the eval band.
 
     This is POST-PROCESSING for presentation. It removes the token-seam jitter
-    that the 16-samples-per-token head emits (``TirROI_Resp_plan.md`` §12), but
+    that the 16-samples-per-token head emits, but
     it cannot add phase information, so the correlation does not move. The
     runner applies it to the prediction AND the reference, records the band in
     the JSON, and keeps Pearson beside the constant-0 baseline so a smoothed
