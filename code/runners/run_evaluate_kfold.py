@@ -11,19 +11,21 @@ per session:
 
 1. assembles the fold's clip predictions into one continuous waveform
    (Hann overlap-add, ``evaluation/assemble.py``);
-2. scores it against the raw ``Resp_Volts`` reference in the three metric
-   families asked for by the evaluation protocol
+2. scores it against the respiration reference in the metric families asked for
+   by the evaluation protocol
    (``code/notes/design/Evaluation_RespWaveform_protocol.md`` sec. 4):
 
    * **pearson** -- ``pearson_band`` (band-limited 0.1-0.6 Hz, the drift-robust
      headline) plus the plain ``pearson`` for contrast and the single-tone
      TEMPLATE baseline it must beat;
-   * **amplitude** -- ``amp_ratio`` / ``amp_rel_err`` = in-band RMS of the
-     prediction vs the reference AFTER the per-session affine calibration (so
-     ORACLE-calibrated: the calibration uses the session's true scale);
    * **rate** -- per-window ``estimate_rate_bpm`` -> ``mae_bpm`` and
      ``within_10pct`` (``--rate_window_s``, default 30 s), pooled over every
      window of every fold;
+   * **amplitude is NOT a metric** (protocol sec. 4.1, retired 2026-11-01: the
+     claim is shape and rhythm). ``amp_ratio`` / ``amp_rel_err`` /
+     ``mae_affine`` / ``rmse_affine`` are still COMPUTED and written per
+     session as oracle-calibrated diagnostics, but they are excluded from
+     ``overall``, from the console summary and from the per-fold table;
 
 3. aggregates per SUBJECT (median over that subject's sessions), then across
    subjects with a bootstrap 95 % CI, plus ``per_task`` / ``per_group`` and a
@@ -67,8 +69,10 @@ _SESSION_KEYS = ('pearson', 'pearson_band', 'template_pearson_band',
                  'dominant_freq_error_hz', 'hf_power_rel',
                  'mae_bpm', 'within_10pct')
 
-#: The three headline aggregates (one bootstrap CI each, over SUBJECTS).
-_HEADLINE = ('pearson_band', 'amp_rel_err', 'mae_bpm')
+#: The headline aggregates (one bootstrap CI each, over SUBJECTS). Amplitude is
+#: DELIBERATELY absent: the evaluation claim is morphological shape and rhythm,
+#: and any amplitude number needs the session's true scale (protocol sec. 4.1).
+_HEADLINE = ('pearson_band', 'mae_bpm')
 
 
 def _fold_dir(root, prefix, k):
@@ -397,8 +401,9 @@ def main(args):
             'band': list(band),
             'pearson': 'band-limited Pearson (headline), plain Pearson for '
                        'contrast, single-tone template baseline',
-            'amplitude': 'in-band RMS ratio after the per-session affine '
-                         'calibration -> ORACLE-calibrated (not deployable)',
+            'amplitude': 'NOT a metric (protocol sec. 4.1) -- amp_ratio / '
+                         'amp_rel_err / mae_affine / rmse_affine are recorded '
+                         'per session as oracle-calibrated diagnostics only',
             'rate': f'dominant in-band FFT peak per {args.rate_window_s:g} s '
                     f'window; MAE (BPM) + {wkey}',
             'task_group_source': ('cli' if group_override is not None
@@ -428,10 +433,6 @@ def main(args):
           f'{o["pearson_band"]["hi"]:+.3f}]  |  template '
           f'{o["template_pearson_band"]["point"]:+.3f}, beaten by '
           f'{o["beat_template_frac_subjects"]:.0%} of subjects')
-    print(f'[kfold] AMPLITUDE rel. error   : '
-          f'{o["amp_rel_err"]["point"]:.3f} '
-          f'[95% CI {o["amp_rel_err"]["lo"]:.3f}, '
-          f'{o["amp_rel_err"]["hi"]:.3f}]  (oracle-calibrated)')
     print(f'[kfold] RATE      MAE          : '
           f'{o["mae_bpm"]["point"]:.2f} BPM '
           f'[95% CI {o["mae_bpm"]["lo"]:.2f}, {o["mae_bpm"]["hi"]:.2f}]'
@@ -440,11 +441,10 @@ def main(args):
           f'(n={rate_overall.get("n", 0)})')
     print('\n[kfold] per-fold (session medians):')
     print(f'  {"fold":>4} {"subj":>4} {"sess":>5} {"pearson_band":>13} '
-          f'{"amp_rel_err":>12} {"mae_bpm":>8} {"within10%":>10}')
+          f'{"mae_bpm":>8} {"within10%":>10}')
     for s in summaries:
         print(f'  {s["fold"]:>4} {s["n_subjects"]:>4} {s["n_sessions"]:>5} '
               f'{s["pearson_band_median"]:>13.3f} '
-              f'{s["amp_rel_err_median"]:>12.3f} '
               f'{s["mae_bpm_median"]:>8.2f} '
               f'{s["within_10pct_median"]:>10.2f}')
     print(f'\n[kfold] wrote {out_path}')

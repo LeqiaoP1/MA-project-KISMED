@@ -5,8 +5,10 @@ waveform for a HELD-OUT subject, so the unit of evaluation is the SUBJECT, not
 the clip. This runner:
 
 1. assembles each of a test subject's sessions into a continuous waveform
-   (Hann overlap-add, ``evaluation/assemble.py``) and scores it against the raw
-   ``Resp_Volts`` reference;
+   (Hann overlap-add, ``evaluation/assemble.py``) and scores it against the
+   reference read from the SAME respiration artefact as the training labels
+   (``--resp_cache`` -> ``read_reference_from_cache``); the legacy raw
+   ``Resp_Volts`` route is compatibility-only, not a protocol variant;
 2. reports one number per subject -- the HEADLINE is band-limited Pearson
    (0.1-0.6 Hz), which is scale/offset-invariant AND drift-robust;
 3. aggregates across subjects with a bootstrap 95% CI (each subject = one
@@ -14,9 +16,11 @@ the clip. This runner:
    baseline it must beat;
 4. writes ``subject_metrics.json`` and one figure per subject.
 
-PROTOCOL: a single fixed subject-disjoint TEST set now; ``--test_subjects`` is
-the hook for k-fold subject-disjoint cross-validation later -- a fold is just a
-different subject list, no code change (see ``code/notes/design/Evaluation_RespWaveform_protocol.md``).
+PROTOCOL: k-fold subject-disjoint cross-validation is IMPLEMENTED
+(``--n_folds``/``--fold`` + ``runners/run_evaluate_kfold.py``); a fold is NOT
+just a different ``--test_subjects`` list, so ``--test_subjects`` is only a
+manual override on a legacy single-split run (see
+``code/notes/design/Evaluation_RespWaveform_protocol.md`` sec. 3.1-3.3).
 
 Usage (from ``code/``)::
 
@@ -128,17 +132,18 @@ def _flat(rec):
 
 
 def _figure_metrics(rec):
-    """Space-consistent numbers for a subject figure's title (see the protocol)."""
+    """Space-consistent numbers for a subject figure's title (see the protocol).
+
+    Amplitude is retired as a metric (protocol sec. 4.1, 2026-11-01), so the
+    title carries only the scale-invariant ``pearson_band`` / ``pearson`` /
+    ``psd_mae``; the affine terms stay in the JSON record as diagnostics.
+    """
     out = {}
     if np.isfinite(rec.get('pearson_band', np.nan)):
         out['pearson_band'] = rec['pearson_band']
     t1 = rec.get('tier1') or {}
     if np.isfinite(t1.get('pearson', np.nan)):
         out['pearson'] = t1['pearson']
-    aff = rec.get('affine') or {}
-    for k, label in (('mae', 'mae_aff_V'), ('rmse', 'rmse_aff_V')):
-        if np.isfinite(aff.get(k, np.nan)):
-            out[label] = aff[k]
     t2 = rec.get('tier2') or {}
     if np.isfinite(t2.get('psd_mae', np.nan)):
         out['psd_mae'] = t2['psd_mae']

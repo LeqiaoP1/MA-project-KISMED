@@ -238,21 +238,22 @@ def _session_quality(rec):
 def _figure_metrics(rec):
     """Space-consistent numbers for a session figure's title.
 
-    The assembled prediction is z-scored per clip while the reference is raw
-    volts, so the raw ``session_tier1`` mae/rmse are NOT amplitude errors --
-    they track the reference DC offset and can RANK sessions wrongly (measured
-    2026-10-10: M055_T4 printed mae 2.335 at pearson -0.634 vs M038_T3's 4.578
-    at pearson +0.947). Print only the affine-invariant ``pearson`` /
-    ``psd_mae`` plus the volts-calibrated ``*_aff_V`` terms.
+    The assembled prediction is z-scored per clip while the reference is in
+    artefact volts, so the raw ``session_tier1`` mae/rmse are NOT amplitude
+    errors -- they track the reference DC offset and can RANK sessions wrongly
+    (measured 2026-10-10: M055_T4 printed mae 2.335 at pearson -0.634 vs
+    M038_T3's 4.578 at pearson +0.947).
+
+    Amplitude is retired as a metric (protocol sec. 4.1, 2026-11-01): the claim
+    is morphological shape and rhythm, and a volts-calibrated mae/rmse needs the
+    session's TRUE scale, i.e. it is oracle-calibrated. The title therefore
+    carries only the scale-invariant ``pearson`` / ``psd_mae``; the affine terms
+    stay in the JSON record as diagnostics.
     """
     out = {}
     t1 = rec.get('session_tier1') or {}
     if np.isfinite(t1.get('pearson', np.nan)):
         out['pearson'] = t1['pearson']
-    aff = rec.get('session_tier1_affine') or {}
-    for k, label in (('mae', 'mae_aff_V'), ('rmse', 'rmse_aff_V')):
-        if np.isfinite(aff.get(k, np.nan)):
-            out[label] = aff[k]
     t2 = rec.get('session_tier2') or {}
     if np.isfinite(t2.get('psd_mae', np.nan)):
         out['psd_mae'] = t2['psd_mae']

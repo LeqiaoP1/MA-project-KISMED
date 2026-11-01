@@ -1,7 +1,9 @@
 # Evaluation Protocol — Respiration Waveform Reconstruction (tested subject)
 
-> Status: **active** · authored 2026-10-12 · scope: Stage-3 respiration output
-> (the final task of the whole model).
+> Status: **active** · authored 2026-10-12 · revised **2026-11-01** (k-fold
+> cross-validation implemented; reference must come from the respiration cache;
+> **amplitude retired as a metric**)
+> · scope: Stage-3 respiration output (the final task of the whole model).
 
 ## 1. Objective
 
@@ -19,51 +21,144 @@ that number (ablation), never on their own pretext losses.
 
 Clips are an implementation detail. The evaluation object is **one held-out
 subject**: all their clips are assembled into continuous per-session waveforms
-(`evaluation/assemble.py`, Hann overlap-add) and compared to the raw
-`Resp_Volts` reference. We then report **one number per tested subject**, and
-aggregate across subjects.
+(`evaluation/assemble.py`, Hann overlap-add) and compared to the reference
+waveform read from the respiration cache (§3.3). We then report **one number
+per tested subject**, and aggregate across subjects.
 
 ## 3. Protocol
 
-### 3.1 Now — a single fixed subject-disjoint test set
-- Train / val / **test** subjects are disjoint. `split_by: subject`.
-- **Model selection and reporting must be separated**: the epoch / checkpoint is
-  chosen on the *val* subjects, and the reported number is on the *test*
-  subjects. (Today `run_waveform.py` checkpoints on `best_pearson` over the same
-  val split it also reports — that is selection leakage and must not be the
-  headline.)
-- `--test_subjects F001,F002,...` selects the reported set.
+### 3.1 Unit of splitting — subject-disjoint, three explicit roles
+- Train / val / **test** subjects are disjoint. `split_by: subject` is the only
+  legal choice whenever `n_folds > 1` (a session split is rejected: two sessions
+  of one subject must never straddle the boundary).
+- The partition is computed **once, over the full usable subject list**
+  (`utils/splits.py::subject_folds`: sorted ids + `np.array_split`, no RNG), so
+  fold membership cannot drift with `--subjects`, `--tasks`, `--max_sessions`
+  or the rail/spread filters. Each run writes `fold_manifest.json` (fold,
+  n_folds, stage, roles) so a Stage-2 vs Stage-3 mismatch is visible.
+- **Model selection and reporting are separated** (design Option A): with
+  `n_folds > 1` and no small val role there is **no val loader**, no `best.pth`,
+  and the schedule is fixed-epoch; `metrics_final.json` records
+  `selection: 'fixed_epoch'` and `eval_role: 'test'`, so the absence of
+  selection is auditable off the artefact. (The legacy `n_folds = 0` path still
+  checkpoints `best_pearson` on the same val split it reports — that is
+  selection leakage and must not be the headline.)
+- `--test_subjects F001,F002,...` is now only a **manual override** on a legacy
+  single-split run; it filters predictions *after* training and therefore cannot
+  create a fold (see §3.2).
 
-### 3.2 Later — k-fold subject-disjoint cross-validation
-- The same command is run once per fold with that fold's held-out subject set;
-  `subject_metrics.json` per fold, then pooled.
-- Correction (2026-10-17): a fold is **not** just a different `--test_subjects`
-  list. That flag filters predictions *after* training, and `run_waveform.py`
-  only predicts on its val split, so the **training** split has to carry the
-  fold. The mechanism and its rollout are specified in
-  `code/notes/plan/subject_kfold_plan.md`.
-- Leave-one-subject-out is the k = N limit (140 subjects); pragmatically k = 5–10
-  folds of ~14–28 subjects each balances rigor and budget.
+### 3.2 k-fold subject-disjoint cross-validation — IMPLEMENTED (2026-10-18)
 
-## 4. Metrics
+- Mechanism and rollout: `code/notes/plan/subject_kfold_plan.md` (all seven
+  phases landed; the requirement lives in
+  `code/notes/design/kfold_val_strategy_design_v2.md`). Roles per fold from
+  `utils/splits.py::get_stage_splits`:
 
-The prediction is **z-scored per clip** (the dataset's only label normalisation,
-`data.tir_resp_dataset.TARGET_NORM`) and the reference is **raw volts**, so only
-scale/offset-invariant metrics are directly valid; amplitude errors need the
-(oracle) affine calibration and must be flagged.
+  | role | Option A (default) | Option B (`--use_small_val`) |
+  |---|---|---|
+  | `test` | `F_k` | `F_k` |
+  | `val` | empty (no loader) | ~10 % of the non-test pool |
+  | `train` | `∪_{i≠k} F_i` | non-test pool minus val |
+
+- One run per fold: `--n_folds 5 --fold k`, submitted as a Slurm array
+  (`FOLD=$SLURM_ARRAY_TASK_ID`), each fold writing its own run directory
+  (`resp_tir_roi_hpc_fold<k>`). Stage 2 is fold-aware as well
+  (`pretrain_split: fold` removes the test fold from the pretrain corpus), so
+  neither stage ever sees the held-out subjects.
+- `n_folds = 0/1` is the legacy path: `train`/`val` behave exactly as before and
+  there is no `test` role — this is the compatibility guarantee, not a second
+  protocol.
+- **Pooling** — `runners/run_evaluate_kfold.py` reads the per-fold
+  `preds.npy` + `entries.json`, **asserts the folds form a subject-disjoint
+  partition** (raises on any overlap or duplicated subject), scores every
+  session, aggregates per subject → bootstrap CI, and writes one
+  `kfold_<run_prefix>.json` with `protocol`, `per_fold`, `per_subject`,
+  `per_task`, `per_group`, `overall` and `rate_overall`.
+- Leave-one-subject-out is the k = N limit; k = 5–10 folds of ~14–28 subjects
+  each balances rigor and budget.
+- **Read the per-fold column with care.** Folds are contiguous over sorted ids
+  (`F001–F028`, `F029–F056`, …), so some folds are 100 % female / 100 % male and
+  a per-fold difference is a *cohort* difference, not a fold effect. The pooled
+  numbers are unaffected (open item, §9).
+
+### 3.3 Reference and label must share ONE preprocessing — IMPLEMENTED (2026-10-31)
+
+- **Rule: the reference is scored in exactly the space the training label lives
+  in.** Both sides are read from the SAME respiration shard
+  (`data/resp_cache.py`), produced by `data/resp_preprocess.py`: saturation
+  events `|V| > 9.95 V` lasting ≥ 1 s, flatline (5 s window, p-p < 0.3 V), valid
+  runs shorter than 8 s turned into holes, per-run DC removal, then
+  `resample_poly` onto the 100 Hz grid. Amplitude is preserved; only the per-run
+  offset is removed.
+- Re-reading `Resp_Volts.txt` and resampling it with `np.interp`
+  (`runners/run_evaluate_session.py::read_raw_series`) is a **different**
+  preprocessing (raw whole-file volts, no anti-alias filter, no run split), so
+  it must not produce a reported number: those differences would be charged to
+  the model as reference error.
+- Mechanism: `read_reference_from_cache(root, session, fs, cache_key)` returns
+  `(t, y, mask, root)`; `y` is `NaN` exactly where the artefact says invalid and
+  the mask is **ANDed with the clip-coverage mask** before scoring, so a
+  reference hole is a hole, never a zero. Session records carry
+  `reference_source: 'resp_cache'` + the resolved directory / `resp_cache_key`
+  (`'raw_resp_volts'` marks the legacy route).
+- Applied on all three respiration evaluators — `run_evaluate_session.py`,
+  `run_evaluate_subject.py`, `run_evaluate_kfold.py` — via `--resp_cache
+  <OUT_ROOT>` (the parent of the `<CACHE_KEY>/` directory), so **every reported
+  number must pass it**. `--fs` must equal the cache's `fs_out` (100) and
+  `--resp_cache_key` pins the directory name instead of resolving it. The flag
+  is respiration-only (`run_evaluate_session.py` refuses it with
+  `--waveform bp`).
+- **Consequence for older numbers:** every measurement taken before 2026-10-31 —
+  including the §5 template tie (0.593 vs 0.600) and the 5-fold pooled table —
+  used the raw-`np.interp` reference and is on a different reference space. It
+  must be recomputed on the artefact before being compared with a new run.
+
+## 4. Metrics — morphological shape and rhythm only
+
+The claim under test is **morphological shape and rhythm**, not level. Both
+sides are shape-normalised before scoring: the prediction is **z-scored per
+clip** (the dataset's only label normalisation,
+`data.tir_resp_dataset.TARGET_NORM`) and the reference is the same artefact with
+its per-run offset removed (§3.3). Every metric below is therefore
+scale/offset-invariant by construction.
 
 | Role | Metric | Rationale |
 |---|---|---|
-| **Headline** | **band-limited Pearson** (0.1–0.6 Hz), per session, median per subject | removes baseline drift; the scale-invariant "is the breathing rhythm reconstructed?" number |
+| **Headline** | **band-limited Pearson** (0.1–0.6 Hz), per session, median per subject | removes baseline drift; the "is the breathing rhythm reconstructed?" number |
 | Reference | plain Pearson | same but drift-sensitive; shown for contrast |
-| Rate | `dominant_freq_error_hz` (report in bpm) | breathing-rate accuracy |
-| Shape | `psd_mae` (in-band, unit-sum) | spectral shape |
+| Rate | `dominant_freq_error_hz` (report in bpm) / `mae_bpm` (§4b) | breathing-rate accuracy |
+| Shape — spectral | `psd_mae` (in-band, unit-sum) | where the in-band energy sits |
+| Shape — morphology | template-subtracted residual correlation + per-breath shape | **required for a morphology claim** (not yet implemented, §9) |
 | Artifact | `hf_power_rel` vs `target_hf_power_rel` | out-of-band (token-seam) energy |
-| Amplitude | `mae_affine` / `rmse_affine` | **oracle-calibrated** (needs the session's true scale); NOT deployable |
 
-**Morphology is a distinct claim.** Rate/phase tracking (high Pearson) does not
-imply waveform morphology. A morphology claim requires template-subtracted
-residual correlation / per-breath shape, which are *not* assumed here.
+### 4.1 Amplitude is NOT a metric (retired 2026-11-01)
+
+The evaluation asks whether the **shape and the rhythm** of the breathing curve
+are reconstructed. Amplitude is deliberately outside that claim:
+
+- the prediction is z-scored per clip, so it carries no absolute scale at all.
+  An amplitude number exists only after fitting a per-session affine map
+  (`evaluation/assemble.py::affine_calibrate`) *against the reference*, i.e. it
+  is **oracle-calibrated** and not deployable;
+- a correctly scaled but wrongly shaped curve is not a better answer, and a
+  shape-correct curve with the wrong depth still answers the question;
+- amplitude stops being comparable across models as soon as the normalisation
+  or the clip length changes.
+
+Consequence: `amp_ratio` / `amp_rel_err` / `mae_affine` / `rmse_affine` stay in
+the per-session / per-task / per-fold JSON blocks as **recorded diagnostics
+only**. They are excluded from `overall`, from console reports and from figure
+titles, and no acceptance criterion, headline or run-to-run comparison may quote
+them.
+
+### 4.2 Morphology is a distinct claim
+
+Rate/phase tracking (high band-limited Pearson) does **not** imply waveform
+morphology: a single tone at the reference's own frequency scores high on
+Pearson and carries no inter-breath shape. Because shape is now the headline
+claim, the morphology metric — template-subtracted residual correlation, and
+per-breath shape after normalising each breath to unit depth — is **required**,
+not optional. It is the one metric this protocol still lacks (§9).
 
 ## 4b. Future target — derived vital sign: respiration RATE (BPM)
 
@@ -84,10 +179,12 @@ constrains the waveform metrics does not apply to it. Report the **window
 length** with every number: a shorter window gives fewer cycles and a coarser
 rate. Use the same window for prediction and reference.
 
-Wired into `runners/run_evaluate_subject.py` as an optional block
-(`--rate_window_s`, default 30 s; `--rate_tol`, default 0.10): per-session
-`rate` blocks feed the per-subject rollup, and a pooled `rate_overall` block is
-the headline.
+Wired into `runners/run_evaluate_subject.py` and
+`runners/run_evaluate_kfold.py` as an optional block (`--rate_window_s`, default
+30 s; `--rate_tol`, default 0.10): per-session `rate` blocks feed the
+per-subject rollup, and a pooled `rate_overall` block is the headline. Windows
+are cut on the **scored** samples only, so a reference hole (§3.3) never forms
+half a window.
 
 ## 5. Baselines a subject must beat
 
@@ -97,8 +194,9 @@ A reconstruction is only meaningful if it beats trivial competitors:
 - **Single-tone template** — a pure tone at the reference's own peak frequency
   (LS cos/sin fit; handed the true rate for free). This is the *best a
   rate-only model can do*; the model must score **above** it in a majority of
-  sessions. (Evidence 2026-10-10: the Stage-3 model's 0.593 median tied this
-  baseline's 0.600, winning only 49.1 % — i.e. currently NOT beaten.)
+  sessions. (Evidence 2026-10-10, on the pre-artefact raw reference — see §3.3:
+  the Stage-3 model's 0.593 median tied this baseline's 0.600, winning only
+  49.1 %, i.e. currently NOT beaten.)
 - **Off-face / global-motion control** — the frame-argmax finding (a chest/hair
   pixel drives the whole-frame gate). Any subject-level claim must survive
   regressing out the global/motion channel.
@@ -114,6 +212,9 @@ A reconstruction is only meaningful if it beats trivial competitors:
 
 ## 7. Reporting artifacts
 
+Per fold run: `fold_manifest.json` (the partition, §3.1), and per epoch the
+`metrics.jsonl` / `metrics_final.json` carrying `selection` and `eval_role`.
+
 Per run (restricted to the test subjects):
 
 - `subject_metrics.json` — `overall` (with CI), `per_subject`, `per_task`,
@@ -123,27 +224,61 @@ Per run (restricted to the test subjects):
 - A one-line console summary: median band-limited Pearson [CI], n subjects,
   beat-template fraction.
 
+For the pooled cross-validation (headline of a k-fold study):
+
+- `kfold_<run_prefix>.json` — `protocol`, `per_fold`, `per_subject`, `per_task`,
+  `per_group`, `overall` (bootstrap CI over subjects), `rate_overall`.
+- `session_metrics.json` per fold, so a fold can be inspected alone.
+
 ## 8. Implementation map
 
 | Piece | Location |
 |---|---|
+| subject-fold partition, roles, manifest | `utils/splits.py` (`subject_folds`, `get_stage_splits`, `write_fold_manifest`) |
+| fold-aware datasets / Stage-2 corpus | `data/tir_resp_dataset.py`, `data/rgb_roi_dataset.py`, `data/datasets.py` |
+| fold CLI (`--n_folds/--fold/--use_small_val/--split_role`) | `runners/_common.py::add_split_args` |
+| fixed-epoch selection + test-fold eval | `runners/run_waveform.py` |
 | band-pass + band-limited Pearson + template + bootstrap | `evaluation/metrics.py` |
-| session assembly (Hann OLA), affine calibration | `evaluation/assemble.py` |
+| session assembly (Hann OLA), affine calibration (diagnostics only) | `evaluation/assemble.py` |
 | subject-level runner | `runners/run_evaluate_subject.py` |
-| reference reader / smoother (reused) | `runners/run_evaluate_session.py` |
-| tests | `tests/test_evaluation_subject.py`, `tests/test_evaluation_breakdown.py` |
+| pooled k-fold runner | `runners/run_evaluate_kfold.py` |
+| reference reader (`read_reference_from_cache`) / smoother | `runners/run_evaluate_session.py` |
+| reference preprocessing (the artefact) | `data/resp_preprocess.py`, `data/resp_cache.py` |
+| tests | `tests/test_evaluation_subject.py`, `tests/test_evaluation_breakdown.py`, `tests/test_kfold_splits.py`, `tests/test_resp_eval_reference.py`; `tests/test_evaluation_amplitude.py` covers the retired diagnostic helper only |
 
-Command (from `code/`):
+Commands (from `code/`), with `RESP_CACHE` = the cache OUT ROOT:
 
 ```bash
+# per fold (one Slurm array element each), then pool
+python runners/run_waveform.py -c configs/finetune/resp_tir_roi_hpc.yaml \
+    --n_folds 5 --fold 0 --output_dir OUT/fold0
+python runners/run_evaluate_kfold.py --root OUT --run_prefix resp_tir_roi_hpc_fold \
+    --folds 0,1,2,3,4 --resp_cache "$RESP_CACHE" --fs 100 --band 0.1,0.6
+
+# single held-out set (legacy override)
 python runners/run_evaluate_subject.py --pred_dir OUT_DIR --waveform resp \
-    --fs 100 --band 0.1,0.6 --test_subjects F001,F002,F003
+    --fs 100 --band 0.1,0.6 --resp_cache "$RESP_CACHE" \
+    --test_subjects F001,F002,F003
 ```
 
 ## 9. Non-goals / open items
 
-- Morphology metrics, per-breath period/amplitude — only if a morphology claim
-  is made.
+- **The morphology metric does not exist yet (required, §4.2).**
+  `evaluation/metrics.py` has no residual/per-breath shape metric, so today
+  "right rate, wrong shape" cannot be separated from "right shape". Until it
+  is implemented, no morphology claim may be made.
+- Amplitude is out of scope **by decision** (§4.1). The oracle-calibrated
+  `amp_ratio` / `amp_rel_err` / `mae_affine` / `rmse_affine` fields are
+  diagnostics: they must not be quoted as results or compared between runs.
+- **Fold membership is contiguous** over sorted subject ids, so gender (and
+  anything else correlated with id order) is confounded with the fold index. The
+  pooled number is unaffected, but a per-fold *effect* claim needs a round-robin
+  or stratified partition — not implemented.
+- **Option B (small val) is specified but not used** by the shipped configs; it
+  reintroduces `best_pearson` selection and must then be reported as such.
 - Clinical HRV (Tier 3) is BP-only and out of scope for respiration.
 - Statistical test *between* two models (e.g. std vs smoothl1) is a paired
   subject-level comparison — a follow-up, not part of the single-model report.
+- Evaluation without the respiration cache (§3.3) is a legacy compatibility
+  route only; it is not a protocol variant and must not produce a reported
+  number.

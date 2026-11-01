@@ -116,16 +116,17 @@ def test_smooth_band_lowpass_and_2d_and_short():
 # --------------------------------------------------------------------------- #
 # space-consistent figure / group metrics
 # --------------------------------------------------------------------------- #
-def test_figure_metrics_excludes_crossspace_mae():
+def test_figure_metrics_excludes_crossspace_mae_and_amplitude():
     rec = {'session_tier1': {'pearson': 0.5, 'mae': 4.5, 'rmse': 6.0},
            'session_tier1_affine': {'mae': 0.2, 'rmse': 0.3, 'pearson': 0.5},
            'session_tier2': {'psd_mae': 0.15}}
     m = _figure_metrics(rec)
     assert m['pearson'] == pytest.approx(0.5)
-    assert m['mae_aff_V'] == pytest.approx(0.2)
-    assert m['rmse_aff_V'] == pytest.approx(0.3)
     assert m['psd_mae'] == pytest.approx(0.15)
     assert 'mae' not in m and 'rmse' not in m       # cross-space excluded
+    # amplitude retired as a metric (protocol sec. 4.1): the oracle-calibrated
+    # volts terms stay in the JSON record, never in the title.
+    assert 'mae_aff_V' not in m and 'rmse_aff_V' not in m
 
 
 def test_session_quality_flattens_and_drops_crossspace():

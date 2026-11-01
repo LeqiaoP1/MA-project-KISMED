@@ -80,16 +80,17 @@ def test_flat_survives_empty_and_missing_blocks():
 # --------------------------------------------------------------------------- #
 # _figure_metrics
 # --------------------------------------------------------------------------- #
-def test_figure_metrics_prefers_band_limited_pearson_and_volts_calibrated_mae():
+def test_figure_metrics_titles_only_shape_and_rhythm():
     rec = {'pearson_band': 0.71, 'tier1': {'pearson': 0.4, 'mae': 99.0},
            'tier2': {'psd_mae': 0.2}, 'affine': {'mae': 1.1, 'rmse': 1.6}}
     out = _figure_metrics(rec)
     assert out['pearson_band'] == pytest.approx(0.71)
     assert out['pearson'] == pytest.approx(0.4)
-    assert out['mae_aff_V'] == pytest.approx(1.1)
-    assert out['rmse_aff_V'] == pytest.approx(1.6)
     assert out['psd_mae'] == pytest.approx(0.2)
     assert 'mae' not in out, 'the cross-space tier1 mae must not be titled'
+    # amplitude is retired as a metric (protocol sec. 4.1): no volts-calibrated
+    # mae/rmse in a figure title, even though the record carries the fit.
+    assert 'mae_aff_V' not in out and 'rmse_aff_V' not in out
 
 
 def test_figure_metrics_omits_non_finite_entries():
