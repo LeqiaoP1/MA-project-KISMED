@@ -460,7 +460,14 @@ Per clip: `uint8 [T, s, s, 3]` RGB (TIR: the false-colour rendering, 3-channel b
 construction) → transposed to `[3, T, s, s]`, cast to float, divided by 255 →
 `[0, 1]`. Channel order is RGB for both streams (BGR→RGB is undone at decode).
 TIR planes are **not** radiometric; no per-channel standardisation is applied
-here (that is a model-side / target-side concern, `physio_norm`).
+here.
+
+> **`[0, 1]` is the DATASET contract, not the network input.** The MODEL
+> z-scores the whole clip per channel before patch division
+> (`core/input_adapters.py::zscore_clip`, called by both Stage-2 and Stage-3).
+> Contract: `design/Video_input_Preprocessing.md`. So a tensor dump at this
+> boundary tells you nothing about the encoder's input space, and a visual
+> checkpoint is only comparable within one input contract.
 
 ### 4.5 `input_size` lineages and model coupling
 

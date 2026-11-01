@@ -93,6 +93,7 @@ with a new run prefix.
 | cache (label) | `data/resp_preprocess.py` (validity mask, per-run DC, resample), `data/resp_cache.py` (`cache_key`, `find_cache`) — see `plan/RESP_session_preprocess_implementation_plan.md` |
 | task rotation | `data/task_groups.py` (`SHIPPED_TASK_GROUPS`, `resolve_task_selection`) |
 | folds | `utils/splits.py::subject_folds` |
+| visual input contract | `core/input_adapters.py::zscore_clip` — the model z-scores each clip per channel before patching; the datasets keep `[0, 1]` (`design/Video_input_Preprocessing.md`, landed per `plan/video_input_preprocessing_implementation_plan.md`) |
 | masking | `core/multimae.py::_tube_mask`, `_span_mask`, `make_masks`, `parse_fft_sizes` |
 | losses | `core/criterion.py::MaskedMSELoss`, `core/waveform_losses.py::WaveformJointLoss`, `MultiResolutionSTFTLoss` |
 | metrics | `evaluation/metrics.py` (band-limited Pearson, single-tone template, amplitude, rate, `hf_power_rel`, bootstrap CI) |

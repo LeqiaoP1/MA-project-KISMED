@@ -52,6 +52,16 @@ SPACE-TIME ATTENTION AND ALIGNMENT (checked, not assumed)
   relation. ``_fit_time`` then refuses to PAD at forward time (padding would
   re-warp the time axis); only a trailing trim (which keeps the time origin)
   is allowed.
+* VISUAL INPUT PREPROCESSING (design
+  ``code/notes/design/Video_input_Preprocessing.md``): after ``_fit_time`` and
+  BEFORE patch division, every visual clip is
+  z-scored per channel over ``(T, H, W)`` per sample
+  (``core.input_adapters.zscore_clip``). The datasets keep returning ``[0, 1]``
+  -- that is their contract, not the network's input space. Forward order is
+  ``_fit_time -> zscore_clip (visual) -> adapters -> positions -> masks ->
+  encoder -> decoder``. The reconstruction targets follow the same split: a
+  MASKED cube is standardised with its own per-cube mean/var, an UNMASKED cube
+  carries the clip-normalised values (:meth:`_targets`).
 * ``_init_pos_embeds`` initialises the (learned) positions with a 3-D
   ``(t, h, w)`` sincos grid for the videos and the SAME 1-D temporal sincos for
   the physio streams, so the space-time prior exists at init -- the Stage-1
@@ -80,9 +90,11 @@ import math
 
 import torch
 import torch.nn as nn
+from torch import Tensor
 
 from .blocks import Block, CrossAttention, DecoderBlock, trunc_normal_
 from .criterion import MaskedMSELoss
+from .input_adapters import zscore_clip
 from .registry import register_model
 from .waveform_losses import MultiResolutionSTFTLoss
 
@@ -815,7 +827,29 @@ class MultiModalMAE(nn.Module):
     # ------------------------------------------------------------------ #
     # reconstruction targets (normalized flat patches)
     # ------------------------------------------------------------------ #
-    def _targets(self, x, stream: str):
+    def _targets(self, x, stream: str, mask: Optional[Tensor] = None):
+        """Reconstruction targets ``[B, N, flat]`` -- masked cubes only.
+
+        VISUAL streams (design ``Video_input_Preprocessing.md``):
+
+        * a MASKED cube (``mask == 1``) is standardised with that cube's OWN
+          mean/var over its ``C*t*ph*pw`` values -- the classic VideoMAE
+          ``norm_pix`` target, local to the cube;
+        * an UNMASKED cube carries the CLIP-normalised values it was patched
+          from (``core.input_adapters.zscore_clip`` applied in ``forward``),
+          i.e. NO local per-cube map -- the contract says unmasked cubes only
+          ever receive clip-level normalisation. The loss ignores those
+          positions anyway (``MaskedMSELoss`` keeps ``mask == 1``), but the
+          returned tensor is honest.
+
+        ``mask=None`` (D7) means "every cube masked" -- only for unit tests and
+        diagnostics; :meth:`forward` always passes the real ``loss_mask``.
+
+        1-D streams are untouched: their label normalisation is the dataset's
+        per-clip z-score (``data.tir_resp_dataset.TARGET_NORM``) and
+        ``target_norm`` decides whether the model re-normalises; ``mask`` is
+        accepted and ignored.
+        """
         if stream in self.visual:
             B, C, T, H, W = x.shape
             t, ph, pw = self.tubelet
@@ -827,13 +861,16 @@ class MultiModalMAE(nn.Module):
             x = x.view(B, Gt * Gh * Gw, -1)          # [B, N, C*t*ph*pw]
             mean = x.mean(dim=-1, keepdim=True)
             var = x.var(dim=-1, unbiased=False, keepdim=True)
-            return (x - mean) / torch.sqrt(var + _EPS)
+            zcube = (x - mean) / torch.sqrt(var + _EPS)
+            if mask is None:
+                return zcube
+            return torch.where(mask.unsqueeze(-1).bool(), zcube, x)
         x = x.reshape(x.shape[0], self.n_signal, self.sig_kernel)
         if self.target_norm == 'none':
-            # IDENTITY: the dataset already normalised this 1-D stream (e.g.
-            # the session-level z-score); use it verbatim. The reshape is the
-            # exact inverse of the tokenisation, so the assembled target IS the
-            # waveform the dataset produced.
+            # IDENTITY: the dataset already normalised this 1-D stream (the
+            # per-clip z-score, ``data.tir_resp_dataset.TARGET_NORM``); use it
+            # verbatim. The reshape is the exact inverse of the tokenisation,
+            # so the assembled target IS the waveform the dataset produced.
             return x
         if self.target_norm == 'clip':
             # ONE mean/std per (sample, stream) -- the flattening inverse of
@@ -869,10 +906,20 @@ class MultiModalMAE(nn.Module):
         # Enforce the configured time/signal lengths. Both streams are trimmed
         # from the END, which keeps the shared time origin and therefore the
         # tubelet <-> signal token alignment; a too-short stream raises.
+        #
+        # VISUAL INPUT PREPROCESSING (design ``Video_input_Preprocessing.md``):
+        # after the trim (so the statistics describe the exact clip the
+        # adapters see) and BEFORE patch division, the whole clip is z-scored
+        # per channel. ``_targets`` below reads ``xin`` too, which is what makes
+        # "unmasked cubes receive clip-level normalisation" true of the target
+        # tensor as well. The 1-D streams are NOT touched: their normalisation
+        # is the dataset's per-clip z-score.
         xin = {}
         for s in self.streams:
             n = self.num_frames if s in self.visual else self.seq_len
             xin[s] = self._fit_time(x[s], n, s)
+            if s in self.visual:
+                xin[s] = zscore_clip(xin[s])
 
         # --- tokenize + add positional embedding -------------------------- #
         tokens = {}
@@ -945,7 +992,9 @@ class MultiModalMAE(nn.Module):
                     q = blk(q, z)
                 pred = self.heads[s](q)                      # [B, n_signal, flat]
                 loss_mask = torch.ones_like(mask_s)
-            tgt = self._targets(xin[s], s)                   # [B, N, flat]
+            # masked cubes get the per-cube z-score, unmasked cubes keep the
+            # clip-normalised values; ``mask`` is ignored for 1-D streams.
+            tgt = self._targets(xin[s], s, loss_mask)        # [B, N, flat]
             # masked MSE on this modality's reconstructed positions, then
             # scaled by its per-modality weight
             losses_mse[s] = self.loss_fn(pred, tgt, loss_mask)

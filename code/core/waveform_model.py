@@ -29,6 +29,7 @@ import torch
 import torch.nn as nn
 
 from .blocks import Block
+from .input_adapters import zscore_clip
 from .multimae import STREAM_CHANNELS, TubeletEmbed, _PosMask, multimae_variant
 
 __all__ = ['MultiModalWaveformRegressor', 'WaveformUpsampleHead',
@@ -284,6 +285,13 @@ class MultiModalWaveformRegressor(nn.Module):
         parts = []
         for s in self.streams:
             xt = self._fit_time(x[s], self.num_frames, s)
+            # SAME visual input preprocessing as Stage 2 -- the encoder must
+            # see the input space it was pre-trained on: z-score the whole
+            # clip per channel BEFORE patch division
+            # (``core.input_adapters.zscore_clip``; design
+            # ``Video_input_Preprocessing.md``). Every stream of this model is
+            # validated visual, so no branch is needed.
+            xt = zscore_clip(xt)
             tok = self.adapters[s](xt)                     # [B, n_visual, D]
             if tok.shape[1] != self.n_visual:
                 raise ValueError(

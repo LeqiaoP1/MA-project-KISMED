@@ -576,7 +576,8 @@ x: [B, C, H, W]
 ```
 Input: {'rgb': [B,3,T,H,W], 'tir': [B,3,T,H,W], 'bp': [B,1,S]}
 
-Step 1 — Tokenise + pos embed:
+Step 1 — Visual input preprocessing + tokenise:
+  for visual s: x[s] = zscore_clip(x[s])                   # per-ch z over (T,H,W), per sample
   tokens_s = adapters[s](x[s]) + positions[s].pos_embed   # [B, N_s, D]
 
 Step 2 — Asymmetric masking:
@@ -603,6 +604,11 @@ Step 7 — Per-stream linear heads:
   pred_s = heads[s](z_dec[slice_s])                        # [B, N_s, patch_dim_s]
 
 Step 8 — Norm-pix targets (per-token or per-clip z-score based on target_norm)
+          VISUAL streams: per-cube z ONLY for masked cubes; unmasked cubes keep
+          the clip-normalised values (`_targets(x, stream, mask)`).
+          Datasets still return [0, 1]; the MODEL z-scores before patching
+          (`core/input_adapters.zscore_clip`). Contract:
+          `design/Video_input_Preprocessing.md`.
 
 Step 9 — Weighted masked MSE + optional MR-STFT loss
 
@@ -643,6 +649,7 @@ x: {'rgb': [B,3,T,H,W]}  (or plain Tensor for single-stream)
 
 For each stream s:
   xt = _fit_time(x[s], num_frames, s)    # trim if T > n; raise ValueError if T < n
+  xt = zscore_clip(xt)                   # per-ch z over (T,H,W), per sample (same as Stage 2)
   tok = adapters[s](xt)                  # [B, n_visual, D]
   assert tok.shape[1] == n_visual        # hard geometry check
   tok = tok + positions[s].pos_embed
@@ -936,6 +943,17 @@ L_total = sum(loss_weights.get(s, signal_weight if s in signals else 1.0)
 
 Default: visual streams = 1.0, physiological streams = 0.5 (`signal_weight`).
 `spectral_weight=0.0` in all current configs (decision 2026-09-26).
+
+**`target_s` is masked-only for VISUAL streams** (`MultiModalMAE._targets(x,
+stream, mask)`, `design/Video_input_Preprocessing.md`): a masked cube is
+z-scored with its own per-cube mean/var, an unmasked cube carries the
+clip-normalised values. `MaskedMSELoss` keeps only `mask == 1`. The 1-D targets
+are decided by `target_norm` and ignore the mask.
+
+**The encoder input is z-scored before patch division** in both stages
+(`core/input_adapters.py::zscore_clip`, per channel over `(T,H,W)`, per sample).
+The datasets keep returning `[0, 1]`; that is the dataset contract, not the
+network input.
 
 ### Stage-3 joint loss
 

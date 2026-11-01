@@ -255,7 +255,8 @@ The codebase supports two structurally different Stage-2 pre-training objectives
 ```
 Input: {'tir': [B,3,T,H,W], 'resp': [B,1,S]}  (or rgb,bp, etc.)
 
-Step 1 — Tokenise + pos embed (all streams):
+Step 1 — Visual input preprocessing + tokenise (all streams):
+  for visual s: x[s] = zscore_clip(x[s])                 # per-channel z over (T,H,W), per sample
   tokens_s = adapters[s](x[s]) + positions[s].pos_embed   # [B, N_s, D]
 
 Step 2 — Per-stream asymmetric masking:
@@ -284,6 +285,18 @@ Step 7 — Per-stream linear heads:
 Step 8 — Norm-pix targets + weighted masked MSE loss
 Returns: {'loss': scalar, 'losses_mse': {...}, 'losses_spectral': {...}}
 ```
+
+`zscore_clip` (`core/input_adapters.py`) runs AFTER `_fit_time` and BEFORE patch
+division, so the statistics describe the clip the adapters actually see. The
+datasets keep returning `[0, 1]` — that is the dataset contract, not the network
+input. Contract: `design/Video_input_Preprocessing.md`.
+
+`_targets(x, stream, mask)` is **masked-only**: a masked cube is standardised
+with its OWN mean/var over its `C*t*ph*pw` values; an unmasked cube carries the
+clip-normalised values (no local map), and `MaskedMSELoss` keeps only
+`mask == 1`. `mask=None` means "every cube masked" (unit tests only). The 1-D
+streams ignore the mask — their label space is the dataset's per-clip z-score
+decided by `target_norm`.
 
 ### 7.5 Solution A `forward(x)` — asymmetric cross-MAE
 
@@ -424,6 +437,7 @@ x: {'rgb': [B,3,T,H,W]}  (or plain Tensor; NO masking anywhere)
 
 For each stream s:
   xt = _fit_time(x[s], num_frames, s)    # trim if T > n; raise ValueError if T < n
+  xt = zscore_clip(xt)                   # per-channel z over (T,H,W), per sample
   tok = adapters[s](xt)                  # [B, n_visual, D]
   assert tok.shape[1] == n_visual        # hard geometry check
   tok = tok + positions[s].pos_embed
@@ -443,6 +457,11 @@ return pred.reshape(B, -1)                      # [B, output_len]
 ```
 
 `output_len = grid_t * k`; must be a multiple of `grid_t` (enforced at construction).
+
+The SAME `zscore_clip` as Stage 2 (`core/input_adapters.py`) runs before the
+adapter, so Stage 3 consumes the exact input space the Stage-2 encoder was
+pre-trained on. Every Stage-3 stream is validated visual, so no branch is needed.
+There is no masking and no target normalisation in this path.
 
 **[design]** — `SolutionA_asymCrossMAE.md §5`: the model must assert the expected `grid_t` and output `L` rather than silently interpolating a desynchronised sequence.
 
@@ -510,6 +529,11 @@ All: `pred: [B,N,D]`, `target: [B,N,D]`, `mask: [B,N]` (1 = masked = compute los
 | `MaskedCrossEntropyLoss` | `mean_masked(CE(pred_BNC, target_BN))` |
 
 Denominator: `mask.sum() + 1e-6`.
+
+Targets come from `MultiModalMAE._targets`: for VISUAL streams only the MASKED
+cubes are per-cube z-scored; unmasked cubes carry the clip-normalised values
+(`design/Video_input_Preprocessing.md`). The 1-D targets are decided by
+`target_norm` (`token` / `clip` / `none`) and are unaffected by `mask`.
 
 ### Stage-3 Waveform Losses — `core/waveform_losses.py`
 

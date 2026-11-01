@@ -1,8 +1,9 @@
 # Video Input Preprocessing — Implementation Plan
 
-Status: **PLANNED (2026-11-01)** — nothing implemented yet.
-Contract of record: `code/notes/design/Video_input_Preprocessing.md`. **On any
-conflict the design wins**; §2 lists the conflicts found in the shipped code.
+Status: **LANDED (2026-11-01)** — all phases implemented; see §12 for the
+as-built record. Contract of record: `code/notes/design/Video_input_Preprocessing.md`.
+**On any conflict the design wins**; §2 lists the conflicts found in the shipped
+code.
 
 Scope: the **visual input** of the two models that consume video clips —
 `core/multimae.py::MultiModalMAE` (Stage 2) and
@@ -177,7 +178,8 @@ same normalised tokens it saw in training.
 ### Phase 5 — verification
 
 **Step 7** `../.env/bin/python -m pytest` (489 + new module) and
-`../.env/bin/python core/multimae.py` (the module's built-in self-test; it feeds
+`../.env/bin/python -m core.multimae` (the module's built-in self-test; the `-m`
+form is required because the package uses relative imports. It feeds
 `torch.randn`, which is already z-like, so it must pass unchanged).
 
 **Step 8** local smoke on synthetic data (no corpus needed): one Stage-2 step and
@@ -263,7 +265,7 @@ marker (e.g. `…_zclip`) so a checkpoint's input contract is readable from its 
 # from code/
 ../.env/bin/python -m pytest -q                     # full suite
 ../.env/bin/python -m pytest -q tests/test_video_input_norm.py
-../.env/bin/python core/multimae.py                 # in-module self-test
+../.env/bin/python -m core.multimae                  # in-module self-test
 ```
 
 Stage-2/Stage-3 smoke on synthetic data requires no corpus (the tests build
@@ -310,3 +312,44 @@ their own trees), so gates G1–G5 are CPU-only and fast.
 * **Given** a frozen MultiModalWaveformRegressor model and a fixed input clip
 * **When** the input clip is scaled and shifted
 * **Then** the Stage-3 waveform output should be identical to the output of the original clip
+
+---
+
+## 12. As built (2026-11-01)
+
+| phase | landed as |
+|---|---|
+| P1 helper | `core/input_adapters.py`: `EPS = 1e-6`, `zscore_clip(x, eps=EPS)`, both in `__all__` |
+| P2 masked-only target | `core/multimae.py::MultiModalMAE._targets(x, stream, mask=None)` — `torch.where(mask.unsqueeze(-1).bool(), zcube, flat)`; `forward` passes `loss_mask` |
+| P3 Stage 2 | `_fit_time -> zscore_clip (visual) -> adapters` in `MultiModalMAE.forward` |
+| P4 Stage 3 | same two lines in `MultiModalWaveformRegressor.forward` (every stream validated visual) |
+| P5 tests | `code/tests/test_video_input_norm.py` (8 tests, gates G1-G5); `tests/test_physio_norm.py::test_target_norm_none_leaves_visual_streams_normalised` now passes an explicit all-ones mask |
+| P6 docs | this plan, `design/Video_input_Preprocessing.md` (Implementation + D1/D4/D5 + leakage note), `spec/02_model_architecture.md` (§7.4 step 1, new `_targets` note, §8.3, §10), `spec/03_engine_and_loss.md` §6, `scripts/project/write_specs.py` (same three edits), `README.md`, `design/ROI_crop_and_rescaling.md` §4.4, `plan/TirROI_Resp_plan.md` §4, `plan/RGB_BP_plan.md` §4 |
+
+Verification actually performed:
+
+* `../.env/bin/python -m pytest -q` -> **497 passed** (489 before + 8 new).
+* `../.env/bin/python -m core.multimae` -> `mask_self_test: ALL PASS` and every
+  `cross_mae_self_test` check ok. **Three `[FAIL]` lines come from
+  `spectral_self_test` and are PRE-EXISTING** — verified identical with the three
+  code files stashed (the finetune-config `fft_sizes` mirror checks). Not
+  touched by this change.
+* Synthetic smoke (CPU, no corpus): one Stage-2 step and one Stage-3 step,
+  finite loss; the encoder receives per-channel `mean=0.0 / std=1.0` for a
+  `[0,1]` clip (before: `mean=0.4990 / std=0.2885`).
+
+Deviations from this plan (both recorded, neither changes a contract):
+
+1. **G3 compares against an emulated pre-change path, not a stored float.** The
+   test patches `core.multimae.zscore_clip` to the identity and feeds an
+   already-z-scored clip. A hardcoded reference loss would be brittle across
+   torch versions for no extra information.
+2. **G4/G5 measure the tokens at `adapters.<stream>`, not at `enc_norm`.** The
+   encoder's first `LayerNorm` is nearly blind to a global affine rescaling of
+   its input, so an `enc_norm` probe reports a difference of ~1e-5 for a clip
+   whose adapter tokens differ by O(1) — it silently certifies nothing. The
+   adapter output is the actual input space.
+3. `python core/multimae.py` cannot run the in-module self-test (relative
+   imports); use `python -m core.multimae` from `code/`. §9 is corrected by this
+   note.
+

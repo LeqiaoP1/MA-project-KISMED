@@ -115,6 +115,12 @@ ROI contract keys recorded in the checkpoint (`roi_landmarks`, `roi_padding`,
 `input_size`, …), because those change the pixels without changing any tensor
 shape.
 
+**Visual input contract** (`plan/video_input_preprocessing_implementation_plan.md`,
+`design/Video_input_Preprocessing.md`): the dataset still returns `[0, 1]`, but
+both stages z-score each clip per channel *before* patch division
+(`core/input_adapters.py::zscore_clip`). A checkpoint therefore belongs to ONE
+input contract — Stage-2 and Stage-3 weights are only interchangeable within it.
+
 **Loss constants per branch** (`WaveformJointLoss`): BP band `1.0–2.5 Hz`,
 `fft_sizes 64,128,256`; RESP band `0.1–0.6 Hz`, `fft_sizes 64,128,256`
 (`128,256,512` in the HPC resp config). The MR-STFT term skips samples whose

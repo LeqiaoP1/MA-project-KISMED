@@ -169,6 +169,19 @@ L_total = sum(loss_weights.get(s, signal_weight if s in signals else 1.0)
 Default: visual streams = 1.0, physiological streams = 0.5 (`signal_weight`).
 `spectral_weight=0.0` in all current configs (decision 2026-09-26).
 
+**`target_s` is masked-only for VISUAL streams** (`MultiModalMAE._targets(x,
+stream, mask)`, `design/Video_input_Preprocessing.md`): a masked cube is
+z-scored with its own per-cube mean/var, an unmasked cube carries the
+clip-normalised values (the adapter's input space). `MaskedMSELoss` keeps only
+`mask == 1`, so the unmasked half never contributes — but the returned target
+tensor is honest. The 1-D targets are decided by `target_norm`
+(`token`/`clip`/`none`) and ignore the mask.
+
+**The encoder input is z-scored before patch division** in both stages
+(`core/input_adapters.py::zscore_clip`, per channel over `(T,H,W)`, per sample).
+The datasets keep returning `[0, 1]`; that is the dataset contract, not the
+network input.
+
 ### Stage-3 joint loss
 
 ```python

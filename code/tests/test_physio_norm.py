@@ -265,13 +265,19 @@ def test_target_norm_none_is_identity():
 
 def test_target_norm_none_leaves_visual_streams_normalised():
     """The identity applies to the 1-D stream only -- video keeps its own
-    per-token z-score (so the dataset's label normalisation never touches the
-    visual view)."""
+    per-cube z-score (so the dataset's label normalisation never touches the
+    visual view).
+
+    The mask is explicit here: only MASKED cubes are locally standardised
+    (``Video_input_Preprocessing.md``); an unmasked cube keeps the
+    clip-normalised values.
+    """
     m = _tiny_model(target_norm='none')
     T = m.num_frames
     S = m.input_size
     x = torch.rand(1, 3, T, S, S) * 3.0 + 1.0                # [B, C, T, H, W]
-    tgt = m._targets(x, 'tir')
+    mask = torch.ones(1, m.n_visual, dtype=torch.long)       # every cube masked
+    tgt = m._targets(x, 'tir', mask)
     per_token_mean = tgt.mean(dim=-1)
     per_token_std = tgt.std(dim=-1, unbiased=False)
     assert torch.allclose(per_token_mean, torch.zeros_like(per_token_mean),

@@ -9,8 +9,40 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
+from torch import Tensor
 
-__all__ = ['PatchedInputAdapter', 'SemSegInputAdapter', 'SignalInputAdapter']
+__all__ = ['PatchedInputAdapter', 'SemSegInputAdapter', 'SignalInputAdapter',
+           'zscore_clip', 'EPS']
+
+#: The ONE epsilon of the visual input space. The per-cube target
+#: (``core.multimae.MultiModalMAE._targets``) and
+#: ``core.criterion.MaskedMSELoss`` use the same constant -- no second epsilon.
+EPS = 1e-6
+
+
+def zscore_clip(x: Tensor, eps: float = EPS) -> Tensor:
+    """THE visual input preprocessing: per-channel z-score over the WHOLE clip.
+
+    ``[B, C, T, H, W] -> [B, C, T, H, W]``. Statistics are taken per SAMPLE and
+    per CHANNEL over the clip's ``(T, H, W)`` (``unbiased=False``), so the three
+    planes of the false-colour TIR rendering are equalised.
+
+    This is the *design contract* of
+    ``code/notes/design/Video_input_Preprocessing.md``: it runs on the raw clip
+    BEFORE patch division (i.e. before ``TubeletEmbed`` /
+    ``PatchedInputAdapter``), so the network never sees the dataset's ``[0, 1]``
+    pixel scale. It is **not configurable** -- no
+    CLI flag, no YAML key, no constructor argument -- because a second input
+    space would make Stage-2 / Stage-3 checkpoints incomparable by
+    construction. Dtype and shape are preserved (float32 in, float32 out); a
+    constant channel becomes exactly 0 (eps guard, no NaN).
+
+    Per-sample statistics need NO cross-rank reduction, so the transform is
+    bit-identical under any DDP world size.
+    """
+    mu = x.mean(dim=(2, 3, 4), keepdim=True)                 # [B, C, 1, 1, 1]
+    var = x.var(dim=(2, 3, 4), unbiased=False, keepdim=True)
+    return (x - mu) / torch.sqrt(var + eps)
 
 
 class PatchedInputAdapter(nn.Module):

@@ -810,6 +810,10 @@ It reads the **raw** tree (no `prepare_bp4d.py` copy needed):
   `respiration_clip(..., normalized=False)` returns the pre-normalisation window
   (raw volts, or the cache's run-mean-removed volts), which is what a clinical
   amplitude comparison needs.
+  **`[0, 1]` is the DATASET contract, not the network input**: the model
+  z-scores the whole visual clip per channel before patch division
+  (`core/input_adapters.py::zscore_clip`, in both stages) —
+  `notes/design/Video_input_Preprocessing.md`.
 * **Clips are non-overlapping by default** (`clip_stride=None`); pass
   `clip_stride` in SECONDS for a hop. **No split is applied here** -- this
   dataset exposes one stream per session, and the subject-disjoint split is the
