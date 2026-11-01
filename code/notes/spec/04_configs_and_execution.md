@@ -116,7 +116,7 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `sig_kernel` | int | Signal window size per token; must satisfy `sig_kernel/fs == tubelet_t*stride/fps` |
 | `physio_norm` | str | `clip` (= `zscore`) per-clip z-score — the SAME setting, name and values as the ROI Stage-2 paths, so one clip yields one identical target in both stages. `none` / `ac` / `session` were removed and are REFUSED |
 | `head_hidden` / `head_style` / `head_init` | int / str | Head architecture + initialisation |
-| `n_folds` / `fold` / `use_small_val` | int / int / bool | K-fold Cyclic Rotation policy. `n_folds <= 1` (default) = legacy ratio split; `--use_small_val` = Option B, off = Option A (no val). Registered by `runners/_common.py::add_split_args` |
+| `n_folds` / `fold` / `use_small_val` / `split_seed` / `split_stratify` | int / int / bool / int / str | K-fold Cyclic Rotation policy. `n_folds <= 1` (default) = legacy ratio split; `--use_small_val` = Option B, off = Option A (no val). `split_seed` + `split_stratify` choose HOW the subjects are grouped (`none`+null = sorted contiguous blocks, i.e. fold == sex block; `sex` + int = seeded stratified draw) and must match between Stage 2 and Stage 3. Registered by `runners/_common.py::add_split_args` |
 | `alpha` / `beta` / `gamma` | float | `WaveformJointLoss` term weights |
 | `fft_sizes` | str | Stage-3 STFT window sizes |
 | `eval_band` | str | `f_low,f_high` Hz for Tier-2 spectral metrics |

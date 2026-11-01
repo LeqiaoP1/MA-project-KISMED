@@ -132,7 +132,8 @@ def build_pretraining_dataset(args):
         # computed over the FULL usable subject list (never the capped/filtered
         # one): --max_sessions / --max_clips would otherwise shift the folds
         # between the Stage-2 and Stage-3 runs of the same fold.
-        from utils.splits import get_stage_splits
+        from utils.splits import (as_split_seed, as_split_strategy,
+                                  get_stage_splits)
         from . import task_groups as tgrp
 
         n_folds = int(getattr(args, 'n_folds', 0) or 0)
@@ -172,7 +173,12 @@ def build_pretraining_dataset(args):
                     f"pretrain_split='fold': no usable subject under {root}; "
                     f'nothing to partition.')
             splits = get_stage_splits(subs, fold=fold, n_folds=n_folds,
-                                      stage=2)
+                                      stage=2,
+                                      split_seed=as_split_seed(
+                                          getattr(args, 'split_seed', None)),
+                                      stratify=as_split_strategy(
+                                          getattr(args, 'split_stratify',
+                                                  'none')))
             train_subjects = splits['train']
             # honour an explicit --subjects filter, but never silently widen
             requested = [s.strip() for s in
@@ -208,7 +214,11 @@ def build_pretraining_dataset(args):
                 if is_main_process():
                     write_fold_manifest(
                         os.path.join(out_dir, 'fold_manifest.json'),
-                        fold=fold, n_folds=n_folds, stage=2, roles=splits)
+                        fold=fold, n_folds=n_folds, stage=2, roles=splits,
+                        split_seed=as_split_seed(
+                            getattr(args, 'split_seed', None)),
+                        stratify=as_split_strategy(
+                            getattr(args, 'split_stratify', 'none')))
                     print(f'[data] wrote '
                           f'{os.path.join(out_dir, "fold_manifest.json")}')
 

@@ -1,14 +1,79 @@
 import json
 import os
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 __all__ = ['subject_folds', 'get_stage_splits', 'write_fold_manifest',
-           'resolve_split_keys']
+           'resolve_split_keys', 'subject_stratum', 'SPLIT_STRATEGIES',
+           'as_split_seed', 'as_split_strategy']
+
+#: Partition strategies accepted by :func:`subject_folds`.
+#:
+#: ``'none'`` = the legacy rule: sorted ids cut into CONTIGUOUS blocks with
+#: ``np.array_split``. On BP4D+ that makes fold = sex block, because ``F001..``
+#: sorts before ``M001..``, so a per-fold spread measures cohorts rather than
+#: model stability.
+#:
+#: ``'sex'``  = a seeded shuffle WITHIN each stratum, then a proportional
+#: interleave, so every fold is a near-representative sample of the corpus and
+#: the fold sizes are still the ``array_split`` ones. Requires ``split_seed``.
+SPLIT_STRATEGIES = ('none', 'sex')
 
 
-def subject_folds(subjects: Sequence[str], n_folds: int) -> List[List[str]]:
+def subject_stratum(subject: str) -> str:
+    """Stratum label of one subject id -> its leading letter, uppercased.
+
+    BP4D+ ids are ``F001..F082`` / ``M001..M058``, so this is SEX. An id that
+    does not start with a letter becomes its own ``'?'`` stratum: a foreign
+    naming scheme then degrades to "no stratification" instead of raising.
+    """
+    s = str(subject).strip()
+    return s[0].upper() if s and s[0].isalpha() else '?'
+
+
+def as_split_seed(value) -> Optional[int]:
+    """Coerce a config/CLI value to a partition seed (``None`` = legacy)."""
+    if value is None or value == '' or value == 'None':
+        return None
+    return int(value)
+
+
+def as_split_strategy(value) -> str:
+    """Coerce a config/CLI value to a validated :data:`SPLIT_STRATEGIES`."""
+    strategy = str(value if value is not None else 'none').strip().lower()
+    if strategy not in SPLIT_STRATEGIES:
+        raise ValueError(
+            f'split_stratify must be one of {SPLIT_STRATEGIES}; '
+            f'got {value!r}')
+    return strategy
+
+
+def _interleave_strata(strata: Dict[str, List[str]]) -> List[str]:
+    """Merge strata into ONE sequence with every stratum spread uniformly.
+
+    Member ``j`` of a stratum with ``n`` members sits at global rank
+    ``(j + 0.5) / n``, so ANY contiguous chunk of the merged sequence holds
+    each stratum in (almost exactly) its corpus proportion. That is what lets
+    ``np.array_split`` produce folds that are equal in SIZE and equal in
+    COMPOSITION; concatenating the strata instead would rebuild the very sex
+    blocks this exists to remove.
+
+    Deterministic: ties fall back to the stratum name, then the member index.
+    """
+    slots = []
+    for name in sorted(strata):
+        members = strata[name]
+        n_members = len(members)
+        for j, subj in enumerate(members):
+            slots.append(((j + 0.5) / n_members, name, j, subj))
+    slots.sort(key=lambda t: (t[0], t[1], t[2]))
+    return [t[3] for t in slots]
+
+
+def subject_folds(subjects: Sequence[str], n_folds: int,
+                  split_seed: Optional[int] = None,
+                  stratify: str = 'none') -> List[List[str]]:
     """Partition sorted unique subject ids into n_folds disjoint folds.
 
     Unlike sklearn.model_selection.GroupKFold, this partitions the SUBJECTS
@@ -18,27 +83,63 @@ def subject_folds(subjects: Sequence[str], n_folds: int) -> List[List[str]]:
     Args:
         subjects: Sequence of subject IDs (e.g., ['F001', 'F002', ...]).
         n_folds: Number of folds to create.
+        split_seed: Seed of the partition. ``None`` (with ``stratify='none'``)
+            reproduces the LEGACY contiguous partition byte-for-byte; any int
+            makes the assignment a reproducible random draw.
+        stratify: One of :data:`SPLIT_STRATEGIES`. ``'sex'`` shuffles within
+            each stratum and interleaves proportionally, which removes the
+            "fold = sex block" confound of the contiguous rule.
 
     Returns:
         A list of n_folds lists, where each inner list contains the subject IDs
-        for that fold.
+        for that fold (sorted, so a manifest is canonical).
     """
     if n_folds <= 0:
         raise ValueError(f"n_folds must be > 0; got {n_folds}")
-    
+    stratify = str(stratify or 'none').strip().lower()
+    if stratify not in SPLIT_STRATEGIES:
+        raise ValueError(
+            f"split_stratify must be one of {SPLIT_STRATEGIES}; got {stratify!r}")
+    if stratify != 'none' and split_seed is None:
+        raise ValueError(
+            f"stratify={stratify!r} requires an explicit split_seed: an "
+            f"unseeded random partition cannot be reproduced by the next "
+            f"stage of the sweep, which would silently break the pairing "
+            f"between the Stage-2 and Stage-3 folds.")
+
     unique_subjects = sorted(set(subjects))
     if not unique_subjects:
         return [[] for _ in range(n_folds)]
-        
-    # np.array_split handles cases where len(unique_subjects) is not perfectly
-    # divisible by n_folds.
-    folds = np.array_split(unique_subjects, n_folds)
-    return [fold.tolist() for fold in folds]
+
+    if stratify == 'none' and split_seed is None:
+        # LEGACY path, kept bit-identical so every existing config/script and
+        # the recorded 5-fold sweep stay reproducible.
+        folds = np.array_split(unique_subjects, n_folds)
+        return [fold.tolist() for fold in folds]
+
+    rng = np.random.default_rng(int(split_seed))
+    if stratify == 'none':
+        order = rng.permutation(len(unique_subjects))
+        sequence = [unique_subjects[i] for i in order]
+    else:
+        strata: Dict[str, List[str]] = {}
+        for subj in unique_subjects:
+            strata.setdefault(subject_stratum(subj), []).append(subj)
+        # One rng, strata consumed in sorted order -> deterministic across
+        # processes (no dependence on dict/set iteration).
+        for name in sorted(strata):
+            order = rng.permutation(len(strata[name]))
+            strata[name] = [strata[name][i] for i in order]
+        sequence = _interleave_strata(strata)
+
+    folds = np.array_split(sequence, n_folds)
+    return [sorted(fold.tolist()) for fold in folds]
 
 
 def get_stage_splits(subjects: Sequence[str], fold: int, n_folds: int = 5,
                      stage: int = 3, use_small_val: bool = False,
-                     val_seed: int = 42) -> Dict[str, List[str]]:
+                     val_seed: int = 42, split_seed: Optional[int] = None,
+                     stratify: str = 'none') -> Dict[str, List[str]]:
     """Generates subject-exclusive splits for Stage 2 (SSL) and Stage 3.
 
     Implements the Cyclic Rotation strategy:
@@ -54,6 +155,11 @@ def get_stage_splits(subjects: Sequence[str], fold: int, n_folds: int = 5,
         stage: Pipeline stage (2 for Domain SSL, 3 for Task Fine-Tuning).
         use_small_val: If True in Stage 3, carves ~10% of the non-test pool for val.
         val_seed: Seed for the Option B validation draw.
+        split_seed: Seed of the PARTITION itself (:func:`subject_folds`).
+            ``None`` + ``stratify='none'`` = the legacy contiguous blocks.
+        stratify: Partition strategy, see :data:`SPLIT_STRATEGIES`. Stage 2 and
+            Stage 3 of one sweep MUST use the same pair of values, otherwise
+            fold k's encoder was pre-trained on fold k's test subjects.
 
     Returns:
         Dict with keys 'train', 'val', 'test', each containing a list of subject IDs.
@@ -74,7 +180,8 @@ def get_stage_splits(subjects: Sequence[str], fold: int, n_folds: int = 5,
     if stage == 2 and use_small_val:
         use_small_val = False
 
-    folds = subject_folds(unique_subjects, n_folds)
+    folds = subject_folds(unique_subjects, n_folds,
+                          split_seed=split_seed, stratify=stratify)
     
     test_subjects = folds[fold]
     
@@ -109,12 +216,22 @@ def get_stage_splits(subjects: Sequence[str], fold: int, n_folds: int = 5,
 
 
 def write_fold_manifest(path: str, fold: int, n_folds: int, stage: int,
-                        roles: Dict[str, List[str]]) -> None:
-    """Writes the fold partition to a JSON manifest for auditability."""
+                        roles: Dict[str, List[str]],
+                        split_seed: Optional[int] = None,
+                        stratify: str = 'none') -> None:
+    """Writes the fold partition to a JSON manifest for auditability.
+
+    ``split_seed`` / ``split_stratify`` record HOW the partition was DRAWN: the
+    legacy contiguous rule and a seeded stratified draw produce different folds
+    from the same corpus, so a manifest that omits them cannot tell the two
+    apart when a Stage-2 / Stage-3 pair is audited.
+    """
     manifest = {
         'fold': fold,
         'n_folds': n_folds,
         'stage': stage,
+        'split_seed': split_seed,
+        'split_stratify': stratify,
         'roles': roles
     }
     os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
@@ -132,7 +249,9 @@ def resolve_split_keys(usable_sessions: List[Dict], is_train: bool,
                        train_ratio: float, split_by: str,
                        val_subject: str, split_role: str,
                        n_folds: int, fold: int, use_small_val: bool,
-                       dataset_name: str = '') -> Tuple[List[str], str]:
+                       dataset_name: str = '',
+                       split_seed: Optional[int] = None,
+                       stratify: str = 'none') -> Tuple[List[str], str]:
     """Resolve the split keys (subjects or sessions) for ONE dataset view.
 
     Two policies, selected by ``n_folds``:
@@ -164,7 +283,8 @@ def resolve_split_keys(usable_sessions: List[Dict], is_train: bool,
 
         subs = sorted({s['subject'] for s in usable_sessions})
         splits = get_stage_splits(subs, fold=fold, n_folds=n_folds, stage=3,
-                                  use_small_val=use_small_val)
+                                  use_small_val=use_small_val,
+                                  split_seed=split_seed, stratify=stratify)
 
         role = split_role or ('train' if is_train else 'val')
         if role not in splits:

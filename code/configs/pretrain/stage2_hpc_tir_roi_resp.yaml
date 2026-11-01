@@ -38,6 +38,16 @@
 data_set: tir_roi                  # raw-tree thermal ROI + Resp_Volts.txt
 subjects: ''                       # '' = every discoverable subject
 pretrain_split: all                # Stage 2 never splits (self-supervised)
+# ---- k-fold PARTITION (MUST mirror configs/finetune/resp_tir_roi_hpc.yaml) --
+# The sbatch passes --n_folds/--fold/--pretrain_split fold; these two knobs
+# decide HOW the subjects are GROUPED, and the Stage-3 config must carry the
+# SAME pair -- otherwise fold k's encoder was pre-trained on fold k's test
+# subjects (the runner's guard compares fold/n_folds only, not the role lists).
+# split_seed null (or split_stratify: none) = the legacy rule, where sorted ids
+# are cut into contiguous blocks and therefore fold == sex block (F001.. sorts
+# before M001..). See code/notes/plan/subject_kfold_plan.md.
+split_seed: 42                     # seed of the draw; null = legacy blocks
+split_stratify: sex                # shuffle within stratum, then interleave
 tasks: ''                          # '' = all tasks; UNIONED with task_set below
 # ---- task GROUPS ("distortion levels") ---------------------------------
 # Named subsets of the BP4D+ task labels (T1..T10); the DEFINITIONS live here,

@@ -131,9 +131,15 @@ physio_norm: zscore                # per-clip z-score, applied by the DATASET
                                    #   target.
 
 # ---- data split (SUBJECT-disjoint) ----
-n_folds: 5                         # 5-fold cyclic rotation (28 test / 112 train)
+n_folds: 5                         # 5-fold cyclic rotation (28 test for folds
+                                   #   0-3, 27 for fold 4 -- the usable corpus
+                                   #   has 139 subjects: 139 = 5*27 + 4)
 fold: 0                            # overridden by the sbatch array
 use_small_val: false               # Option A: 0% val, fixed-epoch checkpointing
+# PARTITION RULE -- MUST equal configs/pretrain/stage2_hpc_tir_roi_resp.yaml
+# and configs/finetune/resp_tir_roi_hpc.yaml (same folds, different loss).
+split_seed: 42
+split_stratify: sex
 train_ratio: 0.8                   # legacy fallback
 split_by: subject
 val_subject: ''                    # legacy fallback

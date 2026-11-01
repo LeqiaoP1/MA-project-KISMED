@@ -87,6 +87,21 @@ def add_split_args(parser: argparse.ArgumentParser):
                              'non-test pool as a subject-disjoint validation '
                              'set. Off = Option A (no val, fixed-epoch '
                              'checkpointing, test fold scored at the end).')
+    parser.add_argument('--split_seed', default=None, type=int,
+                        help='seed of the fold PARTITION (utils/splits.py). '
+                             'None = legacy rule (sorted ids cut into '
+                             'contiguous blocks). Any int = a reproducible '
+                             'random draw; REQUIRED when --split_stratify is '
+                             'not "none". Stage 2 and Stage 3 of one sweep '
+                             'must use the same value.')
+    parser.add_argument('--split_stratify', default='none', type=str,
+                        choices=['none', 'sex'],
+                        help="partition strategy: 'none' = sorted contiguous "
+                             "blocks (fold == sex block on BP4D+, because "
+                             "F001.. sorts before M001..); 'sex' = shuffle "
+                             'within each sex stratum, then interleave so every '
+                             'fold is a near-representative sample. Requires '
+                             '--split_seed.')
     parser.add_argument('--split_role', default='', type=str,
                         choices=['', 'train', 'val', 'test'],
                         help='single-view override: build THIS role only. '

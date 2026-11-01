@@ -2,7 +2,7 @@ import pytest
 import numpy as np
 
 from utils.splits import (get_stage_splits, resolve_split_keys,
-                          subject_folds)
+                          subject_folds, subject_stratum)
 
 
 def test_subject_folds_disjoint():
@@ -178,3 +178,102 @@ def test_resume_noop_when_not_a_fold_run():
     from utils.checkpoint import check_resume_fold
 
     assert check_resume_fold(_ns(n_folds=0, fold=0), _ns(n_folds=4, fold=3)) == {}
+
+
+# --------------------------------------------------------------------------- #
+# Stratified partition (2026-11-01).
+#
+# The legacy rule cuts SORTED ids into contiguous blocks, so on BP4D+ (where
+# 'F001' sorts before 'M001') a fold is a sex block: fold 0-1 all female,
+# 3-4 all male. Per-fold spread then measures COHORTS, not model stability.
+# 'sex' shuffles within each stratum and interleaves proportionally, keeping
+# the array_split fold SIZES while making every fold representative.
+# --------------------------------------------------------------------------- #
+def _corpus(n_f: int = 82, n_m: int = 57):
+    """The real universe size: 139 usable BP4D+ subjects."""
+    return ([f'F{i:03d}' for i in range(1, n_f + 1)]
+            + [f'M{i:03d}' for i in range(1, n_m + 1)])
+
+
+def test_subject_stratum_reads_the_id_prefix():
+    assert subject_stratum('F001') == 'F'
+    assert subject_stratum('m058') == 'M'
+    assert subject_stratum('') == '?'
+    assert subject_stratum('001') == '?'
+
+
+def test_legacy_partition_is_unchanged_and_is_a_sex_block():
+    """The default MUST stay byte-identical (the recorded sweep depends on it)."""
+    subjects = _corpus()
+    folds = subject_folds(subjects, 5)
+
+    assert [len(f) for f in folds] == [28, 28, 28, 28, 27]
+    assert folds[0] == [f'F{i:03d}' for i in range(1, 29)]
+    # the confound this whole change exists to remove
+    assert {s[0] for s in folds[0]} == {'F'}
+    assert {s[0] for s in folds[4]} == {'M'}
+
+
+def test_stratified_partition_is_deterministic():
+    subjects = _corpus()
+    first = subject_folds(subjects, 5, split_seed=42, stratify='sex')
+    again = subject_folds(subjects, 5, split_seed=42, stratify='sex')
+    other = subject_folds(subjects, 5, split_seed=7, stratify='sex')
+
+    assert first == again
+    assert first != other
+
+
+def test_stratified_partition_keeps_sizes_and_balances_sex():
+    subjects = _corpus()
+    folds = subject_folds(subjects, 5, split_seed=42, stratify='sex')
+
+    # Fold sizes are still the array_split ones -> the compute budget per fold
+    # does not change when the confound is removed.
+    assert [len(f) for f in folds] == [28, 28, 28, 28, 27]
+    flat = [s for f in folds for s in f]
+    assert sorted(flat) == sorted(subjects)      # complete
+    assert len(set(flat)) == len(flat)           # disjoint
+
+    # Every fold holds both sexes, and the female count is within 1 subject of
+    # the corpus proportion.
+    total_f = sum(1 for s in subjects if s[0] == 'F')
+    for fold in folds:
+        n_f = sum(1 for s in fold if s[0] == 'F')
+        assert 0 < n_f < len(fold)
+        assert abs(n_f - total_f * len(fold) / len(subjects)) <= 1.0
+
+
+def test_stratified_partition_requires_an_explicit_seed():
+    """An unseeded draw cannot be reproduced by the next stage of the sweep."""
+    with pytest.raises(ValueError, match='split_seed'):
+        subject_folds(_corpus(), 5, split_seed=None, stratify='sex')
+
+
+def test_unknown_partition_strategy_is_rejected():
+    with pytest.raises(ValueError, match='split_stratify'):
+        subject_folds(_corpus(), 5, split_seed=1, stratify='age')
+
+
+def test_get_stage_splits_threads_the_partition_rule():
+    """Stage 2's held-out set MUST be Stage 3's test set for the same fold."""
+    subjects = _corpus()
+    kwargs = dict(split_seed=42, stratify='sex')
+    s2 = get_stage_splits(subjects, fold=0, n_folds=5, stage=2, **kwargs)
+    s3 = get_stage_splits(subjects, fold=0, n_folds=5, stage=3, **kwargs)
+
+    assert s2['test'] == s3['test']
+    assert set(s2['test']).isdisjoint(s2['train'])
+    assert len(s2['train']) + len(s2['test']) == len(subjects)
+
+
+def test_resolve_split_keys_threads_the_partition_rule():
+    kwargs = dict(split_seed=42, stratify='sex')
+    keys, kind = resolve_split_keys(
+        _sessions(*_corpus()), is_train=False, train_ratio=0.8,
+        split_by='subject', val_subject=None, split_role='test',
+        n_folds=5, fold=3, use_small_val=False, dataset_name='dummy', **kwargs)
+
+    assert kind == 'subject'
+    assert len(keys) == 28
+    assert {s[0] for s in keys} == {'F', 'M'}

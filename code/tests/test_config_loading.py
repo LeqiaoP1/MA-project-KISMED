@@ -164,6 +164,24 @@ def test_stage2_and_stage3_agree_on_the_roi_contract(monkeypatch):
            (s3.seq_len or int(round(s3.clip_duration * s3.fs)))
 
 
+def test_stage2_and_stage3_share_the_fold_partition_rule(monkeypatch):
+    """Different partition knobs = fold k trained on fold k's test subjects.
+
+    ``check_stage2_fold_contract`` compares ``fold``/``n_folds`` only, so the
+    two configs could drift to different ROLE LISTS while every guard still
+    passed. These two keys decide the role lists; they must match, and the
+    shipped pair must not silently fall back to the legacy contiguous blocks
+    (which make fold == sex block on BP4D+).
+    """
+    s2, s3 = _stage2(monkeypatch), _stage3(monkeypatch)
+    for key in ('split_seed', 'split_stratify'):
+        assert getattr(s2, key) == getattr(s3, key), (
+            f'{key}: stage2={getattr(s2, key)!r} != stage3={getattr(s3, key)!r}')
+    assert s2.split_seed is not None, 'the shipped pair must pin a partition seed'
+    assert s2.split_stratify == 'sex', \
+        'the shipped pair must stratify: sorted blocks are a sex confound'
+
+
 def test_stage3_hpc_leaves_the_encoder_to_the_fold_aware_job_script(monkeypatch):
     """The k-fold sweep must NEVER inherit a hardcoded encoder.
 

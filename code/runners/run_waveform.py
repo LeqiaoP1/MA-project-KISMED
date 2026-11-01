@@ -980,7 +980,8 @@ def main(args):
             dataset_test = build_dataset(is_train=False, test_mode=False, args=args, split_role='test')
             # Audit artefact: exactly which subjects each role saw in THIS run.
             # A Stage-2 / Stage-3 pair is only valid if the two manifests agree.
-            from utils import write_fold_manifest
+            from utils.splits import (as_split_seed, as_split_strategy,
+                                      write_fold_manifest)
             write_fold_manifest(
                 os.path.join(args.output_dir, 'fold_manifest.json'),
                 fold=int(getattr(args, 'fold', 0) or 0), n_folds=n_folds,
@@ -989,7 +990,10 @@ def main(args):
                                      or ()),
                        'val': list(getattr(dataset_val, 'split_keys', ())
                                    or ()),
-                       'test': list(dataset_test.split_keys)})
+                       'test': list(dataset_test.split_keys)},
+                split_seed=as_split_seed(getattr(args, 'split_seed', None)),
+                stratify=as_split_strategy(
+                    getattr(args, 'split_stratify', 'none')))
             if len(dataset_test) == 0:
                 # A held-out subject can have NO usable clip (locally F004 is
                 # rail-saturated). The fold is still a valid fold: record that

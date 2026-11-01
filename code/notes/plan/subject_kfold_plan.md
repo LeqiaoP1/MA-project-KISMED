@@ -419,6 +419,62 @@ no fold may inherit another fold's weights. Three properties make that true:
          (spec 'videomae:k400', 148 encoder tensors, 376.9 MB, mtime …)
 ```
 
+---
+
+## 9. Amendment 2026-11-01 — seeded sex-stratified partition
+
+**Why.** `subject_folds` cut SORTED ids into contiguous blocks, and BP4D+ ids
+sort F-then-M, so the partition was a sex block by construction. Measured on the
+139-subject universe:
+
+| fold | legacy rule | seeded `sex` rule (seed 42) |
+|---|---|---|
+| 0 | 28 subjects, **28F / 0M** | 28 subjects, 17F / 11M |
+| 1 | 28, **28F / 0M** | 28, 16F / 12M |
+| 2 | 28, 26F / 2M | 28, 17F / 11M |
+| 3 | 28, **0F / 28M** | 28, 16F / 12M |
+| 4 | 27, **0F / 27M** | 27, 16F / 11M |
+
+Per-fold spread therefore measured cohorts, not model stability, and a reviewer
+would ask why fold = sex. Randomising is the cheapest defence against such a
+confound, but only if it is **seeded and recorded** — an unseeded draw cannot be
+reproduced by the next stage of the sweep.
+
+**What changed (code placement).**
+
+| unit | change |
+|---|---|
+| `utils/splits.py::subject_stratum` (new) | stratum label of an id = its leading letter, uppercased (`F`/`M`; a non-alpha id becomes `'?'`) |
+| `utils/splits.py::_interleave_strata` (new) | merges strata into ONE sequence, member `j` of an `n`-member stratum at global rank `(j+0.5)/n`, so any contiguous chunk keeps the corpus proportion |
+| `utils/splits.py::subject_folds` | new `split_seed=None, stratify='none'`. `(None, 'none')` = the LEGACY path, bit-identical; a seed with `'none'` = global shuffle; a seed with `'sex'` = shuffle within stratum, interleave, then the same `np.array_split` (fold SIZES unchanged) |
+| `utils/splits.py::as_split_seed` / `as_split_strategy` (new) | config-value coercion, one source of truth for the `''`/`null` cases |
+| `get_stage_splits` / `resolve_split_keys` | pass-through of the pair; Stage 2 and Stage 3 must pass the same one |
+| `write_fold_manifest` | records `split_seed` / `split_stratify`, so an audit can tell the two rules apart |
+| `runners/_common.py::add_split_args` | `--split_seed` (default `None`) and `--split_stratify {none,sex}` (default `none`) |
+| `data/datasets.py`, `data/tir_resp_dataset.py`, `data/rgb_roi_dataset.py` | read the pair from `args`, print it (`[data] … partition: stratify=… split_seed=…`) |
+| configs | `split_seed: 42` + `split_stratify: sex` in `stage2_hpc_tir_roi_resp.yaml`, `resp_tir_roi_hpc.yaml`, `resp_tir_roi_hpc_smoothl1.yaml` |
+| tests | `tests/test_kfold_splits.py` (8 new: legacy unchanged, determinism, sizes, sex balance, seed required, unknown strategy, `get_stage_splits`/`resolve_split_keys` pass-through) and `tests/test_config_loading.py::test_stage2_and_stage3_share_the_fold_partition_rule` |
+
+**Verified.** Default arguments reproduce the old partition exactly (existing
+tests and the recorded sweep depend on that). With `seed=42, stratify='sex'`:
+sizes `28/28/28/28/27`, disjoint and complete, every fold mixed, F-count within
+1 of proportional, overlap with the legacy fold only 4-7 of 28. End-to-end
+through the real builders, Stage 2's held-out list and Stage 3's `test` role are
+the identical 28-subject list; suites 506 pass.
+
+**Consequence for the recorded results.** `code/notes/eval/tir_resp/resp_5fold_cv.md`
+measured the LEGACY partition on the 112 px / `roi_padding 0.2` / no-respiration-cache
+lineage. A new sweep differs in geometry, label space AND partition, so its
+numbers are not comparable to that report, and no Stage-2 legacy fold may be
+paired with a Stage-3 stratified fold (the contract guard compares
+`fold`/`n_folds` only, not the role lists — the config test above is the guard
+for that gap).
+
+**Not done here.** `code/notes/spec/01_data_pipeline.md` and `04_configs_and_execution.md`
+were updated by hand; `scripts/project/write_specs.py` is a blind overwrite whose
+own header forbids running it against the live spec.
+
+
 so a fold sweep can be checked by eye: identical path, size and mtime means all
 folds started from the same baseline.
 

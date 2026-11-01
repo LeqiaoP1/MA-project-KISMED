@@ -101,9 +101,17 @@ physio_norm: zscore                # per-clip z-score, applied by the DATASET
                                    #   clip has zero mean and unit std.
 
 # ---- data split (SUBJECT-disjoint) ----
-n_folds: 5                         # 5-fold cyclic rotation (28 test / 112 train)
+n_folds: 5                         # 5-fold cyclic rotation (28 test for folds
+                                   #   0-3, 27 for fold 4 -- the usable corpus
+                                   #   has 139 subjects: 139 = 5*27 + 4)
 fold: 0                            # overridden by the sbatch array
 use_small_val: false               # Option A: 0% val, fixed-epoch checkpointing
+# PARTITION RULE -- MUST equal configs/pretrain/stage2_hpc_tir_roi_resp.yaml.
+# seed 42 + 'sex' = shuffle within each sex stratum, then interleave, so a fold
+# is a near-representative sample instead of a contiguous block of sorted ids
+# (which made fold == sex block: F001..F082, then M001..M058).
+split_seed: 42
+split_stratify: sex
 train_ratio: 0.8                   # legacy fallback
 split_by: subject
 val_subject: ''                    # legacy fallback

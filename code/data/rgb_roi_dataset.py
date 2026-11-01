@@ -1123,6 +1123,8 @@ class RGBRoiFinetuneDataset(RGBRoiPretrainDataset):
                  n_folds: int = 0,
                  fold: int = 0,
                  use_small_val: bool = False,
+                 split_seed: Optional[int] = None,
+                 stratify: str = 'none',
                  fs: float = 100.0,
                  clip_duration: float = DEFAULT_CLIP_SECONDS,
                  clip_stride: Optional[float] = None,
@@ -1174,16 +1176,24 @@ class RGBRoiFinetuneDataset(RGBRoiPretrainDataset):
                 f'RGBRoiFinetuneDataset: no usable session under {root} carries '
                 f'{SIGNAL_FILES[target]}.')
                 
-        from utils.splits import resolve_split_keys
+        from utils.splits import (as_split_seed, as_split_strategy,
+                                  resolve_split_keys)
+        self.split_seed = as_split_seed(split_seed)
+        self.split_stratify = as_split_strategy(stratify)
         self.split_keys, self.split_key_kind = resolve_split_keys(
             usable, self.is_train, self.train_ratio, self.split_by,
             self.val_subject, self.split_role, n_folds, fold, use_small_val,
-            'RGBRoiFinetuneDataset')
+            'RGBRoiFinetuneDataset',
+            split_seed=self.split_seed, stratify=self.split_stratify)
 
         print(f'[data] rgb_roi split_by={self.split_key_kind}: '
               f'{self.split_role} = {self.split_keys} '
               f'({len(usable)} usable session(s), '
               f'{len({s["subject"] for s in usable})} subject(s))')
+        print(f'[data] rgb_roi partition: stratify={self.split_stratify} '
+              f'split_seed={self.split_seed}'
+              + (' (legacy: sorted contiguous blocks)' if self.split_seed is None
+                 else ' (seeded draw -- Stage 2 must use the same pair)'))
 
         # An empty role is a legitimate outcome; see the tir_roi twin.
         self._empty_view = False
@@ -1324,6 +1334,7 @@ def build_rgb_roi_finetune_dataset(is_train: bool, test_mode: bool,
     val_subject = getattr(args, 'val_subject', None)
     if isinstance(val_subject, (list, tuple)):
         val_subject = val_subject[0] if val_subject else None
+    from utils.splits import as_split_seed, as_split_strategy
     return RGBRoiFinetuneDataset(
         raw_root=(getattr(args, 'raw_root', None)
                   or getattr(args, 'data_path', None) or None),
@@ -1336,6 +1347,8 @@ def build_rgb_roi_finetune_dataset(is_train: bool, test_mode: bool,
         n_folds=int(getattr(args, 'n_folds', 0)),
         fold=int(getattr(args, 'fold', 0)),
         use_small_val=bool(getattr(args, 'use_small_val', False)),
+        split_seed=as_split_seed(getattr(args, 'split_seed', None)),
+        stratify=as_split_strategy(getattr(args, 'split_stratify', 'none')),
         fs=float(getattr(args, 'fs', 100.0)),
         clip_duration=float(getattr(args, 'clip_duration', DEFAULT_CLIP_SECONDS)),
         clip_stride=getattr(args, 'clip_stride', None),
