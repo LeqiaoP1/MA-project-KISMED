@@ -14,6 +14,14 @@ plan ends at "data pipeline verified", as planned.
 > 145 sessions fully invalidated, 7 subjects lost; 0.3 V: 103 and 6, with 42
 > sessions rescued) is in the impact note §1.2. All superseded artefacts are
 > still on scratch for A/B.
+>
+> **Normalisation superseded 2026-11-01.** The ``physio_norm: session`` mode this
+> plan's decisions C4 / D6 / R5 refer to has been RETIRED: the label is now a
+> per-clip z-score and nothing else (``data.tir_resp_dataset.TARGET_NORM``,
+> ``check_physio_norm``). The cache contract itself is unchanged — it still
+> stores run-mean-removed volts and knows nothing about normalisation — so every
+> gate and number in this file stands; only the sentences that describe the
+> downstream session-level z-score are historical.
 Scope: the **TIR-ROI / RESP lineage** only — `data/tir_resp_dataset.py`, a new
 `data/resp_preprocess.py` + `data/resp_cache.py`, a new
 `runners/run_build_resp_cache.py`, the 8 `configs/*/…tir_roi*.yaml` runs and the TIR

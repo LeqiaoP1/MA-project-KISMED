@@ -24,9 +24,10 @@
 
 **Explicitly out of scope** (the 224 px thesis-scale track): the `input_size: 224`
 lineage geometry and its dedicated work items (npy frame store, query-based decoder,
-mask-ratio 1.0 and per-step ratio, 1-D span masking, per-session z-score target,
-zero-init modality embeddings + weight-decay groups, xavier conv init) — all of them
-are tracked in `code/notes/plan/RGB_BP_plan.md` §3 and §7. Also out
+mask-ratio 1.0 and per-step ratio, 1-D span masking, zero-init modality embeddings
++ weight-decay groups, xavier conv init) — all of them
+are tracked in `code/notes/plan/RGB_BP_plan.md` §3 and §7. (The 1-D label itself
+is settled pipeline-wide: a per-clip z-score, `spec/01_data_pipeline.md`.) Also out
 of scope: HPC submission wiring (`env_hpc.sh` placeholders; the cluster tree has no
 `2D+3D/` RGB folder that `prepare_bp4d.py` requires), the TIR stream and the EDA
 branch.
@@ -387,8 +388,8 @@ per-fold `--output_dir`. Full record: `TirROI_Resp_plan.md` §3 and §8.
 2. **Stitched-waveform scale convention.** Option A *(default)*: report
    affine-invariant session metrics (Pearson / PSD shape / RR) and keep MAE/RMSE
    per-clip. Option B: chain-wise affine calibration between overlapping clips.
-   Option C: switch `physio_norm` to `none` for the final epochs so absolute amplitude
-   is learned — needs a target-scale decision first.
+   (A third option -- normalising the target differently -- no longer exists: the
+   pipeline has exactly one label normalisation, a per-clip z-score.)
 3. **From-scratch control.** The init A/B ("is Stage 2 necessary" at the downstream
    level) needs a third/fourth run off `stage2_local_scratch/checkpoints/checkpoint-0039.pth`.
    Deferred until the two headline runs are green.

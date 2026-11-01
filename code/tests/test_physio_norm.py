@@ -1,17 +1,20 @@
-"""Pipeline-wide 1-D target normalisation (`physio_norm`) + clip-level ROI box.
+"""The ONE label normalisation of the pipeline -- a per-clip z-score, applied by
+THE DATASET -- plus the clip-level ROI box.
 
-The TIR-ROI+RESP pipeline has exactly ONE normalisation knob, and the DATASET
-owns it in BOTH stages (same flag name and values, so the mechanism carries over
-unchanged to the RGB+BP extension):
+Both ROI lineages and both stages share that single function:
 
-* Stage 2 (``data_set: tir_roi``): ``--physio_norm {none, clip|zscore, session}``
-  on ``runners/run_pretrain.py``. The dataset z-scores each clip (whole-session
-  statistics for ``session``) and the MODEL never normalises the 1-D stream:
-  ``run_pretrain.pin_roi_target_norm`` forces ``target_norm='none'`` for every
-  ROI lineage (``tir_roi`` = TIR-ROI+RESP, ``rgb_roi`` = RGB+BP).
-* Stage 3 (``run_waveform.py``): the same flag name and values, applied by
-  ``TirRoiRespFinetuneDataset`` -- so one clip yields ONE identical target in
-  both stages.
+* Stage 2 (``data_set: tir_roi``): ``--physio_norm {clip|zscore}`` on
+  ``runners/run_pretrain.py``. The dataset z-scores each clip and the MODEL
+  never normalises the 1-D stream: ``run_pretrain.pin_roi_target_norm`` forces
+  ``target_norm='none'`` for every ROI lineage (``tir_roi`` = TIR-ROI+RESP,
+  ``rgb_roi`` = RGB+BP).
+* Stage 3 (``run_waveform.py``): the same flag, the same function -- so one clip
+  yields ONE identical target in both stages.
+
+There is no ``none`` / ``ac`` / ``session`` alternative: a second target space
+would make the stages and the lineages incomparable by construction, so those
+values are REFUSED. The RGB+BP behaviour is covered by
+``tests/test_rgb_zip_source.py`` (it needs a real JPEG tree).
 
 The TIR-ROI bounding box is CLIP-level: it is taken over the clip's own frames
 (``BP4DPlusTIRRespDataset.clip_roi_box``), so two clips of the same session get
@@ -133,7 +136,7 @@ def _args(root, **over):
               tubelet='2,16,16', input_size=64, roi_padding=0.2,
               roi_landmarks='', fps=FPS, resp_fs=RESP_FS,
               fs=100.0, min_signal_spread=0.0, rail_touch_v=0.0,
-              physio_norm='none',
+              physio_norm='zscore',
               max_clips=None, max_entries=None)
     kw.update(over)
     return argparse.Namespace(**kw)
@@ -148,76 +151,61 @@ def _raw_on_model_grid(ds, index):
 
 
 # --------------------------------------------------------------------------- #
-# 1. the dataset-side knob (Stage 2)
+# 1. the dataset-side normalisation (Stage 2)
 # --------------------------------------------------------------------------- #
-def test_default_physio_norm_is_none(tmp_path):
+def test_the_only_label_normalisation_is_the_clip_z_score(tmp_path):
     ds = _pretrain_ds(_write_raw(tmp_path))
-    assert ds.physio_norm == 'none'
-    assert ds.base.norm == 'none'
-    assert ds.stats['norm'] == 'none'
+    assert trd.TARGET_NORM == 'clip'
+    assert ds.physio_norm == trd.TARGET_NORM
+    assert ds.stats['target_norm'] == trd.TARGET_NORM
 
 
-def test_physio_norm_none_returns_raw_volts(tmp_path):
-    ds = _pretrain_ds(_write_raw(tmp_path), physio_norm='none')
-    got = ds[0]['resp'].numpy()[0]
-    assert np.allclose(got, _raw_on_model_grid(ds, 0), atol=1e-4)
+def test_target_is_zscored_per_clip(tmp_path):
+    """Every returned window has zero mean / unit std and is exactly the raw
+    window under ITS OWN affine map."""
+    ds = _pretrain_ds(_write_raw(tmp_path))
+    for index in range(len(ds)):
+        got = ds[index]['resp'].numpy()[0]
+        raw = _raw_on_model_grid(ds, index)
+        expect = (raw - raw.mean()) / (raw.std() + trd.ZSCORE_EPS)
+        assert np.allclose(got, expect, atol=1e-4), index
+        assert abs(float(got.mean())) < 1e-4, index
+        assert abs(float(got.std()) - 1.0) < 1e-3, index
 
 
-def test_physio_norm_aliases_zscore_to_clip(tmp_path):
-    """'zscore' (the Stage-3 spelling) == 'clip' here."""
+def test_two_clips_of_a_session_get_their_own_statistics(tmp_path):
+    """Per CLIP, not per session: the clips of one session carry different raw
+    offsets and BOTH come back centred on zero."""
+    ds = _pretrain_ds(_write_raw(tmp_path))
+    raw0, raw1 = _raw_on_model_grid(ds, 0), _raw_on_model_grid(ds, 1)
+    assert abs(float(raw0.mean()) - float(raw1.mean())) > 0.05
+    for got in (ds[0]['resp'].numpy()[0], ds[1]['resp'].numpy()[0]):
+        assert abs(float(got.mean())) < 1e-4
+
+
+def test_physio_norm_accepts_both_z_score_spellings(tmp_path):
+    """'zscore' (the Stage-3 spelling) and 'clip' (the Stage-2 one) are the SAME
+    behaviour, so a config can use either."""
     root = _write_raw(tmp_path)
     a = _pretrain_ds(root, physio_norm='zscore')
     b = _pretrain_ds(root, physio_norm='clip')
     assert a.physio_norm == b.physio_norm == 'clip'
-    assert a.base.norm == b.base.norm == 'clip'
     assert np.allclose(a[0]['resp'].numpy(), b[0]['resp'].numpy())
 
 
-def test_rejects_unknown_physio_norm(tmp_path):
-    with pytest.raises(ValueError, match='physio_norm must be'):
-        _pretrain_ds(_write_raw(tmp_path), physio_norm='bogus')
-
-
-def test_session_norm_uses_the_whole_session_statistics(tmp_path):
-    root = _write_raw(tmp_path)
-    ds = _pretrain_ds(root, physio_norm='session')
-    assert ds.base.norm == 'session'
-    assert ds.stats['norm'] == 'session'
-
-    sess = ds.entries[0]['session']
-    t0 = ds[0]['resp'].numpy()[0]
-    t1 = ds[1]['resp'].numpy()[0]
-
-    # (a) two clips of the SAME session do NOT share a mean -> session-level,
-    #     NOT clip-level (a per-clip z-score would force both to ~0).
-    assert abs(float(t0.mean()) - float(t1.mean())) > 0.5
-    # (b) each clip is exactly the raw window under the SESSION affine map.
-    mu_s, sd_s = ds.base._norm_cache[sess]
-    expect0 = (_raw_on_model_grid(ds, 0) - mu_s) / (sd_s + 1e-8)
-    expect1 = (_raw_on_model_grid(ds, 1) - mu_s) / (sd_s + 1e-8)
-    assert np.allclose(t0, expect0, atol=1e-4)
-    assert np.allclose(t1, expect1, atol=1e-4)
-
-
-def test_session_norm_differs_from_per_clip_norm(tmp_path):
-    """The two normalisations are NOT equivalent on this corpus."""
-    root = _write_raw(tmp_path)
-    ds = _pretrain_ds(root, physio_norm='session')
-    sess = ds.entries[0]['session']
-    ds.base._resp_full(sess)                 # fills _norm_cache (session stats)
-    mu_s, sd_s = ds.base._norm_cache[sess]
-    raw0 = _raw_on_model_grid(ds, 0)
-    per_clip = (raw0 - raw0.mean()) / (raw0.std() + 1e-8)
-    session = (raw0 - mu_s) / (sd_s + 1e-8)
-    assert not np.allclose(per_clip, session, atol=1e-3)
+@pytest.mark.parametrize('retired', ['none', 'ac', 'session', 'bogus'])
+def test_retired_physio_norm_values_are_refused(tmp_path, retired):
+    """A stale config FAILS instead of silently training on another target
+    space: 'none' / 'ac' / 'session' were removed with the extra modes."""
+    with pytest.raises(ValueError, match='physio_norm may only be'):
+        _pretrain_ds(_write_raw(tmp_path), physio_norm=retired)
 
 
 # --------------------------------------------------------------------------- #
 # 2. the model is pinned to identity for EVERY ROI lineage
 # --------------------------------------------------------------------------- #
 def test_pin_roi_target_norm_forces_identity(capsys):
-    a = argparse.Namespace(data_set='tir_roi', target_norm='clip',
-                           physio_norm='session')
+    a = argparse.Namespace(data_set='tir_roi', target_norm='clip')
     assert pin_roi_target_norm(a) is True
     assert a.target_norm == 'none'
     assert 'forcing' in capsys.readouterr().out
@@ -225,33 +213,30 @@ def test_pin_roi_target_norm_forces_identity(capsys):
 
 def test_pin_roi_target_norm_covers_rgb_roi():
     """RGB+BP gets the SAME treatment -- that is the extension."""
-    a = argparse.Namespace(data_set='rgb_roi', target_norm='clip',
-                           physio_norm='clip')
+    a = argparse.Namespace(data_set='rgb_roi', target_norm='clip')
     assert pin_roi_target_norm(a) is True
     assert a.target_norm == 'none'
 
 
 def test_pin_roi_target_norm_ignores_non_roi_paths():
-    a = argparse.Namespace(data_set='bp4d+', target_norm='clip',
-                           physio_norm='none')
+    a = argparse.Namespace(data_set='bp4d+', target_norm='clip')
     assert pin_roi_target_norm(a) is False
     assert a.target_norm == 'clip'            # untouched
 
 
 # --------------------------------------------------------------------------- #
-# 3. the builders thread the SAME knob for both ROI lineages
+# 3. the builder threads the (single) setting to the dataset
 # --------------------------------------------------------------------------- #
-def test_builder_threads_physio_norm(tmp_path):
-    root = _write_raw(tmp_path)
-    ds = build_pretraining_dataset(_args(root, physio_norm='session'))
-    assert ds.physio_norm == 'session'
-    assert ds.base.norm == 'session'
-
-
-def test_builder_accepts_the_stage3_alias(tmp_path):
+def test_builder_threads_the_z_score(tmp_path):
     root = _write_raw(tmp_path)
     ds = build_pretraining_dataset(_args(root, physio_norm='zscore'))
     assert ds.physio_norm == 'clip'
+
+
+def test_builder_refuses_a_retired_value(tmp_path):
+    with pytest.raises(ValueError, match='physio_norm may only be'):
+        build_pretraining_dataset(_args(_write_raw(tmp_path),
+                                        physio_norm='session'))
 
 
 def test_rgb_roi_builder_threads_physio_norm():
@@ -260,7 +245,7 @@ def test_rgb_roi_builder_threads_physio_norm():
 
 
 def test_rgb_roi_dataset_validates_physio_norm():
-    with pytest.raises(ValueError, match='RGBRoiPretrainDataset: physio_norm'):
+    with pytest.raises(ValueError, match='physio_norm may only be'):
         rrd.RGBRoiPretrainDataset(raw_root='/nonexistent',
                                   streams=('rgb', 'bp'),
                                   physio_norm='bogus')
@@ -280,7 +265,8 @@ def test_target_norm_none_is_identity():
 
 def test_target_norm_none_leaves_visual_streams_normalised():
     """The identity applies to the 1-D stream only -- video keeps its own
-    per-token z-score (so a session-norm run does not change the visual view)."""
+    per-token z-score (so the dataset's label normalisation never touches the
+    visual view)."""
     m = _tiny_model(target_norm='none')
     T = m.num_frames
     S = m.input_size
@@ -322,14 +308,14 @@ def test_roi_box_is_computed_per_clip(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# 7. the shipped Stage-2 configs use the ONE knob
+# 7. the shipped configs carry the ONE setting
 # --------------------------------------------------------------------------- #
-def test_hpc_config_uses_physio_norm_and_the_2s_hop():
+def test_hpc_config_uses_the_clip_z_score_and_the_2s_hop():
     path = os.path.join(CODE_DIR, 'configs', 'pretrain',
                         'stage2_hpc_tir_roi_resp.yaml')
     with open(path) as fh:
         cfg = yaml.safe_load(fh)
-    assert cfg['physio_norm'] == 'session'
+    assert cfg['physio_norm'] in ('clip', 'zscore')
     assert cfg['clip_duration'] == pytest.approx(8.0)
     assert cfg['clip_stride'] == pytest.approx(2.0)
     # the rail / dead-signal rules stay pinned
@@ -339,50 +325,34 @@ def test_hpc_config_uses_physio_norm_and_the_2s_hop():
 
 @pytest.mark.parametrize('rel', ROI_PRETRAIN_CONFIGS)
 def test_roi_configs_never_set_the_model_side_target_norm(rel):
-    """One knob: the ROI Stage-2 configs normalise via `physio_norm` (dataset)
-    and must NOT set the model-side `target_norm`."""
+    """The dataset owns the normalisation, so an ROI Stage-2 config must set
+    ``physio_norm`` (z-score only) and must NOT set the model-side
+    ``target_norm``."""
     with open(os.path.join(CODE_DIR, rel)) as fh:
         cfg = yaml.safe_load(fh)
     assert 'target_norm' not in cfg, rel
-    assert cfg['physio_norm'] in ('none', 'clip', 'zscore', 'session'), rel
+    assert cfg['physio_norm'] in ('clip', 'zscore'), rel
 
 
 # --------------------------------------------------------------------------- #
-# 6. Stage 3: physio_norm='session' mirrors the Stage-2 target space
+# 6. Stage 3 sees EXACTLY the Stage-2 target (one function, one label space)
 # --------------------------------------------------------------------------- #
-def test_finetune_session_norm_uses_the_session_statistics(tmp_path):
-    root = _write_raw(tmp_path)
-    ds = _finetune_ds(root, physio_norm='session')
-    assert ds.physio_norm == 'session'
-    assert ds.base.norm == 'session'          # the BASE applies the z-score
-
-    _, w = ds[1]                              # (tir, waveform)
-    sess = ds.entries[1]['session']
-    mu_s, sd_s = ds.base._norm_cache[sess]
-    raw = ds.base.respiration_clip(1, normalized=False)
-    grid = (np.arange(ds.seq_len) / ds.fs) * ds.resp_fs
-    rawg = np.interp(grid, np.arange(raw.shape[0], dtype=np.float64),
-                     raw.astype(np.float64))
-    assert np.allclose(w.numpy(), (rawg - mu_s) / (sd_s + 1e-8), atol=1e-4)
-    # session-relative: the clip offset is KEPT (a per-clip z-score would zero it)
-    assert abs(float(w.mean())) > 0.3
-
-
-def test_finetune_session_norm_is_not_per_clip(tmp_path):
-    root = _write_raw(tmp_path)
-    _, w_s = _finetune_ds(root, physio_norm='session')[0]
-    _, w_c = _finetune_ds(root, physio_norm='zscore')[0]
-    assert abs(float(w_c.mean())) < 1e-5      # per-clip: zero mean
-    assert abs(float(w_s.mean())) > 0.3       # session: offset preserved
-    assert not np.allclose(w_s.numpy(), w_c.numpy(), atol=1e-3)
+def test_finetune_target_is_zscored_per_clip(tmp_path):
+    ds = _finetune_ds(_write_raw(tmp_path))
+    for index in range(len(ds)):
+        _, w = ds[index]                      # (tir, waveform)
+        assert abs(float(w.mean())) < 1e-4, index
+        # unbiased=False: the label uses the POPULATION std, torch defaults to
+        # the sample std (ddof=1), which reads 1.00125 for L=400.
+        assert abs(float(w.std(unbiased=False)) - 1.0) < 1e-3, index
 
 
 def test_stage2_and_stage3_target_spaces_are_identical(tmp_path):
     """The point of the aligned pipeline: the SAME clip yields the SAME target
-    in Stage 2 (``physio_norm: session`` + pinned identity) and Stage 3."""
+    in Stage 2 and in Stage 3, with no normalisation stacked twice."""
     root = _write_raw(tmp_path)
-    pre = _pretrain_ds(root, physio_norm='session')
-    fin = _finetune_ds(root, physio_norm='session')
+    pre = _pretrain_ds(root)
+    fin = _finetune_ds(root)
     assert len(pre) == len(fin) > 0
     for i in range(len(pre)):
         stage2 = pre[i]['resp'].numpy()[0]
@@ -390,22 +360,23 @@ def test_stage2_and_stage3_target_spaces_are_identical(tmp_path):
         assert np.allclose(stage2, stage3, atol=1e-5)
 
 
-def test_finetune_accepts_the_stage2_alias(tmp_path):
+def test_finetune_accepts_the_stage2_spelling(tmp_path):
     ds = _finetune_ds(_write_raw(tmp_path), physio_norm='clip')
-    assert ds.physio_norm == 'zscore'
+    assert ds.physio_norm == trd.TARGET_NORM
 
 
-def test_finetune_rejects_unknown_physio_norm(tmp_path):
-    with pytest.raises(ValueError, match="physio_norm must be"):
-        _finetune_ds(_write_raw(tmp_path), physio_norm='bogus')
+@pytest.mark.parametrize('retired', ['none', 'ac', 'session', 'bogus'])
+def test_finetune_refuses_retired_values(tmp_path, retired):
+    with pytest.raises(ValueError, match='physio_norm may only be'):
+        _finetune_ds(_write_raw(tmp_path), physio_norm=retired)
 
 
-def test_stage3_hpc_config_uses_session_physio_norm():
+def test_stage3_hpc_config_uses_the_clip_z_score():
     path = os.path.join(CODE_DIR, 'configs', 'finetune',
                         'resp_tir_roi_hpc.yaml')
     with open(path) as fh:
         cfg = yaml.safe_load(fh)
-    assert cfg['physio_norm'] == 'session'
+    assert cfg['physio_norm'] in ('clip', 'zscore')
     # the geometry that MUST still mirror the Stage-2 HPC run
     assert cfg['input_size'] == 96
     assert cfg['temporal_stride'] == 2
@@ -413,7 +384,8 @@ def test_stage3_hpc_config_uses_session_physio_norm():
     assert cfg['clip_duration'] == pytest.approx(8.0)
 
 
-def test_run_waveform_exposes_the_session_physio_norm():
+def test_run_waveform_exposes_only_the_z_score():
     with open(os.path.join(CODE_DIR, 'runners', 'run_waveform.py')) as fh:
         src = fh.read()
-    assert "choices=['none', 'ac', 'zscore', 'session']" in src
+    assert "choices=['clip', 'zscore']" in src
+    assert "choices=['none', 'ac', 'zscore', 'session']" not in src

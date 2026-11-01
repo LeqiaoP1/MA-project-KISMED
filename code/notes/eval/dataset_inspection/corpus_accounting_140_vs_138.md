@@ -1,5 +1,12 @@
 # Corpus accounting: why BP4D+ (140 subjects) evaluates as 138
 
+> **HISTORICAL SETTINGS (2026-11-01).** The run recorded below used
+> `physio_norm session`, a mode that has since been retired; the pipeline now
+> applies a per-clip z-score only (`data.tir_resp_dataset.TARGET_NORM`). The
+> clip/session counts in this file are UNAFFECTED (no normalisation enters the
+> enumeration), but the setting lists below and the `norm=` argument in the
+> reproduction snippet no longer run as written.
+>
 > Measured 2026-10-25 against `$RAW_DATA_PATH=/work/projects/l0003511/test`
 > Reproduces the pooled k-fold artifact exactly:
 > `output/eval/resp_kfold/kfold_resp_tir_roi_hpc.json` -> **138 subjects /

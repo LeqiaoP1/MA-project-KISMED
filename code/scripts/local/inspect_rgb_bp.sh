@@ -15,8 +15,8 @@
 #     which is what makes the box's min/max visible; the rectangle is drawn in
 #     the DECODED pixels with the dataset's own floor/ceil/clamp arithmetic;
 #   * the ROI patch EXACTLY as it leaves the dataset ([C, T, H, W] slice);
-#   * the BP_mmHg.txt window in mmHg and, unless --norm none, the per-clip
-#     z-score the model computes internally (norm=clip);
+#   * the BP_mmHg.txt window in mmHg and the per-clip z-score the dataset
+#     returns as the label (the two share one panel, on twin axes);
 #   * (SKIN=1, the default) the two-stage SKIN mask -- per-frame brow/eye/mouth
 #     landmark exclusion + the YCrCb skin gate -- tinted red on the frame AND on
 #     the patch, with the per-frame retained fraction and the retained vs dropped
@@ -72,7 +72,6 @@ CLIP_STRIDE="${CLIP_STRIDE:-0}"
 LANDMARKS="${LANDMARKS:-face}"
 SIGNAL="${SIGNAL:-bp}"
 DECODE_SCALE="${DECODE_SCALE:-1}"
-NORM="${NORM:-clip}"
 # The inspector's default; the RGB provider / the configs use 0.2.
 PADDING="${PADDING:-0.1}"
 # SKIN=1 adds the two-stage skin mask (report + figure tint); SKIN=0 is the
@@ -91,7 +90,7 @@ else
     ARGS=(--subject "$SUBJECT" --task "$TASK" --signal "$SIGNAL"
           --input_size "$SIZE" --clip_seconds "$CLIP_SECONDS"
           --clip_index "$CLIPS" --landmarks "$LANDMARKS"
-          --decode_scale "$DECODE_SCALE" --norm "$NORM"
+          --decode_scale "$DECODE_SCALE"
           --roi_padding "$PADDING" --video "$VIDEO")
     [ "$CLIP_STRIDE" != "0" ] && ARGS+=(--clip_stride "$CLIP_STRIDE")
     [ "$MAX_ENTRIES" != "0" ] && ARGS+=(--max_entries "$MAX_ENTRIES")

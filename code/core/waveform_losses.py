@@ -26,12 +26,9 @@ Implements the unified loss of the Stage-3 design
 All losses operate on 1D waveforms of shape ``[B, T]`` or ``[B, 1, T]``
 (a leading channel axis is squeezed). ``L_time`` is the only SCALE-DEPENDENT term
 (it owns the amplitude); ``L_Pearson`` is scale- and shift-invariant, and
-``L_MR-STFT`` compares magnitude spectra. With the Stage-3 per-clip
-``physio_norm: zscore`` target the target std is ~1.0 by construction, so
-``L_time`` reduces to ``|std(pred) - 1|``. With ``physio_norm: session`` (the
-twin of the Stage-2 ``physio_norm: session`` target space) the target std is NOT
-~1 and the clip mean is non-zero, so ``L_time`` becomes a genuine
-amplitude-matching term ``|std(pred) - std(target)|``.
+``L_MR-STFT`` compares magnitude spectra. The dataset z-scores every target with
+its own mean/std (``data.tir_resp_dataset.TARGET_NORM``), so the target std is
+~1.0 by construction and ``L_time`` reduces to ``|std(pred) - 1|``.
 """
 from typing import List
 
@@ -78,9 +75,9 @@ def _std(x: torch.Tensor, eps: float = _EPS) -> torch.Tensor:
     gradient instead of a NaN.
 
     ``unbiased=False`` (divide by N) matches the target normalisation used
-    upstream: ``data.rgb_roi_dataset.RGBRoiFinetuneDataset._normalize_target``
-    and ``data.paired_dataset`` both divide by the numpy population std, so a
-    ``physio_norm: zscore`` target measures std ~ 1.0 here.
+    upstream: every dataset class divides by the numpy population std
+    (``data.tir_resp_dataset.ZSCORE_EPS`` / ``_normalize``), so a z-scored
+    target measures std ~ 1.0 here.
     """
     d = x - x.mean(dim=-1, keepdim=True)
     return torch.sqrt((d * d).mean(dim=-1) + eps)
@@ -126,10 +123,9 @@ class StdLoss(nn.Module):
     ``0.0000``. Rejecting a wrong-SHAPED prediction is now the job of ``beta``
     alone, and Pearson is scale-invariant and cosine-flat near r = 1.
 
-    :param reduction: ``'l1'`` (default, ``|d|``) or ``'l2'`` (``d ** 2``). With
-        the per-clip ``physio_norm: zscore`` target (measures std 0.999) both
-        reduce to ``|std(pred) - 1|``; with ``physio_norm: session`` the target
-        std is clip-dependent, so they compare ``std(pred)`` against it.
+    :param reduction: ``'l1'`` (default, ``|d|``) or ``'l2'`` (``d ** 2``). The
+        target is z-scored per clip by the dataset (measures std 0.999), so both
+        reduce to ``|std(pred) - 1|``.
     """
 
     def __init__(self, reduction: str = 'l1'):
@@ -251,9 +247,9 @@ class WaveformJointLoss(nn.Module):
         sees all three. The two are NOT comparable in magnitude, so ``alpha``
         may need retuning when switching.
     :param huber_beta: the ``SmoothL1Loss`` transition point, in TARGET-STD
-        units. Only read when ``time_loss='smoothl1'``. Under the Stage-3
-        ``physio_norm: session`` target the target std is ~0.85, so the default
-        1.0 is ~1 std: quadratic for the bulk of the error, linear for outliers.
+        units. Only read when ``time_loss='smoothl1'``. The label is z-scored
+        per clip, so its std is ~1 and the default 1.0 is ~1 std: quadratic for
+        the bulk of the error, linear for outliers.
     """
 
     def __init__(self, alpha: float = 1.0, beta: float = 1.0,

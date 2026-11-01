@@ -121,7 +121,7 @@ def test_stage2_hpc_resolves_the_intended_values(monkeypatch):
     assert a.clip_stride == pytest.approx(2.0)
     assert a.sig_kernel == 16
     assert a.tubelet == '2,16,16'
-    assert a.physio_norm == 'session'       # the ONLY target-norm knob
+    assert a.physio_norm == 'zscore'        # the ONLY label normalisation
     assert a.pretrained_encoder == 'videomae:k400'
     # large-batch MAE convention: blr is set and lr stays None so it is DERIVED
     # (setting a YAML `lr` would silently switch the runner to an absolute LR).

@@ -545,12 +545,13 @@ def amplitude_metrics(pred, target, fs=100.0, band=(0.1, 0.6)):
     usable in-band reference energy.
 
     SPACE CONTRACT -- the caller must put ``pred`` into the SAME units as
-    ``target`` first. Under ``physio_norm: session`` the prediction is
-    session-z-scored while the reference is raw volts, so this metric is only
-    meaningful after ``evaluation.assemble.affine_calibrate`` has mapped the
-    prediction into volts. That calibration uses the session's TRUE scale, so
-    the resulting amplitude error is **oracle-calibrated** (not deployable),
-    exactly like ``mae_affine`` / ``rmse_affine``.
+    ``target`` first. The label is z-scored per clip while the reference is the
+    pre-normalisation window (raw volts, or the cache's run-mean-removed volts),
+    so this metric is only meaningful after ``evaluation.assemble.affine_calibrate``
+    has mapped the prediction into the reference's units. That calibration uses
+    the session's TRUE scale, so the resulting amplitude error is
+    **oracle-calibrated** (not deployable), exactly like ``mae_affine`` /
+    ``rmse_affine``.
 
     :returns: ``{'n', 'amp_pred', 'amp_ref', 'amp_ratio', 'amp_rel_err'}`` --
         ``amp_rel_err = |amp_ratio - 1|`` (0 = perfect depth, 1 = double or

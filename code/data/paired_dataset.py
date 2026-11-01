@@ -34,6 +34,7 @@ from torch.utils.data import Dataset
 
 from . import alignment as align
 from . import video_io as vio
+from .tir_resp_dataset import ZSCORE_EPS
 
 __all__ = ['PairedSessionDataset', 'build_paired_dataset', 'scan_sessions']
 
@@ -163,30 +164,30 @@ class PairedSessionDataset(Dataset):
                  max_entries: Optional[int] = None,
                  tir_channels: int = 3,
                  use_tir: bool = True,
-                 physio_norm: str = 'none'):
+                 physio_norm: str = 'zscore'):
         assert target in ('bp', 'resp', 'eda'), target
         assert int(tir_channels) in (1, 3), \
             f'tir_channels must be 1 or 3, got {tir_channels}'
-        if physio_norm not in ('none', 'ac', 'zscore'):
+        if physio_norm not in ('zscore', 'clip'):
             raise ValueError(
-                f"physio_norm must be 'none', 'ac' or 'zscore'; got "
-                f'{physio_norm!r}')
+                f"physio_norm must be 'zscore' ('clip') -- the per-clip z-score "
+                f"is the pipeline's only label normalisation, so 'none' / 'ac' "
+                f'no longer exist; got {physio_norm!r}')
         if split_by not in ('session', 'subject'):
             raise ValueError(
                 f"split_by must be 'session' or 'subject'; got {split_by!r}")
         self.split_by = split_by
         self.target = target
-        #: waveform normalisation per clip. The recorded BP4D streams are NOT
-        #: zero-mean: the BP (blood pulse) column is raw blood pressure in mmHg (measured
-        #: mean ~101, std ~11 on the local sessions), so a regression head would
-        #: have to reproduce a ~100 offset and the MR-STFT term would be
-        #: dominated by that DC component (its 0 Hz bin) instead of the
-        #: pulsatile band. Stage 3 therefore uses 'zscore' (per-window
-        #: zero-mean/unit-std, the standard rPPG convention; Pearson/PSD/MAE are
-        #: all reported on the normalised waveform).
-        #: 'none' keeps the raw units (default -- the inspection tooling plots
-        #: absolute waveforms), 'ac' removes the mean only.
-        self.physio_norm = physio_norm
+        #: Waveform normalisation per clip -- the ONE mode of the pipeline.
+        #: The recorded BP4D streams are NOT zero-mean: the BP (blood pulse)
+        #: column is raw blood pressure in mmHg (measured mean ~101, std ~11 on
+        #: the local sessions), so a regression head would have to reproduce a
+        #: ~100 offset and the MR-STFT term would be dominated by that DC
+        #: component (its 0 Hz bin) instead of the pulsatile band. Every clip is
+        #: therefore z-scored with its own population statistics (the standard
+        #: rPPG convention; Pearson/PSD/MAE are all reported on it).
+        #: ``'clip'`` is accepted as an alias of ``'zscore'``.
+        self.physio_norm = 'zscore'
         #: False => RGB-only clips (no TIR decode at all). Stage 3 uses this
         #: when the Stage-2 encoder was pre-trained on ``rgb`` (+ physio) only,
         #: so the TIR adapter has no trained weights and TIR would be a domain
@@ -330,11 +331,8 @@ class PairedSessionDataset(Dataset):
         w = align.resample_1d(
             sig_slice, fs_s, float(self.seq_len / self.clip_duration),
             length=self.seq_len)
-        # per-clip waveform normalisation (see physio_norm in __init__)
-        if self.physio_norm != 'none':
-            w = w - float(w.mean())
-            if self.physio_norm == 'zscore':
-                w = w / (float(w.std()) + 1e-6)
+        # per-clip z-score (the pipeline's only label normalisation)
+        w = (w - float(w.mean())) / (float(w.std()) + ZSCORE_EPS)
         return w
 
     def _load_rgb(self, s, t_start: float) -> torch.Tensor:
@@ -521,4 +519,4 @@ def build_paired_dataset(is_train: bool, test_mode: bool, args):
         max_entries=getattr(args, 'max_entries', None),
         tir_channels=int(getattr(args, 'tir_channels', 3)),
         use_tir=bool(getattr(args, 'use_tir', True)),
-        physio_norm=str(getattr(args, 'physio_norm', 'none')))
+        physio_norm=str(getattr(args, 'physio_norm', 'zscore')))

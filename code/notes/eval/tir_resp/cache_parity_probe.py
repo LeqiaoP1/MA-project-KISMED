@@ -1,5 +1,13 @@
 """Parity probe for the offline TIR-ROI cache.
 
+STATUS 2026-11-01: the probe used to build the dataset with
+``physio_norm='session'``; that mode has been retired and the label
+normalisation is now a per-clip z-score only
+(``data.tir_resp_dataset.TARGET_NORM``). The argument below was switched to
+``'zscore'`` -- the cache, the key and every parity check it exercises are
+unchanged by the normalisation. Same for the ROI probe's ``norm='none'``
+(``notes/eval/tir_resp/physio_norm_impact.py`` is HISTORICAL for that reason).
+
 Spec: ``notes/eval/tir_resp/hpc_precomputation.md`` section 9.7. Three checks, one
 of which can still change the design:
 
@@ -378,7 +386,7 @@ def _build(raw_root: str, hop: float, args,
         input_size=args.input_size, roi_padding=args.padding,
         min_signal_spread=(0.1 if args.cleaning else 0.0),
         rail_touch_v=(9.9 if args.cleaning else 0.0),
-        physio_norm='session', subjects=list(subjects) if subjects else None,
+        physio_norm='zscore', subjects=list(subjects) if subjects else None,
         max_entries=args.max_entries or None, verbose=False)
 
 

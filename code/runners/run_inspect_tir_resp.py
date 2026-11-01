@@ -13,11 +13,11 @@ checks that it is what the ROI strategy promises:
   this panel would show it. The SAME 12 landmarks are drawn again, mapped into
   PATCH pixels (``(x - x0) * S/(x1 - x0)``), so the crop's own framing of the
   nose and mouth is visible -- not just the box on the source frame.
-* **respiration (raw VOLTS)** -- the ``Resp_Volts.txt`` window over the clip's
-  own time span, in volts. The dataset's ``resp_signal`` is the SAME array: the
-  default is ``norm='none'``, i.e. **no per-clip z-score**. ``--norm clip`` /
-  ``--norm session`` exist only to inspect an explicitly normalised run, and the
-  panel and the JSON then say so.
+* **respiration (label + window)** -- the ``resp_signal`` the model receives
+  (per-clip z-score, :data:`data.tir_resp_dataset.TARGET_NORM`) drawn over the
+  PRE-normalisation window (raw volts, or the cache's run-mean-removed volts)
+  on a second y-axis, so both the label scale and the physical amplitude are
+  visible. There is no normalisation mode to select: the dataset has one.
 
 The LAYOUT follows the same priority: the annotated frame owns the full-width top
 row (it is the panel that has to be read closely -- box edges and the 28-point
@@ -121,8 +121,8 @@ def _split(value):
 def _plot_clip(ds, index: int, path: str, box, lm, frame0, tir, resp):
     """4-panel figure for one clip; see the module docstring for the content.
 
-    ``resp`` is the raw respiration window in VOLTS (the dataset's
-    ``resp_signal`` under the default ``norm='none'``).
+    ``resp`` is the clip's ``resp_signal`` -- the per-clip Z-SCORED label. The
+    pre-normalisation window is fetched separately and drawn on a twin axis.
     """
     import matplotlib
     matplotlib.use('Agg')
@@ -188,23 +188,27 @@ def _plot_clip(ds, index: int, path: str, box, lm, frame0, tir, resp):
     ax['patch'].set_title(f'ROI patch {ds.input_size}x{ds.input_size} '
                           f'(tensor + {len(want)} landmarks)')
 
-    # --- panel 3: the respiration window, RAW VOLTS (no z-score) ----------
-    # The legend never mentions the scale story: 'resp_signal [V]' when the
-    # dataset is raw (the default), 'resp_signal [z]' only for an explicit
-    # --norm clip/session run.
-    raw_units = ds.norm == 'none'
-    unit = 'V' if raw_units else 'z'
+    # --- panel 3: the respiration window -- the LABEL (z-score, what the model
+    # sees) over the pre-normalisation values on a twin axis.
     t = entry['t_start'] + np.arange(ds.resp_len) / ds.resp_fs
     ax['resp'].plot(t, resp, color='#1f4e9c', lw=0.9,
-                    label=f'resp_signal [{unit}]')
-    ax['resp'].set_ylabel(f'respiration [{unit}]')
+                    label='resp_signal [z] (label)')
+    ax['resp'].set_ylabel('label [z]')
     ax['resp'].set_xlabel('time [s]')
     ax['resp'].set_xlim(float(t[0]), float(t[-1]))
+    ax_raw = ax['resp'].twinx()
+    ax_raw.plot(t, ds.respiration_clip(index, normalized=False),
+                color='#8c8c8c', lw=0.7, alpha=0.7,
+                label='window [V] (pre-z)')
+    ax_raw.set_ylabel('window [V]', color='#6f6f6f')
+    ax_raw.tick_params(axis='y', colors='#6f6f6f')
     ax['resp'].set_title(
-        f'clip {index} respiration window, '
-        f'{"raw volts" if raw_units else f"norm={ds.norm}"} '
-        f'({ds.resp_len} samples @ {ds.resp_fs:g} Hz)')
-    ax['resp'].legend(loc='lower right', fontsize=7, framealpha=0.7)
+        f'clip {index} respiration: per-clip z-score over the '
+        f'{ds.resp_len} samples @ {ds.resp_fs:g} Hz')
+    h1, l1 = ax['resp'].get_legend_handles_labels()
+    h2, l2 = ax_raw.get_legend_handles_labels()
+    ax['resp'].legend(h1 + h2, l1 + l2, loc='lower right', fontsize=7,
+                      framealpha=0.7)
 
     for key in ('roi', 'patch'):
         ax[key].set_xticks([])
@@ -278,17 +282,15 @@ def _write_video(ds, index: int, stem: str, box, lm, frames, tir, resp,
     patch_mouth = ax['patch'].scatter([], [], s=28, c='#ff3df2',
                                       edgecolors='k', lw=0.4)
 
-    # raw respiration + playhead
+    # the per-clip z-scored label + playhead
     tt = entry['t_start'] + np.arange(ds.resp_len) / ds.resp_fs
     ax['resp'].plot(tt, resp, color='#1f4e9c', lw=0.9,
-                    label='resp_signal [V]' if ds.norm == 'none'
-                    else f'resp_signal [{ds.norm}]')
+                    label='resp_signal [z] (label)')
     play = ax['resp'].axvline(float(tt[0]), color='#d62728', lw=1.2)
     dot, = ax['resp'].plot([], [], 'o', color='#d62728', ms=5)
     ax['resp'].set_xlim(float(tt[0]), float(tt[-1]))
     ax['resp'].set_xlabel('time [s]')
-    ax['resp'].set_ylabel('respiration [V]' if ds.norm == 'none'
-                          else 'respiration [z]')
+    ax['resp'].set_ylabel('label [z]')
     ax['resp'].legend(loc='lower right', fontsize=7, framealpha=0.7)
     for key in ('roi', 'patch'):
         ax[key].set_xticks([])
@@ -467,14 +469,14 @@ def _clip_report(ds, index: int, box, fails) -> dict:
         'resp_signal': {
             'shape': list(resp.shape),
             'dtype': str(resp.dtype),
-            'units': 'V' if ds.norm == 'none' else 'z',
+            'units': 'z',
             'min': float(resp.min()),
             'max': float(resp.max()),
             'mean': float(resp.mean()),
             'std': float(resp.std(unbiased=False)),
-            'raw_min_v': float(np.nanmin(raw)),
-            'raw_max_v': float(np.nanmax(raw)),
-            'norm': ds.norm,
+            'window_min_v': float(np.nanmin(raw)),
+            'window_max_v': float(np.nanmax(raw)),
+            'target_norm': trd.TARGET_NORM,
         },
         'subject_task': item['subject_task'],
         'checks_failed': list(fails),
@@ -822,13 +824,6 @@ def main(argv=None) -> int:
                         'Requires --resp_cache. A window whose span crosses a '
                         'hole is absent from the entry list; diagnose it with '
                         '--t_start/--frame_start.')
-    p.add_argument('--norm', default='none', type=str,
-                   choices=['none', 'clip', 'session'],
-                   help="respiration scale of resp_signal: 'none' (default) = "
-                        "RAW VOLTS, NO per-clip z-score; 'clip' = per-clip "
-                        "z-score; 'session' = session z-score. Only use a "
-                        'normalised value to inspect a run that was trained '
-                        'with --physio_norm clip/session.')
     p.add_argument('--clip_index', default='0',
                    help='comma list of clip indices in the selection')
     p.add_argument('--frame_start', default='',
@@ -875,7 +870,6 @@ def main(argv=None) -> int:
         min_signal_spread=args.min_signal_spread,
         rail_touch_v=args.rail_touch_v,
         resp_cache=(str(args.resp_cache).strip() or None),
-        norm=args.norm,
         max_entries=args.max_entries or None)
 
     print('=' * 76)

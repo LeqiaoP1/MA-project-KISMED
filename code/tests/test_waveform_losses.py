@@ -36,13 +36,14 @@ T = 256
 def _tone(std: float = 0.85, n: int = T, fs: float = 100.0, freq: float = 0.3,
           mean: float = 0.0, shift: int = 0, invert: bool = False,
           seed: int = 0) -> torch.Tensor:
-    """A [B, T] batch shaped like a Stage-3 session-z-scored respiration target.
+    """A [B, T] batch shaped like a Stage-3 respiration target.
 
-    ``std`` defaults to the ~0.85 measured on the real run, so ``huber_beta=1.0``
-    sits at ~1 std as the docstring claims. ``shift`` is applied as an EXACT phase
-    offset (``+2*pi*f*shift/fs``) rather than a roll, so a shifted signal keeps
-    its standard deviation bit-for-bit -- which is what makes it a fair test of
-    StdLoss's lag-invariance.
+    ``std`` defaults to 0.85 -- deliberately NOT the unit std of a real label
+    (the dataset z-scores every clip), so the term is exercised across a
+    non-degenerate spread and ``huber_beta=1.0`` sits at ~1.2 std. ``shift`` is
+    applied as an EXACT phase offset (``+2*pi*f*shift/fs``) rather than a roll,
+    so a shifted signal keeps its standard deviation bit-for-bit -- which is
+    what makes it a fair test of StdLoss's lag-invariance.
     """
     t = torch.arange(n, dtype=torch.float64) / fs
     phase = 2 * torch.pi * freq * (shift / fs)
@@ -188,7 +189,7 @@ def test_smoothl1_reintroduces_the_phase_offset_charge_std_removed():
 
 def test_smoothl1_is_not_mean_invariant_but_std_is():
     t = _tone(mean=0.0)
-    offset = _tone(mean=0.9)                   # a session-norm per-clip pedestal
+    offset = _tone(mean=0.9)                   # a non-zero-mean pedestal
     std_crit = WaveformJointLoss(fft_sizes=FFT_SIZES)
     hub_crit = WaveformJointLoss(fft_sizes=FFT_SIZES, time_loss='smoothl1')
     assert std_crit.time(offset, t) < 1e-6

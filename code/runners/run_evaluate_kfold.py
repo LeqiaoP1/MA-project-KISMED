@@ -59,7 +59,7 @@ __all__ = ['main', 'get_args', 'score_fold', 'aggregate_kfold']
 
 #: Per-session metrics carried through the per-subject / per-task aggregation.
 #: Raw cross-space ``mae``/``rmse`` are DELIBERATELY absent (the prediction is
-#: session-z-scored while the reference is raw volts, so they only track the
+#: z-scored per clip while the reference is raw volts, so they only track the
 #: reference DC); the volts-calibrated ``*_affine`` terms carry the point error.
 _SESSION_KEYS = ('pearson', 'pearson_band', 'template_pearson_band',
                  'amp_ratio', 'amp_rel_err', 'amp_ref', 'amp_pred',

@@ -141,13 +141,11 @@ mask_span_s: {resp: 4.0}           # ignored while physio_mask: random
 
 # ---- loss: per-modality masked MSE (masked positions only) ----
 signal_weight: 0.5
-# THE target-normalisation knob (the ONLY one in the pipeline): the DATASET
-# z-scores the respiration target and the model never touches it
-# (runners/run_pretrain.py pins target_norm='none' for tir_roi). 'session' =
-# z-scored with the WHOLE session's mean/std over the entire Resp_Volts.txt, so
-# a clip keeps its session-relative amplitude and offset instead of being
-# flattened to unit variance on its own. Stage 3 uses the SAME value.
-physio_norm: session
+# THE label normalisation (the ONLY one in the pipeline): the DATASET z-scores
+# each respiration target with its OWN mean/std and the model never touches it
+# (runners/run_pretrain.py pins target_norm='none' for tir_roi). 'clip' and
+# 'zscore' are synonyms; there is no raw or session-relative mode.
+physio_norm: zscore
 spectral_weight: 0.0               # the MR-STFT term belongs to Stage 3
                                    #   (decision 2026-09-26); 0.0 = OFF.
 spectral_fft_sizes: 128,256,512

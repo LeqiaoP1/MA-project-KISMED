@@ -93,20 +93,12 @@ seq_len: 0                         # 0 => 800 samples = 8 s at fs 100 Hz
 fs: 100
 sig_kernel: 16                     # 16/100 == 2*2/25 s -> one signal token ==
                                    #   one video tubelet
-physio_norm: session               # WHOLE-session z-score -- the twin of the
-                                   #   Stage-2 knob `physio_norm: session` (the
-                                   #   base dataset does the z-score, and the
-                                   #   Stage-2 model is pinned to identity).
-                                   #   The head therefore
-                                   #   predicts the SESSION-relative waveform
-                                   #   (nonzero mean, clip-relative amplitude),
-                                   #   matching the checkpoint's target space.
-                                   #   NOTE the target std is no longer ~1, so
-                                   #   alpha (StdLoss) is now a real amplitude
-                                   #   term, and a constant clip no longer
-                                   #   gives a ZERO-norm target (no MR-STFT
-                                   #   spike). Use 'zscore' only if you
-                                   #   fine-tune a per-clip Stage-2 run.
+physio_norm: zscore                # per-clip z-score, applied by the DATASET
+                                   #   (one mean/std from the clip's own
+                                   #   samples). 'clip' and 'zscore' are
+                                   #   synonyms -- there is no session-relative
+                                   #   mode any more, so the label of every
+                                   #   clip has zero mean and unit std.
 
 # ---- data split (SUBJECT-disjoint) ----
 n_folds: 5                         # 5-fold cyclic rotation (28 test / 112 train)

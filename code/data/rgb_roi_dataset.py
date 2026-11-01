@@ -78,14 +78,17 @@ try:                                          # package import
     from .rgb_features import (NUM_LANDMARKS_2D, ROI_LANDMARKS_2D,
                                find_2d_features, parse_2d_features)
     from .tir_resp_dataset import (_count_samples, _load_1d, _resp_start_limit,
-                                   roi_box_from_landmarks)
+                                   check_physio_norm, roi_box_from_landmarks,
+                                   TARGET_NORM, ZSCORE_EPS)
 except ImportError:                           # direct script execution
     import sys as _sys
     _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from data.rgb_features import (NUM_LANDMARKS_2D, ROI_LANDMARKS_2D,
                                    find_2d_features, parse_2d_features)
     from data.tir_resp_dataset import (_count_samples, _load_1d,
-                                       _resp_start_limit, roi_box_from_landmarks)
+                                       _resp_start_limit, check_physio_norm,
+                                       roi_box_from_landmarks, TARGET_NORM,
+                                       ZSCORE_EPS)
 
 __all__ = [
     'RGB_TREE', 'FEAT_TREE', 'PHYS_TREE', 'SIGNAL_FILES', 'FACE_LANDMARKS',
@@ -518,7 +521,13 @@ def discover_rgb_sessions(raw_root: str,
 # base dataset: RGB ROI clip -> raw 1-D physiology
 # --------------------------------------------------------------------------- #
 class RGBRoiDataset(Dataset):
-    """RGB face-ROI clip -> raw 1-D physiological window(s), RAW BP4D tree.
+    """RGB face-ROI clip -> 1-D physiological window(s), RAW BP4D tree.
+
+    Every served window is z-scored with ITS OWN mean/std (population
+    statistics) by :meth:`_normalize` -- the ONE label normalisation of the
+    pipeline (:data:`~data.tir_resp_dataset.TARGET_NORM`). There is no mode
+    knob: ``signal_clip(..., normalized=False)`` is the only way to see the
+    pre-normalisation values, and it exists for plots and amplitude audits.
 
     :param raw_root: raw BP4D root (default :func:`default_raw_root`).
     :param subjects, tasks: optional subset, e.g. ``['F001']`` / ``['T1','T2']``.
@@ -539,9 +548,6 @@ class RGBRoiDataset(Dataset):
         faithful), ``2/4/8`` = libjpeg DCT downscale (faster, and the ROI box is
         rescaled accordingly). The plane's materialised ``.npy`` frame store is
         the real answer to decode cost; this knob is for quick experiments.
-    :param norm: ``'none'`` (default -- RAW values, because the model z-scores a
-        clip internally under ``target_norm``), ``'clip'`` (per-clip z-score) or
-        ``'session'``.
     :param max_clips_per_session, max_entries: dev caps (smoke runs).
     :param preload: materialise every clip at init (small: a 224 px clip of 200
         frames is ~30 MB as uint8).
@@ -560,14 +566,11 @@ class RGBRoiDataset(Dataset):
                  roi_padding: float = DEFAULT_ROI_PADDING,
                  landmarks: Sequence[int] = FACE_LANDMARKS,
                  decode_scale: int = 1,
-                 norm: str = 'none',
                  max_clips_per_session: Optional[int] = None,
                  max_entries: Optional[int] = None,
                  preload: bool = False,
                  allow_empty: bool = False,
                  verbose: bool = False):
-        if norm not in ('none', 'clip', 'session'):
-            raise ValueError(f"norm must be 'none', 'clip' or 'session', got {norm!r}")
         if clip_seconds <= 0 or fps <= 0 or phys_fs <= 0:
             raise ValueError('clip_seconds, fps and phys_fs must be positive')
         if int(decode_scale) not in DECODE_FACTORS:
@@ -595,7 +598,6 @@ class RGBRoiDataset(Dataset):
         self.landmarks = resolve_face_landmarks(landmarks)
         self.target_idx = np.asarray([l - 1 for l in self.landmarks], dtype=np.int64)
         self.decode_scale = int(decode_scale)
-        self.norm = norm
         self.preload = bool(preload)
         self.verbose = bool(verbose)
 
@@ -609,7 +611,6 @@ class RGBRoiDataset(Dataset):
         self._feat_cache: Dict[str, np.ndarray] = {}
         self._files: Dict[str, List[str]] = {}
         self._sig_cache: Dict[str, np.ndarray] = {}
-        self._norm_cache: Dict[Tuple[str, str], Tuple[float, float]] = {}
         self._src_size: Dict[str, Tuple[int, int]] = {}
         self._preloaded: List[dict] = []
 
@@ -717,7 +718,7 @@ class RGBRoiDataset(Dataset):
             'roi_padding': self.roi_padding,
             'landmarks': list(self.landmarks),
             'decode_scale': self.decode_scale,
-            'norm': self.norm,
+            'target_norm': TARGET_NORM,
             'signals': list(self.signal_names),
             'warnings': list(self.warnings),
             'unusable': [{'session': u['session'], 'status': 'unusable',
@@ -766,11 +767,8 @@ class RGBRoiDataset(Dataset):
     def _sig_full(self, session: str, name: str) -> np.ndarray:
         key = f'{session}||{name}'
         if key not in self._sig_cache:
-            y = _load_1d(self.sessions[session]['signals'][name])
-            if self.norm == 'session':
-                self._norm_cache[(session, name)] = (float(np.nanmean(y)),
-                                                     float(np.nanstd(y)))
-            self._sig_cache[key] = y
+            self._sig_cache[key] = _load_1d(
+                self.sessions[session]['signals'][name])
         return self._sig_cache[key]
 
     def _sig_clip(self, entry: dict, name: str) -> np.ndarray:
@@ -780,15 +778,16 @@ class RGBRoiDataset(Dataset):
         return np.interp(idx, np.arange(y.shape[0], dtype=np.float64),
                          y.astype(np.float64)).astype(np.float32)
 
-    def _normalize(self, y: np.ndarray, session: str, name: str) -> np.ndarray:
-        if self.norm == 'none':
-            return y.astype(np.float32)
-        if self.norm == 'session':
-            mu, sd = self._norm_cache.get((session, name),
-                                          (float(np.nanmean(y)), float(np.nanstd(y))))
-        else:                                        # per-clip
-            mu, sd = float(np.nanmean(y)), float(np.nanstd(y))
-        return ((y - mu) / (sd + 1e-8)).astype(np.float32)
+    def _normalize(self, y: np.ndarray) -> np.ndarray:
+        """THE label normalisation: one z-score per clip (:data:`TARGET_NORM`).
+
+        Population statistics over THIS window (``ddof=0``), so the label keeps
+        no absolute mmHg / volt scale and the loss scale is comparable across
+        clips -- and identical to the TIR-ROI label space.
+        """
+        y = np.asarray(y, dtype=np.float64)
+        mu, sd = float(np.nanmean(y)), float(np.nanstd(y))
+        return ((y - mu) / (sd + ZSCORE_EPS)).astype(np.float32)
 
     # ------------------------------------------------------------------ frames
     def _read_rgb(self, path: str) -> np.ndarray:
@@ -836,11 +835,15 @@ class RGBRoiDataset(Dataset):
         return self._feat(entry['session'])[entry['frame_start']:entry['frame_end']]
 
     def signal_clip(self, index: int, name: str,
-                    normalized: bool = False) -> np.ndarray:
-        """The clip's ``[L]`` window of ``name`` (RAW by default)."""
+                    normalized: bool = True) -> np.ndarray:
+        """The clip's ``[L]`` window of ``name`` -- the z-scored LABEL.
+
+        ``normalized=False`` returns the raw file values (mmHg / volts) for
+        plots, corpus statistics and ``check_view_parity`` only.
+        """
         entry = self.entries[index]
         y = self._sig_clip(entry, name)
-        return self._normalize(y, entry['session'], name) if normalized else y
+        return self._normalize(y) if normalized else y
 
     def _roi_patches(self, entry: dict) -> np.ndarray:
         """Per-frame decode -> ROI crop -> resize; ``[T, s, s, 3]`` uint8.
@@ -892,7 +895,8 @@ class RGBRoiDataset(Dataset):
         item = {'rgb_video': rgb, 'subject_task': session,
                 '_entry': entry, '_roi_box': self.clip_roi_box(index)}
         for name in self.signal_names:
-            item[f'{name}_signal'] = torch.from_numpy(self.signal_clip(index, name))
+            item[f'{name}_signal'] = torch.from_numpy(
+                self.signal_clip(index, name, normalized=True))
         return item
 
     def _preload(self) -> None:
@@ -935,7 +939,7 @@ class RGBRoiDataset(Dataset):
             f'{NUM_LANDMARKS_2D} padding {s["roi_padding"]:g} '
             f'-> {self.input_size}x{self.input_size} '
             f'(decode_scale {s["decode_scale"]})',
-            f'norm            : {s["norm"]}',
+            f'label norm      : {s["target_norm"]} (per-clip z-score)',
             f'signals         : {list(self.signal_names)}',
         ]
         for u in self.unusable:
@@ -951,15 +955,16 @@ class RGBRoiDataset(Dataset):
 class RGBRoiPretrainDataset(Dataset):
     """Stage-2 masked-pretraining dataset: RGB face ROI -> 1-D physiology.
 
-    Wraps :class:`RGBRoiDataset` (clip enumeration, ROI crop, RAW physiology)
-    and returns exactly the stream dict ``MultiModalMAE`` consumes::
+    Wraps :class:`RGBRoiDataset` (clip enumeration, ROI crop, physiology) and
+    returns exactly the stream dict ``MultiModalMAE`` consumes::
 
         {'rgb':  float32 [3, T, input_size, input_size]   ROI crop, [0, 1]
-         'resp': float32 [1, L]                           RAW values}
+         'resp': float32 [1, L]                           per-clip z-score}
 
-    The 1-D values are deliberately RAW: the model z-scores a clip internally
-    under ``target_norm`` (the same contract ``PairedPretrainDataset`` follows).
-    Do not normalise here as well.
+    The 1-D target is the BASE dataset's per-clip z-score
+    (:data:`~data.tir_resp_dataset.TARGET_NORM`) -- the same function the TIR-ROI
+    lineage and the Stage-3 view use. The model never normalises a 1-D stream:
+    ``run_pretrain.py`` pins ``target_norm='none'`` for every ROI path.
 
     Geometry mirrors ``core.multimae.build_pretraining_model``::
 
@@ -982,7 +987,7 @@ class RGBRoiPretrainDataset(Dataset):
                  landmarks: Sequence[int] = FACE_LANDMARKS,
                  decode_scale: int = 1,
                  phys_fs: float = DEFAULT_PHYS_FS,
-                 physio_norm: str = 'none',
+                 physio_norm: str = TARGET_NORM,
                  subjects=None, tasks=None,
                  max_clips_per_session: Optional[int] = None,
                  max_entries: Optional[int] = None,
@@ -1003,17 +1008,10 @@ class RGBRoiPretrainDataset(Dataset):
             raise ValueError(f'RGBRoiPretrainDataset: unknown stream(s) {unknown}; '
                              f'expected a subset of {sorted(SIGNAL_FILES)}.')
 
-        # WHERE the 1-D target is normalised -- the SAME single knob (and the
-        # same values) as the tir_roi Stage-2 view and as Stage 3. 'zscore' is
-        # accepted as an ALIAS of 'clip'. The model never normalises a 1-D
-        # stream: run_pretrain.py pins target_norm='none' for every ROI path.
-        self.physio_norm = str(physio_norm or 'none').strip().lower()
-        if self.physio_norm == 'zscore':
-            self.physio_norm = 'clip'
-        if self.physio_norm not in ('none', 'clip', 'session'):
-            raise ValueError(
-                f"RGBRoiPretrainDataset: physio_norm must be 'none', 'clip' "
-                f"('zscore') or 'session'; got {physio_norm!r}")
+        # ``physio_norm`` is the pipeline-wide flag; only the z-score spellings
+        # are meaningful now, and both are accepted for CLI compatibility.
+        self.physio_norm = check_physio_norm(physio_norm,
+                                             'RGBRoiPretrainDataset')
 
         self.fs = float(fs)
         self.fps = float(fps)
@@ -1038,7 +1036,7 @@ class RGBRoiPretrainDataset(Dataset):
             phys_fs=self.phys_fs, input_size=self.input_size,
             clip_stride=clip_stride, roi_padding=self.roi_padding,
             landmarks=landmarks,
-            decode_scale=decode_scale, norm=self.physio_norm,
+            decode_scale=decode_scale,
             max_clips_per_session=max_clips_per_session,
             max_entries=max_entries, allow_empty=allow_empty, verbose=verbose)
         self.entries = self.base.entries
@@ -1063,10 +1061,14 @@ class RGBRoiPretrainDataset(Dataset):
         for name in self.streams:
             if name == 'rgb':
                 continue
-            raw = item[f'{name}_signal'].numpy()
+            # resample the PRE-normalisation window, then z-score the EXACT
+            # samples the model predicts (after the trim/resample, so the label
+            # is zero-mean / unit-std over ``L`` and not only over ``phys_len``)
+            raw = self.base.signal_clip(index, name, normalized=False)
             y = np.interp(self._phys_idx,
                           np.arange(raw.shape[0], dtype=np.float64),
                           raw.astype(np.float64)).astype(np.float32)
+            y = self.base._normalize(y)
             out[name] = torch.from_numpy(y).unsqueeze(0)          # [1, L]
         return out
 
@@ -1106,9 +1108,9 @@ class RGBRoiFinetuneDataset(RGBRoiPretrainDataset):
     explicit ``val_subject`` override for leave-one-subject-out, the k-fold
     cyclic rotation (``n_folds`` > 1, with ``split_role`` selecting the
     train/val/test subject set; see :func:`utils.splits.resolve_split_keys`),
-    and a ``(rgb, waveform)`` tuple item; the target is normalised HERE
-    (``physio_norm``) because Stage 3 scores the final waveform against the
-    label, while the base class returns RAW values.
+    and a ``(rgb, waveform)`` tuple item. The waveform is the BASE dataset's
+    per-clip z-score (:data:`~data.tir_resp_dataset.TARGET_NORM`), i.e. exactly
+    the label Stage 2 reconstructs, so this class adds no normalisation.
     """
 
     def __init__(self, raw_root: Optional[str] = None,
@@ -1131,7 +1133,7 @@ class RGBRoiFinetuneDataset(RGBRoiPretrainDataset):
                  decode_scale: int = 1,
                  phys_fs: float = DEFAULT_PHYS_FS,
                  fps: float = DEFAULT_FPS,
-                 physio_norm: str = 'zscore',
+                 physio_norm: str = TARGET_NORM,
                  subjects: Optional[Sequence[str]] = None,
                  tasks: Optional[Sequence[str]] = None,
                  max_clips_per_session: Optional[int] = None,
@@ -1140,13 +1142,8 @@ class RGBRoiFinetuneDataset(RGBRoiPretrainDataset):
         if target not in SIGNAL_FILES:
             raise ValueError(f'target must be one of {sorted(SIGNAL_FILES)}, '
                              f'got {target!r}')
-        physio_norm = str(physio_norm or 'zscore').strip().lower()
-        if physio_norm == 'clip':                       # Stage-2 name
-            physio_norm = 'zscore'
-        if physio_norm not in ('none', 'ac', 'zscore', 'session'):
-            raise ValueError(
-                f"physio_norm must be 'none', 'ac', 'zscore' ('clip') or "
-                f"'session'; got {physio_norm!r}")
+        physio_norm = check_physio_norm(physio_norm,
+                                        'RGBRoiFinetuneDataset')
         if split_by not in ('session', 'subject'):
             raise ValueError(f"split_by must be 'session' or 'subject'; got "
                              f'{split_by!r}')
@@ -1214,10 +1211,6 @@ class RGBRoiFinetuneDataset(RGBRoiPretrainDataset):
             input_size=input_size, roi_padding=roi_padding,
             landmarks=landmarks,
             decode_scale=decode_scale, phys_fs=phys_fs,
-            # 'session' is implemented by the BASE dataset (whole-session
-            # statistics); this class then leaves the window alone -- see
-            # _normalize_target.
-            physio_norm=('session' if self.physio_norm == 'session' else 'none'),
             subjects=_as_list(keep_subjects), tasks=tasks,
             max_clips_per_session=max_clips_per_session,
             max_entries=max_entries,
@@ -1239,10 +1232,6 @@ class RGBRoiFinetuneDataset(RGBRoiPretrainDataset):
             print(f'[data] rgb_roi {self.split_role} view is EMPTY: '
                   f'{self._empty_reason}')
 
-        # The parent stores ITS canonical dataset norm under the same attribute
-        # name (see the tir_roi twin), so restore this class's STAGE-3 value.
-        self.physio_norm = physio_norm
-
         if self.split_key_kind == 'session':
             keep_set = set(self.split_keys)
             self.entries = [e for e in self.entries if e['session'] in keep_set]
@@ -1254,7 +1243,11 @@ class RGBRoiFinetuneDataset(RGBRoiPretrainDataset):
         self.split_sessions = sorted({e['session'] for e in self.entries})
 
     def __getitem__(self, index: int):
-        """``(rgb [3, T, S, S] float32, waveform [L] float32)``."""
+        """``(rgb [3, T, S, S] float32, waveform [L] float32)``.
+
+        The waveform is the base dataset's per-clip z-scored window -- the SAME
+        label Stage 2 reconstructs, so the two stages share one target space.
+        """
         item = super().__getitem__(index)                 # {'rgb': ..., target: ...}
         rgb = item['rgb']
         if not torch.is_tensor(rgb):
@@ -1262,27 +1255,8 @@ class RGBRoiFinetuneDataset(RGBRoiPretrainDataset):
         w = item[self.target]
         if torch.is_tensor(w):
             w = w.numpy()
-        return rgb, torch.from_numpy(self._normalize_target(np.asarray(w)[0]))
-
-    def _normalize_target(self, w: np.ndarray) -> np.ndarray:
-        """Stage-3 target normalisation.
-
-        ``'zscore'`` / ``'ac'`` are per CLIP -- the Stage-3 analogue of the
-        Stage-2 model's internal ``target_norm: clip`` (same population std,
-        same 1e-6 epsilon as ``data.paired_dataset``).
-
-        ``'session'`` is a NO-OP here: the base dataset was constructed with
-        ``physio_norm='session'`` and already z-scored the window with the
-        WHOLE session's statistics -- re-normalising would collapse it back to a
-        per-clip z-score.
-        """
-        w = np.asarray(w, dtype=np.float64)
-        if self.physio_norm in ('none', 'session'):
-            return w.astype(np.float32)
-        w = w - float(w.mean())
-        if self.physio_norm == 'zscore':
-            w = w / (float(w.std()) + 1e-6)
-        return w.astype(np.float32)
+        return rgb, torch.from_numpy(
+            np.ascontiguousarray(np.asarray(w, dtype=np.float32)[0]))
 
     @property
     def empty_reason(self) -> str:
@@ -1329,7 +1303,7 @@ def build_rgb_roi_pretrain_dataset(args) -> RGBRoiPretrainDataset:
             or getattr(args, 'landmarks', None)),
         decode_scale=int(getattr(args, 'decode_scale', 1) or 1),
         phys_fs=float(getattr(args, 'phys_fs', DEFAULT_PHYS_FS)),
-        physio_norm=str(getattr(args, 'physio_norm', 'none') or 'none'),
+        physio_norm=str(getattr(args, 'physio_norm', TARGET_NORM) or TARGET_NORM),
         subjects=getattr(args, 'subjects', None),
         tasks=getattr(args, 'tasks', None),
         max_clips_per_session=getattr(args, 'max_clips', None),
@@ -1375,7 +1349,7 @@ def build_rgb_roi_finetune_dataset(is_train: bool, test_mode: bool,
         decode_scale=int(getattr(args, 'decode_scale', 1) or 1),
         phys_fs=float(getattr(args, 'phys_fs', DEFAULT_PHYS_FS)),
         fps=float(getattr(args, 'fps', DEFAULT_FPS)),
-        physio_norm=str(getattr(args, 'physio_norm', 'zscore')),
+        physio_norm=str(getattr(args, 'physio_norm', TARGET_NORM)),
         subjects=getattr(args, 'subjects', None),
         tasks=getattr(args, 'tasks', None),
         max_clips_per_session=getattr(args, 'max_clips', None),
@@ -1493,7 +1467,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument('--landmarks', default='face',
                    help='"face", a ROI_LANDMARKS_2D preset, or 1-indexed CSV')
     p.add_argument('--decode_scale', type=int, default=1, choices=DECODE_FACTORS)
-    p.add_argument('--norm', default='none', choices=('none', 'clip', 'session'))
     p.add_argument('--max_entries', type=int, default=0, help='0 = no cap')
     p.add_argument('--n_check', type=int, default=3, help='clips to verify')
     p.add_argument('--list', action='store_true', help='print every session verdict')
@@ -1521,7 +1494,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         clip_seconds=args.clip_seconds, clip_stride=args.clip_stride,
         input_size=args.input_size, roi_padding=args.roi_padding,
         landmarks=resolve_face_landmarks(args.landmarks),
-        decode_scale=args.decode_scale, norm=args.norm,
+        decode_scale=args.decode_scale,
         max_entries=args.max_entries or None, allow_empty=True)
     print(ds.describe())
     print('-' * 72)

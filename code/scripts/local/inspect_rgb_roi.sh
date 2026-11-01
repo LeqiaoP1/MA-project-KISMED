@@ -60,4 +60,4 @@ fi
 echo
 echo "Tip: '--list' prints every session verdict (usable / UNUSABLE)."
 echo "     '--landmarks face|nose_mouth|nostrils|nostril_mouth|nose_tip|1,2,3'"
-echo "     '--norm none|clip|session'   '--roi_padding 0.2'"
+echo "     '--roi_padding 0.2'   (the 1-D label is always a per-clip z-score)"

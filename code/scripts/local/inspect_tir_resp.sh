@@ -10,8 +10,9 @@
 #     yellow, mouth magenta, and the same points of every frame faintly behind
 #     them, which is what makes the box's min/max visible;
 #   * the ROI patch EXACTLY as it leaves the dataset ([C, T, H, W] slice);
-#   * the Resp_Volts.txt respiration window in RAW VOLTS -- the dataset's
-#     resp_signal ALSO holds raw volts (norm='none', no per-clip z-score).
+#   * the respiration panel: resp_signal (the per-clip Z-SCORED label the
+#     model receives) over the pre-normalisation window in raw volts / the
+#     cache's run-mean-removed volts, on a twin axis.
 # and writes clip_<n>.png + clip_<n>.gif (the whole clip as an animation, with
 # the frame, the patch and a respiration playhead) + clip_<n>.json +
 # dataset_summary.json + tir_resp_index.json into
@@ -62,7 +63,6 @@ CLIP_SECONDS="${CLIP_SECONDS:-8}"
 CLIPS="${CLIPS:-${CLIP_INDEX:-0}}"
 CLIP_STRIDE="${CLIP_STRIDE:-0}"
 MAX_ENTRIES="${MAX_ENTRIES:-0}"
-NORM="${NORM:-none}"
 VIDEO="${VIDEO:-gif}"
 PLOT="${PLOT:-1}"
 
@@ -73,7 +73,7 @@ else
     ARGS=(--subject "$SUBJECT" --task "$TASK" --input_size "$SIZE"
           --roi_padding "${ROI_PADDING:-0.1}"
           --clip_seconds "$CLIP_SECONDS" --clip_index "$CLIPS"
-          --norm "$NORM" --video "$VIDEO")
+          --video "$VIDEO")
     [ "$CLIP_STRIDE" != "0" ] && ARGS+=(--clip_stride "$CLIP_STRIDE")
     [ "$MAX_ENTRIES" != "0" ] && ARGS+=(--max_entries "$MAX_ENTRIES")
     case "$PLOT" in

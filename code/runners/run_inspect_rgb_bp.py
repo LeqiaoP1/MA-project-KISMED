@@ -25,15 +25,14 @@ checks that it is what the ROI strategy promises:
   ``code/notes/eval/rgb_bp/rppg_skin_chrom.py``; measured there: 34.4 % of the box
   retained on average (13.4-51.2 %), retained pixels brighter (R ~145 vs ~119),
   and CHROM detection rising 83 % -> 90 % against the calibrated control.
-* **1-D target (raw)** -- the ``BP_mmHg.txt`` window over the clip's own time
-  span, in mmHg (``signal_clip(..., normalized=False)``).
-* **1-D overlay** -- the transform selected by ``--norm``. NB the RGB provider's
-  item is ALWAYS RAW (``RGBRoiDataset._load`` calls ``signal_clip(...,
-  normalized=False)``; the model applies ``target_norm: clip`` internally), so
-  this is NOT "what the dataset returns" -- ``--norm clip`` (the default) draws
-  the per-clip z-score on a twin ``[z]`` axis, i.e. exactly the target the model
-  computes, while ``--norm none`` draws no overlay at all, because then the grey
-  raw curve IS the item.
+* **1-D target (label)** -- the ``BP_mmHg.txt`` window over the clip's own time
+  span, z-scored with its OWN mean/std: exactly what the dataset returns
+  (``signal_clip(index, sig)``) and what the model regresses. There is no
+  normalisation mode to select -- the pipeline has one.
+* **1-D overlay** -- the pre-normalisation window in the file's own unit
+  (``signal_clip(..., normalized=False)``), drawn on a twin axis and thicker
+  than the label curve, so the physical amplitude stays visible next to the
+  z-score.
 
 The LAYOUT follows the same priority as the thermal inspector: the annotated
 frame owns the full-width top row (it is the panel that has to be read closely
@@ -444,31 +443,27 @@ def _plot_clip(ds, index, path, box, lm, frame0, tensor, raw, over, sig, unit,
         ax['patch'].imshow(ov, interpolation='nearest', aspect='equal')
     ax['patch'].set_title(f'ROI patch {ds.input_size}x{ds.input_size} (tensor)')
 
-    # --- panel 3: the RAW window the dataset returns + the --norm overlay
+    # --- panel 3: the Z-SCORED label + the pre-normalisation window --------
     t = entry['t_start'] + np.arange(ds.phys_len) / ds.phys_fs
-    # The raw curve is drawn THICKER than the overlay: a z-score is an affine map
+    # The raw curve is drawn THICKER than the label: a z-score is an affine map
     # of the same waveform and each curve fills its own axis, so the two trace
     # the SAME path in pixels -- a thin red curve would hide the grey one
     # completely and the panel would look like a single trace.
     ax['sig'].plot(t, raw, color='0.55', lw=2.0, alpha=0.9,
-                   label=os.path.basename(entry['signals'][sig]))
+                   label=f'{sig} [{unit}] (pre-z)')
     ax['sig'].set_ylabel(f'{sig} [{unit}]')
     ax['sig'].set_xlabel('time [s]')
     ax['sig'].set_xlim(float(t[0]), float(t[-1]))
-    ax['sig'].set_title(f'clip {index} {sig} window '
-                        f'({ds.phys_len} samples @ {ds.phys_fs:g} Hz)'
-                        + ('' if over is not None else ' -- RAW, norm=none'))
-    if over is None:
-        ax['sig'].legend(loc='lower right', fontsize=7, framealpha=0.7)
-    else:
-        tw = ax['sig'].twinx()
-        tw.plot(t, over, color='#d62728', lw=0.9,
-                label=f'{sig}_signal (norm={ds.norm})')
-        tw.set_ylabel(f'{sig}_signal [z]')
-        h1, l1 = ax['sig'].get_legend_handles_labels()
-        h2, l2 = tw.get_legend_handles_labels()
-        ax['sig'].legend(h1 + h2, l1 + l2, loc='lower right', fontsize=7,
-                         framealpha=0.7)
+    ax['sig'].set_title(f'clip {index} {sig} window, per-clip z-score over the '
+                        f'raw unit ({ds.phys_len} samples @ {ds.phys_fs:g} Hz)')
+    tw = ax['sig'].twinx()
+    tw.plot(t, over, color='#d62728', lw=0.9,
+            label=f'{sig}_signal [z] (label)')
+    tw.set_ylabel(f'{sig}_signal [z]')
+    h1, l1 = ax['sig'].get_legend_handles_labels()
+    h2, l2 = tw.get_legend_handles_labels()
+    ax['sig'].legend(h1 + h2, l1 + l2, loc='lower right', fontsize=7,
+                     framealpha=0.7)
 
     for key in ('roi', 'patch'):
         ax[key].set_xticks([])
@@ -631,16 +626,12 @@ def _write_video(ds, index: int, stem: str, box, lm, tensor, raw,
 # report
 # --------------------------------------------------------------------------- #
 def _overlay_curve(ds, index, sig):
-    """The extra curve the figure overlays, or ``None``.
+    """The clip's Z-SCORED label window (what the model regresses).
 
-    ``RGBRoiDataset._load`` always returns RAW values (``normalized=False``), so
-    there is nothing to overlay under ``norm='none'`` -- the grey raw trace IS
-    the item. Otherwise this is the ``norm`` z-score (``clip`` = the transform
-    the model applies internally under ``target_norm: clip``; ``session`` = the
-    whole-session statistics).
+    ``RGBRoiDataset._load`` returns this same array as ``<sig>_signal``; the
+    figure keeps it on its own ``[z]`` axis because the two curves describe one
+    waveform in two units.
     """
-    if ds.norm == 'none':
-        return None
     return ds.signal_clip(index, sig, normalized=True)
 
 
@@ -705,21 +696,21 @@ def _clip_report(ds, index, box, fails, skin=None) -> dict:
         'signal': {
             'name': sig,
             'unit': SIGNAL_UNITS.get(sig, ''),
-            'norm': ds.norm,
-            # the provider's item: ALWAYS raw, whatever ds.norm says
+            'target_norm': rrd.TARGET_NORM,
+            # the provider's item: the per-clip z-scored label
             'item_shape': list(item_sig.shape),
             'item_dtype': str(item_sig.dtype),
             'item_min': float(item_sig.min()),
             'item_max': float(item_sig.max()),
             'item_mean': float(item_sig.mean()),
             'item_std': float(item_sig.std(unbiased=False)),
+            # the same window BEFORE the z-score, in the file's own unit
             'raw_min': float(np.nanmin(raw)),
             'raw_max': float(np.nanmax(raw)),
-            # the --norm transform the figure overlays (None under norm='none')
-            'overlay_min': None if over is None else float(over.min()),
-            'overlay_max': None if over is None else float(over.max()),
-            'overlay_mean': None if over is None else float(over.mean()),
-            'overlay_std': None if over is None else float(np.std(over)),
+            'overlay_min': float(over.min()),
+            'overlay_max': float(over.max()),
+            'overlay_mean': float(over.mean()),
+            'overlay_std': float(np.std(over)),
         },
         'subject_task': item['subject_task'],
         # the skin mask is REPORTED here; nothing in this path applies it to the
@@ -828,12 +819,6 @@ def main(argv=None) -> int:
     p.add_argument('--decode_scale', type=int, default=1,
                    choices=rrd.DECODE_FACTORS,
                    help='1 = native full decode; 2/4/8 = libjpeg DCT downscale')
-    p.add_argument('--norm', default='clip', choices=('none', 'clip', 'session'),
-                   help="overlay drawn on the 1-D panel and recorded in the "
-                        "report: 'clip' = the per-clip z-score the model "
-                        "computes internally, 'session' = whole-session "
-                        "z-score, 'none' = no overlay (the provider's item is "
-                        'always RAW)')
     p.add_argument('--clip_index', default='0',
                    help='comma list of clip indices in the selection')
     p.add_argument('--max_entries', type=int, default=0, help='0 = no cap')
@@ -867,7 +852,7 @@ def main(argv=None) -> int:
             fps=args.fps, phys_fs=args.phys_fs, input_size=args.input_size,
             roi_padding=args.roi_padding,
             landmarks=rrd.resolve_face_landmarks(args.landmarks),
-            decode_scale=args.decode_scale, norm=args.norm,
+            decode_scale=args.decode_scale,
             max_entries=args.max_entries or None)
     except (FileNotFoundError, RuntimeError) as exc:
         # A selection that yields nothing (bad raw_root, or a pair excluded by

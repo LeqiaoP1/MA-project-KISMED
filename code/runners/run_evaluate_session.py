@@ -206,8 +206,8 @@ _TASK_IN_NAME = re.compile(r'_([Tt]\d+)$')
 #: session metrics that are comparable across the prediction / reference spaces.
 #: ``pearson`` is affine-invariant, ``psd_mae`` is band-normalised, and the
 #: ``*_affine`` terms are the volts-calibrated MAE/RMSE. The RAW session
-#: mae/rmse are deliberately EXCLUDED -- with a session-z-scored prediction and
-#: a raw-volts reference they measure the reference DC offset, not error.
+#: mae/rmse are deliberately EXCLUDED -- with a per-clip-z-scored prediction
+#: and a raw-volts reference they measure the reference DC offset, not error.
 _BREAKDOWN_KEYS = ('pearson', 'psd_mae', 'dominant_freq_error_hz',
                    'mae_affine', 'rmse_affine')
 
@@ -238,7 +238,7 @@ def _session_quality(rec):
 def _figure_metrics(rec):
     """Space-consistent numbers for a session figure's title.
 
-    The assembled prediction is session-z-scored while the reference is raw
+    The assembled prediction is z-scored per clip while the reference is raw
     volts, so the raw ``session_tier1`` mae/rmse are NOT amplitude errors --
     they track the reference DC offset and can RANK sessions wrongly (measured
     2026-10-10: M055_T4 printed mae 2.335 at pearson -0.634 vs M038_T3's 4.578
@@ -477,7 +477,7 @@ def main(args):
     # label and the distortion GROUPS ("levels") that contain it, so the
     # breakdown needs neither a config nor name parsing (the name is only a
     # fallback). Only SPACE-CONSISTENT metrics are aggregated (see
-    # _BREAKDOWN_KEYS): the assembled prediction is session-z-scored while the
+    # _BREAKDOWN_KEYS): the assembled prediction is z-scored per clip while the
     # reference is raw volts, so the raw session mae/rmse are not amplitude
     # errors and would mislead a group ranking.
     quality, task_of, levels_of = {}, {}, {}

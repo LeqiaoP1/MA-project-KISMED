@@ -185,9 +185,8 @@ mask_span_s: {bp: 1.75}            # ignored while physio_mask: random
 signal_weight: 0.5                 # lambda for every physio stream (visual 1.0)
 physio_norm: clip                  # per-clip z-score, applied by the DATASET
                                    # (the model is pinned to target_norm='none'
-                                   # for rgb_roi). Same knob as the TIR-ROI
-                                   # pipeline -- set 'session' to move RGB+BP
-                                   # to the session-relative target space too.
+                                   # for rgb_roi). Same setting as the TIR-ROI
+                                   # pipeline; it is the only mode.
 spectral_weight: 0.0               # OFF (decision 2026-09-26: the spectral term
                                    # belongs to Stage-3 fine-tuning)
 

@@ -43,7 +43,7 @@ from runners.run_evaluate_session import (_task_of_name, read_reference,
 __all__ = ['main', 'subject_of', 'aggregate_subjects']
 
 #: session metrics aggregated per subject / task / group. Cross-space raw
-#: mae/rmse are deliberately EXCLUDED (the prediction is session-z-scored while
+#: mae/rmse are deliberately EXCLUDED (the prediction is z-scored per clip while
 #: the reference is raw volts, so they track the reference DC, not error);
 #: the volts-calibrated ``*_affine`` terms are used instead.
 _AGG_KEYS = ('pearson', 'pearson_band', 'template_pearson_band', 'mae_affine',

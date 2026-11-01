@@ -374,24 +374,16 @@ def get_args():
                         help='waveform sampling rate in Hz')
     parser.add_argument('--input_size', default=224, type=int)
     parser.add_argument('--physio_norm', default='zscore', type=str,
-                        choices=['none', 'ac', 'zscore', 'session'],
-                        help='target normalisation. The recorded streams are '
-                             'NOT zero-mean (BP4D BP / blood pulse is raw '
-                             'mmHg, mean ~101): with "none" the head must fit '
-                             'a ~100 DC offset and the MR-STFT term is '
-                             'dominated by the 0 Hz bin instead of the '
-                             'pulsatile band. "zscore" (default) = zero-mean/'
-                             'unit-std PER CLIP, the standard rPPG convention; '
-                             '"ac" removes the clip mean only. "session" '
-                             '(tir_roi only) = zero-mean/unit-std with the '
-                             "WHOLE session's statistics -- the twin of the "
-                             'Stage-2 `physio_norm: session` knob (the model '
-                             'is pinned to identity); use it when the '
-                             'checkpoint was '
-                             'pre-trained that way so both stages share ONE '
-                             'target space. NOTE with it the target std is NOT '
-                             '~1, so alpha*StdLoss becomes a genuine '
-                             'amplitude term.')
+                        choices=['clip', 'zscore'],
+                        help='target normalisation, applied by the DATASET: a '
+                             'per-clip z-score (one mean/std from the clip\'s '
+                             "own samples). 'clip' and 'zscore' are synonyms; "
+                             'there is no raw / mean-only / session-relative '
+                             'alternative -- a second target space would make '
+                             'Stage 2 and Stage 3 incomparable. The recorded '
+                             'streams are NOT zero-mean (BP4D BP is raw mmHg, '
+                             'mean ~101), which is exactly why the offset has '
+                             'to go and the target std is ~1 by construction.')
     # clip geometry -- MUST mirror the Stage-2 Stage-2 run the ckpt comes from
     parser.add_argument('--clip_duration', default=4.0, type=float,
                         help='window length in seconds; mirror Stage 2')
@@ -602,8 +594,8 @@ def get_args():
     parser.add_argument('--huber_beta', default=1.0, type=float,
                         help='SmoothL1 transition point in TARGET-STD units '
                              "(only read when --time_loss smoothl1). The "
-                             'Stage-3 physio_norm: session target std is ~0.85, '
-                             'so 1.0 is ~1 std: quadratic inside, linear out.')
+                             'per-clip z-scored target has std ~1, so 1.0 is '
+                             '~1 std: quadratic inside, linear out.')
 
     # spectral band for evaluation (plan: BP 1.0-2.5 Hz, RESP 0.16-0.4 Hz)
     parser.add_argument('--eval_band', default=None, type=str,

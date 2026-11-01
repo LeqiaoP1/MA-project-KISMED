@@ -340,13 +340,12 @@ class MultiModalMAE(nn.Module):
         #   a step at every token boundary, i.e. broadband energy the STFT loss
         #   would chase instead of the physiological band.
         # 'none' : IDENTITY -- the 1-D target is used EXACTLY as the dataset
-        #   returns it. This is the SESSION-level-normalisation mode: the
-        #   dataset z-scores each clip with its WHOLE SESSION's mean/std
-        #   (``data.tir_resp_dataset.TirRoiRespPretrainDataset(
-        #   physio_norm='session')``), so the model must NOT re-normalise per
-        #   clip -- doing both silently collapses the session-relative
-        #   amplitude back to a per-clip z-score. The VISUAL streams are
-        #   unaffected: they always take their own per-token z-score below.
+        #   returns it. This is the ROI-lineage default: the dataset already
+        #   applied the pipeline's ONE label normalisation (a per-clip z-score,
+        #   ``data.tir_resp_dataset.TARGET_NORM``), so the model must NOT
+        #   re-normalise per clip -- doing both would rescale an already
+        #   normalised label. The VISUAL streams are unaffected: they always
+        #   take their own per-token z-score below.
         if target_norm not in ('token', 'clip', 'none'):
             raise ValueError(
                 f"MultiModalMAE: target_norm must be 'token', 'clip' or "

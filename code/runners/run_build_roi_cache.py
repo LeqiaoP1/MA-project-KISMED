@@ -279,7 +279,7 @@ def mode_check(args, corpus, sessions) -> int:
             temporal_stride=2, tubelet_t=2, input_size=args.input_size,
             roi_padding=args.roi_padding, crop_rule=args.crop_rule,
             target_landmarks=resolve_landmarks(args.roi_landmarks),
-            min_signal_spread=0.0, rail_touch_v=0.0, physio_norm='session',
+            min_signal_spread=0.0, rail_touch_v=0.0,
             subjects=None, verbose=False)
         base = ds.base
         by_sess: Dict[str, List[int]] = {}

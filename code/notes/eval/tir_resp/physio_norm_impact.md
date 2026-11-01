@@ -1,6 +1,10 @@
 # physio normalisation: clip-level vs session-level (measured)
 
 **Date:** 2026-10-08
+**Status (2026-11-01): HISTORICAL.** The multi-mode knob studied here was retired;
+the pipeline now applies a per-clip z-score only (`data.tir_resp_dataset.TARGET_NORM`)
+and refuses `none` / `ac` / `session`. The measurements stay as a record of what
+the session-relative target space did to the corpus.
 **Scope:** the 1-D respiration target of the TIR-ROI branch
 (`data_set: tir_roi`, `--physio_norm {none, clip|zscore, session}`).
 **Cluster:** Lichtenberg — CPU only, **no video decoded** (metadata + text files).

@@ -278,6 +278,28 @@ def test_dataset_from_archive_passes_its_own_checks(tmp_path):
         assert rrd._check_clip(ds, index) == [], index
 
 
+def test_bp_target_is_zscored_per_clip(tmp_path):
+    """The RGB+BP label is the per-clip z-score -- the SAME function the TIR
+    lineage uses, and it must be applied by the DATASET.
+
+    Regression: ``RGBRoiDataset._load`` used to call ``signal_clip`` with its
+    ``normalized=False`` default, so ``physio_norm`` was silently inert and the
+    model trained on raw mmHg while every config claimed a z-score.
+    """
+    root = str(tmp_path)
+    _build_tree(root)
+    ds = _dataset(root)
+    for index in range(len(ds)):
+        w = ds[index]['bp_signal'].numpy()
+        raw = ds.signal_clip(index, 'bp', normalized=False)
+        expect = (raw - raw.mean()) / (raw.std() + rrd.ZSCORE_EPS)
+        assert np.allclose(w, expect, atol=1e-5), index
+        assert abs(float(w.mean())) < 1e-4, index
+        assert abs(float(w.std()) - 1.0) < 1e-3, index
+    # the raw window stays reachable for plots / amplitude audits
+    assert abs(float(ds.signal_clip(0, 'bp', normalized=False).mean())) > 10.0
+
+
 def test_dataset_from_extracted_dir_is_unchanged(tmp_path):
     """The directory path still passes the same checks (no regression)."""
     root = str(tmp_path)

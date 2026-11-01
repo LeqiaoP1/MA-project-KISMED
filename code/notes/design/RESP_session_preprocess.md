@@ -74,7 +74,10 @@ Resolutions of the open items:
   is a corpus-wide convention); the measured rate is deliberately not in the key.
   Each shard stores `n_src` / `fs_in` / `fs_out`, so it is self-verifying without
   the raw file.
-* **R5 — `physio_norm: session`.** Statistics are now `nanmean` / `nanstd` over
-  the stored grid (valid samples only), documented in `_resp_full`.
+* **R5 — normalisation is downstream and single.** The artefact stores
+  run-mean-removed volts; the DATASET then applies the pipeline's only label
+  normalisation, a per-clip z-score (`data.tir_resp_dataset.TARGET_NORM`). The
+  former whole-session mode (`physio_norm: session`) is retired, so no
+  session-level statistics are computed from the grid any more.
 * **R6 — retrain required.** The label space changed to run-mean-removed volts;
   the plan stops at "data pipeline verified" and spends no GPU time.

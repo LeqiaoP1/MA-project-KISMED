@@ -11,11 +11,11 @@ Two details that matter:
   1-D target is sampled at ``fs`` on the *original* window regardless of
   ``temporal_stride`` (only the VIDEO is decimated), so the offset is
   ``round(t_start * fs)`` -- NOT ``t_start * fs / temporal_stride``.
-* **Normalisation.** With ``physio_norm: zscore`` each clip prediction is only
-  defined up to a per-clip affine map. The assembled waveform is therefore
-  meaningful for *affine-invariant* metrics (Pearson, PSD shape, RR intervals);
-  absolute-amplitude metrics need the per-session affine calibration in
-  ``affine_calibrate``.
+* **Normalisation.** Each clip prediction is z-scored with its own mean/std,
+  so it is only defined up to a per-clip affine map. The assembled waveform is
+  therefore meaningful for *affine-invariant* metrics (Pearson, PSD shape, RR
+  intervals); absolute-amplitude metrics need the per-session affine
+  calibration in ``affine_calibrate``.
 
 Hann windows with weight-sum normalisation are used instead of cropping
 ``D - stride`` per clip, so overlapping windows cross-fade and no sample is

@@ -111,7 +111,7 @@ def _survey_subject(args: dict) -> dict:
             resp_fs=args.get('resp_fs', trd.DEFAULT_RESP_FS),
             resp_cache=args.get('resp_cache') or None,
             min_signal_spread=0.0,          # keep every window; we classify below
-            norm='none', allow_empty=True, verbose=False)
+            allow_empty=True, verbose=False)
     except Exception as exc:                                 # pragma: no cover
         return {'subject': subj, 'error': f'{type(exc).__name__}: {exc}',
                 'traceback': traceback.format_exc(), 'sessions': []}

@@ -388,33 +388,35 @@ Consequences to keep in mind:
 * epoch time and the validation set scale with the clip count; revisit `epochs` /
   `eval_freq` instead of assuming the old schedule still fits.
 
-**One normalisation knob: `physio_norm` (2026-10-07).** The TIR-ROI+RESP
-pipeline normalises the 1-D TARGET in the DATASET, in both stages, under the
-SAME flag name and values — so the mechanism carries over unchanged to the
-RGB+BP extension (`data_set: rgb_roi`).
+**One label normalisation: a per-clip z-score (revised 2026-11-01).** Every
+waveform-like target (`resp`, `bp`) is z-scored with ITS OWN mean/std, and the
+DATASET does it — in both stages and in both ROI lineages, so the mechanism
+carries over unchanged between `data_set: tir_roi` and `data_set: rgb_roi`.
 
-* Stage 2: `configs/pretrain/stage2_hpc_tir_roi_resp.yaml` sets
-  `physio_norm: session`. `--physio_norm {none, clip|zscore, session}` makes
-  `TirRoiRespPretrainDataset` wrap the base as
-  `BP4DPlusTIRRespDataset(norm=...)`: `session` z-scores every clip with the
-  **whole session's** mean/std (population statistics over the entire
-  `Resp_Volts.txt`), so a clip keeps its session-relative amplitude and offset
-  instead of being flattened to unit variance on its own. `clip`/`zscore`
-  (aliases) is the per-clip z-score; `none` is raw (debug only).
+* `physio_norm` accepts only `clip` / `zscore` (synonyms;
+  `data.tir_resp_dataset.TARGET_NORM`). The retired values `none`, `ac` and
+  `session` are REFUSED by `check_physio_norm` instead of being silently mapped:
+  a config that asked for another target space would otherwise train on a label
+  nobody intended. Consequence: the whole-session target space is gone, so
+  checkpoints trained under `physio_norm: session` are not comparable and must
+  be retrained.
+* Stage 2 (`tir_roi`, `rgb_roi`) and Stage 3 (`run_waveform.py`) apply the same
+  function to the same window, so ONE clip yields ONE target everywhere
+  (asserted by `test_stage2_and_stage3_target_spaces_are_identical`).
 * The model never normalises a 1-D stream: `run_pretrain.pin_roi_target_norm`
   FORCES `target_norm='none'` for every RAW-tree ROI lineage (`tir_roi` =
   TIR-ROI+RESP, `rgb_roi` = RGB+BP), so there is no second knob to keep in
   sync — the ROI configs therefore never set `target_norm` (asserted by
   `test_roi_configs_never_set_the_model_side_target_norm`). Visual streams are
   unaffected — they always take their own per-token z-score.
-* Stage 3 uses the same flag and values on `run_waveform.py`; with
-  `configs/finetune/resp_tir_roi_hpc.yaml` set to `physio_norm: session` the
-  SAME clip yields the SAME target in both stages (asserted by
-  `test_stage2_and_stage3_target_spaces_are_identical`). The other Stage-3
-  configs stay `zscore` because they pair with per-clip Stage-2 runs.
-* Caveat: under `session` the target std is no longer ~1, so `alpha` (StdLoss)
-  becomes a genuine amplitude term rather than `|std(pred) - 1|`.
-* Tests: `tests/test_physio_norm.py`.
+* `signal_clip(..., normalized=False)` / `respiration_clip(..., normalized=False)`
+  still return the PRE-normalisation window (raw volts / mmHg, or the cache's
+  run-mean-removed volts). That is for plots, corpus statistics and the aligned
+  amplitude metrics — never for a model input.
+* Because the target std is ~1 by construction, `alpha` (StdLoss) reduces to
+  `|std(pred) - 1|` and `huber_beta` is in target-std units.
+* Tests: `tests/test_physio_norm.py` (TIR lineage) and
+  `tests/test_rgb_zip_source.py::test_bp_target_is_zscored_per_clip` (RGB+BP).
 
 **Where the rail rule applies (audited 2026-10-06).** `rail_touch_v` and
 `min_signal_spread` are threaded through `args` in every stage that builds the
@@ -470,8 +472,8 @@ The crop itself is shared by construction (both views call
 `python data/tir_resp_dataset.py --check_views` PROVES it: it builds the
 Stage-2 and the Stage-3 view on the same clip grid and asserts, per window,
 that the `[3, T, S, S]` clip tensor is **bit-identical**, the ROI box is equal,
-and the Stage-3 target equals the per-clip z-score of the Stage-2 raw volts
-(the label Stage 2 saw internally under `target_norm: clip`).
+and the Stage-3 target is **identical to the Stage-2 target** (both views return
+the same per-clip z-score, so no normalisation can be stacked twice).
 
 **Empty splits now fail fast (2026-10-01).** A `DataLoader` yields ZERO batches
 when `drop_last` eats the whole split (fewer clips than `batch_size`, the usual
@@ -510,12 +512,13 @@ checkpoint's tubelet into `adapters.tir` instead of leaving it random
 `rgb,...` run is unaffected). The canonical `rgb,bp*` configs and
 `PairedPretrainDataset` are untouched.
 
-Not yet implemented: a finer Stage-3 temporal decoder, and the *session-level*
-reconstruction/stitching that turns per-clip predictions into one continuous
-whole-session waveform (a planned offline inference step — per-clip training is
-clip-level by design). (RESP/EDA streams in Stage 2 *are* implemented — the
-local configs now train all five streams, see the flexible-modalities
-subsection above.)
+Not yet implemented: a finer Stage-3 temporal decoder, and **model-side sliding
+inference** over an arbitrary recording (one command that runs the net window by
+window over a whole file). The *stitching* of an existing prediction dump is
+implemented and is what every reported session/subject number goes through —
+see §"Whole-session waveform reconstruction" below. (RESP/EDA streams in Stage 2
+*are* implemented — the local configs now train all five streams, see the
+flexible-modalities subsection above.)
 
 ## Thesis plan alignment (`code/notes/plan/RGB_BP_plan.md`)
 
@@ -529,7 +532,7 @@ subsection above.)
 | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Stage 1 — ImageNet init of ViT-Base encoder                                          | `core/model.py` entrypoints (`project_vit_base_patch16_224`)                                                                                                                                                                                                                                                                                                                                                                                                                     | official ImageNet-1K timm classifier converter; encoder inheritance IMPLEMENTED (`core/multimae.py::load_pretrained_encoder` + `canonicalise_vit_state_dict` -- 3-D tubelet kernel transferred verbatim; K400 vs SSV2 corpus selectable via `--videomae_dataset` / `videomae:k400` / `videomae:ssv2`; blank/random is rejected) via `--pretrained_encoder`; variant specs (`small |
 | Stage 2 — multimodal masked pre-training on BP4D+ (RGB/TIR 50-75%, BP/RESP/EDA 90%+) | `core/input_adapters.py` (`SignalInputAdapter`), `data/masking_generator.py` (`MultiModalMaskingGenerator` asymmetric), `core/criterion.py` (`MaskedMSELoss`), configs `configs/pretrain/stage2_local.yaml` (wiring smoke) + `stage2_local_pretrained.yaml` (VideoMAE K400 + Stage-1 init) + `stage2_local_pretrained_ssv2.yaml` (SSV2 twin) + HPC template `stage2_multimodal.yaml`; implemented local milestone: `core/multimae.py` (`MultiModalMAE`) + `PairedPretrainDataset` + `runners/run_pretrain.py` | separate deeper decoders; full-data HPC run at larger 224 geometry. Local five-stream milestone (rgb+tir+bp+resp+eda) is implemented & run:`core/multimae.py` (`MultiModalMAE`), `data/paired_dataset.PairedPretrainDataset`, `runners/run_pretrain.py`, `configs/pretrain/stage2_local{,_pretrained,_pretrained_ssv2}.yaml`                         |
-| Stage 3 — three branches BP, RESP & EDA, unified spatio-temporal-spectral loss       | `core/waveform_losses.py` (`WaveformJointLoss`: L1 + Pearson + MR-STFT; 64/128/256 for BP/RESP, 256/512/1024 for EDA), regression head (`ProjectViT(output_len=...)`, baseline CLS->seq), `runners/run_waveform.py`, configs `configs/finetune/{bp,resp,eda}.yaml`                                                                                                                                                                                                         | lightweight conv decoder over all tokens for finer temporal resolution; session-level whole-waveform reconstruction/stitching (offline inference, not yet implemented)                                                                                                                                                                                |
+| Stage 3 — three branches BP, RESP & EDA, unified spatio-temporal-spectral loss       | `core/waveform_losses.py` (`WaveformJointLoss`: L1 + Pearson + MR-STFT; 64/128/256 for BP/RESP, 256/512/1024 for EDA), regression head (`ProjectViT(output_len=...)`, baseline CLS->seq), `runners/run_waveform.py`, configs `configs/finetune/{bp,resp,eda}.yaml`                                                                                                                                                                                                         | lightweight conv decoder over all tokens for finer temporal resolution; model-side sliding inference over an arbitrary recording (the evaluation-time stitching of a prediction dump IS implemented — `evaluation/assemble.py`)                                                                                                                                                                                |
 | Evaluation — Tier 1/2/3 post-processing                                              | `evaluation/metrics.py` (MAE/RMSE/Pearson; Welch PSD), `evaluation/clinical.py` (NeuroKit2 RMSSD/pNN50/MedianNN/ShanEn), `runners/run_evaluate.py`                                                                                                                                                                                                                                                                                                                             | —                                                                                                                                                                                                                                                                                                                                                    |
 
 ```bash
@@ -542,15 +545,25 @@ python runners/run_evaluate.py --pred_path out.npy --target_path gt.npy \
     --fs 100 --tier 1,2,3 --waveform bp
 ```
 
-### Whole-session waveform reconstruction (planned)
+### Whole-session waveform reconstruction (evaluation-time)
 
-Stage-3 *training* is per clip (`video window -> waveform window`). The final
-deliverable — the continuous 1-D waveform of a whole session (subject/task) —
-is assembled **after** training by sliding the window over the session
-(`clip_duration` + `clip_stride`) and overlap-adding (stitching) the per-window
-predictions, then evaluated offline with Tier 1 (time), Tier 2 (spectral) and
-Tier 3 (clinical/NeuroKit2, BP/HRV only). This stitching step is **not yet
-implemented** (no training involved).
+Stage-3 *training* is per clip (`video window -> waveform window`). The reported
+deliverable — the continuous 1-D waveform of a whole session (subject/task) — is
+assembled **after** training: `run_waveform.py --save_preds` dumps
+`preds.npy` + `targets.npy` + `entries.json`, and
+`evaluation/assemble.py::assemble_session` Hann-overlap-adds the per-window
+predictions on the session timeline (offsets from the entries' `t_start`), then
+Tier 1 (time), Tier 2 (spectral) and Tier 3 (clinical/NeuroKit2, BP/HRV only) are
+computed on the assembled waveform. Consumers: `run_evaluate_session.py` (per
+session + figures), `run_evaluate_subject.py` (one number per subject, median
+over sessions + bootstrap CI) and `run_evaluate_kfold.py` (pooled folds — this is
+what produced the 138-subject / 1260-session numbers in
+`notes/eval/tir_resp/resp_5fold_cv.md`). Samples no clip covers are `nan` with a
+`covered` mask, so callers must score `y[covered]`; and because each prediction
+is z-scored per clip, amplitude metrics need the (oracle)
+`affine_calibrate` step. What is still missing is **model-side sliding
+inference** over an arbitrary recording (today the dump comes from the val split
+of a `run_waveform.py` run, not from a standalone "infer this file" command).
 
 **Tier-2 resolution + degenerate-target fix (2026-10-01).** `spectral_metrics`
 used a hardcoded `nperseg=min(256, n)`, i.e. 0.39 Hz bins at `fs=100`; an
@@ -792,10 +805,11 @@ It reads the **raw** tree (no `prepare_bp4d.py` copy needed):
   sessions (F001 T2/T6/T7/T8) -- the dataset returns it as measured; drop or
   mask those windows before drawing conclusions about amplitude.
 * **Normalisation.** Thermal frames -> `[0, 1]` by `/255`; respiration is
-  z-scored **per clip** (`(y - mu) / (sigma + 1e-8)`, the default, matching the
-  Stage-2 `target_norm: clip` convention). `norm='session'` uses whole-session
-  statistics and `norm='none'` returns raw volts (needed for any clinical
-  amplitude comparison).
+  z-scored **per clip** (`(y - mu) / (sigma + ZSCORE_EPS)`, the pipeline's only
+  label normalisation — see `data.tir_resp_dataset.TARGET_NORM`).
+  `respiration_clip(..., normalized=False)` returns the pre-normalisation window
+  (raw volts, or the cache's run-mean-removed volts), which is what a clinical
+  amplitude comparison needs.
 * **Clips are non-overlapping by default** (`clip_stride=None`); pass
   `clip_stride` in SECONDS for a hop. **No split is applied here** -- this
   dataset exposes one stream per session, and the subject-disjoint split is the

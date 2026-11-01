@@ -47,9 +47,10 @@ aggregate across subjects.
 
 ## 4. Metrics
 
-The prediction is **session-z-scored** and the reference is **raw volts**
-(`physio_norm: session`), so only scale/offset-invariant metrics are directly
-valid; amplitude errors need the (oracle) affine calibration and must be flagged.
+The prediction is **z-scored per clip** (the dataset's only label normalisation,
+`data.tir_resp_dataset.TARGET_NORM`) and the reference is **raw volts**, so only
+scale/offset-invariant metrics are directly valid; amplitude errors need the
+(oracle) affine calibration and must be flagged.
 
 | Role | Metric | Rationale |
 |---|---|---|

@@ -123,6 +123,29 @@ def test_window_inside_a_valid_run_is_kept(tmp_path):
     assert np.isfinite(item['resp_signal'].numpy()).all()
 
 
+def test_target_is_the_clip_z_score_of_the_cached_grid(tmp_path):
+    """Goal contract: with a cache attached the dataset READS the preprocessed
+    grid, and the label is that window's per-clip z-score -- one function, no
+    second normalisation anywhere."""
+    raw, out = tmp_path / 'raw', tmp_path / 'out'
+    cache = _make_resp_cache(raw, out, {'S001_T1': _breathing()})
+    base = _base(raw, cache)
+    sh = base._resp_shard('S001_T1')
+    s0 = int(round(base.entries[0]['t_start'] * base.resp_fs))
+    total = base.resp_len
+    assert sh['signal'].shape[0] > s0 + total          # a slice, not a copy
+    win = np.asarray(sh['signal'][s0:s0 + total], dtype=np.float64)
+    expect = (win - win.mean()) / (win.std() + trd.ZSCORE_EPS)
+    got = base[0]['resp_signal'].numpy()
+    assert got.shape == expect.shape
+    assert np.allclose(got, expect, atol=1e-5)
+    assert abs(float(got.mean())) < 1e-4
+    assert abs(float(got.std()) - 1.0) < 1e-3
+    # ... and the RAW view is still the stored (run-mean-removed) grid slice
+    raw_win = base.respiration_clip(0, normalized=False)
+    assert np.allclose(raw_win, win, atol=1e-6)
+
+
 def test_window_over_a_saturation_hole_is_dropped_with_the_right_counter(tmp_path):
     x = _breathing()
     x[int(10 * RESP_FS):int(13 * RESP_FS)] = 12.0     # 3 s event
@@ -290,7 +313,7 @@ def test_stage3_data_path_shapes(tmp_path):
         raw_root=str(raw), is_train=True, train_ratio=1.0, split_by='subject',
         fs=100.0, clip_duration=CLIP_S, temporal_stride=2, tubelet_t=2,
         input_size=112, roi_padding=0.2, crop_rule='square', resp_fs=100.0,
-        resp_cache=str(cache), physio_norm='session')
+        resp_cache=str(cache), physio_norm='zscore')
     tir, wav = ds[0]
     assert tuple(tir.shape) == (3, 100, 112, 112)
     assert tuple(wav.shape) == (800,)

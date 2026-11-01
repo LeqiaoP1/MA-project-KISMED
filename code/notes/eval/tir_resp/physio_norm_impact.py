@@ -1,5 +1,13 @@
 """clip- vs session-level physio normalisation: the measured consequences.
 
+STATUS 2026-11-01: HISTORICAL. The multi-mode knob this probe measured
+(``--physio_norm {none, clip|zscore, session}``) has been retired; the pipeline
+now applies a per-clip z-score and nothing else
+(``data.tir_resp_dataset.TARGET_NORM``), and ``check_physio_norm`` refuses the
+other spellings. The script is kept with its measurements because the numbers
+below are facts about the corpus, not a description of the current API, and it
+will no longer run against the current datasets without restoring the modes.
+
 Context. ``--physio_norm {none, clip|zscore, session}`` is DATASET-owned (the
 model is pinned to identity for the ROI lineages by
 ``run_pretrain.pin_roi_target_norm``). The HPC pair ships ``session``; every

@@ -285,7 +285,7 @@ def plot_session_waveform(t, target, pred, out_png, title='', fs=100.0,
     Both curves are z-scored for DISPLAY, so the overlay looks amplitude-matched
     even when the two series are in different spaces. ``metrics`` must therefore
     be a caller-curated, SPACE-CONSISTENT dict -- for the raw-volts reference vs
-    a session-z-scored prediction that means ``pearson`` (affine-invariant) and
+    a per-clip-z-scored prediction that means ``pearson`` (affine-invariant) and
     the volts-calibrated ``mae``/``rmse``, NOT the cross-space ones (the suffix
     rendered under the plot is the only honest number in the title).
     """

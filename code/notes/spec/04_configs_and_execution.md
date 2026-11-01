@@ -94,7 +94,7 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `mask_ratio_{rgb\|tir\|bp\|resp\|eda}` | float | Per-stream masking ratio |
 | `signal_weight` | float | Loss weight for physio streams (default 0.5) |
 | `target_norm` | str | `token` (per-token z-score), `clip` (per-clip z-score) or `none` (IDENTITY). **NON-ROI paths only** (e.g. `bp4d+`): for the RAW-tree ROI lineages (`tir_roi` = TIR-ROI+RESP, `rgb_roi` = RGB+BP) the DATASET owns the normalisation and `run_pretrain.py` pins this to `none` |
-| `physio_norm` (Stage 2) | str | **THE 1-D target-normalisation knob** for `tir_roi` / `rgb_roi`: `none` (raw, debug), `clip` (= `zscore`) per-clip z-score, `session` whole-session z-score. Applied by the dataset; the model never re-normalises |
+| `physio_norm` (Stage 2) | str | The 1-D target normalisation for `tir_roi` / `rgb_roi`: `clip` (= `zscore`) per-clip z-score. That is the ONLY value — `none` / `ac` / `session` were removed and are REFUSED (`data.tir_resp_dataset.check_physio_norm`). Applied by the dataset; the model never re-normalises |
 | `spectral_weight` | float | MR-STFT loss weight; **0.0 in all current configs** |
 | `spectral_fft_sizes` / `spectral_hop_ratio` | str / float | STFT config |
 | `pretrained_encoder` | str | Stage-1 VideoMAE corpus: `videomae:k400` / `videomae:ssv2` / `videomae` / `base` (= k400) / a local path. Blank/random is **rejected** |
@@ -114,7 +114,7 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `target` | str | `bp` / `resp` / `eda` |
 | `finetune` | str | Path to Stage-2 checkpoint |
 | `sig_kernel` | int | Signal window size per token; must satisfy `sig_kernel/fs == tubelet_t*stride/fps` |
-| `physio_norm` | str | `none` / `ac` / `zscore` (per clip) / `session` (whole-session stats). The SAME knob, name and values as the ROI Stage-2 paths, so one clip yields one identical target in both stages |
+| `physio_norm` | str | `clip` (= `zscore`) per-clip z-score — the SAME setting, name and values as the ROI Stage-2 paths, so one clip yields one identical target in both stages. `none` / `ac` / `session` were removed and are REFUSED |
 | `head_hidden` / `head_style` / `head_init` | int / str | Head architecture + initialisation |
 | `n_folds` / `fold` / `use_small_val` | int / int / bool | K-fold Cyclic Rotation policy. `n_folds <= 1` (default) = legacy ratio split; `--use_small_val` = Option B, off = Option A (no val). Registered by `runners/_common.py::add_split_args` |
 | `alpha` / `beta` / `gamma` | float | `WaveformJointLoss` term weights |
@@ -174,8 +174,10 @@ Available Slurm batch files (`code/scripts/hpc/`): `submit_inspect.sbatch`, `sub
 | `run_waveform.py` | Stage 3 | `-c`, `--target`, `--finetune`, `--sig_kernel`, `--physio_norm` |
 | `run_finetune.py` | Classification | `-c`, `--model`, `--finetune`, `--nb_classes` |
 | `run_au_probe.py` | AU probe | `-c`, `--probe` (linear/ft), `--finetune` |
-| `run_evaluate.py` | Offline eval | `--preds_dir`, `--target`, `--fs` |
-| `run_evaluate_session.py` | Session-level eval | `--preds_dir`, session assembly |
+| `run_evaluate.py` | Offline eval (arrays) | `--pred_path`, `--target_path`, `--fs`, `--tier`, `--waveform` |
+| `run_evaluate_session.py` | Session-level eval | `--pred_dir`, session assembly, `--tier` |
+| `run_evaluate_subject.py` | Subject-level rollup | `--pred_dir`, bootstrap CI, `--rate_window_s` |
+| `run_evaluate_kfold.py` | Pooled k-fold eval | `--root`, `--run_prefix`, `--folds`, `--out` |
 | `run_download_weights.py` | Weight download | `--list`, `--model` |
 | `run_inspect_data.py` | Dataset inspection | `--plot`, `--max_sessions`, `--split` |
 | `run_inspect_physio.py` | Physio signal QC | signal stats |
@@ -186,6 +188,30 @@ Available Slurm batch files (`code/scripts/hpc/`): `submit_inspect.sbatch`, `sub
 | `run_visualize.py` | Visualisation | predicted vs. target waveforms |
 
 **Common flags** (all runners via `add_common_args`): `--device`, `--seed`, `--dist_url`, `--local_rank`, `--output_dir`, `--resume`, `--log_wandb`, `--wandb_project`, `--num_workers`, `--tir_channels`, `--pin_mem`, `--max_sessions`, `--max_clips`, `--max_entries`.
+
+### 5.1 Session-level assembly — `evaluation/assemble.py`
+
+Stage 3 predicts ONE fixed-length window per clip, so a session-level score
+requires rebuilding the whole recording first (training-free post-processing; the
+protocol of record is `design/Evaluation_RespWaveform_protocol.md` §2/§4):
+
+- `clip_offsets` / `group_entries` — offset `round(t_start * fs)` per clip, NOT
+  `t_start * fs / temporal_stride` (only the VIDEO is decimated; the 1-D target
+  keeps the full-rate window). Entries are grouped per session and time-sorted.
+- `assemble_session(preds, offsets, fs, window='hann')` — Hann overlap-add with
+  weight-sum normalisation, returning **`(t, y, covered)`**. Uncovered samples
+  are `nan`, never 0, and callers MUST score `y[covered]` (a zero-fill moved one
+  session's Pearson by 0.18 on the 2026-10-15 run). A covered sample whose window
+  weights sum to 0 (the taper edge of a LONE window) falls back to the
+  unweighted mean, so a single-clip session needs no special case.
+- `affine_calibrate(pred, ref)` — least-squares `(a, b)` for the AMPLITUDE
+  metrics only, because a per-clip z-scored prediction is defined up to a
+  per-clip affine map. `pearson` / `psd_mae` / RR intervals need none;
+  `mae_affine` / `rmse_affine` are ORACLE-calibrated and not deployable.
+
+Consumers: `runners/run_evaluate_session.py` (per session + figure),
+`run_evaluate_subject.py` (median over the subject's sessions + bootstrap CI),
+`run_evaluate_kfold.py` (pooled folds). Tests: `tests/test_assemble_session.py`.
 
 ---
 

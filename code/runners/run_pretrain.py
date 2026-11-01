@@ -290,19 +290,18 @@ def get_args():
                              'DATASET owns the normalisation via --physio_norm '
                              "and run_pretrain pins target_norm='none'. "
                              'REQUIRED to be clip when --spectral_weight > 0.')
-    parser.add_argument('--physio_norm', default='none', type=str,
-                        choices=['none', 'clip', 'zscore', 'session'],
-                        help="THE 1-D target-normalisation knob of the pipeline "
-                             '(same flag name and values as the Stage-3 '
-                             'runner run_waveform.py). The DATASET applies it, '
-                             'for EVERY ROI lineage (tir_roi = TIR-ROI+RESP '
-                             'and rgb_roi = RGB+BP alike): "none" = raw values '
-                             '(debug), "clip"/"zscore" (aliases) = per-clip '
-                             'z-score, "session" = z-scored with the WHOLE '
-                             "session's mean/std so a clip keeps its "
-                             'session-relative amplitude and offset. The MODEL '
-                             'never normalises a 1-D stream: run_pretrain pins '
-                             "target_norm='none' for the ROI data_sets.")
+    parser.add_argument('--physio_norm', default='zscore', type=str,
+                        choices=['clip', 'zscore'],
+                        help="the ROI lineages' label normalisation, applied by "
+                             'the DATASET (tir_roi = TIR-ROI+RESP and rgb_roi = '
+                             'RGB+BP alike): a per-clip z-score, i.e. one '
+                             'mean/std per clip from that clip\'s own samples. '
+                             "'clip' and 'zscore' are synonyms; there is no "
+                             'raw / session-relative alternative, because a '
+                             'second target space makes the two stages '
+                             'incomparable. The MODEL never normalises a 1-D '
+                             'stream: run_pretrain pins target_norm="none" for '
+                             'the ROI data_sets.')
     parser.add_argument('--spectral_weight', default=0.0, type=float,
                         help='weight of the multi-resolution STFT MAGNITUDE '
                              'loss (see --spectral_fft_sizes) on the ASSEMBLED '
@@ -455,9 +454,7 @@ def pin_roi_target_norm(args) -> bool:
     """Pin the model's 1-D target normalisation to identity for ROI lineages.
 
     For every RAW-tree ROI lineage (``tir_roi`` = TIR-ROI+RESP, ``rgb_roi`` =
-    RGB+BP) the DATASET returns a fully normalised 1-D target, selected by the
-    single knob ``--physio_norm`` (``none`` | ``clip``/``zscore`` | ``session``)
-    -- the SAME flag name and values as the Stage-3 runner. The model must
+    RGB+BP) the DATASET returns a per-clip z-scored 1-D target. The model must
     therefore NOT normalise the 1-D stream again, so ``--target_norm`` is forced
     to ``'none'`` for these data_sets; any other value is reported as a no-op.
 
@@ -469,8 +466,7 @@ def pin_roi_target_norm(args) -> bool:
         return False
     if str(getattr(args, 'target_norm', 'token')) != 'none':
         print(f'[data] data_set {data_set!r}: the dataset owns the 1-D target '
-              f'normalisation (--physio_norm '
-              f"{getattr(args, 'physio_norm', 'none')!r}) -> forcing "
+              f'normalisation (per-clip z-score) -> forcing '
               f"--target_norm 'none' (the model does not re-normalise).")
     args.target_norm = 'none'
     return True
