@@ -254,7 +254,7 @@ def main() -> int:
     print(f'  median {agg("clip_std_under_session_median"):.3f}'
           f'   p10 {agg("clip_std_under_session_p10"):.3f}'
           f'   p90 {agg("clip_std_under_session_p90"):.3f}')
-    print('  -> deviate from 1 => alpha*StdLoss is a real amplitude term in Stage 3')
+    print('  -> deviate from 1 => huber_beta is not ~1 label-std in Stage 3')
     print()
 
     print('--- 4. boundary continuity of the ASSEMBLED waveform ---')

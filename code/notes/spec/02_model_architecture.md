@@ -542,8 +542,8 @@ All accept `[B,T]` or `[B,1,T]` (channel squeezed via `_to_1d`).
 **`PearsonLoss`**: `mean(1 - r)` where `r = (p_norm . t_norm) / (||p_norm|| * ||t_norm||)`.
 **[design]** — `SolutionA_asymCrossMAE.md §6`: must use a variance floor/epsilon and define a finite fallback for near-constant predictions or targets.
 
-**`StdLoss`** (L_time): `mean(|std(pred) - std(target)|)`. Population std with `eps=1e-8` under sqrt to avoid NaN.
-**[design]** — `SolutionA_asymCrossMAE.md §6`: the design note advises **not** including StdLoss on the normalised target (its std is ~1.0 by construction, making it largely redundant with Pearson). `StdLoss` is still the CODE default for `L_time` and the other waveform configs rely on it, but the shipped Stage-3 HPC config (`configs/finetune/resp_tir_roi_hpc.yaml`) selects `time_loss: smoothl1` as of 2026-11-01 — StdLoss is blind to polarity, which is the failure mode the baseline output showed.
+**`L_time` (point-wise Huber)**: `torch.nn.SmoothL1Loss(beta=huber_beta)`, `mean` reduction, on the raw point-wise error (no per-sample centring). `huber_beta` is in TARGET-STD units; the label is z-scored per clip, so its std is ~1 and the default `1.0` sits at ~1 std — quadratic inside that band, linear beyond.
+**[design]** — `SolutionA_asymCrossMAE.md §6`: the design note also considers an amplitude-only (std-matching) term on the normalised target and finds it largely redundant with Pearson. It is NOT used: amplitude-only is blind to POLARITY and SHAPE (an inverted waveform has the same std, mean and magnitude spectrum). A point-wise term does charge a constant phase offset, which is accepted here — the waveform, not just the rate, is the deliverable.
 
 **`MultiResolutionSTFTLoss`**: for each `n_fft` in `fft_sizes`:
 
@@ -567,7 +567,7 @@ Degenerate-target guard: skip samples with `||T_mag|| <= 1e-6 * max_batch(||T_ma
 | Sign flip (-z) | 4.000 (worst) | 0.000 (free) |
 | 1 s time shift | 2.557 | 2.016 |
 
-**`WaveformJointLoss`**: `L = alpha*L_time + beta*PearsonLoss + gamma*MultiResolutionSTFTLoss`, where `L_time` is `StdLoss` (CODE default) or `SmoothL1(pred - target)`, selected by `time_loss` (`{std, smoothl1|huber}`) with `huber_beta` in target-std units.  
+**`WaveformJointLoss`**: `L = alpha*L_time + beta*PearsonLoss + gamma*MultiResolutionSTFTLoss`, where `L_time` is the point-wise Huber described above (`huber_beta` in target-std units).  
 Default alpha=beta=gamma=1.0. Weights stored as `register_buffer`.
 
 ---

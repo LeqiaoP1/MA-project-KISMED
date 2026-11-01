@@ -1,46 +1,25 @@
 # Stage 3 -- HPC / FULL-CORPUS: TIR-ROI thermal (visual) -> RESP waveform.
 #
-# *** L_time = SmoothL1 (point-wise), NOT the amplitude-only StdLoss. ***
-# Changed 2026-11-01: this file used to ship `time_loss: std`, and the
-# point-wise arm lived in a separate clone,
-# configs/finetune/resp_tir_roi_hpc_smoothl1.yaml. That clone is now folded in
-# here and DELETED, so this is the single Stage-3 HPC config and it is the
-# SmoothL1 arm. Every sbatch default (submit_waveform_tir_roi,
-# submit_waveform_eval, submit_stage3_kfold, chain_lineage96,
-# bench_stage3_step) therefore points at this loss.
+# L_time is a POINT-WISE Huber term (``torch.nn.SmoothL1Loss``); `huber_beta`
+# is its only knob and is expressed in TARGET-STD units. It is the only term in
+# the joint loss that sees POLARITY and SHAPE -- an inverted waveform keeps the
+# same amplitude, mean and magnitude spectrum, so anything amplitude-only would
+# score it as a perfect reconstruction. The cost is that a constant phase offset
+# IS charged rather than forgiven, which is the right trade here: the waveform,
+# not just the rate, is the deliverable.
 #
-# WHY THE SWITCH. StdLoss = |std(pred) - std(target)| was introduced 2026-09-28
-# to stop charging the optimiser for a constant phase offset it can never
-# remove, but it is BLIND to shape and polarity: measured in
-# code/tests/test_waveform_losses.py, an INVERTED target costs it 0.000000 and
-# white noise of the right amplitude costs 0.032885. The read of the 200-epoch
-# baseline was exactly that failure mode -- a smooth near-sinusoid that beats a
-# 3-parameter single-tone fit in only 18 % of subjects -- so supervision moved
-# to point-wise Huber. Measured A/B (same Stage-2 checkpoint, same 273
-# held-out sessions / 5143 clips, 200 epochs each):
+# !! PROVENANCE GAP -- READ BEFORE QUOTING ANY NUMBER !!
+# The CV record in notes/eval/tir_resp/resp_5fold_cv.md (+0.307 pooled
+# band-Pearson, 138 subjects) and the output/finetune/resp_tir_roi_hpc{,_fold*}
+# dumps behind it were measured BEFORE this term was finalised, under an
+# AMPLITUDE-ONLY L_time (``|std(pred) - std(target)|``). They are NOT this
+# config's numbers until the 5-fold sweep is re-run, and any results table must
+# name the loss it reports.
 #
-#     clip-level Pearson   0.4988 (std)  ->  0.5249 (smoothl1)
-#     session band-Pearson by group:
-#         low       +0.573 -> +0.578
-#         moderate  +0.413 -> +0.494   (n=51, the one real-looking move)
-#         high      +0.435 -> +0.437
-#
-# The trade is real and NOT a free upgrade: at huber_beta 1.0 a pure AMPLITUDE
-# error is caught ~5x harder by StdLoss (0.349316 vs 0.065442). In particular
-# the ~3x under-scaling (amp_rel_err ~0.68) is NOT fixed by this switch -- see
-# notes/plan/TirROI_Resp_plan.md W3.
-#
-# !! TWO CONSEQUENCES BEFORE YOU RUN ANYTHING !!
-#  1. THE PUBLISHED CV NUMBERS ARE THE STD ARM. output/finetune/
-#     resp_tir_roi_hpc{,_fold*} and notes/eval/tir_resp/resp_5fold_cv.md
-#     (+0.307 pooled band-Pearson, 138 subjects) were all produced with
-#     time_loss='std'. They are not this config's numbers until the 5-fold
-#     sweep is re-run, and any results table must say which arm it reports.
-#  2. DO NOT resume those dumps. run_waveform.py auto-resumes the latest
-#     checkpoint in <output_dir>/checkpoints, and continuing a STD-trained
-#     checkpoint under SmoothL1 changes the objective mid-run.
-#     utils/checkpoint.py::check_resume_loss only WARNS about this. Pass a
-#     fresh --output_dir for the SmoothL1 sweep.
+# Do not resume those dumps either: run_waveform.py auto-resumes the latest
+# checkpoint in <output_dir>/checkpoints, so continuing them would silently
+# change the objective mid-run (utils/checkpoint.py::check_resume_loss warns
+# when huber_beta moves). Pass a fresh --output_dir for the new sweep.
 #
 # HPC twin of configs/finetune/resp_tir_roi_local.yaml, matched to
 # configs/pretrain/stage2_hpc_tir_roi_resp.yaml. The geometry differences from
@@ -173,14 +152,11 @@ clip_stride: 2.0                   # window hop in SECONDS. MUST equal the Stage
 max_clips: 0                       # 0 = no per-session cap
 
 # ---- joint spatio-temporal-spectral loss (the MR-STFT term lives in Stage 3) ----
-alpha: 1.0                         # L_time WEIGHT. Which term it multiplies is
-                                   #   selected by `time_loss` below -- see the
-                                   #   header for why this run is not StdLoss.
+alpha: 1.0                         # L_time WEIGHT. The term is a point-wise
+                                   #   Huber -- see the header.
 beta: 1.0                          # L_Pearson (phase-locking)
 gamma: 1.0                         # L_MR-STFT (multi-resolution)
-# L_time selection. `std` still exists in core/waveform_losses.py and is still
-# the CODE default; it is simply no longer what this experiment ships.
-time_loss: smoothl1                # {std | smoothl1|huber}
+# L_time is the point-wise Huber term; huber_beta is its only knob.
 huber_beta: 1.0                    # SmoothL1 transition point in TARGET-STD
                                    #   units. The target is z-scored per clip, so
                                    #   its std is ~1 and 1.0 ~= 1 std: QUADRATIC

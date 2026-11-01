@@ -1,5 +1,13 @@
 # Stage 3 -- LOCAL, RGB-ROI-only -> ARTERIAL BP waveform reconstruction.
 #
+# *** HISTORICAL RECORD -- READ THIS FIRST. *** The measurements below were
+# taken when L_time was an AMPLITUDE-ONLY term, ``|std(pred) - std(target)|``.
+# That term no longer exists in the code: L_time is now a point-wise Huber
+# (``huber_beta`` in target-std units). The numbers are unchanged and still
+# correct AS MEASURED; only the attribution label was updated ("StdLoss" ->
+# "amp term"). Do not expect this config to reproduce them -- rerun it if the
+# question matters, and expect the amplitude column to move.
+#
 # *** PHASE PROBE *** -- a SINGLE-VARIABLE variant of
 # configs/finetune/bp_rgb_roi_local.yaml. Everything is identical EXCEPT the
 # three joint-loss weights, the epoch budget and the output_dir. Do NOT treat
@@ -7,7 +15,7 @@
 # branch carry any per-clip PHASE information at all?
 #
 # WHY (measured 2026-09-28, see /memories/repo/stage3-loss-audit.md):
-# The StdLoss run (output/finetune/bp_rgb_roi_g1_stdloss_local, alpha=beta=
+# The amplitude-only-L_time run (output/finetune/bp_rgb_roi_g1_stdloss_local, alpha=beta=
 # gamma=1.0) fixed the amplitude -- std(pred)/std(target) went 0.213 (L1) and
 # 0.553 (L1, gamma=1) to **0.980** -- but its output is a FIXED TEMPLATE: 98.4 %
 # of the prediction's variance is one shared waveform emitted for every clip
@@ -16,7 +24,7 @@
 # Pearson PEAKED at +0.0030 @ epoch 2 and then DECLINED to -0.0129.
 # The mechanism is the weighting, measured as PARAMETER-space gradient shares
 # (d(term)/d(model params), 8 real val batches):
-#     checkpoint        StdLoss   Pearson   MR-STFT
+#     checkpoint        amp term  Pearson   MR-STFT
 #     best.pth (ep 2)    21.42 %   1.34 %   77.24 %
 #     checkpoint-0010    12.19 %   3.64 %   84.18 %
 #     checkpoint-0029     8.30 %   2.38 %   89.32 %
@@ -29,14 +37,14 @@
 # (user decision 2026-09-28: "I wanted only beta raised"), so this is a BETA-ONLY
 # probe, NOT a beta/gamma rebalance. alpha is also unchanged.
 # AS EXECUTED the MEASURED parameter-gradient force shares were (epoch 14):
-#     StdLoss 12.08 % | Pearson 15.55 % | MR-STFT 72.37 %
+#     amp term 12.08 % | Pearson 15.55 % | MR-STFT 72.37 %
 # vs the template run's 21.42 / 1.34 / 77.24 (all weights 1). So beta's force rose
 # 1.34 % -> 15.55 % (11.6x) but MR-STFT STILL LEADS at 72 %, i.e. the phase term
 # never became dominant. Note the divergence: Pearson held 81.8 % of the loss
 # VALUE yet only 15.6 % of the FORCE -- MR-STFT's gradient-to-value ratio is ~46x
 # higher. VALUE SHARE != GRADIENT SHARE.
 #
-# WHY StdLoss IS KEPT (not reverted to L1):
+# WHY THE AMPLITUDE TERM IS NOT REVERTED TO L1:
 #   * the inert term is beta, not the time term -- reverting changes only WHICH
 #     phase-blind term owns the amplitude, gamma still leads;
 #   * L1 re-opens the collapse confound (0.213/0.553 vs 0.980), so a null result
@@ -44,7 +52,7 @@
 #   * L1 charges 1.2868 for a PERFECT waveform delayed 0.20 s by the pulse
 #     transit time -- an error the model cannot fix -- and beta charges 1.0785
 #     there too, so the lag would be double-charged;
-#   * with StdLoss the decomposition stays clean and interpretable:
+#   * with an amplitude term the decomposition stays clean and interpretable:
 #     alpha = amplitude, beta = phase, gamma = spectrum.
 #
 # READ THE RESULT LIKE THIS:
@@ -68,7 +76,7 @@
 #   python -u runners/run_waveform.py -c configs/finetune/bp_rgb_roi_phaseprobe_local.yaml \
 #       2>&1 | tee ../output/finetune/bp_rgb_roi_phaseprobe_local/train.log
 #
-# 15 epochs, NOT 30: in the StdLoss run val Pearson peaked at epoch 2 and then
+# 15 epochs, NOT 30: in that run val Pearson peaked at epoch 2 and then
 # declined, so 15 is enough to see whether phase-locking appears while leaving
 # room past the early plateau. If Pearson is still rising at epoch 15, extend the
 # budget and re-run -- Stage 3 AUTO-RESUMES from --output_dir, so raising `epochs`
@@ -144,13 +152,13 @@ clip_stride: 4.0                   # window hop in SECONDS matching Stage 2
 max_clips: 0                       # 0 = no per-session cap (dev knob)
 
 # ---- joint spatio-temporal-spectral loss -- THE ONLY SUBSTANTIVE CHANGE ----
-# alpha is UNCHANGED (StdLoss already fixed amplitude); beta and gamma are the
+# alpha is UNCHANGED (the amplitude term already fixed amplitude); beta and gamma are the
 # probe variables. See the header for the measured shares and the projections.
-alpha: 1.0                         # L_time   (StdLoss = |std(pred) - std(target)|).
-                                   #   UNCHANGED from the parent config. It is what pins the
-                                   #   amplitude; it held 12.08 % of the parameter-gradient force
-                                   #   in this run. Blind to shape/polarity -- see
-                                   #   core/waveform_losses.StdLoss.
+alpha: 1.0                         # L_time   (point-wise SmoothL1 / Huber).
+                                   #   UNCHANGED from the parent config. It pins the
+                                   #   amplitude; under the amplitude-only L_time then
+                                   #   in use it held 12.08 % of the parameter-gradient
+                                   #   force (see the header).
 beta: 10.0                         # L_Pearson (phase-locking) -- RAISED 1.0 -> 10.0. THE ONLY
                                    #   CHANGE. It is the sole phase-sensitive term and held just
                                    #   1.34 % (ep2) / 2.38 % (ep29) of the force at 1.0.

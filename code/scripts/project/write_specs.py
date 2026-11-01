@@ -69,7 +69,7 @@ Stage 1  ──►  Stage 2  ──►  Stage 3
 - **Runner**: `runners/run_waveform.py`
 - **Engine**: `engines/waveform.py` (evaluation) + inline training loop in `run_waveform.py`
 - **Contract**: Visual streams ONLY (simulated sensor failure). The Stage-2 encoder weights are transferred verbatim (identical module names: `adapters.*`, `positions.*`, `enc_blocks.*`, `enc_norm`).
-- **Objective**: `WaveformJointLoss` = α·`StdLoss` + β·`PearsonLoss` + γ·`MultiResolutionSTFTLoss` (`core/waveform_losses.py`).
+- **Objective**: `WaveformJointLoss` = α·`L_time` + β·`PearsonLoss` + γ·`MultiResolutionSTFTLoss` (`core/waveform_losses.py`), where `L_time` is a point-wise Huber (`torch.nn.SmoothL1Loss`, transition at `huber_beta` in target-std units).
 
 ### Add-on — AU Occurrence Probe
 - **Model**: `MultiModalMAEProbe` (`core/au_probe.py`)
@@ -145,7 +145,7 @@ code/
 │   ├── input_adapters.py    # PatchedInputAdapter, SignalInputAdapter, SemSegInputAdapter
 │   ├── output_adapters.py   # SpatialOutputAdapter
 │   ├── criterion.py         # MaskedMSELoss, MaskedL1Loss, MaskedCrossEntropyLoss
-│   ├── waveform_losses.py   # PearsonLoss, StdLoss, MultiResolutionSTFTLoss, WaveformJointLoss
+│   ├── waveform_losses.py   # PearsonLoss, MultiResolutionSTFTLoss, WaveformJointLoss
 │   ├── au_probe.py          # MultiModalMAEProbe
 │   └── registry.py          # @register_model decorator + model_entrypoint
 ├── data/           # Datasets, masking generators, video I/O
@@ -737,7 +737,7 @@ All accept `[B,T]` or `[B,1,T]` (channel squeezed via `_to_1d`).
 
 **`PearsonLoss`**: `mean(1 - r)` where `r = (p_norm . t_norm) / (||p_norm|| * ||t_norm||)`.
 
-**`StdLoss`** (L_time): `mean(|std(pred) - std(target)|)`. Population std with `eps=1e-8` under sqrt to avoid NaN on constant input.
+**`L_time` (point-wise Huber)**: `torch.nn.SmoothL1Loss(beta=huber_beta)`, `mean` reduction, on the raw point-wise error. `huber_beta` is in TARGET-STD units (the label is z-scored per clip, so 1.0 ~= 1 std).
 
 **`MultiResolutionSTFTLoss`**: for each `n_fft` in `fft_sizes`:
 
@@ -751,7 +751,7 @@ total += sc + lm
 
 Degenerate-target guard: skip samples with `||T_mag|| <= 1e-6 * max_batch(||T_mag||)`.
 
-**`WaveformJointLoss`**: `L = alpha*StdLoss + beta*PearsonLoss + gamma*MultiResolutionSTFTLoss`.  
+**`WaveformJointLoss`**: `L = alpha*L_time + beta*PearsonLoss + gamma*MultiResolutionSTFTLoss` with `L_time` the point-wise Huber.  
 Default alpha=beta=gamma=1.0. Weights stored as `register_buffer`.
 
 ---
@@ -959,13 +959,13 @@ network input.
 
 ```python
 # WaveformJointLoss.forward:
-L = alpha * StdLoss(pred, target)
+L = alpha * SmoothL1(pred, target)
   + beta  * PearsonLoss(pred, target)
   + gamma * MultiResolutionSTFTLoss(pred, target)
 ```
 
 Gradient norm balance (measured 2026-09-28, N=496 @ 100 Hz):
-- `StdLoss`: `1/sqrt(N) ≈ 0.0449` (~1.81 % of composite)
+- `L_time` (point-wise Huber): `1/sqrt(N)`-scaled like Pearson, does not dominate
 - `MultiResolutionSTFTLoss`: ~63–84 % of composite norm at alpha=beta=gamma=1
 
 ---

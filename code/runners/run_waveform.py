@@ -580,22 +580,12 @@ def get_args():
     parser.add_argument('--gamma', default=1.0, type=float, help='L_MR-STFT weight')
     parser.add_argument('--fft_sizes', default='64,128,256', type=str,
                         help='MR-STFT FFT window sizes (comma separated)')
-    parser.add_argument('--time_loss', default='std',
-                        choices=['std', 'smoothl1', 'huber'],
-                        help="L_time term. 'std' (default) = "
-                             '|std(pred) - std(target)|: amplitude-only, BLIND '
-                             'to shape, polarity and phase lag. \'smoothl1\' '
-                             '(alias \'huber\') = SmoothL1 on the POINT-WISE '
-                             'error: shape/polarity/lag sensitive and no longer '
-                             'mean-invariant. The point-wise terms charge for a '
-                             'constant phase offset, which is why std is the '
-                             'default (2026-09-28); switching changes the '
-                             "term's typical magnitude, so re-check --alpha.")
     parser.add_argument('--huber_beta', default=1.0, type=float,
-                        help='SmoothL1 transition point in TARGET-STD units '
-                             "(only read when --time_loss smoothl1). The "
-                             'per-clip z-scored target has std ~1, so 1.0 is '
-                             '~1 std: quadratic inside, linear out.')
+                        help='L_time (SmoothL1) transition point in TARGET-STD '
+                             'units. The per-clip z-scored target has std ~1, '
+                             'so 1.0 is ~1 std: quadratic inside that band, '
+                             'linear beyond. Lower it for a heavier (L1-like) '
+                             'charge on large errors.')
 
     # spectral band for evaluation (plan: BP 1.0-2.5 Hz, RESP 0.16-0.4 Hz)
     parser.add_argument('--eval_band', default=None, type=str,
@@ -828,7 +818,6 @@ def main(args):
                        create_optimizer)
     criterion = WaveformJointLoss(alpha=args.alpha, beta=args.beta,
                                   gamma=args.gamma, fft_sizes=args.fft_sizes,
-                                  time_loss=args.time_loss,
                                   huber_beta=args.huber_beta)
     # layer-wise LR decay (spec 4.2): only when --layer_decay < 1.0. The assigner
     # puts a per-group lr_scale on the param groups and engines/finetune.py
@@ -844,16 +833,6 @@ def main(args):
         optimizer = create_optimizer(args, model_without_ddp)
     loss_scaler = NativeScalerWithGradNormCount()
     print(f'Criterion: {criterion}')
-    if criterion.time_loss == 'smoothl1':
-        # A behavioural change worth seeing in the log: the point-wise term
-        # charges for a constant phase offset that StdLoss deliberately ignores
-        # (and it is no longer mean-invariant), so a worse-looking L_time here
-        # is expected and is not by itself evidence of a worse model.
-        print(f'[stage3] NOTE: L_time is SmoothL1 on the POINT-WISE error '
-              f'(beta={criterion.huber_beta} in target-std units), not the '
-              f'amplitude-only StdLoss: it is shape/polarity/lag sensitive and '
-              f'NOT mean-invariant. Its magnitude is not comparable to a std '
-              f'run -- compare the validation metrics, not the train loss.')
 
     # ----- step-level warmup + cosine LR schedule, then resume ------------ #
     # Mirrors run_pretrain: until now --warmup_epochs / --min_lr were parsed but
@@ -1053,12 +1032,10 @@ def main(args):
                 'fold': int(getattr(args, 'fold', 0) or 0),
                 'n_folds': n_folds,
                 'fold_contract': _fold_check,
-                # loss provenance: the A/B (std vs smoothl1 L_time) must be
-                # readable off the artefact, not only off the job log.
-                'loss': {'time_loss': criterion.time_loss,
-                         'huber_beta': (criterion.huber_beta
-                                        if criterion.time_loss == 'smoothl1'
-                                        else None),
+                # loss provenance: the L_time shape must be readable off the
+                # artefact, not only off the job log.
+                'loss': {'time': 'smoothl1',
+                         'huber_beta': criterion.huber_beta,
                          'alpha': args.alpha, 'beta': args.beta,
                          'gamma': args.gamma,
                          'fft_sizes': list(args.fft_sizes)},

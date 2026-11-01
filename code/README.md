@@ -413,8 +413,8 @@ carries over unchanged between `data_set: tir_roi` and `data_set: rgb_roi`.
   still return the PRE-normalisation window (raw volts / mmHg, or the cache's
   run-mean-removed volts). That is for plots, corpus statistics and the aligned
   amplitude metrics — never for a model input.
-* Because the target std is ~1 by construction, `alpha` (StdLoss) reduces to
-  `|std(pred) - 1|` and `huber_beta` is in target-std units.
+* Because the target std is ~1 by construction, `huber_beta` is in label-std
+  units: the default `1.0` puts `L_time`'s quadratic band at ~1 std of the label.
 * Tests: `tests/test_physio_norm.py` (TIR lineage) and
   `tests/test_rgb_zip_source.py::test_bp_target_is_zscored_per_clip` (RGB+BP).
 

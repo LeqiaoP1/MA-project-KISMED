@@ -49,7 +49,7 @@ Stage 1  ──►  Stage 2  ──►  Stage 3
 - **Runner**: `runners/run_waveform.py`
 - **Engine**: `engines/waveform.py` (evaluation) + inline training loop in `run_waveform.py`
 - **Contract**: Visual streams ONLY (simulated sensor failure). The Stage-2 encoder weights are transferred verbatim (identical module names: `adapters.*`, `positions.*`, `enc_blocks.*`, `enc_norm`).
-- **Objective**: `WaveformJointLoss` = α·`StdLoss` + β·`PearsonLoss` + γ·`MultiResolutionSTFTLoss` (`core/waveform_losses.py`).
+- **Objective**: `WaveformJointLoss` = α·`L_time` + β·`PearsonLoss` + γ·`MultiResolutionSTFTLoss` (`core/waveform_losses.py`), where `L_time` is a point-wise Huber (`torch.nn.SmoothL1Loss`, transition at `huber_beta` in target-std units).
 
 ### Add-on — AU Occurrence Probe
 - **Model**: `MultiModalMAEProbe` (`core/au_probe.py`)
@@ -125,7 +125,7 @@ code/
 │   ├── input_adapters.py    # PatchedInputAdapter, SignalInputAdapter, SemSegInputAdapter
 │   ├── output_adapters.py   # SpatialOutputAdapter
 │   ├── criterion.py         # MaskedMSELoss, MaskedL1Loss, MaskedCrossEntropyLoss
-│   ├── waveform_losses.py   # PearsonLoss, StdLoss, MultiResolutionSTFTLoss, WaveformJointLoss
+│   ├── waveform_losses.py   # PearsonLoss, MultiResolutionSTFTLoss, WaveformJointLoss
 │   ├── au_probe.py          # MultiModalMAEProbe
 │   └── registry.py          # @register_model decorator + model_entrypoint
 ├── data/           # Datasets, masking generators, video I/O

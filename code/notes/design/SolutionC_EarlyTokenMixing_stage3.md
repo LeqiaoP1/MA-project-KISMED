@@ -70,7 +70,7 @@ HEADALT ..> HEAD : alternative, not the default
 HEAD --> PRED
 ALIGN --> TGT
 
-node "L_time = StdLoss, absolute difference of std(pred) and std(target), amplitude only; time_loss smoothl1 swaps in Huber on the point-wise error" as L1
+node "L_time = point-wise Huber, SmoothL1 on pred minus target with huber_beta in target-std units; the only term that sees polarity and shape" as L1
 node "L_Pearson = 1 minus Pearson r, batch mean, phase locking" as PEAR
 node "L_MR-STFT per window spectral convergence plus log magnitude L1, averaged over the kept windows" as STFT
 

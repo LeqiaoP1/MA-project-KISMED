@@ -1,32 +1,32 @@
-"""The Stage-3 ``L_time`` term: ``std`` (default) vs ``smoothl1``.
+"""The Stage-3 ``L_time`` term: point-wise Huber (``SmoothL1``).
 
 ``core/waveform_losses.WaveformJointLoss`` owns three terms:
 
     L = alpha * L_time + beta * L_Pearson + gamma * L_MR-STFT
 
-Historically ``L_time`` was a point-wise L1 on ``pred - target``; on 2026-09-28 it
-was replaced by :class:`StdLoss` (``|std(pred) - std(target)|``) because the
-point-wise form charged the optimiser for a constant PHASE OFFSET it can never
-remove (a perfect waveform delayed by 0.20 s cost L1 ``1.2868`` and StdLoss
-``0.0000``). The cost of that swap is that L_time became blind to SHAPE and
-POLARITY, which is exactly what the Stage-3 respiration figures show being
-missed.
+``L_time`` is ``torch.nn.SmoothL1Loss`` on the POINT-WISE error ``pred -
+target``, and ``huber_beta`` sets the quadratic -> linear transition point in
+TARGET-STD units. The dataset z-scores every clip, so the label has zero mean
+and unit std and ``huber_beta = 1.0`` sits at ~1 std of the target.
 
-``time_loss='smoothl1'`` buys that sensitivity back (at the price of re-charging
-the phase offset), so these tests pin BOTH halves of the trade:
+These tests pin the properties that make a point-wise term the right choice for
+a waveform, plus the cost that comes with it:
 
-* the default is unchanged and numerically IDENTICAL to the old formula, so no
-  existing run silently changes value;
-* the two terms really do behave differently where it matters (a time shift, an
-  inverted/noise-shaped waveform, a non-zero target mean) -- otherwise the A/B
-  would be a no-op;
-* the degenerate-input and gradient paths stay finite.
+* it sees POLARITY and SHAPE, which an amplitude-only statistic cannot -- an
+  inverted waveform has the same std, mean and magnitude spectrum, so anything
+  blind to the point-wise difference would call it a perfect reconstruction;
+* it is NOT mean-invariant and NOT lag-invariant. That is the documented cost of
+  a point-wise term (a constant phase offset is charged, not forgiven) and it is
+  pinned here so it cannot drift silently;
+* ``huber_beta`` is really plumbed through (it changes the value on a large
+  error), and a non-positive beta is a hard error;
+* the degenerate-input and gradient paths stay finite -- a collapsing model is
+  the realistic Stage-3 failure, so a constant prediction must not produce NaN.
 """
-import numpy as np
 import pytest
 import torch
 
-from core.waveform_losses import (MultiResolutionSTFTLoss, PearsonLoss, StdLoss,
+from core.waveform_losses import (MultiResolutionSTFTLoss, PearsonLoss,
                                   WaveformJointLoss)
 
 FFT_SIZES = (64, 128, 256)
@@ -42,8 +42,8 @@ def _tone(std: float = 0.85, n: int = T, fs: float = 100.0, freq: float = 0.3,
     (the dataset z-scores every clip), so the term is exercised across a
     non-degenerate spread and ``huber_beta=1.0`` sits at ~1.2 std. ``shift`` is
     applied as an EXACT phase offset (``+2*pi*f*shift/fs``) rather than a roll,
-    so a shifted signal keeps its standard deviation bit-for-bit -- which is
-    what makes it a fair test of StdLoss's lag-invariance.
+    so a shifted signal keeps its standard deviation bit-for-bit -- which keeps
+    the lag test independent of amplitude.
     """
     t = torch.arange(n, dtype=torch.float64) / fs
     phase = 2 * torch.pi * freq * (shift / fs)
@@ -56,26 +56,22 @@ def _tone(std: float = 0.85, n: int = T, fs: float = 100.0, freq: float = 0.3,
 
 
 # --------------------------------------------------------------------------- #
-# the default must not change any existing run
+# the term itself, and that the weights compose as documented
 # --------------------------------------------------------------------------- #
-def test_default_time_loss_is_std_and_repr_says_so():
+def test_l_time_is_a_point_wise_huber_and_repr_says_so():
     crit = WaveformJointLoss(fft_sizes=FFT_SIZES)
-    assert crit.time_loss == 'std'
-    assert isinstance(crit.time, StdLoss)
-    assert "time_loss='std'" in repr(crit)
+    assert isinstance(crit.time, torch.nn.SmoothL1Loss)
+    assert crit.huber_beta == 1.0
+    assert 'huber_beta=1.0' in repr(crit)
 
 
-def test_default_forward_is_bit_identical_to_the_original_formula():
-    """alpha*Std + beta*Pearson + gamma*MR-STFT, recomputed by hand.
-
-    Guards the whole point of making the term selectable: the default path must
-    not drift numerically.
-    """
+def test_forward_is_the_weighted_sum_of_its_three_terms():
+    """alpha*Huber + beta*Pearson + gamma*MR-STFT, recomputed by hand."""
     torch.manual_seed(0)
     p = _tone(shift=3)
     t = _tone()
     crit = WaveformJointLoss(alpha=1.0, beta=1.0, gamma=1.0, fft_sizes=FFT_SIZES)
-    expected = (1.0 * StdLoss()(p, t)
+    expected = (1.0 * torch.nn.SmoothL1Loss(beta=1.0)(p, t)
                 + 1.0 * PearsonLoss()(p, t)
                 + 1.0 * MultiResolutionSTFTLoss(fft_sizes=FFT_SIZES)(p, t))
     assert torch.equal(crit(p, t), expected)
@@ -91,214 +87,150 @@ def test_weights_still_scale_their_own_terms():
                          + MultiResolutionSTFTLoss(fft_sizes=FFT_SIZES)(p, t))
 
 
-# --------------------------------------------------------------------------- #
-# selection + validation
-# --------------------------------------------------------------------------- #
-def test_smoothl1_is_selected_and_reported():
-    crit = WaveformJointLoss(fft_sizes=FFT_SIZES, time_loss='smoothl1',
-                             huber_beta=0.5)
-    assert crit.time_loss == 'smoothl1'
-    assert isinstance(crit.time, torch.nn.SmoothL1Loss)
-    assert crit.huber_beta == 0.5
-    assert 'huber_beta=0.5' in repr(crit)
-
-
-@pytest.mark.parametrize('alias', ['huber', 'smoothl1', 'SmoothL1', ' smoothl1 '])
-def test_aliases_and_case_normalise_to_smoothl1(alias):
-    crit = WaveformJointLoss(fft_sizes=FFT_SIZES, time_loss=alias)
-    assert crit.time_loss == 'smoothl1'
-
-
-def test_unknown_time_loss_is_a_hard_error_naming_the_choices():
-    with pytest.raises(ValueError) as e:
-        WaveformJointLoss(fft_sizes=FFT_SIZES, time_loss='l1')
-    msg = str(e.value)
-    assert 'std' in msg and 'smoothl1' in msg and "'l1'" in msg
-
-
 def test_non_positive_huber_beta_is_rejected():
     with pytest.raises(ValueError) as e:
-        WaveformJointLoss(fft_sizes=FFT_SIZES, time_loss='smoothl1',
-                          huber_beta=0.0)
+        WaveformJointLoss(fft_sizes=FFT_SIZES, huber_beta=0.0)
     assert 'huber_beta' in str(e.value)
 
 
-def test_huber_beta_is_ignored_by_the_std_path():
-    """A bad beta must not break a std run (it is simply not read)."""
-    crit = WaveformJointLoss(fft_sizes=FFT_SIZES, huber_beta=0.0)
-    assert isinstance(crit.time, StdLoss)
-
-
 # --------------------------------------------------------------------------- #
-# the actual behavioural difference (this is why the A/B is worth running)
+# what a point-wise term buys: polarity and shape
 # --------------------------------------------------------------------------- #
-def test_smoothl1_sees_the_shape_and_polarity_that_std_is_blind_to():
-    """MEASURED: inverted -> std 0.000000 / smoothl1 1.126436;
-    white noise at the same std -> std 0.032885 / smoothl1 0.585573."""
+def test_a_polarity_error_is_charged_in_full():
+    """An INVERTED waveform keeps the same std, mean and magnitude spectrum, so
+    an amplitude-only statistic cannot see it at all. This is the whole reason
+    ``L_time`` is point-wise."""
     t = _tone()
-    std_crit = WaveformJointLoss(fft_sizes=FFT_SIZES)
-    hub_crit = WaveformJointLoss(fft_sizes=FFT_SIZES, time_loss='smoothl1')
-
-    # an INVERTED waveform has the SAME std, so StdLoss cannot see it at all
     inverted = _tone(invert=True)
-    assert std_crit.time(inverted, t) < 1e-6
-    assert hub_crit.time(inverted, t) > 0.5
+    assert torch.isclose(t.std(), inverted.std(), rtol=1e-6)
+    assert WaveformJointLoss(fft_sizes=FFT_SIZES).time(inverted, t) > 0.5
 
-    # white noise of the right amplitude likewise
+
+def test_noise_of_the_right_amplitude_is_charged():
+    """A wrong SHAPE at the correct amplitude must not pass."""
+    t = _tone()
     torch.manual_seed(1)
     noise = torch.randn_like(t)
     noise = noise * (t.std() / noise.std())
-    assert std_crit.time(noise, t) < 0.05
-    assert hub_crit.time(noise, t) > 0.3
+    assert WaveformJointLoss(fft_sizes=FFT_SIZES).time(noise, t) > 0.3
 
 
-def test_the_two_terms_win_on_DIFFERENT_error_types():
-    """MEASURED at huber_beta=1.0 (i.e. ~1 target std, so the QUADRATIC regime):
-    a pure amplitude error is caught ~5x harder by std (0.349316 vs 0.065442),
-    while polarity/noise are caught only by smoothl1 (1.126436 / 0.585573 vs
-    ~0). So the A/B is NOT a one-sided upgrade -- smoothl1 buys shape and
-    polarity at the cost of amplitude sensitivity, which is why beta (and
-    possibly alpha) matter.
+# --------------------------------------------------------------------------- #
+# ... and what it costs: no mean- or lag-invariance
+# --------------------------------------------------------------------------- #
+def test_a_pure_lag_is_charged_not_ignored():
+    """MEASURED: a +0.25 s lag (a quarter period at 0.3 Hz) costs 0.064684.
+
+    The charge is modest because ``beta=1.0`` puts this error size in the
+    QUADRATIC region; the point is that it is NON-ZERO. A statistic that only
+    looks at amplitude would report exactly zero here.
     """
-    t = _tone()
-    std_crit = WaveformJointLoss(fft_sizes=FFT_SIZES)
-    hub_crit = WaveformJointLoss(fft_sizes=FFT_SIZES, time_loss='smoothl1')
-
-    amp = _tone(std=0.5)                      # amplitude error only
-    assert std_crit.time(amp, t) > 3 * hub_crit.time(amp, t)
-
-    inv = _tone(invert=True)                  # polarity error only
-    assert hub_crit.time(inv, t) > 100 * std_crit.time(inv, t)
-
-
-def test_smoothl1_reintroduces_the_phase_offset_charge_std_removed():
-    """The documented COST of the swap, pinned so it cannot regress silently.
-
-    MEASURED: a +0.25 s (quarter-cycle at 0.3 Hz) lag costs std 0.000000 and
-    smoothl1 0.064684. The smoothl1 figure is modest because beta=1.0 puts it in
-    the QUADRATIC region for this error size -- it is a real charge, not a large
-    one; the point is that it is nonzero where std is bit-exactly zero.
-    """
-    t = _tone(freq=0.3, fs=100.0)              # 0.3 Hz
+    t = _tone(freq=0.3, fs=100.0)
     shifted = _tone(freq=0.3, fs=100.0, shift=25)   # +0.25 s = 1/4 period
-    std_crit = WaveformJointLoss(fft_sizes=FFT_SIZES)
-    hub_crit = WaveformJointLoss(fft_sizes=FFT_SIZES, time_loss='smoothl1')
-    assert std_crit.time(shifted, t) < 1e-6, 'std must stay lag-invariant'
-    assert hub_crit.time(shifted, t) > 0.01
+    assert WaveformJointLoss(fft_sizes=FFT_SIZES).time(shifted, t) > 0.01
 
 
-def test_smoothl1_is_not_mean_invariant_but_std_is():
+def test_a_mean_pedestal_is_charged():
+    """MEASURED: a +0.9 pedestal costs 0.405000 -- the term is not
+    mean-invariant."""
     t = _tone(mean=0.0)
-    offset = _tone(mean=0.9)                   # a non-zero-mean pedestal
-    std_crit = WaveformJointLoss(fft_sizes=FFT_SIZES)
-    hub_crit = WaveformJointLoss(fft_sizes=FFT_SIZES, time_loss='smoothl1')
-    assert std_crit.time(offset, t) < 1e-6
-    assert hub_crit.time(offset, t) > 0.1
+    offset = _tone(mean=0.9)
+    assert WaveformJointLoss(fft_sizes=FFT_SIZES).time(offset, t) > 0.1
 
 
 def test_huber_beta_controls_how_much_outliers_are_charged():
+    """beta -> larger means more of the error sits in the QUADRATIC region, so
+    the same error is charged more. Both are valid losses; the assertion is
+    only that ``huber_beta`` is actually plumbed."""
     p, t = _tone(shift=25), _tone()
-    small = WaveformJointLoss(fft_sizes=FFT_SIZES, time_loss='smoothl1',
-                              huber_beta=0.1)
-    large = WaveformJointLoss(fft_sizes=FFT_SIZES, time_loss='smoothl1',
-                              huber_beta=10.0)
-    # beta -> larger means more of the error sits in the quadratic region.
-    # Both are valid losses; the point is only that beta is actually plumbed.
-    assert torch.isfinite(small.time(p, t)) and torch.isfinite(large.time(p, t))
+    small = WaveformJointLoss(fft_sizes=FFT_SIZES, huber_beta=0.1)
+    large = WaveformJointLoss(fft_sizes=FFT_SIZES, huber_beta=10.0)
+    assert torch.isfinite(small.time(p, t))
+    assert torch.isfinite(large.time(p, t))
     assert not torch.isclose(small.time(p, t), large.time(p, t))
 
 
-def test_perfect_match_is_zero_for_both_terms():
+def test_perfect_match_is_exactly_zero():
     t = _tone()
-    assert WaveformJointLoss(fft_sizes=FFT_SIZES).time(t, t) < 1e-9
-    assert WaveformJointLoss(fft_sizes=FFT_SIZES,
-                             time_loss='smoothl1').time(t, t) == 0.0
+    assert WaveformJointLoss(fft_sizes=FFT_SIZES).time(t, t) == 0.0
 
 
 # --------------------------------------------------------------------------- #
 # robustness: degenerate inputs and gradients
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize('time_loss', ['std', 'smoothl1'])
-def test_gradients_are_finite_and_nonzero(time_loss):
+def test_gradients_are_finite_and_nonzero():
     p = _tone(shift=7).clone().requires_grad_(True)
     t = _tone()
-    crit = WaveformJointLoss(fft_sizes=FFT_SIZES, time_loss=time_loss)
+    crit = WaveformJointLoss(fft_sizes=FFT_SIZES)
     crit(p, t).backward()
     assert p.grad is not None
     assert torch.isfinite(p.grad).all()
     assert p.grad.abs().sum() > 0
 
 
-@pytest.mark.parametrize('time_loss', ['std', 'smoothl1'])
-def test_constant_prediction_does_not_nan(time_loss):
-    """A collapsing model is the realistic failure; StdLoss needed an eps for
-    this (``std(constant)`` is 0 and its backward is 0/0)."""
+def test_constant_prediction_does_not_nan():
+    """A collapsing model is the realistic Stage-3 failure."""
     t = _tone()
     p = torch.full_like(t, 0.3).clone().requires_grad_(True)
-    crit = WaveformJointLoss(fft_sizes=FFT_SIZES, time_loss=time_loss)
+    crit = WaveformJointLoss(fft_sizes=FFT_SIZES)
     loss = crit(p, t)
     loss.backward()
     assert torch.isfinite(loss)
     assert torch.isfinite(p.grad).all()
 
 
-@pytest.mark.parametrize('time_loss', ['std', 'smoothl1'])
-def test_channel_axis_is_squeezed_for_both(time_loss):
+def test_channel_axis_is_squeezed():
     """core.criterion-style [B, 1, T] input must match the [B, T] result."""
     t = _tone()
     p = _tone(shift=5)
-    crit = WaveformJointLoss(fft_sizes=FFT_SIZES, time_loss=time_loss)
+    crit = WaveformJointLoss(fft_sizes=FFT_SIZES)
     assert torch.equal(crit(p.unsqueeze(1), t.unsqueeze(1)), crit(p, t))
 
 
 # --------------------------------------------------------------------------- #
-# resume provenance: a checkpoint must not silently change arm
+# resume provenance: the objective must not change silently mid-run
 # --------------------------------------------------------------------------- #
-def test_resume_across_arms_is_reported_not_silent(capsys):
-    """Continuing a StdLoss run under SmoothL1 loads fine but switches the
-    objective mid-run, so ``check_resume_loss`` must say so."""
+def test_resume_with_a_different_huber_beta_is_reported(capsys):
     from types import SimpleNamespace
 
     from utils.checkpoint import check_resume_loss
 
-    verdict = check_resume_loss(SimpleNamespace(time_loss='smoothl1'),
-                                SimpleNamespace(time_loss='std'))
+    verdict = check_resume_loss(SimpleNamespace(huber_beta=2.0),
+                                SimpleNamespace(huber_beta=1.0))
     assert verdict['match'] is False
-    assert verdict['checkpoint_time_loss'] == 'std'
-    assert verdict['run_time_loss'] == 'smoothl1'
+    assert verdict['checkpoint_huber_beta'] == 1.0
+    assert verdict['run_huber_beta'] == 2.0
     out = capsys.readouterr().out
-    assert 'WARNING' in out and "'std'" in out and "'smoothl1'" in out
+    assert 'WARNING' in out and '1.0' in out and '2.0' in out
 
 
-def test_resume_same_arm_is_silent(capsys):
+def test_resume_with_the_same_huber_beta_is_silent(capsys):
     from types import SimpleNamespace
 
     from utils.checkpoint import check_resume_loss
 
-    verdict = check_resume_loss(SimpleNamespace(time_loss='smoothl1'),
-                                SimpleNamespace(time_loss='huber'))
-    assert verdict['match'] is True          # 'huber' IS 'smoothl1'
+    verdict = check_resume_loss(SimpleNamespace(huber_beta=1.0),
+                                SimpleNamespace(huber_beta=1.0))
+    assert verdict['match'] is True
     assert 'WARNING' not in capsys.readouterr().out
 
 
-def test_resume_check_ignores_runners_without_a_time_loss(capsys):
-    """Stage 1/2 have no ``time_loss``; the guard must stay out of their way."""
+def test_resume_check_ignores_runners_without_a_huber_beta(capsys):
+    """Stage 1/2 have no ``huber_beta``; the guard must stay out of their way."""
     from types import SimpleNamespace
 
     from utils.checkpoint import check_resume_loss
 
     assert check_resume_loss(SimpleNamespace(), SimpleNamespace()) == {}
-    assert check_resume_loss(SimpleNamespace(time_loss='std'), None) == {}
+    assert check_resume_loss(SimpleNamespace(huber_beta=1.0), None) == {}
     assert capsys.readouterr().out == ''
 
 
-def test_pre_2026_checkpoint_counts_as_the_std_arm(capsys):
+def test_resume_check_ignores_a_checkpoint_without_the_key(capsys):
     from types import SimpleNamespace
 
     from utils.checkpoint import check_resume_loss
 
-    verdict = check_resume_loss(SimpleNamespace(time_loss='smoothl1'),
-                                SimpleNamespace())
-    assert verdict['checkpoint_time_loss'] == 'std'
-    assert verdict['match'] is False
-    assert 'no time_loss' in capsys.readouterr().out
+    assert check_resume_loss(SimpleNamespace(huber_beta=1.0),
+                             SimpleNamespace()) == {}
+    assert capsys.readouterr().out == ''

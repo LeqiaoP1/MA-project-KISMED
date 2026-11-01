@@ -84,49 +84,42 @@ def check_resume_fold(cur_args, ck_args) -> dict:
 
 
 def check_resume_loss(cur_args, ck_args) -> dict:
-    """Report when a resume changes the Stage-3 ``L_time`` term.
+    """Report when a resume changes the shape of the Stage-3 ``L_time`` term.
 
-    The terms of ``WaveformJointLoss`` are not on a common scale, so a run
-    started with ``time_loss='std'`` and continued with ``'smoothl1'`` loads
-    perfectly and trains without complaint -- it simply changes the objective
-    mid-run, and ``metrics_final.json`` then records ONE arm for a run that had
-    two. Nothing else in the pipeline notices (the weights and the optimiser
-    state are shape-compatible), which is exactly why this is said out loud.
+    ``L_time`` is a Huber term, so ``huber_beta`` IS the objective: inside the
+    band the error is charged quadratically, beyond it linearly. A run started
+    with one beta and continued with another loads perfectly and trains without
+    complaint (the weights and the optimiser state are shape-compatible) -- it
+    simply changes the objective mid-run, and ``metrics_final.json`` then records
+    ONE loss for a run that had two. Nothing else in the pipeline notices, which
+    is exactly why this is said out loud.
 
-    A warning, not a ``SystemExit``: re-weighting a live run is legitimate when
-    it is meant. The check is skipped for runners that have no ``time_loss``
-    (Stage 1/2), so it costs them nothing.
+    A warning, not a ``SystemExit``: retuning ``huber_beta`` on a live run is
+    legitimate when it is meant. Runners with no ``huber_beta`` (Stage 1/2) are
+    skipped, so it costs them nothing.
 
     :returns: a small verdict dict for logging.
     """
-    cur_raw = getattr(cur_args, 'time_loss', None)
+    cur_raw = getattr(cur_args, 'huber_beta', None)
     if cur_raw is None:
         return {}                       # not a Stage-3 waveform run
-    cur = str(cur_raw).strip().lower()
-    if cur == 'huber':                  # the same function
-        cur = 'smoothl1'
+    cur = float(cur_raw)
     if not ck_args:
         return {}                       # unverifiable; check_resume_fold said so
-    ck_raw = getattr(ck_args, 'time_loss', None)
+    ck_raw = getattr(ck_args, 'huber_beta', None)
     if ck_raw is None:
-        # checkpoints written before 2026-10-10 predate the switch and can only
-        # be the StdLoss arm.
-        ck = 'std'
-        print('[resume] the checkpoint records no time_loss (written before '
-              '2026-10-10) -> treating it as the StdLoss arm.')
-    else:
-        ck = str(ck_raw).strip().lower()
-        if ck == 'huber':
-            ck = 'smoothl1'
+        return {}                       # predates the key; nothing to compare
+    ck = float(ck_raw)
 
     if ck != cur:
-        print(f'[resume] WARNING: L_time changes across this resume -- the '
-              f'checkpoint was trained with time_loss={ck!r}, this run uses '
-              f'{cur!r}. The weights and the optimizer state load fine, but '
-              f'the objective changes mid-run; pass a fresh --output_dir '
-              f'unless that is what you meant.')
-        return {'checkpoint_time_loss': ck, 'run_time_loss': cur, 'match': False}
-    return {'checkpoint_time_loss': ck, 'run_time_loss': cur, 'match': True}
+        print(f'[resume] WARNING: huber_beta (the L_time transition point) '
+              f'changes across this resume -- the checkpoint was trained with '
+              f'{ck!r}, this run uses {cur!r}. The weights and the optimizer '
+              f'state load fine, but the objective changes mid-run; pass a '
+              f'fresh --output_dir unless that is what you meant.')
+        return {'checkpoint_huber_beta': ck, 'run_huber_beta': cur,
+                'match': False}
+    return {'checkpoint_huber_beta': ck, 'run_huber_beta': cur, 'match': True}
 
 
 def load_model(args, model_without_ddp, optimizer, loss_scaler, model_ema=None):

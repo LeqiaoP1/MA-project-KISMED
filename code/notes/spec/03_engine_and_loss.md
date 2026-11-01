@@ -186,14 +186,16 @@ network input.
 
 ```python
 # WaveformJointLoss.forward:
-L = alpha * StdLoss(pred, target)
+L = alpha * SmoothL1(pred, target)      # huber_beta in target-std units
   + beta  * PearsonLoss(pred, target)
   + gamma * MultiResolutionSTFTLoss(pred, target)
 ```
 
 Gradient norm balance (measured 2026-09-28, N=496 @ 100 Hz):
-- `StdLoss`: `1/sqrt(N) ≈ 0.0449` (~1.81 % of composite)
-- `MultiResolutionSTFTLoss`: ~63–84 % of composite norm at alpha=beta=gamma=1
+- `L_time` (point-wise Huber): `1/sqrt(N)`-scaled like Pearson; it does not
+  dominate the composite
+- `MultiResolutionSTFTLoss`: ~63–84 % of composite norm at alpha=beta=gamma=1,
+  so `alpha`/`beta` need explicit weights to be heard at all
 
 ---
 

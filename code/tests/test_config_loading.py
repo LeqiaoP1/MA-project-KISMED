@@ -78,18 +78,16 @@ def test_config_inventory_is_not_empty():
     assert any(p.endswith('resp_tir_roi_hpc.yaml') for p in SHIPPED_CONFIGS)
 
 
-def test_stage3_hpc_ships_the_point_wise_time_loss(monkeypatch):
-    """The ``L_time`` arm of record (switched 2026-11-01).
+def test_stage3_hpc_ships_a_usable_huber_beta(monkeypatch):
+    """``L_time`` is a point-wise Huber with ONE knob: ``huber_beta``.
 
-    ``StdLoss`` is polarity-blind -- an inverted target costs it exactly zero --
-    so the shipped Stage-3 config selects the point-wise term. ``std`` stays
-    available in ``core/waveform_losses.py`` and is still the CODE default; it
-    is simply not what this experiment reports, and a silent revert to it would
-    make the run disagree with the arm every doc names.
+    There is no term selector any more, so what is worth guarding is that the
+    shipped config still supplies a valid transition point and that the removed
+    ``--time_loss`` flag did not creep back into the runner.
     """
     a = _stage3(monkeypatch)
-    assert a.time_loss == 'smoothl1'
     assert a.huber_beta > 0
+    assert not hasattr(a, 'time_loss')
 
 
 PRETRAIN_CONFIGS = sorted(

@@ -4,12 +4,12 @@
 > Run dirs `output/finetune/resp_tir_roi_hpc_fold{0..4}` · artifact
 > `output/eval/resp_kfold/kfold_resp_tir_roi_hpc.json`
 >
-> **ARM: `time_loss='std'` — every number on this page is the StdLoss arm.**
-> The shipped config `configs/finetune/resp_tir_roi_hpc.yaml` was switched to
-> `time_loss: smoothl1` on 2026-11-01 (the former `resp_tir_roi_hpc_smoothl1.yaml`
-> clone was folded into it and deleted), so this record describes a loss the
-> configs no longer ship. Re-run the sweep before quoting these as current, and
-> label any table with the arm it reports.
+> **LOSS PROVENANCE: every number on this page was measured with an
+> AMPLITUDE-ONLY `L_time`, `|std(pred) - std(target)|`.** As of 2026-11-01
+> `L_time` is a point-wise Huber and the amplitude-only term no longer exists in
+> the code, so this record describes a loss the configs cannot reproduce.
+> Re-run the sweep before quoting these as current, and label any table with the
+> loss it reports.
 
 ## What was measured
 

@@ -84,9 +84,9 @@ squashed: 2.2 % of sessions keep less than half their amplitude, 6.1 % less than
 | **0.856** | 0.636 | 1.069 |
 
 This confirms, at corpus scale, the caveat already in the config comments: under
-`session` the target std is NOT ~1, so **`alpha*StdLoss` is a genuine amplitude
-term** rather than `|std(pred) - 1|`, and the deviation is systematic (median
-below 1), not just noisy.
+`session` the target std is NOT ~1 (median **0.856**), so **`huber_beta` is not
+literally ~1 label-std** — the quadratic band of `L_time` is ~17 % wider than
+the nominal value, and the amplitude charge differs from the `zscore` arm's.
 
 ### 2.4 Boundary continuity of the assembled waveform
 
@@ -119,7 +119,7 @@ needs.
 **2–6 % of subject-tasks** have their surviving clips compressed below half to
 70 % amplitude. Those clips still occupy sampler slots and still contribute
 loss, but carry almost no signal — a small, silent, systematic loss of training
-data, plus the StdLoss semantics change in 2.3.
+data, plus the `huber_beta` scaling change in 2.3.
 
 **Surgical fix that keeps the rationale.** Compute the session (mu, sigma) from
 the **kept-window samples only** (equivalently: drop the samples belonging to
