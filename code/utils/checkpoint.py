@@ -9,7 +9,8 @@ import torch
 
 from .dist import is_main_process, save_on_master
 
-__all__ = ['save_model', 'load_model', 'auto_resume_model']
+__all__ = ['save_model', 'load_model', 'auto_resume_model',
+           'check_resume_fold', 'check_resume_loss']
 
 
 def save_model(args, epoch, model, model_without_ddp, optimizer, loss_scaler,
@@ -82,6 +83,52 @@ def check_resume_fold(cur_args, ck_args) -> dict:
             'match': True}
 
 
+def check_resume_loss(cur_args, ck_args) -> dict:
+    """Report when a resume changes the Stage-3 ``L_time`` term.
+
+    The terms of ``WaveformJointLoss`` are not on a common scale, so a run
+    started with ``time_loss='std'`` and continued with ``'smoothl1'`` loads
+    perfectly and trains without complaint -- it simply changes the objective
+    mid-run, and ``metrics_final.json`` then records ONE arm for a run that had
+    two. Nothing else in the pipeline notices (the weights and the optimiser
+    state are shape-compatible), which is exactly why this is said out loud.
+
+    A warning, not a ``SystemExit``: re-weighting a live run is legitimate when
+    it is meant. The check is skipped for runners that have no ``time_loss``
+    (Stage 1/2), so it costs them nothing.
+
+    :returns: a small verdict dict for logging.
+    """
+    cur_raw = getattr(cur_args, 'time_loss', None)
+    if cur_raw is None:
+        return {}                       # not a Stage-3 waveform run
+    cur = str(cur_raw).strip().lower()
+    if cur == 'huber':                  # the same function
+        cur = 'smoothl1'
+    if not ck_args:
+        return {}                       # unverifiable; check_resume_fold said so
+    ck_raw = getattr(ck_args, 'time_loss', None)
+    if ck_raw is None:
+        # checkpoints written before 2026-10-10 predate the switch and can only
+        # be the StdLoss arm.
+        ck = 'std'
+        print('[resume] the checkpoint records no time_loss (written before '
+              '2026-10-10) -> treating it as the StdLoss arm.')
+    else:
+        ck = str(ck_raw).strip().lower()
+        if ck == 'huber':
+            ck = 'smoothl1'
+
+    if ck != cur:
+        print(f'[resume] WARNING: L_time changes across this resume -- the '
+              f'checkpoint was trained with time_loss={ck!r}, this run uses '
+              f'{cur!r}. The weights and the optimizer state load fine, but '
+              f'the objective changes mid-run; pass a fresh --output_dir '
+              f'unless that is what you meant.')
+        return {'checkpoint_time_loss': ck, 'run_time_loss': cur, 'match': False}
+    return {'checkpoint_time_loss': ck, 'run_time_loss': cur, 'match': True}
+
+
 def load_model(args, model_without_ddp, optimizer, loss_scaler, model_ema=None):
     """Load a checkpoint (from ``args.resume``) into model/optimizer/scaler."""
     if args.resume:
@@ -94,6 +141,8 @@ def load_model(args, model_without_ddp, optimizer, loss_scaler, model_ema=None):
                                 weights_only=False)
         # k-fold: a fold run may only resume its OWN fold (see the helper).
         check_resume_fold(args, checkpoint.get('args'))
+        # Stage 3: say so when the L_time term changes across the resume.
+        check_resume_loss(args, checkpoint.get('args'))
         model_without_ddp.load_state_dict(checkpoint['model'])
         print("Resume checkpoint %s" % args.resume)
         if 'optimizer' in checkpoint and 'epoch' in checkpoint:

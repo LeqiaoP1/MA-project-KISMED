@@ -42,11 +42,9 @@ STRIDE_S = 1.0                             # the shipped hop (synthetic tests)
 #: per-config window-hop OVERRIDES (s): the HPC runs deliberately sample
 #: transients at 2 s (4x redundant decode instead of 8x, ~halves the epoch).
 #: Stage 3 must MATCH its Stage-2 encoder's hop (the config says so), and the
-#: rest of the TIR-ROI study stays at the 1 s hop. The `_smoothl1` arm is a
-#: clone of resp_tir_roi_hpc.yaml, so it inherits the same 2 s hop.
+#: rest of the TIR-ROI study stays at the 1 s hop.
 EXPECTED_STRIDE_S = {'stage2_hpc_tir_roi_resp.yaml': 2.0,
-                     'resp_tir_roi_hpc.yaml': 2.0,
-                     'resp_tir_roi_hpc_smoothl1.yaml': 2.0}
+                     'resp_tir_roi_hpc.yaml': 2.0}
 N_RESP = int(N_FRAMES / FPS * RESP_FS)     # 16000 samples
 RAIL = trd.RESP_RAIL_V
 
@@ -222,10 +220,10 @@ def test_the_tir_configs_use_the_strict_rule_and_a_consistent_hop():
     """Every TIR-ROI/RESP config: the touch rule ON, an 8 s window, and the
     DOCUMENTED window hop (the HPC Stage-2/Stage-3 runs use 2 s, the rest 1 s).
 
-    The count is the study's config list: the 7 originals + the Stage-3
-    `_smoothl1` L_time A/B arm (a clone of resp_tir_roi_hpc.yaml).
+    The count is the study's config list: 7 (the Stage-3 `_smoothl1` L_time A/B
+    clone was folded into resp_tir_roi_hpc.yaml on 2026-11-01 and deleted).
     """
-    assert len(TIR_CONFIGS) == 8
+    assert len(TIR_CONFIGS) == 7
     for path in TIR_CONFIGS:
         with open(path) as fh:
             cfg = yaml.safe_load(fh)

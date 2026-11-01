@@ -249,3 +249,56 @@ def test_channel_axis_is_squeezed_for_both(time_loss):
     p = _tone(shift=5)
     crit = WaveformJointLoss(fft_sizes=FFT_SIZES, time_loss=time_loss)
     assert torch.equal(crit(p.unsqueeze(1), t.unsqueeze(1)), crit(p, t))
+
+
+# --------------------------------------------------------------------------- #
+# resume provenance: a checkpoint must not silently change arm
+# --------------------------------------------------------------------------- #
+def test_resume_across_arms_is_reported_not_silent(capsys):
+    """Continuing a StdLoss run under SmoothL1 loads fine but switches the
+    objective mid-run, so ``check_resume_loss`` must say so."""
+    from types import SimpleNamespace
+
+    from utils.checkpoint import check_resume_loss
+
+    verdict = check_resume_loss(SimpleNamespace(time_loss='smoothl1'),
+                                SimpleNamespace(time_loss='std'))
+    assert verdict['match'] is False
+    assert verdict['checkpoint_time_loss'] == 'std'
+    assert verdict['run_time_loss'] == 'smoothl1'
+    out = capsys.readouterr().out
+    assert 'WARNING' in out and "'std'" in out and "'smoothl1'" in out
+
+
+def test_resume_same_arm_is_silent(capsys):
+    from types import SimpleNamespace
+
+    from utils.checkpoint import check_resume_loss
+
+    verdict = check_resume_loss(SimpleNamespace(time_loss='smoothl1'),
+                                SimpleNamespace(time_loss='huber'))
+    assert verdict['match'] is True          # 'huber' IS 'smoothl1'
+    assert 'WARNING' not in capsys.readouterr().out
+
+
+def test_resume_check_ignores_runners_without_a_time_loss(capsys):
+    """Stage 1/2 have no ``time_loss``; the guard must stay out of their way."""
+    from types import SimpleNamespace
+
+    from utils.checkpoint import check_resume_loss
+
+    assert check_resume_loss(SimpleNamespace(), SimpleNamespace()) == {}
+    assert check_resume_loss(SimpleNamespace(time_loss='std'), None) == {}
+    assert capsys.readouterr().out == ''
+
+
+def test_pre_2026_checkpoint_counts_as_the_std_arm(capsys):
+    from types import SimpleNamespace
+
+    from utils.checkpoint import check_resume_loss
+
+    verdict = check_resume_loss(SimpleNamespace(time_loss='smoothl1'),
+                                SimpleNamespace())
+    assert verdict['checkpoint_time_loss'] == 'std'
+    assert verdict['match'] is False
+    assert 'no time_loss' in capsys.readouterr().out

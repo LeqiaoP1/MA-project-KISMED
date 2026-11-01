@@ -111,8 +111,8 @@ The new mapping partitions T1..T10 (3 / 2 / 5) with every task in exactly one ti
    - `configs/finetune/resp_tir_roi_local.yaml`
    - `configs/finetune/resp_tir_roi_local_matched.yaml`
    - `configs/finetune/resp_tir_roi_crossmae.yaml`
-   - `configs/finetune/resp_tir_roi_hpc.yaml`
-   - `configs/finetune/resp_tir_roi_hpc_smoothl1.yaml`
+   - `configs/finetune/resp_tir_roi_hpc.yaml` (this list also covered the
+     `_smoothl1` clone until it was folded in on 2026-11-01)
 
    The `# MUST mirror ...` comments stay valid, but they are only comments -- see
    phase 3 for the check that finally enforces them.

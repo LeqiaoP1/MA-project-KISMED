@@ -311,11 +311,12 @@ change, so a square Stage-3 on a legacy encoder is never silent. These keys must
 move into the corpus-level warn list (203–214): they change the pixels, which is
 exactly the abort case.
 
-**Step 12 — configs.** Edit the 8 TIR-ROI configs (do not add new ones —
-`tests/test_rail_rule_plumbing.py` pins `len(TIR_CONFIGS) == 8`):
+**Step 12 — configs.** Edit the 7 TIR-ROI configs (do not add new ones —
+`tests/test_rail_rule_plumbing.py` pins `len(TIR_CONFIGS) == 7`; it was 8 until the
+Stage-3 `_smoothl1` clone was folded into `resp_tir_roi_hpc.yaml` on 2026-11-01):
 `configs/pretrain/stage2_hpc_tir_roi_resp.yaml`, `stage2_local_tir_roi_resp.yaml`,
 `stage2_local_tir_roi_crossmae.yaml`; `configs/finetune/resp_tir_roi_hpc.yaml`,
-`resp_tir_roi_hpc_smoothl1.yaml`, `resp_tir_roi_local.yaml`,
+`resp_tir_roi_local.yaml`,
 `resp_tir_roi_local_matched.yaml`, `resp_tir_roi_crossmae.yaml`:
 
 ```yaml

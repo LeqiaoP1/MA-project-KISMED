@@ -212,8 +212,8 @@ returned list holds **subject ids**, not sample or clip indices.
 ### Phase 6 — configs and HPC rollout
 
 - Add `n_folds` / `fold` / `use_small_val` to the HPC configs only
-  (`code/configs/finetune/resp_tir_roi_hpc.yaml`,
-  `code/configs/finetune/resp_tir_roi_hpc_smoothl1.yaml`). Leave the
+  (`code/configs/finetune/resp_tir_roi_hpc.yaml`; its `_smoothl1` clone was
+  folded into it on 2026-11-01 and deleted). Leave the
   `*_local.yaml` files on `val_subject`: four subjects are already
   leave-one-subject-out.
 - `code/scripts/hpc/submit_waveform_tir_roi.sbatch`: add an array submission
@@ -452,7 +452,7 @@ reproduced by the next stage of the sweep.
 | `write_fold_manifest` | records `split_seed` / `split_stratify`, so an audit can tell the two rules apart |
 | `runners/_common.py::add_split_args` | `--split_seed` (default `None`) and `--split_stratify {none,sex}` (default `none`) |
 | `data/datasets.py`, `data/tir_resp_dataset.py`, `data/rgb_roi_dataset.py` | read the pair from `args`, print it (`[data] … partition: stratify=… split_seed=…`) |
-| configs | `split_seed: 42` + `split_stratify: sex` in `stage2_hpc_tir_roi_resp.yaml`, `resp_tir_roi_hpc.yaml`, `resp_tir_roi_hpc_smoothl1.yaml` |
+| configs | `split_seed: 42` + `split_stratify: sex` in `stage2_hpc_tir_roi_resp.yaml`, `resp_tir_roi_hpc.yaml` |
 | tests | `tests/test_kfold_splits.py` (8 new: legacy unchanged, determinism, sizes, sex balance, seed required, unknown strategy, `get_stage_splits`/`resolve_split_keys` pass-through) and `tests/test_config_loading.py::test_stage2_and_stage3_share_the_fold_partition_rule` |
 
 **Verified.** Default arguments reproduce the old partition exactly (existing

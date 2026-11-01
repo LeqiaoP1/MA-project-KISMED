@@ -78,6 +78,20 @@ def test_config_inventory_is_not_empty():
     assert any(p.endswith('resp_tir_roi_hpc.yaml') for p in SHIPPED_CONFIGS)
 
 
+def test_stage3_hpc_ships_the_point_wise_time_loss(monkeypatch):
+    """The ``L_time`` arm of record (switched 2026-11-01).
+
+    ``StdLoss`` is polarity-blind -- an inverted target costs it exactly zero --
+    so the shipped Stage-3 config selects the point-wise term. ``std`` stays
+    available in ``core/waveform_losses.py`` and is still the CODE default; it
+    is simply not what this experiment reports, and a silent revert to it would
+    make the run disagree with the arm every doc names.
+    """
+    a = _stage3(monkeypatch)
+    assert a.time_loss == 'smoothl1'
+    assert a.huber_beta > 0
+
+
 PRETRAIN_CONFIGS = sorted(
     path for path in SHIPPED_CONFIGS
     if os.path.relpath(path, CODE_DIR).startswith('configs/pretrain/')

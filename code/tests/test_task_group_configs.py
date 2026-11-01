@@ -49,7 +49,6 @@ TIR_ROI_CONFIGS = [
     'configs/finetune/resp_tir_roi_local_matched.yaml',
     'configs/finetune/resp_tir_roi_crossmae.yaml',
     'configs/finetune/resp_tir_roi_hpc.yaml',
-    'configs/finetune/resp_tir_roi_hpc_smoothl1.yaml',
 ]
 
 REGROUP_STRING = 'low=T2|T3|T5;moderate=T1|T4;high=T6|T7|T8|T9|T10'
