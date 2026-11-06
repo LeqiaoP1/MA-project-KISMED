@@ -218,6 +218,18 @@ for fold in "${READY[@]}"; do
          "SBATCH_JOB_NAME=st3_resp_tir_fold${fold}"
          "GPU_TYPE=$GPU_TYPE" "GPUS=$GPUS" "FOLDS=$fold"
          "OUT_DIR=$out_dir" "RESP_CACHE=$RESP_CACHE")
+    # The job script resolves its encoder from STAGE2_DIR or STAGE2_RUN_NAME
+    # (default 'stage2_hpc_tir_roi_resp'). STAGE2_NAME is only used by the
+    # preflight above, so it MUST be forwarded here as well: without this the
+    # driver validates one lineage and Stage 3 then loads the OTHER one, which
+    # dies on the geometry check (e.g. positions.tir.pos_embed 112 px vs 96 px)
+    # ~10 s into every fold -- exactly what happened to the 96respgrid sweep
+    # (jobs 55906288-55906291, 2026-11-04).
+    if [ -n "${STAGE2_DIR:-}" ]; then
+        cmd+=("STAGE2_DIR=$STAGE2_DIR")
+    else
+        cmd+=("STAGE2_RUN_NAME=$STAGE2_NAME")
+    fi
     [ -n "${EPOCHS:-}" ] && cmd+=("EPOCHS=$EPOCHS")
     cmd+=(bash scripts/hpc/submit.sh "$JOB_SCRIPT")
     echo "fold $fold -> $out_dir"

@@ -424,7 +424,11 @@ def main(args):
 
     # ---------------------------- console summary -------------------------
     o = agg['overall']
-    print('\n[kfold] ===== pooled 5-fold subject-disjoint evaluation =====')
+    # "5-fold" was hardcoded here, so a partial sweep (--folds 0,1,2,3 while the
+    # last fold is still queued) printed a header claiming five folds. Report the
+    # number actually pooled.
+    print(f'\n[kfold] ===== pooled {len(summaries)}-fold subject-disjoint '
+          f'evaluation =====')
     print(f'[kfold] {n_subjects} subjects / {o["n_sessions"]} sessions / '
           f'{o["n_clips"]} clips, band {band} Hz')
     print(f'[kfold] PEARSON   band-limited (per-subject median): '
