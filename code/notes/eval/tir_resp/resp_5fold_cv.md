@@ -10,6 +10,13 @@
 > the code, so this record describes a loss the configs cannot reproduce.
 > Re-run the sweep before quoting these as current, and label any table with the
 > loss it reports.
+>
+> **SUPERSEDED AS THE CURRENT HEADLINE (2026-11-06):** the live 5-fold result is
+> the `96respgrid` lineage in `resp_5fold_cv_96respgrid.md` (**+0.542**). This
+> page stays as the record of the 112 px / amplitude-only-loss lineage, and its
+> five dumps are the "old" arm of that comparison — re-scored against the
+> respiration-cache reference they give **+0.313**, which is what the paired
+> 132-subject analysis on the new page uses.
 
 ## What was measured
 
