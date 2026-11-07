@@ -47,14 +47,6 @@ x = proj(x)
 
 > **Critical**: At 224 px (9800 tokens), the naive path requires ~9 GB per block per sample. SDPA (torch >= 2.0) is mandatory for the full-resolution geometry.
 
-### `CrossAttention`
-
-**Forward**: `x: [B, N, C]`, `context: [B, M, C]` -> `[B, N, C]`
-
-Queries from `x`; keys/values from `context`. Used in `DecoderBlock` for **Solution A** cross-stream decoding (RESP stream attending to the full visual encoder output). Ported from `tmp/MultiMAE/multimae/multimae_utils.py`, modernised to use `scaled_dot_product_attention`.
-
-**[design]** — `SolutionA_vs_SolutionC.md §4`: the cross-attention modules are constructed **last** and only when a stream actually uses `cross_attn`, so the default Solution C path registers no extra module (identical `state_dict` keys) and consumes no extra RNG draws.
-
 ### `Block` (pre-norm encoder block)
 
 ```
@@ -63,18 +55,6 @@ x = x + DropPath(Mlp(LayerNorm(x)))
 ```
 
 **Forward**: `[B, N, D]` -> `[B, N, D]`
-
-### `DecoderBlock` (self-attn + cross-attn + MLP)
-
-```
-x = x + DropPath(self_attn(LayerNorm(x)))
-x = x + DropPath(cross_attn(query_norm(x), context_norm(context)))
-x = x + DropPath(Mlp(LayerNorm(x)))
-```
-
-**Forward**: `x: [B, N, D]`, `context: [B, M, D]` -> `[B, N, D]`
-
-Used exclusively in Solution A (`signal_decoder: cross_attn`). Not constructed on the Solution C path.
 
 ### `Mlp`
 
@@ -94,7 +74,7 @@ x = patch_embed(x)            # [B, D, Gt, Gh, Gw]
 x = x.flatten(2).transpose(1, 2)  # [B, Gt*Gh*Gw, D]
 ```
 
-**[design]** — `SolutionA_asymCrossMAE.md §2.1`: the implementation must preserve the `(time, height, width)` flattening order and use the matching 3-D positional embedding. Shape assertions are required at the adapter output.
+The implementation must preserve the `(time, height, width)` flattening order and use the matching 3-D positional embedding. Shape assertions are required at the adapter output.
 
 Grid sizes at standard geometries:
 
@@ -104,7 +84,7 @@ Grid sizes at standard geometries:
 | 64 | 200 | 2,16,16 | 2 | 50 | 4 | 800 |
 | 224 | 100 | 2,16,16 | 1 | 50 | 14 | 9800 |
 
-**TIR-ROI geometry** (Solution A / `SolutionA_asymCrossMAE.md §2.1`):
+**TIR-ROI geometry**:
 
 ```
 T = 100 frames  (8 s x 25 fps / temporal_stride 2)
@@ -159,8 +139,6 @@ Default: `sig_kernel=8`, `S=400` -> `Ns=50`.
 
 `pos_init='sincos3d'` (default) initialises with sincos; `'random'` keeps trunc_normal (std=0.02).
 
-**[design]** — `SolutionA_asymCrossMAE.md §3.3`: the Solution A cross-attention RESP decoder creates `L` learned query positions initialised by `query_init` (`sincos3d` uses the temporal component; `random` is an ablation knob). The positional signal is re-added at every forward pass.
-
 ---
 
 ## 5. Output Adapters — `core/output_adapters.py`
@@ -209,23 +187,11 @@ x: [B, C, H, W]
 
 ## 7. Stage-2: `MultiModalMAE` — `core/multimae.py`
 
-### 7.1 Two Pre-training Variants: Solution C (default) and Solution A
+### 7.1 Stage-2 pre-training objective
 
-**[design]** — `SolutionA_vs_SolutionC.md`, `SolutionA_asymCrossMAE.md`
+**[design]** — `SolutionC_EarlyTokenMixing_stage2.md`
 
-The codebase supports two structurally different Stage-2 pre-training objectives that share **one encoder interface** and differ only in how the physiological stream is handled:
-
-| | Solution C (default, shipped) | Solution A (asymmetric cross-MAE) |
-|---|---|---|
-| Config switch | `resp_in_encoder: true` (default) | `resp_in_encoder: false` |
-| Encoder input | Visible TIR + visible RESP tokens | Visible TIR tokens **only** |
-| RESP decoding | Shared self-attention decoder (own visible tokens + mask tokens) | **Cross-attention decoder**: learned per-time-slot queries attend to full visual encoder output |
-| RESP loss support | Masked resp tokens only | **All** time slots (all-ones mask) |
-| TIR decoding | Self-attention pixel decoder | Self-attention pixel decoder (unchanged) |
-| Extra Stage-2 modules | None | `signal_queries.*` + `xdec_blocks.*` |
-| Encoder keys/shapes | `adapters.*`, `positions.*`, `enc_blocks.*`, `enc_norm.*` | **Identical** — either checkpoint loads into the same Stage-3 model |
-
-**Why Solution A** (`SolutionA_vs_SolutionC.md §1`): under Solution C with scattered random masking, a 5-line linear interpolator using **zero video** reaches `mse_resp 0.129` / `spec_resp 0.98`, beating the trained 102 M-parameter model (`1.052` / `~5.0`). Solution A removes the shortcut structurally: the physio stream never enters the encoder. The initial `mse_resp` is higher (~5.7 vs ~3.2) — that difference *is* the removed shortcut.
+The Stage-2 SSL path is a shared-encoder masked autoencoder: the visible tokens of every stream enter one ViT, and each stream is reconstructed by the shared self-attention decoder over its own visible tokens plus `mask_token`s. TIR video and the 1-D physiological signal are treated symmetrically.
 
 ### 7.2 Construction-time validation
 
@@ -234,23 +200,20 @@ The codebase supports two structurally different Stage-2 pre-training objectives
 3. `_check_space_time_alignment()`: enforces `sig_kernel/fs == tubelet_t*temporal_stride/fps` AND `n_signal == Gt`. Raises `ValueError` on mismatch.
 4. `pos_init` in `{'sincos3d', 'random'}`.
 5. `target_norm` in `{'token', 'clip', 'none'}` (`'none'` = IDENTITY: the dataset already normalised the 1-D stream). NON-ROI paths only — `run_pretrain.pin_roi_target_norm` forces `'none'` for `tir_roi`/`rgb_roi`.
-6. `resp_in_encoder` / `signal_decoder` consistency: a `cross_attn` stream must be **outside** the encoder; a `self_attn` stream must be **inside** it. Invalid combinations raise a named `ValueError`.
 
 ### 7.3 Sub-modules
 
-| Key | Module | Present in |
-|-----|--------|-----------|
-| `adapters` | `nn.ModuleDict` — per-stream `TubeletEmbed` or `SignalEmbed` | Both |
-| `positions` | `nn.ModuleDict` — per-stream `_PosMask` (pos_embed + mask_token) | Both |
-| `enc_blocks` | `nn.ModuleList` — `enc_depth` x `Block` | Both |
-| `enc_norm` | `nn.LayerNorm` — post-encoder norm | Both |
-| `dec_blocks` | `nn.ModuleList` — `dec_depth=2` x `Block` (TIR pixel decoder) | Both |
-| `dec_norm` | `nn.LayerNorm` — post-decoder norm | Both |
-| `heads` | `nn.ModuleDict` — per-stream Linear head `D -> patch_dim` | Both |
-| `signal_queries.*` | `nn.Parameter` — learned RESP query positions | **Solution A only** |
-| `xdec_blocks.*` | `nn.ModuleList` — `DecoderBlock x cross_attn_depth` | **Solution A only** |
+| Key | Module |
+|-----|--------|
+| `adapters` | `nn.ModuleDict` — per-stream `TubeletEmbed` or `SignalEmbed` |
+| `positions` | `nn.ModuleDict` — per-stream `_PosMask` (pos_embed + mask_token) |
+| `enc_blocks` | `nn.ModuleList` — `enc_depth` x `Block` |
+| `enc_norm` | `nn.LayerNorm` — post-encoder norm |
+| `dec_blocks` | `nn.ModuleList` — `dec_depth=2` x `Block` (TIR pixel decoder) |
+| `dec_norm` | `nn.LayerNorm` — post-decoder norm |
+| `heads` | `nn.ModuleDict` — per-stream Linear head `D -> patch_dim` |
 
-### 7.4 Solution C `forward(x)` — shared-encoder (default)
+### 7.4 `forward(x)` — shared-encoder
 
 ```
 Input: {'tir': [B,3,T,H,W], 'resp': [B,1,S]}  (or rgb,bp, etc.)
@@ -298,50 +261,7 @@ clip-normalised values (no local map), and `MaskedMSELoss` keeps only
 streams ignore the mask — their label space is the dataset's per-clip z-score
 decided by `target_norm`.
 
-### 7.5 Solution A `forward(x)` — asymmetric cross-MAE
-
-**[design]** — `SolutionA_asymCrossMAE.md §3`, `SolutionA_asymCrossMAE_diagram.md §1`
-
-```
-Input: {'tir': [B,3,T,H,W], 'resp': [B,1,S]}
-
-Step 1 — Tokenise TIR only (resp excluded from encoder):
-  tir_tokens = adapters['tir'](x['tir']) + positions['tir'].pos_embed   # [B, n_visual, D]
-
-Step 2 — Tube mask TIR (ratio=0.90):
-  mask_tir in {0,1} [n_visual]
-  z_v = tir_tokens[:, mask_tir==0, :]           # [B, n_visible ~80, D]
-
-Step 3 — Shared ViT encoder (TIR visible tokens ONLY — no resp):
-  for blk in enc_blocks: z_v = blk(z_v)
-  z_v = enc_norm(z_v)                           # [B, n_visible, D]
-
-Step 4 — TIR pixel self-attention decoder (same as Solution C):
-  re-insert mask tokens -> dec_blocks -> heads['tir']
-  pred_tir_masked: [B, n_masked, tubelet_t*16*16*3]
-  L_tir = MSE(pred_tir_masked, gt_tir_masked)
-
-Step 5 — RESP cross-attention decoder (Solution A only):
-  q_resp = signal_queries + query_pos_embed     # [B, n_signal=50, D]
-  for blk in xdec_blocks:
-      q_resp = blk(q_resp, context=z_v)         # DecoderBlock: self-attn + cross-attn
-  y_pred = Linear(q_resp).reshape(B, -1)        # [B, L=800]
-  L_resp = MSE(y_pred, y_norm)                  # over ALL time slots
-
-Step 6 — Combined SSL loss:
-  L_ssl = 1.0 * L_tir + lambda_resp * L_resp
-  (lambda_resp in [0.5, 1.0]; NO spectral term in Stage-2)
-
-Returns: {'loss': scalar, 'losses_mse': {'tir': ..., 'resp': ...}}
-```
-
-**Verified properties** (`SolutionA_vs_SolutionC.md §6`):
-- `[encoder] streams fed to the encoder: ['tir']` — resp tokens never reach the encoder (asserted by `cross_mae_self_test()`).
-- The RESP-only loss produces a **non-zero encoder gradient**.
-- Solution C smoke reproduces `mse_tir 2.0890 / mse_resp 3.2286` bit-for-bit.
-- Solution A extra parameters: ~19 M (cross-attention decoder). Solution C: 102.3 M.
-
-### 7.6 Masking strategies — `_random_mask` vs `_span_mask`
+### 7.5 Masking strategies — `_random_mask` vs `_span_mask`
 
 **[design]** — `SpanMask_PhysioSignals.md` (implemented 2026-09-26)
 
@@ -395,7 +315,7 @@ mask_span_s: 4.0                     # global scalar, or {resp: 4.0, bp: 1.0}
 mask_n_spans: 0                      # 0 = derive from mask_ratio and mask_span_s
 ```
 
-### 7.7 Geometry variants
+### 7.6 Geometry variants
 
 | Variant | `embed_dim` | `enc_depth` | `enc_num_heads` |
 |---------|------------|------------|----------------|
@@ -412,9 +332,9 @@ mask_n_spans: 0                      # 0 = derive from mask_ratio and mask_span_
 
 ### 8.1 Overview
 
-**[design]** — `SolutionC_EarlyTokenMixing_stage3.md`, `SolutionA_asymCrossMAE.md §5`
+**[design]** — `SolutionC_EarlyTokenMixing_stage3.md`
 
-Stage 3 is the **sensor-failure** condition: only visual input, **no masking**, no 1-D physio stream. The Stage-2 encoder is fine-tuned end-to-end; `freeze_encoder()` exists but is not called. Both Solution A and Solution C encoders load into the **same** `MultiModalWaveformRegressor` — Solution A's extra tensors (`signal_queries.*`, `xdec_blocks.*`) are silently ignored by `load_stage2_encoder`.
+Stage 3 is the **sensor-failure** condition: only visual input, **no masking**, no 1-D physio stream. The Stage-2 encoder is fine-tuned end-to-end; `freeze_encoder()` exists but is not called.
 
 ### 8.2 Sub-modules (identical key names to Stage-2 encoder)
 
@@ -463,11 +383,9 @@ adapter, so Stage 3 consumes the exact input space the Stage-2 encoder was
 pre-trained on. Every Stage-3 stream is validated visual, so no branch is needed.
 There is no masking and no target normalisation in this path.
 
-**[design]** — `SolutionA_asymCrossMAE.md §5`: the model must assert the expected `grid_t` and output `L` rather than silently interpolating a desynchronised sequence.
+The model must assert the expected `grid_t` and output `L` rather than silently interpolating a desynchronised sequence.
 
 ### 8.4 Head variants
-
-**[design]** — `SolutionA_vs_SolutionC.md §4`: the matched ablation pair ships `head_style: transposed_conv`, `head_init: none`, `layer_decay: 0.75` for **both** arms to avoid confounding by a one-sided head transfer.
 
 | `head_style` | `head_hidden` | Module |
 |-------------|--------------|--------|
@@ -477,7 +395,7 @@ There is no masking and no target normalisation in this path.
 
 ### 8.5 `WaveformUpsampleHead` tensor flow
 
-**[design]** — `SolutionA_asymCrossMAE.md §5`: spatial aggregation must preserve the temporal grid before upsampling to the target length.
+Spatial aggregation must preserve the temporal grid before upsampling to the target length.
 
 ```
 h: [B, grid_t, D]
@@ -539,11 +457,10 @@ cubes are per-cube z-scored; unmasked cubes carry the clip-normalised values
 
 All accept `[B,T]` or `[B,1,T]` (channel squeezed via `_to_1d`).
 
-**`PearsonLoss`**: `mean(1 - r)` where `r = (p_norm . t_norm) / (||p_norm|| * ||t_norm||)`.
-**[design]** — `SolutionA_asymCrossMAE.md §6`: must use a variance floor/epsilon and define a finite fallback for near-constant predictions or targets.
+**`PearsonLoss`**: `mean(1 - r)` where `r = (p_norm . t_norm) / (||p_norm|| * ||t_norm||)`. Must use a variance floor/epsilon and define a finite fallback for near-constant predictions or targets.
 
 **`L_time` (point-wise Huber)**: `torch.nn.SmoothL1Loss(beta=huber_beta)`, `mean` reduction, on the raw point-wise error (no per-sample centring). `huber_beta` is in TARGET-STD units; the label is z-scored per clip, so its std is ~1 and the default `1.0` sits at ~1 std — quadratic inside that band, linear beyond.
-**[design]** — `SolutionA_asymCrossMAE.md §6`: the design note also considers an amplitude-only (std-matching) term on the normalised target and finds it largely redundant with Pearson. It is NOT used: amplitude-only is blind to POLARITY and SHAPE (an inverted waveform has the same std, mean and magnitude spectrum). A point-wise term does charge a constant phase offset, which is accepted here — the waveform, not just the rate, is the deliverable.
+Amplitude-only (std-matching) is NOT used: it is blind to POLARITY and SHAPE (an inverted waveform has the same std, mean and magnitude spectrum). A point-wise term does charge a constant phase offset, which is accepted here — the waveform, not just the rate, is the deliverable.
 
 **`MultiResolutionSTFTLoss`**: for each `n_fft` in `fft_sizes`:
 
@@ -584,35 +501,17 @@ Default alpha=beta=gamma=1.0. Weights stored as `register_buffer`.
 
 Geometry guard: `pos_embed` shape mismatch raises `ValueError` with actionable message.
 
-**[design]** — `SolutionA_vs_SolutionC.md §2` (Invariant I2): the only Solution A-only tensors are `signal_queries.*` and `xdec_blocks.*`; the loader whitelists only `enc_blocks.` / `enc_norm.` / `adapters.` / `positions.` and silently ignores the rest. Either pre-trained checkpoint loads into the same fine-tuning model without any key renaming.
-
 Stage-1 VideoMAE -> Stage-2: `canonicalise_vit_state_dict` handles the official MAE/VideoMAE and the HF-transformers VideoMAE checkpoint layouts. The 3-D `patch_embed.proj.weight [D, C, t, ph, pw]` (VideoMAE tubelet) is copied **verbatim**; a tubelet mismatch raises. The legacy 2-D boxcar inflation was removed with the non-VideoMAE sources.
 
 ---
 
 ## 12. Design Config Map
 
-**[design]** — `SolutionA_vs_SolutionC.md §4`
-
-| Config file | Arm | Key differences |
-|------------|-----|-----------------|
-| `configs/pretrain/stage2_local_tir_roi_resp.yaml` | Solution C | `resp_in_encoder: true` (default) |
-| `configs/pretrain/stage2_local_tir_roi_crossmae.yaml` | Solution A | `resp_in_encoder: false`, `signal_decoder: resp=cross_attn` |
-| `configs/finetune/resp_tir_roi_local.yaml` | Historical Stage-3 | Unchanged |
-| `configs/finetune/resp_tir_roi_local_matched.yaml` | Solution C encoder | `head_style: transposed_conv`, `head_init: none`, `layer_decay: 0.75` |
-| `configs/finetune/resp_tir_roi_crossmae.yaml` | Solution A encoder | Identical recipe to matched |
-
-Pre-train pair differs only in: `resp_in_encoder`, `signal_decoder`, `cross_attn_depth`, `query_init`, `output_dir`.
-Stage-3 pair differs only in: `finetune`, `output_dir`.
-
-### Solution A YAML knobs
-
-```yaml
-resp_in_encoder: false
-signal_decoder: resp=cross_attn   # or 'cross_attn' for all signal streams
-cross_attn_depth: 2               # DecoderBlock stack depth
-query_init: sincos3d              # 'sincos3d' or 'random' (ablation)
-```
+| Config file | Purpose |
+|------------|---------|
+| `configs/pretrain/stage2_local_tir_roi_resp.yaml` | Stage 2, shared-encoder MAE |
+| `configs/finetune/resp_tir_roi_local.yaml` | Historical Stage-3 |
+| `configs/finetune/resp_tir_roi_local_matched.yaml` | Stage 3, `head_style: transposed_conv`, `head_init: none`, `layer_decay: 0.75` |
 
 ### Span masking YAML knobs (additive; `'random'` is the unchanged default)
 

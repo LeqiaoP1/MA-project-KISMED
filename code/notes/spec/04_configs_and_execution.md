@@ -37,7 +37,6 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `stage2_local_pretrained_ssv2.yaml` | Twin of the above with VideoMAE **SSV2** init (the corpus A/B) |
 | `stage2_local_rgb_roi_bp.yaml` | RGB face-ROI + BP, raw tree |
 | `stage2_local_tir_roi_resp.yaml` | TIR-ROI + RESP, raw tree |
-| `stage2_local_tir_roi_crossmae.yaml` | TIR-ROI, Solution A cross-MAE |
 | `stage2_multimodal.yaml` | HPC full-data template, 800 epochs, input_size 224 |
 | `example.yaml` | Annotated reference template |
 
@@ -52,8 +51,7 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `resp_local.yaml` | RESP | canonical, RGB-only |
 | `resp.yaml` | RESP | canonical, HPC |
 | `resp_tir_roi_local.yaml` | RESP | TIR ROI, 8 s clip, stride 2, fft 128,256,512 |
-| `resp_tir_roi_crossmae.yaml` | RESP | TIR ROI, cross-MAE head |
-| `resp_tir_roi_local_matched.yaml` | RESP | TIR ROI, matched geometry variant |
+| `resp_tir_roi_local_matched.yaml` | RESP | TIR ROI, Stage-3 recipe from the local shared-encoder model (`transposed_conv`, `head_init: none`, `layer_decay 0.75`) |
 | `eda.yaml` | EDA | canonical, HPC |
 | `au_local.yaml` | AU probe | canonical, multi-label BCE |
 | `au_local_pretrained.yaml` | AU probe | canonical, with Stage-2 encoder init |

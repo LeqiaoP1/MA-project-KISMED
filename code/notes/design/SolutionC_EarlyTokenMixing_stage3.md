@@ -103,7 +103,7 @@ note right of HEAD
   when head_init is transfer (the default) AND the head is a single
   Linear, i.e. samples_per_token equals sig_kernel and head_hidden is 0.
   head_init none keeps the pre-training decoder discarded and starts the
-  head RANDOM, which is what both current A / C configs use. The legacy
+  head RANDOM, which is what the current Stage-3 configs use. The legacy
   key heads.bvp is accepted for bp and named in the load log.
 end note
 
