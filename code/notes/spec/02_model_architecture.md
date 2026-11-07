@@ -227,7 +227,7 @@ Step 2 — Per-stream asymmetric masking:
   visible_s = tokens_s[:, mask_s==0, :]         # [B, N_vis_s, D]
 
 Step 3 — Concatenate visible tokens (ALL streams in encoder):
-  z_vis = cat([visible_s for s in encoder_streams], dim=1)  # [B, sum(N_vis_s), D]
+  z_vis = cat([visible_s for s in streams], dim=1)      # [B, sum(N_vis_s), D]
 
 Step 4 — Shared ViT encoder:
   for blk in enc_blocks: z_vis = blk(z_vis)

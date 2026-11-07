@@ -103,16 +103,17 @@ The new mapping partitions T1..T10 (3 / 2 / 5) with every task in exactly one ti
    Resolution stays config-driven -- the constant only supplies defaults and a
    test anchor, it is never applied implicitly.
 
-2. **Edit the 8 `task_groups:` blocks**, keeping `task_set: ''` and rewriting the
-   inline tier comments so they explain the NEW criterion:
+2. **Edit the TIR-ROI `task_groups:` blocks**, keeping `task_set: ''` and
+   rewriting the inline tier comments so they explain the NEW criterion:
    - `configs/pretrain/stage2_local_tir_roi_resp.yaml`
-   - `configs/pretrain/stage2_local_tir_roi_crossmae.yaml`
    - `configs/pretrain/stage2_hpc_tir_roi_resp.yaml`
    - `configs/finetune/resp_tir_roi_local.yaml`
    - `configs/finetune/resp_tir_roi_local_matched.yaml`
-   - `configs/finetune/resp_tir_roi_crossmae.yaml`
-   - `configs/finetune/resp_tir_roi_hpc.yaml` (this list also covered the
-     `_smoothl1` clone until it was folded in on 2026-11-01)
+   - `configs/finetune/resp_tir_roi_hpc.yaml`
+   (this list also covered the `_smoothl1` clone until it was folded in on
+   2026-11-01, and the asymmetric cross-MAE pair
+   `stage2_local_tir_roi_crossmae.yaml` / `resp_tir_roi_crossmae.yaml` until it
+   was retired on 2026-11-07)
 
    The `# MUST mirror ...` comments stay valid, but they are only comments -- see
    phase 3 for the check that finally enforces them.

@@ -26,13 +26,14 @@
 #       --val_subject $S --output_dir ../output/finetune/resp_tir_roi_loso/$S
 #   done
 #
-# MATCHED-PAIR ARM 1 of 2 (Solution C encoder). This file and
-# resp_tir_roi_crossmae.yaml are IDENTICAL except `finetune:` and `output_dir:`
-# -- that is what makes "Solution A vs Solution C differ ONLY in pre-training"
-# true end to end. Both arms share the spec 4.1/4.2 Stage-3 recipe:
-#   head_style: transposed_conv, head_init: none, layer_decay: 0.75.
-# (head_init none on BOTH arms: the Stage-2 decoder heads are discarded per
-# spec 4.1, and transferring the head on one arm only would confound the run.)
+# Stage-3 recipe of record (spec 4.1/4.2): head_style transposed_conv,
+# head_init none, layer_decay 0.75 -- the Stage-2 decoder heads are DISCARDED,
+# so the result never depends on which masked-reconstruction decoder produced
+# the pre-training. (The file name is historical: this config used to be the
+# shared-encoder arm of a matched pair against the retired "Solution A"
+# asymmetric cross-MAE pre-training; the recipe itself is unchanged and it is
+# the only surviving arm. Sibling without this recipe:
+# configs/finetune/resp_tir_roi_local.yaml.)
 #
 # Sibling of configs/finetune/resp_local.yaml (RGB -> RESP): the SAME model,
 # loss weights (alpha/beta/gamma), optimizer and 64 px ROI crop size. NOTE
@@ -110,9 +111,9 @@ head_style: transposed_conv         # spec 4.1: learned 1-D upsampling head
                                    #   samples_per_token = 16). Replaces the
                                    #   linear per-time-step projection.
 head_init: none                    # spec 4.1: DISCARD the pre-training decoder
-                                   #   head and start RANDOM. IDENTICAL on both
-                                   #   arms so the A vs C comparison is not
-                                   #   confounded by a one-sided head transfer.
+                                   #   head and start RANDOM, so the Stage-3
+                                   #   result never depends on the Stage-2
+                                   #   reconstruction head.
 
 # ---- clip geometry -- MUST equal the Stage-2 geometry of `finetune` ----
 # The Stage-2 run was 8 s / temporal_stride 2 / sig_kernel 16 / input 64 -> the
