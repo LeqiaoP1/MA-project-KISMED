@@ -67,7 +67,6 @@
 | `core/input_adapters.py` | `SemSegInputAdapter.forward` | No channel count assertion. |
 | `core/input_adapters.py` | `SignalInputAdapter.forward` | No `ndim` check. |
 | `core/output_adapters.py` | `SpatialOutputAdapter.forward` | No `assert self.head is not None`; if `init()` was skipped, raises NoneType with no context. |
-| `core/blocks.py` | `CrossAttention.forward` | No check that `x` and `context` share the same `C`; mismatch surfaces inside Linear. |
 
 ### Present — positive examples
 

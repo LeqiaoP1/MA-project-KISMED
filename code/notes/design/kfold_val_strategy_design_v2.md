@@ -5,7 +5,7 @@ This document defines the technical architecture for subject-exclusive cross-val
 
 It explicitly standardizes the 3-stage training pipeline nomenclature:
 1. **Stage 1**: **Initial Backbone Weight Ingestion** — Loading initial pretrained weights provided by the VideoMAE authors (pretrained on Kinetics-400/SSv2).
-2. **Stage 2**: **Domain SSL Pretraining** — Self-Supervised Learning (Solution A / Asymmetric Cross-MAE) on the BP4D+ domain dataset.
+2. **Stage 2**: **Domain SSL Pretraining** — Self-Supervised Learning (shared-encoder masked autoencoder) on the BP4D+ domain dataset.
 3. **Stage 3**: **Task Fine-Tuning** — Supervised downstream fine-tuning for continuous respiratory waveform prediction and Action Unit (AU) detection.
 
 ---
@@ -57,8 +57,8 @@ Fold 4: [ Test: F4 (28 subs) | Train Pool: F0, F1, F2, F3 (112 subs) ]
 
 ---
 
-### 3.2 Stage 2: Domain SSL Pretraining (Solution A / Asymmetric Cross-MAE)
-* **Objective**: Pretrain the ViT-Base encoder on domain-specific thermal infrared (TIR) video sequences using cross-modal frame alignment and InfoNCE loss against physiological signals.
+### 3.2 Stage 2: Domain SSL Pretraining (shared-encoder masked autoencoder)
+* **Objective**: Pretrain the ViT-Base encoder on domain-specific thermal infrared (TIR) video sequences with a shared-encoder masked autoencoder, using per-modality masked MSE loss over the visual and physiological streams.
 * **Allocation**: **112 Subjects (80%) Train**, **0 Subjects (0%) Val**, **28 Subjects (20%) Test Holdout**.
 
 ```

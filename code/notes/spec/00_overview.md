@@ -121,7 +121,7 @@ code/
 │   ├── multimae.py          # Stage-2 MultiModalMAE
 │   ├── waveform_model.py    # Stage-3 MultiModalWaveformRegressor
 │   ├── model.py             # ProjectViT (Stage-1 baseline)
-│   ├── blocks.py            # Block, CrossAttention, DecoderBlock, Mlp, Attention
+│   ├── blocks.py            # Block, Attention, Mlp
 │   ├── input_adapters.py    # PatchedInputAdapter, SignalInputAdapter, SemSegInputAdapter
 │   ├── output_adapters.py   # SpatialOutputAdapter
 │   ├── criterion.py         # MaskedMSELoss, MaskedL1Loss, MaskedCrossEntropyLoss

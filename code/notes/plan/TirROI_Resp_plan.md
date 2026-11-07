@@ -29,17 +29,17 @@ by whether they move that number.
 
 | item | value | owning design |
 |---|---|---|
-| clip / fps / stride | 8.0 s, source 25 fps, `temporal_stride 2` (12.5 fps effective) | `design/SolutionA_asymCrossMAE.md` §2 |
-| tubelet / grid | `(2,16,16)`; `num_frames 100` → `G_t = 50` | `design/SolutionA_asymCrossMAE.md` §2.1 |
-| 1-D grid | `fs 100`, `sig_kernel 16`, `seq_len 800` → `n_signal 50`; **160 ms per token** | same |
-| alignment | `tubelet_t·stride/fps == sig_kernel/fs` (hard `ValueError` in `MultiModalMAE`) | same |
+| clip / fps / stride | 8.0 s, source 25 fps, `temporal_stride 2` (12.5 fps effective) | `design/ROI_crop_and_rescaling.md` §5 |
+| tubelet / grid | `(2,16,16)`; `num_frames 100` → `G_t = 50` | `spec/02_model_architecture.md` §3 |
+| 1-D grid | `fs 100`, `sig_kernel 16`, `seq_len 800` → `n_signal 50`; **160 ms per token** | `design/SpanMask_PhysioSignals.md` §1 |
+| alignment | `tubelet_t·stride/fps == sig_kernel/fs` (hard `ValueError` in `MultiModalMAE`) | `spec/02_model_architecture.md` §7.2 |
 | ROI landmarks | 12-point nose+mouth (`9,10,11,12,13,20,21,22,23,24,25,26`) | `design/ROI_crop_and_rescaling.md` §3.1 |
 | ROI box | `roi_padding 0.10`, `crop_rule='square'` (square **before** the single isotropic rescale), `max_sway_px 40` (drop, not absorb) | `design/ROI_crop_and_rescaling.md` §3.2/§3.4 |
 | patch | `input_size 96` on HPC (6×6 grid), `64` local (4×4); patch 16 | `design/ROI_crop_and_rescaling.md` §4.5 |
 | clip validity | any `(0,0)` landmark line inside the window drops the clip; `min_signal_spread 0.1 V`; `rail_touch_v 9.9 V` | `design/ROI_crop_and_rescaling.md` §3.4 |
 | target space | **dataset-side** per-clip z-score (`physio_norm: zscore`, `data.tir_resp_dataset.TARGET_NORM`); the model is pinned to `target_norm: none` (`run_pretrain.pin_roi_target_norm`) | `design/RESP_session_preprocess.md` §3, `spec/01_data_pipeline.md` |
-| visual mask | tube `0.90` | `design/SolutionC_EarlyTokenMixing_stage2.md`, `design/SolutionA_asymCrossMAE.md` §3 |
-| 1-D mask | `0.50` **scattered** in every shipped config; `physio_mask: span` + `mask_span_s {resp: 4.0}` is the designed alternative (W2) | `design/SpanMask_PhysioSignals.md` §4 |
+| visual mask | tube `0.90` | `design/SolutionC_EarlyTokenMixing_stage2.md` |
+| 1-D mask | `0.50` **scattered** in every shipped config; `physio_mask: span` + `mask_span_s {resp: 4.0}` is the designed alternative (W1) | `design/SpanMask_PhysioSignals.md` §4 |
 | Stage-2 loss | per-stream masked MSE, `λ_tir 1.0`, `λ_resp = signal_weight 0.5`; **MR-STFT 0.0** (it belongs to Stage 3) | `design/SpanMask_PhysioSignals.md` §5, §7 |
 | Stage-3 | `streams: tir`, `head_hidden 0`, `alpha/beta/gamma = 1.0`, `fft_sizes 128,256,512`, `eval_band 0.1–0.6`, fixed-epoch (Option A), `clip_stride 2.0` | `design/Evaluation_RespWaveform_protocol.md` §3, `design/kfold_val_strategy_design_v2.md` §3.3 |
 | split | subject-disjoint, `n_folds 5`, `split_role train/val/test`; Stage 2 uses `pretrain_split: fold` so the test fold is excluded | `design/kfold_val_strategy_design_v2.md` §2 |
@@ -56,10 +56,9 @@ checkpoint disagree.
 
 | stage | objective | design | code | config |
 |---|---|---|---|---|
-| **1 — init** | VideoMAE-B (K400) → `enc_blocks`, `enc_norm`; `Conv3d(3,D,(2,16,16))` copied **verbatim** into the resolved visual adapter (`adapters.tir` here) | `design/SolutionA_vs_SolutionC.md` §2–§3 | `core/multimae.py::load_pretrained_encoder`, `fit_visual_patch_embed` | `pretrained_encoder: videomae:k400` |
-| **2 — SSL, shipped (Solution C)** | visible `tir + resp` tokens in one ViT; each stream reconstructed by the shared self-attention decoder over its **own** visible tokens + mask tokens | `design/SolutionC_EarlyTokenMixing_stage2.md` | `core/multimae.py::MultiModalMAE` | `stage2_hpc_tir_roi_resp.yaml` |
-| **2 — SSL, designed (Solution A)** | resp tokens **never enter the encoder**; reconstruction by a target-driven cross-attention head, so it can only succeed by reading the video (removes the interpolation shortcut structurally) | `design/SolutionA_asymCrossMAE.md`, `design/SolutionA_vs_SolutionC.md` | `resp_in_encoder: false`, `signal_decoder: resp=cross_attn`, `cross_attn_depth` | `stage2_local_tir_roi_crossmae.yaml` |
-| **3 — waveform** | encoder duplicated per target; mean-pool per time step; `Linear(D,16)`; α·Huber + β·Pearson + γ·MR-STFT; no masking | `design/SolutionC_EarlyTokenMixing_stage3.md` | `core/waveform_model.py`, `core/waveform_losses.py` | `resp_tir_roi_hpc.yaml`, `resp_tir_roi_crossmae.yaml` |
+| **1 — init** | VideoMAE-B (K400) → `enc_blocks`, `enc_norm`; `Conv3d(3,D,(2,16,16))` copied **verbatim** into the resolved visual adapter (`adapters.tir` here) | `spec/02_model_architecture.md` §11 | `core/multimae.py::load_pretrained_encoder`, `fit_visual_patch_embed` | `pretrained_encoder: videomae:k400` |
+| **2 — SSL (shared-encoder)** | visible `tir + resp` tokens in one ViT; each stream reconstructed by the shared self-attention decoder over its **own** visible tokens + mask tokens | `design/SolutionC_EarlyTokenMixing_stage2.md` | `core/multimae.py::MultiModalMAE` | `stage2_hpc_tir_roi_resp.yaml` |
+| **3 — waveform** | encoder duplicated per target; mean-pool per time step; `Linear(D,16)`; α·Huber + β·Pearson + γ·MR-STFT; no masking | `design/SolutionC_EarlyTokenMixing_stage3.md` | `core/waveform_model.py`, `core/waveform_losses.py` | `resp_tir_roi_hpc.yaml` |
 | **eval** | per-clip → session assembly → subject medians → pooled k-fold | `design/Evaluation_RespWaveform_protocol.md` | `evaluation/{metrics,assemble}.py`, `runners/run_evaluate_{session,subject,kfold}.py` | — |
 
 **Precomputation.** Decode is the wall clock. `data/roi_cache.py` stores the
@@ -140,9 +139,9 @@ protocol; a change that only improves the reconstruction loss does not count.
 | **A2** | rate: per-subject MAE and pooled-window agreement | 4.64 BPM; 34.4 % within 10 % | **< 3 BPM**; **≥ 60 %** |
 | **A3** | amplitude: in-band pred/ref ratio under a **deployable** calibration | 0.334 (oracle) | rel. error **< 0.5**, calibration computed without the reference |
 
-**Stop rule.** If a structurally different objective (Solution A, §7 W1) on the
-same input fails A1, the line is reported as a **controlled negative** with the
-mechanism in `eval/tir_resp/FINDINGS.md`, and further compute is not invested. The input — not
+**Stop rule.** If the shipped objective on the same input fails A1, the line is
+reported as a **controlled negative** with the mechanism in
+`eval/tir_resp/FINDINGS.md`, and further compute is not invested. The input — not
 the architecture — is then the limiting factor.
 
 **Reopening condition.** Only a **new input** that first passes the pixel-level
@@ -160,13 +159,12 @@ Ordered by expected information per unit compute.
 
 | # | work | where | closed when |
 |---|---|---|---|
-| **W1** | **Solution A arm.** Train the cross-attention (resp excluded from the encoder) variant, then its Stage-3 twin, on the identical corpus and folds. This is the only lever that changes what the encoder *can* learn rather than reweighting the same shortcut. | `configs/pretrain/stage2_local_tir_roi_crossmae.yaml` → an HPC twin; `configs/finetune/resp_tir_roi_crossmae.yaml` | A1 measured against the shipped arm on the same folds |
-| **W2** | **Span-mask ladder E1–E3** on the W1 geometry (`physio_mask: span`, 1.5 / 2 / 4 s). Scattered masking on a ~30–60× oversampled band-limited signal is locally solvable, which is why the 1-D stream currently contributes no encoder signal after the ramp. | `core/multimae.py::_span_mask`; configs | A1 moves; report the span geometry printed at build |
-| **W3** | **Amplitude.** The output is ~3× under-scaled. An earlier A/B between an amplitude-only `L_time` and the point-wise term moved band-Pearson only marginally and did not close the scale gap, so the remaining choice is a scale-aware loss term versus a deployable per-session calibration. **Decided 2026-11-01:** `L_time` is the point-wise Huber (no selector). That settles which `L_time` ships, NOT this item — the amplitude gap is still open. | `core/waveform_losses.py`, `utils/optim_factory.py` | A3 met with a non-oracle calibration |
-| **W4** | **Rate.** The rate claim needs a stable spectral peak, not just phase locking: harmonic tracking over overlapping 30 s windows, reported as BPM. | `evaluation/metrics.py` (`estimate_rate_bpm`, `rate_metrics`) | A2 met |
-| **W5** | **Fold cohort confound.** `subject_folds` splits sorted ids into contiguous blocks, so fold membership is confounded with sex/recording cohort (`eval/tir_resp/resp_t3_spread_sources.md` §2). Pooled numbers are unaffected; per-fold spreads are not a variance estimate. | `utils/splits.py`, `design/kfold_val_strategy_design_v2.md` §2.2 | fold assignment is stratified/interleaved, and the pooled number is unchanged |
-| **W6** | **Optional bounded retry** on an on-face nostril/lip tile, cleared by all three of: rank/Spearman gate, local-motion partialling, gradient/sign-flip test. | `code/notes/eval/tir_resp/` tools | a gate pass, or it is not pursued |
-| **W7** | **Doc/spec sync** after any geometry change: `roi_geometry_ledger.py` must still exit 0, and the change must be hand-applied to `code/notes/spec/` (`scripts/project/write_specs.py` still contains stale text and overwrites hand edits — read its warning before running it). | `code/notes/spec/`, `scripts/project/write_specs.py` | ledger PASS + spec diff reviewed |
+| **W1** | **Span-mask ladder E1–E3** on the shipped geometry (`physio_mask: span`, 1.5 / 2 / 4 s). Scattered masking on a ~30–60× oversampled band-limited signal is locally solvable, which is why the 1-D stream currently contributes no encoder signal after the ramp. | `core/multimae.py::_span_mask`; configs | A1 moves; report the span geometry printed at build |
+| **W2** | **Amplitude.** The output is ~3× under-scaled. An earlier A/B between an amplitude-only `L_time` and the point-wise term moved band-Pearson only marginally and did not close the scale gap, so the remaining choice is a scale-aware loss term versus a deployable per-session calibration. **Decided 2026-11-01:** `L_time` is the point-wise Huber (no selector). That settles which `L_time` ships, NOT this item — the amplitude gap is still open. | `core/waveform_losses.py`, `utils/optim_factory.py` | A3 met with a non-oracle calibration |
+| **W3** | **Rate.** The rate claim needs a stable spectral peak, not just phase locking: harmonic tracking over overlapping 30 s windows, reported as BPM. | `evaluation/metrics.py` (`estimate_rate_bpm`, `rate_metrics`) | A2 met |
+| **W4** | **Fold cohort confound.** `subject_folds` splits sorted ids into contiguous blocks, so fold membership is confounded with sex/recording cohort (`eval/tir_resp/resp_t3_spread_sources.md` §2). Pooled numbers are unaffected; per-fold spreads are not a variance estimate. | `utils/splits.py`, `design/kfold_val_strategy_design_v2.md` §2.2 | fold assignment is stratified/interleaved, and the pooled number is unchanged |
+| **W5** | **Optional bounded retry** on an on-face nostril/lip tile, cleared by all three of: rank/Spearman gate, local-motion partialling, gradient/sign-flip test. | `code/notes/eval/tir_resp/` tools | a gate pass, or it is not pursued |
+| **W6** | **Doc/spec sync** after any geometry change: `roi_geometry_ledger.py` must still exit 0, and the change must be hand-applied to `code/notes/spec/` (`scripts/project/write_specs.py` still contains stale text and overwrites hand edits — read its warning before running it). | `code/notes/spec/`, `scripts/project/write_specs.py` | ledger PASS + spec diff reviewed |
 
 **Not planned:** chest/body ROI, whole-frame arm, a BP pivot on thermal (weaker
 and task-concentrated), and re-tuning the Stage-2 reconstruction loss for its own
@@ -226,8 +224,7 @@ lines).
 | AMP rollout | `code/notes/plan/hpc_AMP_implementation.md` |
 | ROI + rescale contract | `design/ROI_crop_and_rescaling.md` |
 | span masking design + experiment ladder | `design/SpanMask_PhysioSignals.md` |
-| asymmetric cross-MAE (Solution A) | `design/SolutionA_asymCrossMAE.md`, `design/SolutionA_vs_SolutionC.md`, `design/SolutionA_asymCrossMAE_diagram.md` |
-| shared-encoder MAE (Solution C) | `design/SolutionC_EarlyTokenMixing_stage2.md`, `design/SolutionC_EarlyTokenMixing_stage3.md` |
+| shared-encoder MAE (historical name "Solution C"; `SolutionC_*` filenames retained for link stability) | `design/SolutionC_EarlyTokenMixing_stage2.md`, `design/SolutionC_EarlyTokenMixing_stage3.md` |
 | evaluation protocol | `design/Evaluation_RespWaveform_protocol.md` |
 | folds | `design/kfold_val_strategy_design_v2.md` |
 | task tiers rationale | `design/TIR_ROI_RESP_TasksDistortion.md` |

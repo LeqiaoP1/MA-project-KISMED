@@ -141,7 +141,7 @@ code/
 │   ├── multimae.py          # Stage-2 MultiModalMAE
 │   ├── waveform_model.py    # Stage-3 MultiModalWaveformRegressor
 │   ├── model.py             # ProjectViT (Stage-1 baseline)
-│   ├── blocks.py            # Block, CrossAttention, DecoderBlock, Mlp, Attention
+│   ├── blocks.py            # Block, Attention, Mlp
 │   ├── input_adapters.py    # PatchedInputAdapter, SignalInputAdapter, SemSegInputAdapter
 │   ├── output_adapters.py   # SpatialOutputAdapter
 │   ├── criterion.py         # MaskedMSELoss, MaskedL1Loss, MaskedCrossEntropyLoss
@@ -414,12 +414,6 @@ x = proj(x)
 
 > **Critical**: At 224 px (9800 tokens), the naive path requires ~9 GB per block per sample. SDPA (torch >= 2.0) is mandatory for the full-resolution geometry.
 
-### `CrossAttention`
-
-**Forward**: `x: [B, N, C]`, `context: [B, M, C]` -> `[B, N, C]`
-
-Queries from `x`; keys/values from `context`. Used in `DecoderBlock` for Solution-A cross-stream decoding (RESP stream attending to the full visual encoder output).
-
 ### `Block` (pre-norm encoder block)
 
 ```
@@ -428,16 +422,6 @@ x = x + DropPath(Mlp(LayerNorm(x)))
 ```
 
 **Forward**: `[B, N, D]` -> `[B, N, D]`
-
-### `DecoderBlock` (self-attn + cross-attn + MLP)
-
-```
-x = x + DropPath(self_attn(LayerNorm(x)))
-x = x + DropPath(cross_attn(query_norm(x), context_norm(context)))
-x = x + DropPath(Mlp(LayerNorm(x)))
-```
-
-**Forward**: `x: [B, N, D]`, `context: [B, M, D]` -> `[B, N, D]`
 
 ### `Mlp`
 
@@ -556,7 +540,6 @@ x: [B, C, H, W]
 3. `_check_space_time_alignment()`: enforces `sig_kernel/fs == tubelet_t*temporal_stride/fps` AND `n_signal == Gt`. Raises `ValueError` otherwise.
 4. `pos_init` in `{'sincos3d', 'random'}`.
 5. `target_norm` in `{'token', 'clip'}`.
-6. `resp_in_encoder` / `signal_decoder` consistency validated.
 
 ### Sub-modules
 
@@ -569,7 +552,6 @@ x: [B, C, H, W]
 | `dec_blocks` | `nn.ModuleList` | `dec_depth=2` x `Block` |
 | `dec_norm` | `nn.LayerNorm` | Post-decoder norm |
 | `heads` | `nn.ModuleDict` | Per-stream Linear head: `D -> patch_dim` |
-| `cross_decoder.*` | `nn.ModuleList` | `DecoderBlock x cross_attn_depth` (Solution A only) |
 
 ### `forward(x: Dict[str, Tensor])` tensor flow
 
@@ -1118,7 +1100,6 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `stage2_local_pretrained.yaml` | Local with VideoMAE init, 11 sessions, 32 clips |
 | `stage2_local_rgb_roi_bp.yaml` | RGB face-ROI + BP, raw tree |
 | `stage2_local_tir_roi_resp.yaml` | TIR-ROI + RESP, raw tree |
-| `stage2_local_tir_roi_crossmae.yaml` | TIR-ROI, Solution A cross-MAE |
 | `stage2_multimodal.yaml` | HPC full-data template, 800 epochs, input_size 224 |
 | `example.yaml` | Annotated reference template |
 
@@ -1133,8 +1114,7 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `resp_local.yaml` | RESP | canonical, RGB-only |
 | `resp.yaml` | RESP | canonical, HPC |
 | `resp_tir_roi_local.yaml` | RESP | TIR ROI, 8 s clip, stride 2, fft 128,256,512 |
-| `resp_tir_roi_crossmae.yaml` | RESP | TIR ROI, cross-MAE head |
-| `resp_tir_roi_local_matched.yaml` | RESP | TIR ROI, matched geometry variant |
+| `resp_tir_roi_local_matched.yaml` | RESP | TIR ROI, Stage-3 recipe from the local shared-encoder model (`transposed_conv`, `head_init: none`, `layer_decay 0.75`) |
 | `eda.yaml` | EDA | canonical, HPC |
 | `au_local.yaml` | AU probe | canonical, multi-label BCE |
 | `au_local_pretrained.yaml` | AU probe | canonical, with Stage-2 encoder init |
@@ -1379,7 +1359,6 @@ print("wrote 04_configs_and_execution.md")
 | `core/input_adapters.py` | `SemSegInputAdapter.forward` | No channel count assertion. |
 | `core/input_adapters.py` | `SignalInputAdapter.forward` | No `ndim` check. |
 | `core/output_adapters.py` | `SpatialOutputAdapter.forward` | No `assert self.head is not None`; if `init()` was skipped, raises NoneType with no context. |
-| `core/blocks.py` | `CrossAttention.forward` | No check that `x` and `context` share the same `C`; mismatch surfaces inside Linear. |
 
 ### Present — positive examples
 
