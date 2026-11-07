@@ -311,13 +311,15 @@ change, so a square Stage-3 on a legacy encoder is never silent. These keys must
 move into the corpus-level warn list (203–214): they change the pixels, which is
 exactly the abort case.
 
-**Step 12 — configs.** Edit the 7 TIR-ROI configs (do not add new ones —
-`tests/test_rail_rule_plumbing.py` pins `len(TIR_CONFIGS) == 7`; it was 8 until the
-Stage-3 `_smoothl1` clone was folded into `resp_tir_roi_hpc.yaml` on 2026-11-01):
-`configs/pretrain/stage2_hpc_tir_roi_resp.yaml`, `stage2_local_tir_roi_resp.yaml`,
-`stage2_local_tir_roi_crossmae.yaml`; `configs/finetune/resp_tir_roi_hpc.yaml`,
-`resp_tir_roi_local.yaml`,
-`resp_tir_roi_local_matched.yaml`, `resp_tir_roi_crossmae.yaml`:
+**Step 12 — configs.** Edit the TIR-ROI configs (do not add new ones —
+`tests/test_rail_rule_plumbing.py` pins the exact count via `TIR_CONFIGS`; it was
+8 until the Stage-3 `_smoothl1` clone was folded into `resp_tir_roi_hpc.yaml` on
+2026-11-01, and 7 until the asymmetric cross-MAE pair
+(`stage2_local_tir_roi_crossmae.yaml`, `resp_tir_roi_crossmae.yaml`) was retired
+on 2026-11-07 — now 5):
+`configs/pretrain/stage2_hpc_tir_roi_resp.yaml`, `stage2_local_tir_roi_resp.yaml`;
+`configs/finetune/resp_tir_roi_hpc.yaml`, `resp_tir_roi_local.yaml`,
+`resp_tir_roi_local_matched.yaml`:
 
 ```yaml
 crop_rule: square

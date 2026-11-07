@@ -416,9 +416,9 @@ def get_args():
                              '(default) = copy the Stage-2 heads.<target> '
                              'weights in (single-Linear head only). '
                              "'none' = always RANDOM -- what the spec 4.1 "
-                             'discard-the-decoders recipe needs, and what a '
-                             'controlled Solution A vs C comparison must use '
-                             'for BOTH arms so the only difference is Stage 2.')
+                             'discard-the-decoders recipe needs, so the '
+                             'Stage-3 head never depends on the Stage-2 '
+                             'decoder weights.')
     parser.add_argument('--layer_decay', default=1.0, type=float,
                         help='layer-wise LR decay exponent for fine-tuning '
                              '(spec 4.2, typical 0.65-0.75). 1.0 (default) = '

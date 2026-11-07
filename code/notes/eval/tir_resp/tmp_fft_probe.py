@@ -12,7 +12,10 @@ FS = 100.0
 L = 800                       # 8 s clip
 RESP = (0.1, 0.6)             # eval_band
 HF = 2.0
-ROOTS = {'C': 'resp_tir_roi_local_matched', 'A': 'resp_tir_roi_crossmae'}
+ROOTS = {'C': 'resp_tir_roi_local_matched'}
+# NOTE (2026-11-07): the 'A' arm (resp_tir_roi_crossmae, the retired asymmetric
+# cross-MAE pre-training) was dropped from this probe; only the shared-encoder
+# arm is measured.
 
 
 def magnitude(x, n_fft, hop_ratio=0.25):
