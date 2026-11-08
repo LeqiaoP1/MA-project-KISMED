@@ -10,10 +10,18 @@
 > batch-level modality dropout.
 > **This is the only plan for this study.** *Why* the components exist is the
 > design doc; measurements belong in `code/notes/eval/`.
-> **State.** Not started. The encoder-side contract the design assumes
-> ("encoder sees only visible tokens") is **already implemented**; the masking
-> *policy*, modality dropout and the 128 / 96 geometry are not. Engine semantics
-> are settled (design rev. 2026-11-08); only D5/D6 (§6.3) remain open.
+> **State.** **Phase 1 implemented (2026-11-08)**: `core/ammm_masking.py` (pure
+> policy module), `MultiModalMAE` wiring behind `masking: ammm`, 44 tests in
+> `tests/test_ammm_masking.py`, and the arm-A config
+> `configs/pretrain/stage2_ammm_tir_roi_resp.yaml` (a 1-variable clone of
+> `stage2_local_tir_roi_resp.yaml`: only the masking policy differs).
+> `masking: ratio` is byte-identical and stays the default. Phases 2-5 are NOT
+> started: `modality_dropout > 0` and `physio_mask: span` under `ammm` raise
+> `NotImplementedError` on purpose. The arm-A smoke (1 epoch, 4 clips, GPU,
+> ROI + respiration caches) runs and logs the plan:
+> `kept_tir 1, kept_resp 21..48, n_batch 98..160`, `mse_tir 2.11, mse_resp 2.58`
+> on the first step. Engine semantics are settled (design rev. 2026-11-08);
+> only D5/D6 (§6.3) remain open.
 
 ---
 
@@ -394,12 +402,12 @@ desynchronise.
 ### Phase 5 — configs, tests, docs
 
 * configs, one per arm, each differing only in `data_set` / `streams` /
-  geometry: `stage2_ammm_tir_resp.yaml` (A), `stage2_ammm_rgb_bp.yaml` (B),
-  `stage2_ammm_bp4d4.yaml` (C, canonical tree at one size),
-  `stage2_ammm_roi4.yaml` (D, after Phase 4). All must state `masking: ammm`
-  explicitly and keep `physio_mask`, `target_norm`, `spectral_*` at their
-  Stage-2 defaults (`target_norm: none` for the ROI lineages, pinned by
-  `pin_roi_target_norm`);
+  geometry: `stage2_ammm_tir_roi_resp.yaml` (A, **shipped 2026-11-08**),
+  `stage2_ammm_rgb_bp.yaml` (B), `stage2_ammm_bp4d4.yaml` (C, canonical tree at
+  one size), `stage2_ammm_roi4.yaml` (D, after Phase 4). All must state
+  `masking: ammm` explicitly and keep `physio_mask`, `target_norm`,
+  `spectral_*` at their Stage-2 defaults (`target_norm: none` for the ROI
+  lineages, pinned by `pin_roi_target_norm`);
 * `tests/test_ammm_masking.py` (Phase 1, CPU-only, `_tiny_model` style)
   **parametrised over modality combinations** — at minimum `('tir','resp')`
   (the current study), `('rgb','bp')` (the next one), `('rgb','tir','bp','resp')`

@@ -260,6 +260,44 @@ def get_args():
                              ". The span COUNT is derived (n_spans = "
                              "round(ratio * n_signal / span_tokens)) so that "
                              "ratio x clip length is preserved.")
+    # ---- AMMM masking engine (masking='ammm'); see
+    # code/notes/plan/Asymmetric_MultiModal_Masking_plan.md Phase 1.
+    # 'ratio' (default) keeps the historical mask_ratio_* path untouched.
+    parser.add_argument('--masking', default='ratio', type=str,
+                        choices=['ratio', 'ammm'],
+                        help="masking policy: 'ratio' (default) = fixed "
+                             'per-stream mask_ratio_*; ammm = Asymmetric '
+                             'Multi-Modal Masking (kept ratios drawn per step '
+                             'from a Dirichlet, video kept-capped, 1-D '
+                             'uncapped). All --*-kept/alpha/override/min_kept '
+                             'flags are inert unless ammm.')
+    parser.add_argument('--dirichlet_alpha', default=1.0, type=float,
+                        help='AMMM only: Dirichlet concentration for the '
+                             'DRAWN streams (one value; per-stream via a '
+                             'YAML mapping).')
+    parser.add_argument('--video_kept_cap', default=0.25, type=float,
+                        help='AMMM only: kept-ratio ceiling for every VISUAL '
+                             'stream (0.25 => >= 75 %% masked). Per-stream '
+                             "form: 'tir=0.15,rgb=0.25' (YAML mapping allowed).")
+    parser.add_argument('--physio_kept_cap', default=1.0, type=float,
+                        help='AMMM only: kept-ratio ceiling for every SIGNAL '
+                             'stream (1.0 = uncapped, the design default).')
+    parser.add_argument('--modality_dropout', default=0.0, type=float,
+                        help='AMMM only: probability that a stream is dropped '
+                             'from a step. NOT IMPLEMENTED YET (plan Phase 2); '
+                             'only 0.0 is accepted.')
+    parser.add_argument('--min_kept', default=0, type=int,
+                        help='AMMM only: lower bound for Dirichlet-DRAWN '
+                             'streams. 0 (default) lets any stream be 100 %% '
+                             'masked; 1 is the historical "every active stream '
+                             'reaches the encoder" variant. Streams pinned by '
+                             '--kept_ratio_override are exempt.')
+    parser.add_argument('--kept_ratio_override', default='', type=str,
+                        help='AMMM only: fixed kept ratio per stream, used '
+                             'VERBATIM and outside the Dirichlet (e.g. '
+                             "'tir=0.0' pins the thermal stream at 100 %% "
+                             'masked). Empty = no pins. An override must be '
+                             'inside that stream\'s kept cap.')
     parser.add_argument('--loss_weights', default='', type=str,
                         help='FULL per-stream override of the per-modality '
                              'masked-MSE weights: comma list, ONE value per '

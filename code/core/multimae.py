@@ -97,6 +97,7 @@ from .criterion import MaskedMSELoss
 from .input_adapters import zscore_clip
 from .registry import register_model
 from .waveform_losses import MultiResolutionSTFTLoss
+from . import ammm_masking as ammm
 
 __all__ = ['TubeletEmbed', 'MultiModalMAE', 'build_pretraining_model',
            'load_pretrained_encoder', 'canonicalise_vit_state_dict',
@@ -224,7 +225,14 @@ class MultiModalMAE(nn.Module):
                  spectral_fft_sizes=None,
                  spectral_hop_ratio: float = 0.25,
                  physio_mask: str = 'random',
-                 mask_span_s=None):
+                 mask_span_s=None,
+                 masking: str = 'ratio',
+                 dirichlet_alpha=1.0,
+                 video_kept_cap=0.25,
+                 physio_kept_cap=1.0,
+                 modality_dropout: float = 0.0,
+                 min_kept: int = 0,
+                 kept_ratio_override=None):
         super().__init__()
         self.streams = list(streams)
         # per-stream input channels (tir = 3 by default; see STREAM_CHANNELS)
@@ -459,6 +467,74 @@ class MultiModalMAE(nn.Module):
                       f'({span * self.sig_kernel / self.fs:.2f} s) x {n} '
                       f'span(s) -> effective masked fraction {eff:.3f}'
                       f'{note}')
+
+        # ---- masking POLICY: fixed per-stream mask ratio, or AMMM ---------- #
+        # 'ratio' (default) = the historical path: ``mask_ratio_*`` are MASK
+        #   ratios, one constant per stream, ``make_masks`` is unchanged.
+        # 'ammm' = the Asymmetric Multi-Modal Masking engine
+        #   (``core/ammm_masking.py``): KEPT ratios are drawn per STEP from a
+        #   Dirichlet over the active streams, video kept-capped, 1-D uncapped,
+        #   optional ``kept_ratio_override`` pins. Design:
+        #   ``code/notes/design/Asymmetric_MultiModal_Masking.md`` §3; plan:
+        #   ``code/notes/plan/Asymmetric_MultiModal_Masking_plan.md`` Phase 1.
+        #   The policy module returns COUNTS only; the mask tensors stay here.
+        self.masking = str(masking or 'ratio').strip().lower()
+        if self.masking not in ('ratio', 'ammm'):
+            raise ValueError(
+                f"MultiModalMAE: masking must be 'ratio' or 'ammm'; got "
+                f'{masking!r}')
+        self.ammm_specs: List[ammm.StreamSpec] = []
+        self.ammm_caps: Dict[str, float] = {}
+        self.ammm_alpha: Dict[str, float] = {}
+        self.ammm_overrides: Dict[str, float] = {}
+        self.ammm_min_kept = int(min_kept or 0)
+        self.ammm_dropout = float(modality_dropout or 0.0)
+        self._last_mask_plan: Optional[ammm.MaskPlan] = None
+        if self.masking == 'ammm':
+            if self.physio_mask == 'span':
+                raise NotImplementedError(
+                    "MultiModalMAE: masking='ammm' with physio_mask='span' is "
+                    'not implemented; span placement inside AMMM is an '
+                    'optional ablation (plan Phase 1). Use physio_mask: random.')
+            if self.ammm_dropout > 0.0:
+                raise NotImplementedError(
+                    'MultiModalMAE: modality dropout is plan Phase 2; '
+                    'masking=\'ammm\' currently supports modality_dropout: 0.0')
+            video_caps = parse_kept_cap(video_kept_cap)
+            physio_caps = parse_kept_cap(physio_kept_cap)
+            for s in self.streams:
+                kind = ammm.VISUAL if s in self.visual else ammm.SIGNAL
+                n_units = (self.grid_h * self.grid_w
+                           if kind == ammm.VISUAL else self.n_signal)
+                self.ammm_specs.append(ammm.StreamSpec(s, kind, n_units))
+                knob = video_caps if kind == ammm.VISUAL else physio_caps
+                default = 0.25 if kind == ammm.VISUAL else 1.0
+                self.ammm_caps[s] = float(knob.get(s, knob.get('*', default)))
+            alpha_spec = parse_kept_cap(dirichlet_alpha)
+            self.ammm_alpha = {s: float(alpha_spec.get(s, alpha_spec.get('*', 1.0)))
+                               for s in self.streams}
+            ov = parse_kept_cap(kept_ratio_override)
+            if '*' in ov:      # a wildcard pins every declared stream
+                self.ammm_overrides = {s: float(ov['*']) for s in self.streams}
+            else:
+                self.ammm_overrides = {k: float(v) for k, v in ov.items()}
+            # fail at CONSTRUCTION on an invalid declared set / cap / override,
+            # instead of on the first forward (plan Phase 1, gate G12/G19).
+            ammm.plan_step(self.ammm_specs, caps=self.ammm_caps,
+                           alpha=self.ammm_alpha,
+                           min_kept=self.ammm_min_kept,
+                           overrides=self.ammm_overrides,
+                           generator=torch.Generator().manual_seed(0))
+            limits = {
+                s.name: (s.n_units if s.kind == ammm.SIGNAL
+                         else min(s.n_units,
+                                  int(math.floor(self.ammm_caps[s.name]
+                                                 * s.n_units))))
+                for s in self.ammm_specs}
+            print(f'[mask] policy=ammm  caps={self.ammm_caps}  '
+                  f'kept limits={limits}  alpha={self.ammm_alpha}  '
+                  f'min_kept={self.ammm_min_kept}  '
+                  f'override={self.ammm_overrides or None}')
 
         # per-modality weights of the final weighted masked-MSE sum.
         # default policy: lambda = 1.0 for the visual streams (rgb/tir) and
@@ -713,6 +789,8 @@ class MultiModalMAE(nn.Module):
         return m
 
     def make_masks(self, B: int, device):
+        if self.masking == 'ammm':
+            return self._make_masks_ammm(B, device)
         out = {}
         for s in self.streams:
             if s in self.visual:
@@ -725,6 +803,68 @@ class MultiModalMAE(nn.Module):
                 out[s] = self._random_mask(B, device, self.n_signal,
                                            self.mask_ratios[s])
         return out
+
+    # ------------------------------------------------------------------ #
+    # AMMM: counts -> masks (the sampler owns the POLICY, this owns PLACEMENT)
+    # ------------------------------------------------------------------ #
+    def _tube_keep_mask(self, B: int, device, n_spatial: int, kept: int):
+        """Keep exactly ``kept`` spatial patches, replicated over all frames.
+
+        Count-based sibling of :meth:`_tube_mask` (which is parameterised by a
+        MASK ratio and rounds with ``int()``). ``kept == 0`` is legal and yields
+        an all-ones mask (100 % masked). Mask semantics stay ``1 = masked``.
+        """
+        n_spatial = int(n_spatial)
+        kept = max(0, min(int(kept), n_spatial))
+        perm = torch.rand(B, n_spatial, device=device).argsort(dim=1)
+        keep = torch.zeros(B, n_spatial, device=device, dtype=torch.long)
+        if kept > 0:
+            keep.scatter_(1, perm[:, :kept], 1)
+        mask = 1 - keep.unsqueeze(1).expand(B, self.grid_t, n_spatial)
+        return mask.reshape(B, self.grid_t * n_spatial)
+
+    def _random_keep_mask(self, B: int, device, N: int, kept: int):
+        """Keep exactly ``kept`` tokens of a 1-D stream (scattered).
+
+        ``kept == 0`` is legal (100 % masked); ``kept == N`` means no masked
+        position, so this stream contributes an explicit 0 to the loss.
+        """
+        N = int(N)
+        kept = max(0, min(int(kept), N))
+        perm = torch.rand(B, N, device=device).argsort(dim=1)
+        keep = torch.zeros(B, N, device=device, dtype=torch.long)
+        if kept > 0:
+            keep.scatter_(1, perm[:, :kept], 1)
+        return 1 - keep
+
+    def _make_masks_ammm(self, B: int, device):
+        """One plan per STEP, then per-stream placement from its counts.
+
+        The plan's ``active`` set is the only source of truth for which streams
+        are present: an inactive stream and an ACTIVE 0-kept stream both get an
+        all-ones mask, so the mask tensor cannot tell them apart.
+        """
+        plan = ammm.plan_step(self.ammm_specs, caps=self.ammm_caps,
+                              alpha=self.ammm_alpha,
+                              dropout_p=self.ammm_dropout,
+                              min_kept=self.ammm_min_kept,
+                              overrides=self.ammm_overrides)
+        self._last_mask_plan = plan
+        masks = {}
+        for spec in self.ammm_specs:
+            s = spec.name
+            if s in plan.active:
+                if spec.kind == ammm.VISUAL:
+                    masks[s] = self._tube_keep_mask(B, device, spec.n_units,
+                                                    plan.kept_units[s])
+                else:
+                    masks[s] = self._random_keep_mask(B, device, spec.n_units,
+                                                      plan.kept_units[s])
+            else:      # placeholder only: `forward` skips inactive streams
+                n = (self.grid_t * spec.n_units if spec.kind == ammm.VISUAL
+                     else spec.n_units)
+                masks[s] = torch.ones(B, n, device=device, dtype=torch.long)
+        return masks
 
     # ------------------------------------------------------------------ #
     # reconstruction targets (normalized flat patches)
@@ -823,23 +963,38 @@ class MultiModalMAE(nn.Module):
             if s in self.visual:
                 xin[s] = zscore_clip(xin[s])
 
+        # --- per-stream asymmetric masks ----------------------------------
+        # Computed BEFORE tokenisation so a stream with no visible unit can skip
+        # its adapter entirely: a fully masked video would otherwise pay a full
+        # Conv3d and receive a ZERO (not absent) gradient. Moving this call up
+        # is RNG-neutral: the adapters consume no randomness.
+        masks = self.make_masks(B, device)
+
         # --- tokenize + add positional embedding -------------------------- #
         tokens = {}
         for s in self.streams:
+            if bool(masks[s].all()):     # 100 % masked -> nothing to encode
+                tokens[s] = None
+                continue
             tok = self.adapters[s](xin[s])           # [B, N, D]
             tok = tok + self.positions[s].pos_embed
             tokens[s] = tok
-
-        # --- per-stream asymmetric masks ---------------------------------- #
-        masks = self.make_masks(B, device)
 
         # --- gather the VISIBLE tokens of every stream -------------------- #
         enc_parts = []
         info = {}
         for s in self.streams:
             mask_s = masks[s]                           # [B, N] 1 = masked
+            n = self.n_visual if s in self.visual else self.n_signal
+            if tokens[s] is None:
+                # 100 % masked (legal for any modality, design §3.2.3): no
+                # visible token, and no gradient to this stream's adapter or
+                # to the encoder through it. Its loss is still computed below.
+                info[s] = (mask_s, None, 0, n)
+                enc_parts.append(torch.zeros(B, 0, self.embed_dim,
+                                             device=device))
+                continue
             ids_shuffle = torch.argsort(mask_s, dim=1, stable=True)
-            n = tokens[s].shape[1]
             k = int((mask_s == 0).sum(dim=1).max())      # visible per sample
             ids_keep = ids_shuffle[:, :k]
             tok = tokens[s]
@@ -847,6 +1002,12 @@ class MultiModalMAE(nn.Module):
                 tok, 1, ids_keep.unsqueeze(-1).expand(B, k, tok.shape[2])))
             info[s] = (mask_s, ids_shuffle, k, n)
         z = torch.cat(enc_parts, dim=1)                 # [B, sum_k, D]
+        # The global-visibility guard of the mask policy guarantees >= 1 kept
+        # unit; this is the second line of defence (AGENTS.md §6).
+        assert z.shape[1] >= 1, (
+            'MultiModalAE.forward: the concatenated visible-token sequence is '
+            'empty; every active stream was fully masked. See the '
+            'global-visibility guard in core/ammm_masking.plan_step.')
 
         # --- shared encoder -------------------------------------------------
         for blk in self.enc_blocks:
@@ -864,13 +1025,19 @@ class MultiModalMAE(nn.Module):
             # --- self-attention decoder (shared path) --------------------- #
             enc_s = z[:, start:start + k]
             start += k
-            ids_restore = torch.argsort(ids_shuffle, dim=1)     # [B, N]
-            dec = torch.cat([enc_s, self.positions[s].mask_token
-                             .expand(B, n - k, self.embed_dim)], dim=1)
-            dec = torch.gather(
-                dec, 1,
-                ids_restore.unsqueeze(-1).expand(B, n, dec.shape[2]))
-            dec = dec + self.positions[s].pos_embed
+            embs = self.positions[s]
+            if ids_shuffle is None:
+                # no visible token: the decoder runs on mask tokens + positions
+                dec = embs.mask_token.expand(B, n, self.embed_dim)
+                dec = dec + embs.pos_embed
+            else:
+                ids_restore = torch.argsort(ids_shuffle, dim=1)  # [B, N]
+                dec = torch.cat([enc_s, embs.mask_token
+                                 .expand(B, n - k, self.embed_dim)], dim=1)
+                dec = torch.gather(
+                    dec, 1,
+                    ids_restore.unsqueeze(-1).expand(B, n, dec.shape[2]))
+                dec = dec + embs.pos_embed
             for blk in self.dec_blocks:
                 dec = blk(dec)
             pred = self.heads[s](dec)                        # [B, N, flat]
@@ -902,9 +1069,21 @@ class MultiModalMAE(nn.Module):
             preds[s] = pred
 
         total = torch.stack(list(losses.values())).sum()
-        return {'loss': total, 'losses': losses, 'losses_mse': losses_mse,
-                'losses_spectral': losses_spectral, 'masks': masks,
-                'preds': preds}
+        out = {'loss': total, 'losses': losses, 'losses_mse': losses_mse,
+               'losses_spectral': losses_spectral, 'masks': masks,
+               'preds': preds}
+        if self.masking == 'ammm' and self._last_mask_plan is not None:
+            # Diagnostics of the STEP's plan (counts, so they are identical for
+            # every sample of the batch). Key set is a function of the CONFIG:
+            # every declared stream needs an entry, even when it is inactive or
+            # 0-kept (the metric logger synchronises one collective per key).
+            plan = self._last_mask_plan
+            out['active'] = plan.active
+            out['kept'] = {s: int(plan.kept_units.get(s, 0))
+                           for s in self.streams}
+            out['r'] = dict(plan.r)
+            out['n_batch'] = int(z.shape[1])
+        return out
 
 
 # --------------------------------------------------------------------------- #
@@ -930,6 +1109,36 @@ def parse_mask_span(spec) -> Dict[str, float]:
 
     ``None``/``''``/``0`` yield an empty mapping => per-stream defaults
     (:data:`MASK_SPAN_DEFAULTS`).
+    """
+    if spec is None:
+        return {}
+    if isinstance(spec, dict):
+        return {str(k).strip(): float(v) for k, v in spec.items()}
+    if isinstance(spec, (int, float)):
+        return {'*': float(spec)}
+    text = str(spec).strip()
+    if not text:
+        return {}
+    if '=' in text:
+        out = {}
+        for part in text.split(','):
+            part = part.strip()
+            if not part:
+                continue
+            key, _, val = part.partition('=')
+            out[key.strip()] = float(val)
+        return out
+    return {'*': float(text)}
+
+
+def parse_kept_cap(spec) -> Dict[str, float]:
+    """Normalise a kept-cap / alpha / override argument to ``{stream: value}``.
+
+    Accepts a number (``0.25``), a numeric string (``'0.25'``), a
+    ``stream=value`` CSV (``'tir=0.25,resp=1.0'``, the CLI form) or a YAML
+    mapping. ``'*'`` means "every declared stream"; the caller resolves it.
+    Used by ``masking='ammm'`` for ``video_kept_cap`` / ``physio_kept_cap`` /
+    ``dirichlet_alpha`` / ``kept_ratio_override``.
     """
     if spec is None:
         return {}
@@ -1249,7 +1458,16 @@ def build_pretraining_model(args):
         spectral_fft_sizes=_fft_sizes_spec(args),
         physio_mask=str(getattr(args, 'physio_mask', 'random') or 'random'),
         mask_span_s=getattr(args, 'mask_span_s', None),
-        spectral_hop_ratio=float(getattr(args, 'spectral_hop_ratio', 0.25)))
+        spectral_hop_ratio=float(getattr(args, 'spectral_hop_ratio', 0.25)),
+        # masking policy (plan Phase 1): 'ratio' = legacy, 'ammm' = the new
+        # engine. Values are per-experiment config; only 'ammm' reads them.
+        masking=str(getattr(args, 'masking', 'ratio') or 'ratio'),
+        dirichlet_alpha=getattr(args, 'dirichlet_alpha', 1.0),
+        video_kept_cap=getattr(args, 'video_kept_cap', 0.25),
+        physio_kept_cap=getattr(args, 'physio_kept_cap', 1.0),
+        modality_dropout=float(getattr(args, 'modality_dropout', 0.0) or 0.0),
+        min_kept=int(getattr(args, 'min_kept', 0) or 0),
+        kept_ratio_override=getattr(args, 'kept_ratio_override', ''))
     print(f'[encoder] streams: {model.streams} (all fed to the shared '
           f'encoder); target streams: {model.signal}')
     return model

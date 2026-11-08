@@ -89,7 +89,11 @@ def _unmasked_tiny(monkeypatch, **over):
     m.eval()
     for p in m.parameters():
         p.requires_grad_(False)
-    masks = _fixed_masks(m)
+    masks = {k: v.clone() for k, v in _fixed_masks(m).items()}
+    # A 100 %-masked stream is not tokenised at all (design
+    # Asymmetric_MultiModal_Masking §3.2.3: the adapter is skipped), so the
+    # adapter probe below needs at least one VISIBLE token in `tir`.
+    masks['tir'][:, 0] = 0
     monkeypatch.setattr(m, 'make_masks', lambda B, device: masks)
     return m
 
