@@ -110,6 +110,16 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable,
                                 ('losses_spectral', 'spec')):
                 for name, value in (out.get(key) or {}).items():
                     metric_logger.update(**{f'{prefix}_{name}': value})
+            # AMMM plan diagnostics (masking='ammm' only, so the key set of the
+            # legacy path is untouched): the number of KEPT units per stream and
+            # the resulting encoder sequence length. Logged every step because
+            # they are a property of the step's Dirichlet draw, not of the run.
+            kept = out.get('kept') or {}
+            if kept:
+                metric_logger.update(**{f'kept_{name}': value
+                                        for name, value in kept.items()})
+            if 'n_batch' in out:
+                metric_logger.update(n_batch=out['n_batch'])
 
     metric_logger.synchronize_between_processes()
     print('Averaged stats:', metric_logger)

@@ -57,6 +57,7 @@ H_FRAME, W_FRAME = 160, 240
 ROI_PRETRAIN_CONFIGS = (
     'configs/pretrain/stage2_hpc_tir_roi_resp.yaml',
     'configs/pretrain/stage2_local_tir_roi_resp.yaml',
+    'configs/pretrain/stage2_ammm_tir_roi_resp.yaml',
     'configs/pretrain/stage2_local_rgb_roi_bp.yaml',
 )
 

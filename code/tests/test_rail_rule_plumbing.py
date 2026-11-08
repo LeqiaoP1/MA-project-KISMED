@@ -220,13 +220,13 @@ def test_the_tir_configs_use_the_strict_rule_and_a_consistent_hop():
     """Every TIR-ROI/RESP config: the touch rule ON, an 8 s window, and the
     DOCUMENTED window hop (the HPC Stage-2/Stage-3 runs use 2 s, the rest 1 s).
 
-    The count is the study's config list: 5 (the Stage-3 `_smoothl1` L_time A/B
-    clone was folded into resp_tir_roi_hpc.yaml on 2026-11-01 and deleted; the
-    asymmetric cross-MAE pair -- stage2_local_tir_roi_crossmae.yaml and
-    resp_tir_roi_crossmae.yaml -- was retired on 2026-11-07, taking the list
-    from 7 to 5).
+    The count is the study's config list: 6 (the AMMM arm A config,
+    stage2_ammm_tir_roi_resp.yaml, was added on 2026-11-08 and is a 1-variable
+    clone of the local ratio run). History: 5 after the Stage-3 ``_smoothl1``
+    L_time A/B clone was folded into resp_tir_roi_hpc.yaml (2026-11-01) and the
+    asymmetric cross-MAE pair was retired (2026-11-07, 7 -> 5).
     """
-    assert len(TIR_CONFIGS) == 5
+    assert len(TIR_CONFIGS) == 6
     for path in TIR_CONFIGS:
         with open(path) as fh:
             cfg = yaml.safe_load(fh)

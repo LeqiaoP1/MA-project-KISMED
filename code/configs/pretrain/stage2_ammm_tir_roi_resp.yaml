@@ -1,0 +1,94 @@
+# Stage 2 -- AMMM arm A: thermal ROI -> RESPIRATION, Asymmetric Multi-Modal
+# Masking (kept ratios drawn per STEP from a Dirichlet; video kept-capped, 1-D
+# uncapped). Design: code/notes/design/Asymmetric_MultiModal_Masking.md.
+# Plan of record: code/notes/plan/Asymmetric_MultiModal_Masking_plan.md (arm A).
+#
+# A/B against configs/pretrain/stage2_local_tir_roi_resp.yaml: this file differs
+# in EXACTLY ONE variable -- the masking policy (`masking: ammm` + the four AMMM
+# knobs). Data selection, ROI contract, clip geometry, target space and loss are
+# copied verbatim, so the comparison isolates the masking engine.
+#
+# Run from code/ (ALWAYS with `-u`, else stdout is block-buffered through tee):
+#     python -u runners/run_pretrain.py -c configs/pretrain/stage2_ammm_tir_roi_resp.yaml \
+#         2>&1 | tee ../output/pretrain/stage2_ammm_tir_roi_resp/train.log
+# Smoke first (--warmup_epochs 0: epochs < warmup trips the cosine_scheduler assert):
+#     python -u runners/run_pretrain.py -c configs/pretrain/stage2_ammm_tir_roi_resp.yaml \
+#         --epochs 1 --warmup_epochs 0 --max_entries 2 --num_workers 0 \
+#         --output_dir /tmp/ammm_probe
+
+data_set: tir_roi
+raw_root: ''                       # '' => $RAW_DATA_PATH, else <repo>/data/raw/BP4D
+subjects: ''
+pretrain_split: all
+tasks: ''
+task_groups:
+  low: [T2, T3, T5]
+  moderate: [T1, T4]
+  high: [T6, T7, T8, T9, T10]
+task_set: ''
+
+model: project_multimae_base       # 768-d/12-layer -- MUST match pretrained_encoder
+pretrained_encoder: videomae:k400
+
+# ---- streams & tokenizer geometry (identical to the ratio sibling) ----
+streams: tir,resp
+tir_channels: 3                    # thermal is a false-colour render, not gray
+tubelet: 2,16,16
+fs: 100.0
+fps: 25.0
+clip_duration: 8.0                 # 200 source frames -> 100 after stride 2
+clip_stride: 1.0                   # window hop (s), NOT the in-window decimation
+temporal_stride: 2                 # 12.5 fps effective; requires sig_kernel 16
+seq_len: 0                         # 0 => round(kept_seconds*fs) = 800 samples
+input_size: 64                     # 4x4 = 16 spatial patches (local smoke scale)
+roi_padding: 0.10                  # frozen CACHE KEY -> must equal Stage 3
+crop_rule: square
+max_sway_px: 40
+roi_landmarks: ''                  # the historical 12-point nose+mouth set
+min_signal_spread: 0.1             # VOLTS: dead-signal guard (keep in Stage 3)
+rail_touch_v: 9.900                # VOLTS: drop any rail-touching window
+sig_kernel: 16                     # 16/100 == 2*2/25 s -> one token == one tubelet
+pos_init: sincos3d
+
+# ---- MASKING: the AMMM engine (THE variable of this arm) -------------------
+# Per step, one Dirichlet draw over the non-pinned streams decides how much of
+# each stream survives; the video stream is capped, the 1-D stream is not. The
+# counts are identical for every sample of a batch and may differ between steps.
+masking: ammm
+dirichlet_alpha: 1.0               # Dir(1, 1) over {tir, resp} -> uniform-ish
+video_kept_cap: 0.25               # <= 25 % of the 4x4 grid -> <= 4 patches kept
+physio_kept_cap: 1.0               # no cap (the design's value)
+min_kept: 0                        # 0 kept (100 % masked) is a legal draw
+modality_dropout: 0.0              # Phase 2 is NOT implemented; 0.0 only
+kept_ratio_override: {}            # e.g. {tir: 0.0} pins the visual stream
+#
+# The legacy mask_ratio_* block below is INERT under masking: ammm. It is kept
+# so that flipping `masking: ratio` reproduces the sibling run exactly.
+mask_ratio_tir: 0.90
+mask_ratio_resp: 0.50
+mask_ratio_rgb: 0.90
+mask_ratio_bp: 0.50
+mask_ratio_eda: 0.50
+physio_mask: random                # span-inside-AMMM is not implemented
+mask_span_s: {resp: 4.0}
+
+# ---- loss: per-modality masked MSE on the masked positions only ------------
+# There is NO spectral / MR-STFT term in Stage 2 (decision 2026-09-26): the
+# periodicity term belongs to Stage-3 fine-tuning on the FINAL waveform
+# (core.waveform_losses.WaveformJointLoss, gamma). It is not configurable here.
+signal_weight: 0.5
+physio_norm: clip                  # dataset-side per-clip z-score; the model is
+                                   # pinned to target_norm='none' for tir_roi
+
+# ---- training (local scale, identical to the ratio sibling) ----------------
+epochs: 40
+batch_size: 4
+save_ckpt_freq: 10
+opt: adamw
+lr: 3.0e-4
+min_lr: 1.0e-4
+warmup_epochs: 5
+weight_decay: 0.05
+clip_grad: 5.0
+output_dir: output/pretrain/stage2_ammm_tir_roi_resp
+log_wandb: false
