@@ -477,7 +477,8 @@ def pin_roi_target_norm(args) -> bool:
 
 
 def main(args):
-    from utils import get_world_size, is_main_process, resolve_amp
+    from utils import (WandbLogger, get_world_size, is_main_process,
+                       resolve_amp)
 
     device = init_env(args)
     amp_config = resolve_amp(getattr(args, 'amp_dtype', 'none'), device)
@@ -611,12 +612,25 @@ def main(args):
 
     # ----- training loop -------------------------------------------------- #
     from utils import save_model
+    # Optional W&B logging (rank 0 only, offline by default inside a Slurm job).
+    # ``--log_wandb`` used to be parsed but never consumed, so the flag was a
+    # silent no-op; utils/wandb_logger.py is its consumer. The run name is the
+    # output-dir basename, i.e. one W&B run per FOLD of a sweep.
+    wandb_logger = WandbLogger.from_args(
+        args, job_type='pretrain',
+        tags=(str(getattr(args, 'data_set', '')),
+              str(getattr(args, 'masking', 'ratio')),
+              f"n_folds{getattr(args, 'n_folds', '')} fold{getattr(args, 'fold', '')}"),
+        extra={'data/steps_per_epoch': steps_per_epoch,
+               'data/n_samples': len(dataset_train),
+               'train/world_size': get_world_size()})
     print(f'Start training for {args.epochs} epochs '
           f'(resuming at epoch {start_epoch})')
     for epoch in range(start_epoch, args.epochs):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
 
+        _t_epoch = time.time()
         stats = train_one_epoch_pretrain(
             model=model, data_loader=data_loader_train, optimizer=optimizer,
             device=device, epoch=epoch, loss_scaler=loss_scaler,
@@ -624,12 +638,17 @@ def main(args):
             lr_schedule_values=lr_schedule_values,
             start_steps=epoch * steps_per_epoch,
             amp_config=amp_config)
+        epoch_seconds = time.time() - _t_epoch
         print(f'Epoch {epoch} stats: {stats}')
+        wandb_logger.log({**{f'train/{k}': v for k, v in stats.items()},
+                          'train/epoch_seconds': epoch_seconds,
+                          'epoch': epoch}, step=epoch)
 
         if is_main_process() and (epoch % args.save_ckpt_freq == 0
                                   or epoch + 1 == args.epochs):
             save_model(args, epoch, model, model_without_ddp, optimizer,
                        loss_scaler)
+    wandb_logger.finish()
 
 
 if __name__ == '__main__':

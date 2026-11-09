@@ -22,6 +22,13 @@
 > `kept_tir 1, kept_resp 21..48, n_batch 98..160`, `mse_tir 2.11, mse_resp 2.58`
 > on the first step. Engine semantics are settled (design rev. 2026-11-08);
 > only D5/D6 (§6.3) remain open.
+> **k-fold harness (2026-11-08).** The HPC twin
+> `configs/pretrain/stage2_ammm_hpc_tir_roi_resp.yaml` (96 px / 2 s hop /
+> 150 epochs, a 1-variable clone of `stage2_hpc_tir_roi_resp.yaml`) is the arm
+> of the 5-fold sweep; `scripts/hpc/submit_ammm_pretrain_kfold.sh` preflights
+> and queues ONE job per fold (`--pilot <EPOCHS>` for the fold-0 timing run),
+> and `notes/eval/tir_resp/ammm_pilot_report.py` turns a train log into epoch
+> time, the 150-epoch projection and a flat/still-descending verdict.
 
 ---
 

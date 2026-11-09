@@ -16,3 +16,4 @@ from .lr_sched import cosine_scheduler
 from .model_ema import *
 from .pos_embed import *
 from .splits import *
+from .wandb_logger import WandbLogger
