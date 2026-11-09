@@ -1,13 +1,20 @@
 # Span Masking for the 1-D Physiological Streams
 
-### — and why the STFT (MR-STFT) loss becomes useful once you have it
+> **SUPERSEDED IN PART — 2026-11-09.** The Stage-2 MR-STFT ("spectral") loss
+> discussed in §4.1 and §5-§7 was **removed from the code** (`core/multimae.py`,
+> `runners/run_pretrain.py`: no `spectral_weight` / `spectral_weights` /
+> `spectral_fft_sizes` / `parse_fft_sizes`). Span masking (`physio_mask`,
+> `mask_span_s`) is unaffected and still live. Every number below that involves
+> `spec_*`, `spectral_weight` or `fft_sizes` was measured **with the retired
+> Stage-2 term** and is kept for provenance only; MR-STFT now exists only in
+> Stage-3 finetuning (`core/waveform_losses.WaveformJointLoss`, gamma).
 
 **Status: IMPLEMENTED 2026-09-26** (`core/multimae.py`: `_span_mask`,
 `physio_mask`, `mask_span_s`, `parse_mask_span`, `MASK_SPAN_DEFAULTS`,
 `mask_self_test`; `runners/run_pretrain.py`: `--physio_mask`, `--mask_span_s`).
 The **default is unchanged** (`physio_mask: random` reproduces the historical
 scattered mask bit-for-bit — verified: the 2-epoch run matches the pre-change
-`mse_resp 1.0483` to 1e-6), and `spectral_weight` is still `0.0`. The
+`mse_resp 1.0483` to 1e-6). The
 measurements below were taken on the shipped TIR-ROI + RESP geometry
 (2026-09-26); the probe scripts and commands are listed in §8 so every number can
 be reproduced. The empirical question the ladder poses — *does the encoder start

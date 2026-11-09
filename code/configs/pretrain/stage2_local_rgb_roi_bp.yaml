@@ -187,8 +187,8 @@ physio_norm: clip                  # per-clip z-score, applied by the DATASET
                                    # (the model is pinned to target_norm='none'
                                    # for rgb_roi). Same setting as the TIR-ROI
                                    # pipeline; it is the only mode.
-spectral_weight: 0.0               # OFF (decision 2026-09-26: the spectral term
-                                   # belongs to Stage-3 fine-tuning)
+# NOTE: Stage 2 has no spectral term (the Stage-2 MR-STFT loss was removed
+# 2026-11-09); the periodicity loss lives in Stage-3 fine-tuning.
 
 # ------------------------------------------------------------------ training
 # Local single-GPU recipe. NOTE: small-batch local runs MUST set --lr

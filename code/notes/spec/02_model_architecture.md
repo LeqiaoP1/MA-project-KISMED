@@ -246,7 +246,7 @@ Step 7 — Per-stream linear heads:
   pred_s = heads[s](z_dec[slice_s])             # [B, N_s, patch_dim_s]
 
 Step 8 — Norm-pix targets + weighted masked MSE loss
-Returns: {'loss': scalar, 'losses_mse': {...}, 'losses_spectral': {...}}
+Returns: {'loss': scalar, 'losses_mse': {...}}
 ```
 
 `zscore_clip` (`core/input_adapters.py`) runs AFTER `_fit_time` and BEFORE patch
@@ -474,7 +474,7 @@ total += sc + lm
 
 Degenerate-target guard: skip samples with `||T_mag|| <= 1e-6 * max_batch(||T_mag||)`.
 
-**[design]** — `SpanMask_PhysioSignals.md §5`: the STFT loss is informative **only after span masking removes the interpolation shortcut**. Under scattered masking its optimum is already achieved by the linear interpolator (`spec_interp 0.98`); at the weights tried it produced `spec_resp 3.7e8` and destroyed the model. Under a 4 s span the interpolator degrades to `spec_interp 2.37` — a magnitude-spectral loss can then detect spectral damage that amplitude loss forgives.
+**[design, historical]** — `SpanMask_PhysioSignals.md §5`: while this term was also wired into Stage 2 (removed 2026-11-09), it was informative **only after span masking removed the interpolation shortcut**. Under scattered masking its optimum is already achieved by the linear interpolator (`spec_interp 0.98`); at the weights tried it produced `spec_resp 3.7e8` and destroyed the model. Under a 4 s span the interpolator degrades to `spec_interp 2.37` — a magnitude-spectral loss can then detect spectral damage that amplitude loss forgives.
 
 **[design]** — `SpanMask_PhysioSignals.md §3`: MSE and MR-STFT are complementary and neither is sufficient alone:
 

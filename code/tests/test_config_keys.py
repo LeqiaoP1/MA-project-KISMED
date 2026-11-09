@@ -43,8 +43,13 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument('--streams', default='rgb,tir,bp', type=str)
     p.add_argument('--task_groups', default='', type=str)
     p.add_argument('--lr', default=1e-4, type=float)
-    p.add_argument('--spectral_fft_sizes', '--fft_sizes',
-                   dest='spectral_fft_sizes', default='', type=str)
+    # A DEST whose flag spelling differs from the attribute name. None of the
+    # shipped runners has an alias any more (the old
+    # --spectral_fft_sizes/--fft_sizes pair was removed with the Stage-2
+    # spectral loss on 2026-11-09), so this alias is SYNTHETIC on purpose: the
+    # guard must still catch an alias spelling written into a YAML file.
+    p.add_argument('--flag_alias', '--other_spelling',
+                   dest='flag_dest', default='', type=str)
     return p
 
 
@@ -183,12 +188,18 @@ def test_null_yaml_value_arrives_as_none(write_yaml):
 
 
 def test_yaml_key_must_be_the_dest_not_an_alias(write_yaml):
-    """``--fft_sizes`` is an ALIAS; the YAML must use the dest name."""
-    ok = parse(['-c', write_yaml('spectral_fft_sizes: "128,256,512"\n')])
-    assert ok.spectral_fft_sizes == '128,256,512'
+    """An ALIAS spelling is not a YAML key; the YAML must use the dest name.
 
-    msg = reject_message(write_yaml('fft_sizes: "128,256,512"\n'))
-    assert 'fft_sizes' in msg and 'SILENTLY IGNORED' in msg
+    The alias in the synthetic parser is deliberate (see ``make_parser``): the
+    repo no longer ships an aliased option, but a YAML key that spells the
+    alias instead of the dest is still silently swallowed by ``set_defaults``,
+    so the guard must keep rejecting it.
+    """
+    ok = parse(['-c', write_yaml('flag_dest: "128,256,512"\n')])
+    assert ok.flag_dest == '128,256,512'
+
+    msg = reject_message(write_yaml('other_spelling: "128,256,512"\n'))
+    assert 'other_spelling' in msg and 'SILENTLY IGNORED' in msg
 
 
 def test_yaml_mapping_flows_into_a_str_arg_unconverted(write_yaml):

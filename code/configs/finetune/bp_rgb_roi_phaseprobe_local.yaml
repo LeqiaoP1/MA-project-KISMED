@@ -175,7 +175,7 @@ gamma: 1.0                         # L_MR-STFT (multi-resolution) -- DELIBERATEL
                                    #   To actually reach a phase-dominant regime, set this to 0.1,
                                    #   which projects to force shares 39.9 / 44.0 / 16.1
                                    #   (std / pearson / stft) at the ep-14 state.
-fft_sizes: '64,128,256'            # the plan's bp default (SPECTRAL_FFT_DEFAULTS) and the same
+fft_sizes: '64,128,256'            # the plan's bp default, and the same
                                    #   set configs/finetune/bp.yaml uses, so the RGB-ROI branch
                                    #   differs from it ONLY in the input modality. At fs=100:
                                    #   64/128/256 samples = 1.56/0.78/0.39 Hz bins.

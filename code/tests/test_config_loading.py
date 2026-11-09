@@ -96,6 +96,26 @@ PRETRAIN_CONFIGS = sorted(
 )
 
 
+#: Stage-2 options that were DELETED with the MR-STFT term (2026-11-09).
+#: Neither the runner parser nor any shipped pretrain YAML may mention them: an
+#: unknown YAML key is a hard error, so a stale key breaks the run at startup.
+REMOVED_SPECTRAL_KEYS = ('spectral_weight', 'spectral_weights',
+                         'spectral_fft_sizes', 'spectral_hop_ratio')
+
+
+def test_stage2_carries_no_spectral_keys(monkeypatch):
+    """The Stage-2 MR-STFT term is gone from the runner AND from the configs."""
+    a = _stage2(monkeypatch)
+    for name in REMOVED_SPECTRAL_KEYS:
+        assert not hasattr(a, name), f'run_pretrain still defines --{name}'
+    assert PRETRAIN_CONFIGS
+    for cfg in PRETRAIN_CONFIGS:
+        rel = os.path.relpath(cfg, CODE_DIR)
+        args = _args_for(cfg, monkeypatch)
+        for name in REMOVED_SPECTRAL_KEYS:
+            assert not hasattr(args, name), f'{rel}: stale {name}'
+
+
 def test_every_pretrain_config_declares_a_videomae_init(monkeypatch):
     """Stage 1 has no blank path: every shipped Stage-2 config must name a
     VideoMAE corpus (never '' / random / scratch / mae / timm / large)."""

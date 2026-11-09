@@ -128,8 +128,8 @@ clip_stride: 1.0                   # window hop in SECONDS (overlapping): 7/8 of
 max_clips: 0                       # 0 = no per-session cap (dev knob)
 
 # ---- joint spatio-temporal-spectral loss (Stage-3-only term, gamma = 1.0) ----
-# This is where the MR-STFT / periodicity prior lives: Stage 2 does NOT use it
-# (every configs/pretrain/*.yaml is spectral_weight: 0.0 -- decision 2026-09-26).
+# This is where the MR-STFT / periodicity prior lives: Stage 2 has no spectral
+# term at all (the Stage-2 MR-STFT loss was removed 2026-11-09).
 alpha: 1.0                         # L_time   (point-wise SmoothL1 / Huber --
                                    #   see configs/finetune/bp_rgb_roi_local.yaml)
 beta: 1.0                          # L_Pearson (phase-locking)
@@ -144,11 +144,8 @@ fft_sizes: '128,256,512'           # >= 1 BREATH PER WINDOW: the 0.1-0.6 Hz band
                                    #   and 128 the whole band sat in STFT bin 0, so the
                                    #   term policed waveform SHAPE, never rate.
                                    #   512 <= the 800-sample (8 s) waveform, so no window
-                                   #   is dropped. MUST equal the Stage-2 value
-                                   #   (configs/pretrain/stage2_local_tir_roi_*.yaml,
-                                   #   spectral_fft_sizes: 128,256,512) -- Stage 2 and
-                                   #   Stage 3 police the same stream, and spec_resp is
-                                   #   NOT comparable across window sets.
+                                   #   is dropped. spec_resp is NOT comparable across
+                                   #   window sets.
 eval_band: '0.1,0.6'               # RESP band, WIDENED 2026-10-01 for METRIC
                                    #   RESOLUTION: at fs 100 the largest Welch
                                    #   window an 8 s clip allows is 0.125 Hz, so

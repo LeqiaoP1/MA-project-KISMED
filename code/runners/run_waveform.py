@@ -51,9 +51,8 @@ def _resolve_fft_sizes(fft_sizes, output_len, fs=100.0):
 
     ``torch.stft`` ZERO-PADS when ``n_fft`` exceeds the signal, so an over-long
     window does NOT raise -- it silently turns part of the magnitude comparison
-    into a comparison of padding. The Stage-2 build path already guards this by
-    dropping too-long windows (``core.multimae``, logged as ``[DROPPED ...]``);
-    this is the Stage-3 equivalent with the same semantics.
+    into a comparison of padding. This guard therefore drops too-long windows
+    rather than letting that happen.
 
     :returns: ``(kept, dropped)``. Raises ``SystemExit`` when nothing survives.
     """
@@ -71,8 +70,7 @@ def _resolve_fft_sizes(fft_sizes, output_len, fs=100.0):
             f'waveform ({output_len} samples = {output_len / fs:.2f} s at fs '
             f'{fs:g} Hz), and torch.stft would zero-pad instead of raising. Use '
             f'a longer clip (--clip_duration) or smaller windows. Per-modality '
-            f'defaults: bp 64,128,256 / resp 128,256,512 / eda 256,512,1024 '
-            f'(see core.multimae.SPECTRAL_FFT_DEFAULTS).')
+            f'defaults: bp 64,128,256 / resp 128,256,512 / eda 256,512,1024.')
     return tuple(kept), tuple(dropped)
 
 
@@ -83,7 +81,7 @@ def _fft_window_advisory(kept, band_lo, output_len, fs=100.0):
     term measures local waveform SHAPE rather than RATE -- precisely how the
     historical respiration set 64,128,256 failed: at fs = 100 Hz the whole
     0.1-0.6 Hz band collapsed into STFT bin 0, so the term could never see
-    respiratory rate (see core.multimae.SPECTRAL_FFT_DEFAULTS).
+    respiratory rate.
 
     Returns an INFORMATIONAL string (never an error) when the largest kept window
     cannot reach the slow edge of the band. That is usually a CLIP-LENGTH limit
@@ -743,7 +741,7 @@ def main(args):
           f'target ({_target_len / args.fs:.2f} s at fs {args.fs:g} Hz)')
     if _fft_dropped:
         print(f'[stft] DROPPED {tuple(_fft_dropped)}: longer than the target, so '
-              f'torch.stft would ZERO-PAD (the Stage-2 path drops these too)')
+              f'torch.stft would ZERO-PAD')
     _fft_advice = _fft_window_advisory(
         args.fft_sizes, min(args.eval_band) if args.eval_band else None,
         _target_len, fs=args.fs)

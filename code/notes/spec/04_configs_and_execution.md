@@ -93,8 +93,6 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `signal_weight` | float | Loss weight for physio streams (default 0.5) |
 | `target_norm` | str | `token` (per-token z-score), `clip` (per-clip z-score) or `none` (IDENTITY). **NON-ROI paths only** (e.g. `bp4d+`): for the RAW-tree ROI lineages (`tir_roi` = TIR-ROI+RESP, `rgb_roi` = RGB+BP) the DATASET owns the normalisation and `run_pretrain.py` pins this to `none` |
 | `physio_norm` (Stage 2) | str | The 1-D target normalisation for `tir_roi` / `rgb_roi`: `clip` (= `zscore`) per-clip z-score. That is the ONLY value — `none` / `ac` / `session` were removed and are REFUSED (`data.tir_resp_dataset.check_physio_norm`). Applied by the dataset; the model never re-normalises |
-| `spectral_weight` | float | MR-STFT loss weight; **0.0 in all current configs** |
-| `spectral_fft_sizes` / `spectral_hop_ratio` | str / float | STFT config |
 | `pretrained_encoder` | str | Stage-1 VideoMAE corpus: `videomae:k400` / `videomae:ssv2` / `videomae` / `base` (= k400) / a local path. Blank/random is **rejected** |
 | `videomae_dataset` | str | `k400` (default) / `ssv2`: corpus for a bare `videomae` spec |
 | `rail_touch_v` | float | **LEGACY RAW PATH ONLY** (superseded by the stored per-sample validity mask, `--resp_cache`): drop a clip whose respiration window contains ANY sample that touched the recorder rail (`abs(x) >=` volts; 0.0 = off). The shipped `9.90` sits 0.1 V inside the `+/-10 V` clamp, so a dead/pinned channel AND a clipped flat-topped trough are both removed. With a cache attached a non-zero value RAISES (no silent double filtering). Keep equal in Stage 2/3 when no cache is used |

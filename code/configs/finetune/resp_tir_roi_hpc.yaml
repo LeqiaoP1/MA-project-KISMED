@@ -165,8 +165,7 @@ huber_beta: 1.0                    # SmoothL1 transition point in TARGET-STD
                                    #   errors.
 fft_sizes: '128,256,512'           # >= 1 BREATH PER WINDOW for the 0.1-0.6 Hz
                                    #   band; 512 <= the 800-sample (8 s) waveform,
-                                   #   so no window is dropped. MUST equal the
-                                   #   Stage-2 spectral_fft_sizes (128,256,512).
+                                   #   so no window is dropped.
 eval_band: '0.1,0.6'               # RESP band widened for metric resolution at
                                    #   fs 100 (an 8 s clip allows 0.125 Hz bins)
 

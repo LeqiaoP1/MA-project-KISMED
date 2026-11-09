@@ -274,7 +274,7 @@ what keeps the module testable without a model and reusable if a third stream
 Wiring in `MultiModalMAE` (the only place that knows modality names and token grids):
 
 * `__init__` parses the new knobs (`parse_kept_cap`, `parse_dirichlet_alpha`,
-  mirroring `parse_mask_span` / `parse_fft_sizes`) and builds the spec list
+  mirroring `parse_mask_span`) and builds the spec list
   **from `self.streams`**, one entry per declared stream:
   `kind = 'visual' if s in self.visual else 'signal'`,
   `n_units = grid_h*grid_w` (visual) or `self.n_signal` (signal). No stream
@@ -312,9 +312,9 @@ Wiring in `MultiModalMAE` (the only place that knows modality names and token gr
   the metric-key set must be config-stable ("loss keys are a function of the
   CONFIG" below, G13). `preds` is the only dict that may omit it (no decoder
   ran). Key policy: `losses` and `losses_mse` carry one entry per declared
-  stream; `losses_spectral` carries one per stream with a positive spectral
-  weight (a config property), zero when inactive. Applies to any number of
-  streams and any combination, including 5- or 2-stream runs;
+  stream (`losses_spectral` was removed with the Stage-2 spectral term on
+  2026-11-09). Applies to any number of streams and any combination, including
+  5- or 2-stream runs;
 * within a step the per-sample visible count must be **identical per stream** —
   assert it (`torch.unique(mask_s.sum(1)).numel() == 1`) instead of silently
   trusting it: the current `k = (mask_s == 0).sum(1).max()` gather LEAKS masked
@@ -361,7 +361,7 @@ AMMM config's setting, and a run that configures one size behaves exactly as
 today.
 
 * `input_size` / `tubelet` accept `int` **or** a dict / `stream=value` CSV
-  (same parser style as `parse_fft_sizes`); new CLI spellings
+  (same parser style as `parse_kept_cap`); new CLI spellings
   `--input_size_rgb / --input_size_tir`;
 * the resolved geometry is recorded with the checkpoint (args + a
   `[geometry]` log line) so a Stage-3 sibling can echo it verbatim;
@@ -412,8 +412,8 @@ desynchronise.
   geometry: `stage2_ammm_tir_roi_resp.yaml` (A, **shipped 2026-11-08**),
   `stage2_ammm_rgb_bp.yaml` (B), `stage2_ammm_bp4d4.yaml` (C, canonical tree at
   one size), `stage2_ammm_roi4.yaml` (D, after Phase 4). All must state
-  `masking: ammm` explicitly and keep `physio_mask`, `target_norm`,
-  `spectral_*` at their Stage-2 defaults (`target_norm: none` for the ROI
+  `masking: ammm` explicitly and keep `physio_mask`, `target_norm`
+  at their Stage-2 defaults (`target_norm: none` for the ROI
   lineages, pinned by `pin_roi_target_norm`);
 * `tests/test_ammm_masking.py` (Phase 1, CPU-only, `_tiny_model` style)
   **parametrised over modality combinations** — at minimum `('tir','resp')`

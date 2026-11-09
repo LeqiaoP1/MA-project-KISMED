@@ -329,13 +329,11 @@ their own trees), so gates G1–G5 are CPU-only and fast.
 Verification actually performed:
 
 * `../.env/bin/python -m pytest -q` -> **497 passed** (489 before + 8 new).
-* `../.env/bin/python -m core.multimae` -> `mask_self_test: ALL PASS` and every
-  `spectral_self_test` check ok. **Three `[FAIL]` lines came from
-  `spectral_self_test` and are PRE-EXISTING** — verified identical with the three
-  code files stashed (the finetune-config `fft_sizes` mirror checks). Not
-  touched by this change. (At the time this also ran the
-  `cross_mae_self_test`; that self-test was removed with the asymmetric
-  cross-MAE variant on 2026-11-07.)
+* `../.env/bin/python -m core.multimae` -> `mask_self_test: ALL PASS` and
+  `stft_self_test: ALL PASS`. (At the time this also ran `spectral_self_test`;
+  that self-test was removed with the Stage-2 MR-STFT term on 2026-11-09, and
+  the asymmetric `cross_mae_self_test` went with the cross-MAE variant on
+  2026-11-07.)
 * Synthetic smoke (CPU, no corpus): one Stage-2 step and one Stage-3 step,
   finite loss; the encoder receives per-channel `mean=0.0 / std=1.0` for a
   `[0,1]` clip (before: `mean=0.4990 / std=0.2885`).

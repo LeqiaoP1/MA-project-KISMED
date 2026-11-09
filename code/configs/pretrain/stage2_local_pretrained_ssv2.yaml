@@ -76,23 +76,12 @@ mask_ratio_eda: 0.50               # waveform family (unused while streams=rgb,b
 signal_weight: 0.5
 sig_kernel: 8
 
-# ---- 1-D periodicity prior: multi-resolution STFT magnitude loss -----------
-# `target_norm: clip` + `spectral_weight: 0.1` add an MR-STFT magnitude term on
-# the ASSEMBLED clip waveform, so the encoder gets a direct gradient on
-# periodicity that a per-token masked MSE cannot express. 0.0 = off. Keep this
+# ---- 1-D target normalisation (matches the Stage-3 target space) -----------
+# ONE mean/std per (sample, stream), so the token windows reassemble into a
+# coherent waveform. NOTE Stage 2 has no spectral term (removed 2026-11-09);
+# the MR-STFT loss lives in Stage 3 (WaveformJointLoss gamma). Keep this
 # identical in the K400/SSV2 twins, otherwise the corpus A/B is confounded.
 target_norm: clip
-spectral_weight: 0.0               # RETIRED FROM STAGE 2 (decision 2026-09-26):
-                                   # the spectral loss belongs to Stage-3
-                                   # finetuning. The A/B run reported earlier
-                                   # used 0.1 in BOTH twins, so a re-run with
-                                   # this file is not comparable on the
-                                   # spect_* columns.
-                                   # See SpanMask_PhysioSignals.md §1-§3, §5;
-                                   # keep this line identical to the K400 twin
-                                   # (stage2_local_pretrained.yaml).
-spectral_fft_sizes: 64,128,256     # fs=100 Hz -> 1.56 / 0.78 / 0.39 Hz bins
-spectral_hop_ratio: 0.25
 
 # ---- data (canonical layout from data/prepare_bp4d.py) ----
 data_path: ../data/processed/bp4d_canonical

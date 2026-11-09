@@ -42,7 +42,7 @@ Stage 1  ──►  Stage 2  ──►  Stage 3
 - **Runner**: `runners/run_pretrain.py`
 - **Engine**: `engines/pretrain.py::train_one_epoch`
 - **Contract**: ≥1 visual stream (rgb / tir) AND ≥1 physiological 1-D signal (bp / resp / eda). All-visual or all-signal stream lists are rejected at construction time.
-- **Objective**: Asymmetric masked reconstruction (VideoMAE-style `norm_pix`) — visual streams masked 50–75 %, physiological signals masked 90 %+. Per-modality `MaskedMSELoss`, combined as a weighted sum. An optional per-stream MR-STFT magnitude loss is available but **disabled in all current configs** (`spectral_weight: 0.0`).
+- **Objective**: Asymmetric masked reconstruction (VideoMAE-style `norm_pix`) — visual streams masked 50–75 %, physiological signals masked 90 %+. Per-modality `MaskedMSELoss`, combined as a weighted sum. There is **no spectral term in Stage 2** — the optional MR-STFT loss was removed 2026-11-09; MR-STFT lives only in Stage 3.
 
 ### Stage 3 — Waveform Regression Fine-tuning
 - **Model**: `MultiModalWaveformRegressor` (`core/waveform_model.py`)
@@ -83,7 +83,7 @@ data/processed/bp4d_canonical/
         |
         v  Stage-2: engines/pretrain.py
   MultiModalMAE.forward(x)
-    -> {'loss': scalar, 'losses_mse': {...}, 'losses_spectral': {...}}
+    -> {'loss': scalar, 'losses_mse': {...}}
         |
         v  Stage-3: run_waveform.py training loop
   MultiModalWaveformRegressor.forward(x)

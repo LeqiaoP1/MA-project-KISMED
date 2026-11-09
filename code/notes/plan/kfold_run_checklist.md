@@ -77,7 +77,7 @@
 
 - [ ] `python -m compileall -q .`
 - [ ] `python -m pytest -q` -> baseline **497 passed**, ~14 s, CPU. Judge only
-      NEW failures; the 3 `spectral_self_test` `[FAIL]` lines are pre-existing.
+      NEW failures.
 - [ ] `python -m core.waveform_model` (module form; running the file as a script
       dies on relative imports).
 - [ ] Edited a config? `tests/test_config_loading.py` globs every YAML

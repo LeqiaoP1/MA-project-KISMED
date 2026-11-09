@@ -326,8 +326,7 @@ def get_args():
                              'the NON-ROI paths only (e.g. bp4d+): for the '
                              'RAW-tree ROI lineages (tir_roi / rgb_roi) the '
                              'DATASET owns the normalisation via --physio_norm '
-                             "and run_pretrain pins target_norm='none'. "
-                             'REQUIRED to be clip when --spectral_weight > 0.')
+                             "and run_pretrain pins target_norm='none'.")
     parser.add_argument('--physio_norm', default='zscore', type=str,
                         choices=['clip', 'zscore'],
                         help="the ROI lineages' label normalisation, applied by "
@@ -340,48 +339,6 @@ def get_args():
                              'incomparable. The MODEL never normalises a 1-D '
                              'stream: run_pretrain pins target_norm="none" for '
                              'the ROI data_sets.')
-    parser.add_argument('--spectral_weight', default=0.0, type=float,
-                        help='weight of the multi-resolution STFT MAGNITUDE '
-                             'loss (see --spectral_fft_sizes) on the ASSEMBLED '
-                             '1-D waveform of every physio stream. 0.0 '
-                             '(default) = OFF = the previous masked-MSE-only '
-                             'objective. Requires --target_norm clip. The '
-                             'per-token masked MSE constrains amplitude only, '
-                             'so a low-frequency surrogate can lower it '
-                             'without modelling the cardiac/respiratory cycle; '
-                             'this term gives the shared encoder a direct '
-                             'gradient on periodicity. Start ~0.1 and tune.')
-    parser.add_argument('--spectral_weights', default='', type=str,
-                        help='FULL per-stream override of the spectral '
-                             'weights: comma list, ONE value per --streams '
-                             'modality in order (same convention as '
-                             '--loss_weights; empty = --spectral_weight for '
-                             'every physio stream, 0.0 for the video streams). '
-                             'A positive value on a video stream is rejected.')
-    parser.add_argument('--spectral_fft_sizes', '--fft_sizes',
-                        dest='spectral_fft_sizes', default='', type=str,
-                        help='MR-STFT FFT window sizes in SAMPLES, resolved PER '
-                             'PHYSIO STREAM (a window must span >= 1 period of '
-                             "the band it polices, so BP 1-2.5 Hz and RESP "
-                             '0.16-0.4 Hz cannot share one set). Forms: '
-                             "'64,128,256' = the SAME windows for every physio "
-                             "stream; 'resp=128/256/512,bp=64/128/256' = per "
-                             'stream (the COMMA separates streams, "/" '
-                             'separates the windows of one stream); or a YAML '
-                             'mapping {resp: [128, 256, 512]}. Empty/"auto" = '
-                             'the per-modality defaults (SPECTRAL_FFT_DEFAULTS: '
-                             'bp/resp 64,128,256, eda 256,512,1024), which '
-                             'mirror configs/finetune/*.yaml one for one so a '
-                             'stream gets the same spectral objective in Stage '
-                             '2 and Stage 3. --fft_sizes is accepted as the '
-                             'Stage-3 alias. At fs=100 Hz: 64 -> 1.56 Hz, '
-                             '128 -> 0.78 Hz, 256 -> 0.39 Hz bins. Windows '
-                             'longer than the clip are DROPPED and logged (the '
-                             'model raises only if none remain, so eda needs a '
-                             'clip of >= 2.56 s).')
-    parser.add_argument('--spectral_hop_ratio', default=0.25, type=float,
-                        help='STFT hop as a fraction of the FFT window '
-                             '(0.25 = 75 %% overlap).')
     parser.add_argument('--dec_depth', default=2, type=int)
     parser.add_argument('--mlp_ratio', default=4.0, type=float)
     parser.add_argument('--sig_kernel', default=8, type=int,

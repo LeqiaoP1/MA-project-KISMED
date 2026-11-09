@@ -156,10 +156,9 @@ signal_weight: 0.5
 # (runners/run_pretrain.py pins target_norm='none' for tir_roi). 'clip' and
 # 'zscore' are synonyms; there is no raw or session-relative mode.
 physio_norm: zscore
-spectral_weight: 0.0               # the MR-STFT term belongs to Stage 3
-                                   #   (decision 2026-09-26); 0.0 = OFF.
-spectral_fft_sizes: 128,256,512
-spectral_hop_ratio: 0.25
+# NOTE: Stage 2 has no spectral term (the Stage-2 MR-STFT loss was removed
+# 2026-11-09); the periodicity loss lives in Stage-3 finetuning
+# (WaveformJointLoss gamma).
 
 # ---- space-time alignment (checked hard by the model) ----
 sig_kernel: 16                     # 16/100 == 2*2/25 s -> one signal token ==
