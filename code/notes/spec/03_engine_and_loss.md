@@ -75,8 +75,6 @@ if grad_norm: metric_logger.update(grad_norm=grad_norm.item())
 # Per-stream diagnostics (value already a Python float from model forward):
 for name, val in out.get('losses_mse', {}).items():
     metric_logger.update(**{f'mse_{name}': val})
-for name, val in out.get('losses_spectral', {}).items():
-    metric_logger.update(**{f'spec_{name}': val})
 ```
 
 ---
@@ -163,11 +161,10 @@ Tier 3 requires >= 30 s of signal; run offline via `runners/run_evaluate.py`.
 L_total = sum(loss_weights.get(s, signal_weight if s in signals else 1.0)
               * MaskedMSELoss(pred_s, target_s, mask_s)
               for s in streams)
-       + sum(spectral_weights.get(s, 0.0) * STFT_s for s in signal_streams)
 ```
 
 Default: visual streams = 1.0, physiological streams = 0.5 (`signal_weight`).
-`spectral_weight=0.0` in all current configs (decision 2026-09-26).
+No spectral term: the optional Stage-2 MR-STFT loss was removed 2026-11-09.
 
 **`target_s` is masked-only for VISUAL streams** (`MultiModalMAE._targets(x,
 stream, mask)`, `design/Video_input_Preprocessing.md`): a masked cube is

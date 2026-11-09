@@ -101,15 +101,12 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable,
         if grad_norm is not None:
             metric_logger.update(grad_norm=grad_norm.item())
         # Per-stream diagnostics for the multimodal MAE: the RAW masked MSE of
-        # every stream plus the RAW MR-STFT term where it is enabled (the
-        # weighted contributions would hide which stream actually moved). A
-        # placeholder/single-stream model, or spectral_weight 0.0, simply logs
+        # every stream (the weighted contributions would hide which stream
+        # actually moved). A placeholder/single-stream model simply logs
         # nothing extra.
         if isinstance(out, dict):
-            for key, prefix in (('losses_mse', 'mse'),
-                                ('losses_spectral', 'spec')):
-                for name, value in (out.get(key) or {}).items():
-                    metric_logger.update(**{f'{prefix}_{name}': value})
+            for name, value in (out.get('losses_mse') or {}).items():
+                metric_logger.update(**{f'mse_{name}': value})
             # AMMM plan diagnostics (masking='ammm' only, so the key set of the
             # legacy path is untouched): the number of KEPT units per stream and
             # the resulting encoder sequence length. Logged every step because

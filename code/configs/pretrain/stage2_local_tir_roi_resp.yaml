@@ -181,66 +181,9 @@ physio_norm: clip                  # per-clip z-score, applied by the DATASET
                                    # for tir_roi). Same flag and values as
                                    # Stage 3; 'session' is the space the HPC
                                    # run uses.
-spectral_weight: 0.0               # DECISION 2026-09-26 (user): the spectral
-                                   # (MR-STFT periodicity) loss is NOT part of
-                                   # Stage-2 pre-training. It belongs to the
-                                   # Stage-3 FINETUNING of the targeted 1-D
-                                   # signal (core/waveform_losses
-                                   # .WaveformJointLoss, gamma = 1.0, on the
-                                   # FINAL waveform).
-                                   # MEASURED reasons (both 2026-09-26):
-                                   # (1) on the masked stream the term is
-                                   #     satisfied by within-modality
-                                   #     interpolation, so a linear interpolator
-                                   #     of the visible resp BEATS the trained
-                                   #     model on the very spectral metric
-                                   #     (0.98 vs ~5.0) --
-                                   #     SpanMask_PhysioSignals.md §1-§3, §5;
-                                   # (2) it was the SPIKE TRIGGER: spec_resp
-                                   #     3.7e8-4.3e10 in single steps with
-                                   #     pre-clip grad_norm ~5e8. With
-                                   #     clip_grad 0.0 that destroyed the
-                                   #     weights (ckpt-0010: mse_tir 11.96,
-                                   #     mse_resp 556017). ROOT CAUSE: a railed
-                                   #     (-10 V) respiration window z-scores to
-                                   #     EXACTLY zero, so the scale-invariant
-                                   #     ||P-T||/(||T||+eps) divides by ~0 (see
-                                   #     eval/tir_resp/resp_rail_touch_filter_results.md).
-                                   # The code path is KEPT for ablation runs
-                                   # (0.0 is also the runner default), but a
-                                   # Stage-2 run with a positive weight now
-                                   # prints a warning, and the shared loss has
-                                   # a degenerate-target guard.
-                                   # Off also UNBLOCKS target_norm: token,
-                                   # which is the next lever against the resp
-                                   # collapse.
-spectral_fft_sizes: 128,256,512     # MR-STFT windows in SAMPLES, resolved PER
-                                   # PHYSIO STREAM -- one window set cannot
-                                   # police both BP (1.0-2.5 Hz) and RESP
-                                   # (0.16-0.4 Hz): a window should span >=
-                                   # one period of the band it polices. Forms:
-                                   #   64,128,256  -> the SAME windows for
-                                   #                  every physio stream
-                                   #   resp=128/256/512,bp=64/128/256 -> per
-                                   #                  stream; the COMMA
-                                   #                  separates streams, "/"
-                                   #                  the windows of one
-                                   #   {resp: [128, 256, 512]}        -> per
-                                   #                  stream (YAML mapping)
-                                   #   '' / auto  -> the per-modality
-                                   #                  defaults bp 64,128,256,
-                                   #                  resp 128,256,512, eda
-                                   #                  256,512,1024 -- what
-                                   #                  configs/finetune/*.yaml
-                                   #                  --fft_sizes use for
-                                   #                  that stream, so Stage 2
-                                   #                  and Stage 3 match
-                                   # --fft_sizes is accepted as the Stage-3
-                                   # alias. Windows longer than the clip are
-                                   # DROPPED and now printed ([spectral] ...
-                                   # at build time). Only read when
-                                   # spectral_weight > 0.
-spectral_hop_ratio: 0.25
+# NOTE: Stage 2 has no spectral term (the Stage-2 MR-STFT loss was removed
+# 2026-11-09). The periodicity loss lives in Stage-3 finetuning
+# (core/waveform_losses.WaveformJointLoss, gamma = 1.0, on the FINAL waveform).
 
 # ---- training (local: the whole local clip budget at 64 px) ----
 epochs: 40

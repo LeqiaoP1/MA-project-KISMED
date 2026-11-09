@@ -147,7 +147,9 @@ The algebra in §5 applies to `MultiModalMAE._targets` — i.e. Stage-2 pretrain
 and `run_finetune.py` — **not** to Stage 3.
 
 **2. The spectral term is NOT `MultiModalMAE`'s — so the config combination is
-legal.** Stage 3 uses `WaveformJointLoss(alpha, beta, gamma, fft_sizes)`
+legal.** *(Note 2026-11-09: the `MultiModalMAE` spectral guard cited below no
+longer exists — the Stage-2 MR-STFT loss was removed; the measurement stands.)*
+Stage 3 uses `WaveformJointLoss(alpha, beta, gamma, fft_sizes)`
 (`core/waveform_losses.py`, built at `run_waveform.py:549`), so the
 `MultiModalMAE` guard (`spectral_weight > 0` requires `target_norm='clip'`,
 `core/multimae.py:396`) cannot fire from `run_waveform.py`, which builds the

@@ -32,7 +32,6 @@
 | `dec_depth=2` (constructor default) | Decoder depth | Not exposed as a YAML key; changing requires a code edit or explicit CLI override. |
 | `_VISUAL_STREAMS = ('rgb','tir')` | Valid visual stream names | Hardcoded tuple; adding a new visual modality requires editing two constants. |
 | `_SIGNAL_STREAMS = ('bp','resp','eda')` | Valid signal stream names | Same risk. |
-| `spectral_weight=0.0` constructor default | MR-STFT disabled | Intentional (decision 2026-09-26). Documented in all YAML comments. |
 
 ### `utils/dist.py`
 

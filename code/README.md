@@ -149,65 +149,22 @@ per-stream override (one comma value per `--streams` modality, in order; empty
 ⇒ policy above). `MultiModalMAE.forward` returns `losses_mse` (raw per-modality
 masked MSE) and `losses` (weighted contributions); `loss = Σ losses`.
 
-#### Optional periodicity prior: multi-resolution STFT loss on the 1-D streams
+#### No spectral term in Stage 2
 
-> **NOT USED IN STAGE 2 — decision 2026-09-26.** The spectral/periodicity loss
-> belongs to **Stage-3 finetuning** of the targeted 1-D signal
-> (`core.waveform_losses.WaveformJointLoss`, `gamma = 1.0`, on the FINAL
-> waveform). Every shipped `configs/pretrain/*.yaml` therefore sets
-> `spectral_weight: 0.0`, and a positive Stage-2 weight now prints a warning.
-> Two measured reasons: as a masked-reconstruction term it is satisfied by
-> within-modality interpolation (a linear interpolator of the visible resp
-> beats the trained model on the very spectral metric —
-> `code/notes/design/SpanMask_PhysioSignals.md` §1–§3), and it was the spike
-> trigger (a railed `-10 V` respiration window z-scores to *exactly* zero, so
-> the scale-invariant `‖P−T‖/(‖T‖+ε)` term divides by ~0 → `spec_resp 4.3e10`;
-> the corpus rule is in `code/notes/eval/tir_resp/resp_rail_touch_filter_results.md`).
-> The mechanism is kept for
-> ablation runs, and `MultiResolutionSTFTLoss` now guards against
-> zero-variance targets.
+Stage 2 optimises the weighted masked MSE only. The optional per-stream
+multi-resolution STFT (MR-STFT) magnitude loss that used to live here was
+**removed on 2026-11-09**. It had already been disabled by the 2026-09-26
+decision, for two measured reasons: as a masked-reconstruction term it is
+satisfied by within-modality interpolation (a linear interpolator of the
+visible resp beats the trained model on the very spectral metric), and it was
+the spike trigger on zero-variance railed targets (`spec_resp 4.3e10`). See
+`code/notes/design/SpanMask_PhysioSignals.md` §1–§3.
 
-A per-token masked MSE constrains **amplitude** only — a low-frequency
-surrogate can lower it without ever modelling the cardiac/respiratory cycle.
-Setting **`--spectral_weight`** (default **0.0 = off**) adds a
-**multi-resolution STFT magnitude loss**
-(`core/waveform_losses.MultiResolutionSTFTLoss`) on the **assembled** clip
-waveform, so the shared encoder gets a direct gradient on periodicity:
-
-```math
-L = Σ_s ( λ_s·MSE_s + w_s·STFT_s ) ,      w_physio = spectral weight ,      w_RGB = w_TIR = 0
-```
-
-* **Assembled waveform:** `[B, n_signal*sig_kernel]` — the concatenated
-  per-token windows (`SignalEmbed` uses kernel == stride), i.e. the whole clip.
-* **`--target_norm clip` is REQUIRED** (the model raises under the default
-  `token` norm): one mean/std per (sample, stream) instead of one per token, so
-  the token windows reassemble into a *coherent* waveform. Under per-token
-  normalization every token is independently rescaled, so its spectrum carries
-  token-boundary artefacts instead of the physiological band the loss is meant
-  to enforce. It also aligns the Stage-2 target space with Stage 3.
-* **Knobs:** `--spectral_fft_sizes` is resolved **PER PHYSIO STREAM**
-  (`core/multimae.parse_fft_sizes` + `SPECTRAL_FFT_DEFAULTS`): `'64,128,256'` =
-  the same windows for every physio stream, `'resp=128/256/512,bp=64/128/256'`
-  (the comma separates streams, `/` the windows of one stream) or a YAML
-  mapping `{resp: [128, 256, 512]}` = per stream, and `''`/`auto` = the
-  per-modality defaults (bp/resp `64,128,256`, eda `256,512,1024`) which mirror
-  the Stage-3 `configs/finetune/*.yaml --fft_sizes` one for one — the Stage-3
-  spelling `--fft_sizes` is accepted as an alias. One window set cannot police
-  both BP (1.0–2.5 Hz) and RESP (0.16–0.4 Hz), because a window should span at
-  least one period of the band it polices: 64/128/256 ⇒ 1.56 / 0.78 / 0.39 Hz
-  bins at fs = 100 Hz. Windows longer than the clip are **dropped and
-  logged** (a `[spectral]` block is printed per stream at build time). Also
-  `--spectral_hop_ratio` (default 0.25 ⇒ 75 % overlap), and
-  `--spectral_weights` — a FULL per-stream override (one comma value per
-  `--streams` modality, same convention as `--loss_weights`; a positive value on
-  a video stream is rejected). Start at ~0.1 and tune.
-* **Diagnostics:** `forward` also returns `losses_spectral` (raw MR-STFT per
-  stream) and the engine logs `mse_<stream>` / `spec_<stream>` per epoch, so the
-  term's effect is visible without a separate probe.
-* **Comparability:** enabling it switches the 1-D targets from per-token to
-  per-clip normalization, so the reported loss scale is **not** comparable with
-  runs made before it.
+The MR-STFT / periodicity prior now exists **only** in Stage-3 finetuning
+(`core/waveform_losses.WaveformJointLoss`, `gamma = 1.0`, `--fft_sizes`), where
+it is scored on the FINAL waveform. `--spectral_weight`, `--spectral_weights`,
+`--spectral_fft_sizes` and `--spectral_hop_ratio` no longer exist, and
+`MultiModalMAE.forward` no longer returns `losses_spectral`.
 
 ### Stage-2 streams — flexible modality contract
 The pretraining modalities are configured with `--streams` (or `streams:` in

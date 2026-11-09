@@ -62,7 +62,7 @@ Stage 1  ──►  Stage 2  ──►  Stage 3
 - **Runner**: `runners/run_pretrain.py`
 - **Engine**: `engines/pretrain.py::train_one_epoch`
 - **Contract**: ≥1 visual stream (rgb / tir) AND ≥1 physiological 1-D signal (bp / resp / eda). All-visual or all-signal stream lists are rejected at construction time.
-- **Objective**: Asymmetric masked reconstruction (VideoMAE-style `norm_pix`) — visual streams masked 50–75 %, physiological signals masked 90 %+. Per-modality `MaskedMSELoss`, combined as a weighted sum. An optional per-stream MR-STFT magnitude loss is available but **disabled in all current configs** (`spectral_weight: 0.0`).
+- **Objective**: Asymmetric masked reconstruction (VideoMAE-style `norm_pix`) — visual streams masked 50–75 %, physiological signals masked 90 %+. Per-modality `MaskedMSELoss`, combined as a weighted sum. There is **no spectral term in Stage 2** — the optional MR-STFT loss was removed 2026-11-09; MR-STFT lives only in Stage 3.
 
 ### Stage 3 — Waveform Regression Fine-tuning
 - **Model**: `MultiModalWaveformRegressor` (`core/waveform_model.py`)
@@ -103,7 +103,7 @@ data/processed/bp4d_canonical/
         |
         v  Stage-2: engines/pretrain.py
   MultiModalMAE.forward(x)
-    -> {'loss': scalar, 'losses_mse': {...}, 'losses_spectral': {...}}
+    -> {'loss': scalar, 'losses_mse': {...}}
         |
         v  Stage-3: run_waveform.py training loop
   MultiModalWaveformRegressor.forward(x)
@@ -592,9 +592,9 @@ Step 8 — Norm-pix targets (per-token or per-clip z-score based on target_norm)
           (`core/input_adapters.zscore_clip`). Contract:
           `design/Video_input_Preprocessing.md`.
 
-Step 9 — Weighted masked MSE + optional MR-STFT loss
+Step 9 — Weighted masked MSE loss
 
-Returns: {'loss': scalar, 'losses_mse': {...}, 'losses_spectral': {...}}
+Returns: {'loss': scalar, 'losses_mse': {...}}
 ```
 
 ### Geometry variants
@@ -832,8 +832,6 @@ if grad_norm: metric_logger.update(grad_norm=grad_norm.item())
 # Per-stream diagnostics (value already a Python float from model forward):
 for name, val in out.get('losses_mse', {}).items():
     metric_logger.update(**{f'mse_{name}': val})
-for name, val in out.get('losses_spectral', {}).items():
-    metric_logger.update(**{f'spec_{name}': val})
 ```
 
 ---
@@ -920,11 +918,10 @@ Tier 3 requires >= 30 s of signal; run offline via `runners/run_evaluate.py`.
 L_total = sum(loss_weights.get(s, signal_weight if s in signals else 1.0)
               * MaskedMSELoss(pred_s, target_s, mask_s)
               for s in streams)
-       + sum(spectral_weights.get(s, 0.0) * STFT_s for s in signal_streams)
 ```
 
 Default: visual streams = 1.0, physiological streams = 0.5 (`signal_weight`).
-`spectral_weight=0.0` in all current configs (decision 2026-09-26).
+No spectral term: the optional Stage-2 MR-STFT loss was removed 2026-11-09.
 
 **`target_s` is masked-only for VISUAL streams** (`MultiModalMAE._targets(x,
 stream, mask)`, `design/Video_input_Preprocessing.md`): a masked cube is
@@ -1156,8 +1153,6 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `signal_weight` | float | Loss weight for physio streams (default 0.5) |
 | `target_norm` | str | `token` (per-token z-score), `clip` (per-clip z-score) or `none` (IDENTITY). **NON-ROI paths only** (e.g. `bp4d+`): for the RAW-tree ROI lineages (`tir_roi` = TIR-ROI+RESP, `rgb_roi` = RGB+BP) the DATASET owns the normalisation and `run_pretrain.py` pins this to `none` |
 | `physio_norm` (Stage 2) | str | The 1-D target normalisation for `tir_roi` / `rgb_roi`: `clip` (= `zscore`) per-clip z-score. That is the ONLY value — `none` / `ac` / `session` were removed and are REFUSED (`data.tir_resp_dataset.check_physio_norm`). Applied by the dataset; the model never re-normalises |
-| `spectral_weight` | float | MR-STFT loss weight; **0.0 in all current configs** |
-| `spectral_fft_sizes` / `spectral_hop_ratio` | str / float | STFT config |
 | `pretrained_encoder` | str | `base` / `large` / `''` (from scratch) |
 | `epochs` / `batch_size` / `update_freq` / `save_ckpt_freq` | int | Training schedule |
 | `opt` / `lr` / `blr` / `min_lr` / `warmup_epochs` | str / float | Optimizer + LR |
@@ -1324,7 +1319,6 @@ print("wrote 04_configs_and_execution.md")
 | `dec_depth=2` (constructor default) | Decoder depth | Not exposed as a YAML key; changing requires a code edit or explicit CLI override. |
 | `_VISUAL_STREAMS = ('rgb','tir')` | Valid visual stream names | Hardcoded tuple; adding a new visual modality requires editing two constants. |
 | `_SIGNAL_STREAMS = ('bp','resp','eda')` | Valid signal stream names | Same risk. |
-| `spectral_weight=0.0` constructor default | MR-STFT disabled | Intentional (decision 2026-09-26). Documented in all YAML comments. |
 
 ### `utils/dist.py`
 

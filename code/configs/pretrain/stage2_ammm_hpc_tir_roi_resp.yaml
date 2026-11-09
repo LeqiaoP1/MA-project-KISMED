@@ -108,12 +108,9 @@ signal_weight: 0.5
 # each respiration target with its own mean/std; the model is pinned to
 # target_norm='none' for tir_roi. 'clip' and 'zscore' are synonyms.
 physio_norm: zscore
-# NOTE: no spectral_* keys on purpose. The MR-STFT periodicity term is a
-# Stage-3 fine-tuning loss (core/waveform_losses.WaveformJointLoss, gamma), not
-# a Stage-2 objective (decision 2026-09-26), so this run uses the runner
-# default --spectral_weight 0.0 = OFF. Do not set spectral_fft_sizes /
-# spectral_hop_ratio here either: without a positive weight they are inert and
-# only make the file look like the term is active.
+# NOTE: Stage 2 has no spectral term (the Stage-2 MR-STFT loss was removed
+# 2026-11-09). The periodicity loss lives in Stage-3 fine-tuning
+# (core/waveform_losses.WaveformJointLoss, gamma), not in this objective.
 
 # ---- training ----------------------------------------------------------
 # BUDGET: 300 epochs (the ratio twin stage2_hpc_tir_roi_resp.yaml ships 150).

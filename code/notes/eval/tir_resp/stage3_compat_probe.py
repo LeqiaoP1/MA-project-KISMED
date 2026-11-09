@@ -74,7 +74,7 @@ GEOM_KEYS = ('model', 'tubelet', 'fps', 'temporal_stride',
 #: only -- a config carries no value -- so the comparison below is skipped when
 #: the Stage-3 side has none, and the note right after says so.
 CORPUS_KEYS = ('task_set', 'tasks', 'clip_stride', 'physio_norm',
-               'spectral_fft_sizes', 'resp_cache_key')
+               'resp_cache_key')
 
 OK, BAD, WARN = '  OK  ', 'FAIL  ', ' WARN '
 
@@ -218,17 +218,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             print(f'[{WARN}] resp_cache_key: stage2={s2_cache} '
                   f'stage3=<env/CLI only -- pass RESP_CACHE to compare>')
-
-        # Stage-2's spectral windows live under a different key name.
-        s2_fft = getattr(s2_args, 'spectral_fft_sizes', None)
-        s3_fft = getattr(ns, 'fft_sizes', None)
-        if s2_fft is not None and s3_fft is not None:
-            a = tuple(int(x) for x in str(s2_fft).replace(' ', '').split(',') if x)
-            b = tuple(int(x) for x in str(s3_fft).replace(' ', '').split(',') if x)
-            print(f'[{OK if a == b else WARN}] spectral_fft_sizes   '
-                  f'stage2={a} stage3={b}')
-            if a != b:
-                warnings.append(f'spectral_fft_sizes {a} -> {b}')
 
         print(f'\nstage-2 streams were        : '
               f'{getattr(s2_args, "streams", None)!r}')

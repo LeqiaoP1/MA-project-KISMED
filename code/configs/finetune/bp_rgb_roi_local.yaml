@@ -90,8 +90,8 @@ clip_stride: 4.0                   # window hop in SECONDS matching Stage 2
 max_clips: 0                       # 0 = no per-session cap (dev knob)
 
 # ---- joint spatio-temporal-spectral loss (Stage-3-only term, gamma = 1.0) ----
-# This is where the MR-STFT / periodicity prior lives: Stage 2 does NOT use it
-# (every configs/pretrain/*.yaml is spectral_weight: 0.0 -- decision 2026-09-26).
+# This is where the MR-STFT / periodicity prior lives: Stage 2 has no spectral
+# term at all (the Stage-2 MR-STFT loss was removed 2026-11-09).
 alpha: 1.0                         # L_time   (point-wise SmoothL1 / Huber).
                                    #   `huber_beta` (in TARGET-STD units) sets where
                                    #   the charge turns linear: quadratic inside that
@@ -110,7 +110,7 @@ alpha: 1.0                         # L_time   (point-wise SmoothL1 / Huber).
                                    #   alpha/beta need explicit weights.
 beta: 1.0                          # L_Pearson (phase-locking)
 gamma: 1.0                         # L_MR-STFT (multi-resolution)
-fft_sizes: '64,128,256'            # the plan's bp default (SPECTRAL_FFT_DEFAULTS) and the same
+fft_sizes: '64,128,256'            # the plan's bp default, and the same
                                    #   set configs/finetune/bp.yaml uses, so the RGB-ROI branch
                                    #   differs from it ONLY in the input modality. At fs=100:
                                    #   64/128/256 samples = 1.56/0.78/0.39 Hz bins.

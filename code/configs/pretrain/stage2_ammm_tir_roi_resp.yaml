@@ -73,9 +73,9 @@ physio_mask: random                # span-inside-AMMM is not implemented
 mask_span_s: {resp: 4.0}
 
 # ---- loss: per-modality masked MSE on the masked positions only ------------
-# There is NO spectral / MR-STFT term in Stage 2 (decision 2026-09-26): the
-# periodicity term belongs to Stage-3 fine-tuning on the FINAL waveform
-# (core.waveform_losses.WaveformJointLoss, gamma). It is not configurable here.
+# Stage 2 has no spectral term (the Stage-2 MR-STFT loss was removed
+# 2026-11-09): the periodicity term lives in Stage-3 fine-tuning on the FINAL
+# waveform (core.waveform_losses.WaveformJointLoss, gamma).
 signal_weight: 0.5
 physio_norm: clip                  # dataset-side per-clip z-score; the model is
                                    # pinned to target_norm='none' for tir_roi

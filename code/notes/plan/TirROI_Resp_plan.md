@@ -93,7 +93,7 @@ with a new run prefix.
 | task rotation | `data/task_groups.py` (`SHIPPED_TASK_GROUPS`, `resolve_task_selection`) |
 | folds | `utils/splits.py::subject_folds` |
 | visual input contract | `core/input_adapters.py::zscore_clip` — the model z-scores each clip per channel before patching; the datasets keep `[0, 1]` (`design/Video_input_Preprocessing.md`, landed per `plan/video_input_preprocessing_implementation_plan.md`) |
-| masking | `core/multimae.py::_tube_mask`, `_span_mask`, `make_masks`, `parse_fft_sizes` |
+| masking | `core/multimae.py::_tube_mask`, `_span_mask`, `make_masks` |
 | losses | `core/criterion.py::MaskedMSELoss`, `core/waveform_losses.py::WaveformJointLoss`, `MultiResolutionSTFTLoss` |
 | metrics | `evaluation/metrics.py` (band-limited Pearson, single-tone template, amplitude, rate, `hf_power_rel`, bootstrap CI) |
 | assembly | `evaluation/assemble.py` (Hann OLA, `affine_calibrate`) |
