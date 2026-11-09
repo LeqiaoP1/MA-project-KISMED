@@ -41,3 +41,6 @@ output
 
 # git diff files
 .patch
+
+# wandb artifacts
+wandb/

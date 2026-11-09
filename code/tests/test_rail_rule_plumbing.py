@@ -44,6 +44,7 @@ STRIDE_S = 1.0                             # the shipped hop (synthetic tests)
 #: Stage 3 must MATCH its Stage-2 encoder's hop (the config says so), and the
 #: rest of the TIR-ROI study stays at the 1 s hop.
 EXPECTED_STRIDE_S = {'stage2_hpc_tir_roi_resp.yaml': 2.0,
+                     'stage2_ammm_hpc_tir_roi_resp.yaml': 2.0,
                      'resp_tir_roi_hpc.yaml': 2.0}
 N_RESP = int(N_FRAMES / FPS * RESP_FS)     # 16000 samples
 RAIL = trd.RESP_RAIL_V
@@ -220,13 +221,14 @@ def test_the_tir_configs_use_the_strict_rule_and_a_consistent_hop():
     """Every TIR-ROI/RESP config: the touch rule ON, an 8 s window, and the
     DOCUMENTED window hop (the HPC Stage-2/Stage-3 runs use 2 s, the rest 1 s).
 
-    The count is the study's config list: 6 (the AMMM arm A config,
-    stage2_ammm_tir_roi_resp.yaml, was added on 2026-11-08 and is a 1-variable
-    clone of the local ratio run). History: 5 after the Stage-3 ``_smoothl1``
-    L_time A/B clone was folded into resp_tir_roi_hpc.yaml (2026-11-01) and the
-    asymmetric cross-MAE pair was retired (2026-11-07, 7 -> 5).
+    The count is the study's config list: 7 (the HPC AMMM twin,
+    stage2_ammm_hpc_tir_roi_resp.yaml, was added on 2026-11-08 as the k-fold
+    A/B partner of stage2_hpc_tir_roi_resp.yaml). History: 6 after the local
+    AMMM arm A landed, 5 after the Stage-3 ``_smoothl1`` L_time A/B clone was
+    folded into resp_tir_roi_hpc.yaml (2026-11-01) and the asymmetric cross-MAE
+    pair was retired (2026-11-07, 7 -> 5).
     """
-    assert len(TIR_CONFIGS) == 6
+    assert len(TIR_CONFIGS) == 7
     for path in TIR_CONFIGS:
         with open(path) as fh:
             cfg = yaml.safe_load(fh)

@@ -123,6 +123,16 @@ cd "$CODE_DIR"
 # is the explicit escape hatch.
 export INITIAL_MODELS_DIR="${WEIGHTS_DIR:-$PROJ_DIR/models/initial}"
 
+# ---- Weights & Biases (optional: the config's `log_wandb`) ---------------- #
+# Compute nodes have NO outbound internet, so an ONLINE run would hang in
+# wandb.init. Default to offline: each fold's run dir collects
+# <out_dir>/wandb/offline-run-<ts>-<id>/ and you upload it later from a LOGIN
+# node:
+#     wandb sync <out_dir>/wandb/offline-run-*
+# Override with WANDB_MODE=online (needs an API key in your env) if the nodes
+# have egress. WANDB_DIR is set by utils/wandb_logger.py to <out_dir>/wandb.
+export WANDB_MODE="${WANDB_MODE:-offline}"
+
 CONFIG="${CONFIG:-configs/pretrain/stage2_hpc_tir_roi_resp.yaml}"
 RUN_NAME="${RUN_NAME:-$(basename "${CONFIG%.yaml}")}"
 
@@ -248,6 +258,7 @@ run_fold() {
     echo "[fold $fold] output   : $out_dir"
     echo "[fold $fold] roi_cache: ${ROI_CACHE:-<disabled: decode .wmv>}"
     echo "[fold $fold] resp_cache: ${RESP_CACHE:-<disabled: read Resp_Volts.txt>}"
+    echo "[fold $fold] wandb     : ${WANDB_MODE} (dir: $out_dir/wandb)"
     echo "[fold $fold] world    : ${SLURM_NTASKS} task(s) on $(hostname)"
     echo "[fold $fold] command  : python -u runners/run_pretrain.py ${args[*]}"
     echo "=================================================================="
