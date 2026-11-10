@@ -1,0 +1,33 @@
+{
+  "raw_root": "/work/projects/l0003511/test",
+  "clip_seconds": 8.0,
+  "tir_threshold_px": 40.0,
+  "sessions_with_both_tracks": 1375,
+  "sessions_missing_tir": 15,
+  "sessions_missing_2d": 0,
+  "windows_paired": 7005,
+  "tir_sway_px": {
+    "p50": 7.51,
+    "p75": 14.65,
+    "p90": 32.83,
+    "p95": 77.33,
+    "p99": 423.11
+  },
+  "rgb2d_sway_px": {
+    "p50": 24.09,
+    "p75": 48.31,
+    "p90": 94.88,
+    "p95": 144.15,
+    "p99": 282.39
+  },
+  "ratio_rgb2d_over_tir": {
+    "p10": 1.862,
+    "p25": 2.718,
+    "p50": 3.384,
+    "p75": 3.931,
+    "p90": 4.463
+  },
+  "tir_retention_at_threshold": 0.9191,
+  "scale_matched_rgb2d_px": 128.3,
+  "retention_matched_rgb2d_px": 108.9
+}

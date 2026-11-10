@@ -45,6 +45,7 @@ STRIDE_S = 1.0                             # the shipped hop (synthetic tests)
 #: rest of the TIR-ROI study stays at the 1 s hop.
 EXPECTED_STRIDE_S = {'stage2_hpc_tir_roi_resp.yaml': 2.0,
                      'stage2_ammm_hpc_tir_roi_resp.yaml': 2.0,
+                     'stage2_hpc_tir_roi_resp_rgb2d.yaml': 2.0,
                      'resp_tir_roi_hpc.yaml': 2.0}
 N_RESP = int(N_FRAMES / FPS * RESP_FS)     # 16000 samples
 RAIL = trd.RESP_RAIL_V
@@ -228,7 +229,7 @@ def test_the_tir_configs_use_the_strict_rule_and_a_consistent_hop():
     folded into resp_tir_roi_hpc.yaml (2026-11-01) and the asymmetric cross-MAE
     pair was retired (2026-11-07, 7 -> 5).
     """
-    assert len(TIR_CONFIGS) == 7
+    assert len(TIR_CONFIGS) == 8
     for path in TIR_CONFIGS:
         with open(path) as fh:
             cfg = yaml.safe_load(fh)

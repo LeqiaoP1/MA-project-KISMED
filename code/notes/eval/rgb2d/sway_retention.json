@@ -1,0 +1,79 @@
+{
+  "raw_root": "/work/projects/l0003511/test",
+  "clip_seconds": 8.0,
+  "clip_stride_s": 8.0,
+  "fps": 25.0,
+  "padding": 0.1,
+  "landmarks": "face",
+  "n_target_landmarks": 49,
+  "sessions": 1390,
+  "sessions_measured": 1390,
+  "sessions_skipped": 0,
+  "windows": 7093,
+  "sway_px": {
+    "p50": 24.17,
+    "p75": 49.03,
+    "p90": 96.09,
+    "p95": 147.48,
+    "p99": 285.58,
+    "p100": 560.33
+  },
+  "span_px": {
+    "p50": 65.1,
+    "p90": 171.46,
+    "p100": 861.1
+  },
+  "session_max_sway_px": {
+    "p50": 55.91,
+    "p75": 118.94,
+    "p90": 210.98,
+    "p95": 281.05,
+    "p99": 414.47,
+    "p100": 560.33
+  },
+  "retention": [
+    {
+      "max_sway_px": 200.0,
+      "windows_kept": 0.9721,
+      "sessions_kept": 0.8849,
+      "sessions_any_clip_kept": 0.9835
+    },
+    {
+      "max_sway_px": 220.0,
+      "windows_kept": 0.9779,
+      "sessions_kept": 0.9072,
+      "sessions_any_clip_kept": 0.9871
+    },
+    {
+      "max_sway_px": 240.0,
+      "windows_kept": 0.9829,
+      "sessions_kept": 0.9259,
+      "sessions_any_clip_kept": 0.9899
+    },
+    {
+      "max_sway_px": 260.0,
+      "windows_kept": 0.9863,
+      "sessions_kept": 0.9396,
+      "sessions_any_clip_kept": 0.9906
+    },
+    {
+      "max_sway_px": 280.0,
+      "windows_kept": 0.989,
+      "sessions_kept": 0.9496,
+      "sessions_any_clip_kept": 0.9928
+    },
+    {
+      "max_sway_px": 300.0,
+      "windows_kept": 0.9921,
+      "sessions_kept": 0.9633,
+      "sessions_any_clip_kept": 0.995
+    },
+    {
+      "max_sway_px": 320.0,
+      "windows_kept": 0.9938,
+      "sessions_kept": 0.9705,
+      "sessions_any_clip_kept": 0.9964
+    }
+  ],
+  "runtime_s": 27.3
+}

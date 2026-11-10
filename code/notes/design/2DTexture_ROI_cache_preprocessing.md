@@ -58,7 +58,7 @@ The following pipeline attributes are permanently fixed in the system architectu
 | `roi_padding` | float | `0.10` | `[0.0, 0.50]` | Fractional expansion applied to all four sides of the minimal facial landmark bounding box (10% isotropic margin). **In the cache key** (it changes stored pixels). |
 | `clip_duration` | float | `8.0` | `[1.0, 30.0]` | Temporal window duration in seconds per training/evaluation sample ($8.0\text{ s} = 200\text{ frames}$). Load-time; only its value at build time (via `clip_seconds`) affects the hull. |
 | `stride_duration` | float | `2.0` | `[0.5, 10.0]` | Temporal shift between consecutive clips. **Load-time only** — never in the key. |
-| `max_sway_px` | float | measured (Phase 0) | `[5.0, 100.0]` | Maximum centroid excursion inside one window. Load-time selection rule. v1 proposed 15 px; at 1392x1040 that is ~0.06 face widths and is expected to be very aggressive, so the value is measured before being pinned. |
+| `max_sway_px` | float | measured (Phase 0) | `[0.0, 100.0]` | Maximum centroid excursion inside one window. Load-time selection rule. v1 proposed 15 px; at 1392x1040 that is ~0.06 face widths and is expected to be very aggressive, so the value is measured before being pinned. **Measured 2026-11-10** (`code/notes/eval/rgb2d/sway_retention.md`): median 8 s union sway is 65 px, 15 px keeps 0.9 % of windows and 40 px keeps 1 % of sessions, so the library default is `110` (`DEFAULT_RGB2D_MAX_SWAY_PX`, mirroring the TIR module's measured `DEFAULT_MAX_SWAY_PX = 40`; `0` = gate off) and the Stage-2 config pins the same `110` (the same statistic as the TIR gate, `landmark_sway`, converted on the same sessions so both gates reject the same fraction of clips: RGB reports 3.2× the TIR excursion, 40 px on TIR ↔ 110 px here, 128 px by pure scale matching; `code/notes/eval/rgb2d/tir_rgb2d_sway_ratio.py`). |
 | `min_valid_ratio` | float | `1.0` | `(0.0, 1.0]` | Fraction of the window's frames that must carry a finite 49-point track. Load-time. |
 | `area_min_frac` | float | `0.5` | `[0.0, 1.0]` | Minimum in-frame share of a clip's own box; below it the clip is dropped (`clips_dropped_2d_envelope`). Load-time. |
 | `input_size` | int | `96` | multiple of the patch size | Model-side resolution (load-time rescale target). **Not in the key.** |
@@ -137,6 +137,14 @@ distinct products:
 
 Consequence: the per-clip crop is **tight** (the face nearly fills the frame),
 v1's fixed hull-relative framing no longer applies, and `input_size` is free.
+
+**Coordinate frame (binding).** The stored array's origin **is** the hull origin
+$B_0$, padding included: stored index `c` holds source column $x_0 + c$, and
+the first `pad_left` columns are the black bar. So the load mapping is
+`stored_index = source_coordinate - hull_origin`, with **no** pad term — `pad`
+records where the black bars sit, it is never an offset. (Measured on a hull at
+$x_0 = -3, y_0 = -2$: source `(1,1)` sits at `stored[3, 4]`; adding
+`pad_top/pad_left` reads the wrong pixel and then runs off the array.)
 
 ---
 
@@ -217,7 +225,7 @@ Per session `<S>_<T>`, under `<out_root>/<CACHE_KEY>/tasks/`:
 | `<S>_<T>.lm.dat` | the landmark track the shard was built from | `float32`, $(T, 49, 2)$ |
 | `<S>_<T>.json` | `session, source, n_frames, box, pad, src_hw, hull_hw, store_resolution, area_in_frac`, plus both shapes/dtypes and the byte total | scalars |
 
-* **Storage Footprint**: at $L \approx 250$ px, $250 \cdot 250 \cdot 3 = 187.5\text{ KB/frame}$ → $\approx 280\text{ MB}$ per 1500-frame session → $\approx 0.4\text{ TB}$ for the corpus, i.e. about **23x smaller than the raw** $1040 \times 1392$ frames. (v1's 5.53 MB-per-clip / 52.4x figures assumed prerendered 96 px pixels and no longer apply. Measured quota on the Lichtenberg scratch: 40 TB with 623 GB used, so this is ~1 % of headroom.)
+* **Storage Footprint**: **MEASURED 2026-11-10** (`code/notes/eval/rgb2d/build_preflight.md`): 1.21 MB/frame, **1.37 GB per session**, **~1.9 TB of frame data (~2.25 TB on disk) for 1390 sessions** — i.e. about **2× smaller than the raw** 1040 × 1392 frames. The earlier ~0.19 MB/frame / ~0.4 TB estimate assumed a ~250 px hull; the real hull is the union over every stride-1 8 s window of the WHOLE task (design I2), so it is a task-wide motion envelope of 621–1036 px and ~3× wider than a clip box. That cost is disk only: the loader crops the *clip's* hull out of the stored task box before the rescale, so `input_size = 96` is not diluted. Measured quota on the Lichtenberg scratch: 40 TB with 623 GB used, so this is ~6 % of headroom. (v1's 5.53 MB-per-clip / 52.4x figures assumed prerendered 96 px pixels and no longer apply.)
 * **No header, offset 0**: `.npy` was rejected because `np.lib.format.open_memmap` writes a 128-byte header and maps from offset 128, and because `shape`/`dtype` would then live in two places. Here they live only in the `.json`.
 * **Runtime Access**: `np.memmap(path, dtype=..., mode="r", shape=...)`, sliced per clip. Nothing is materialised per shard; the OS page cache serves the reads and its pages are evictable. A `ShardHandle` (context manager) owns the two mappings and releases their file descriptors on `close()` — which drops the references, because calling `mmap.close()` behind a live numpy view raises `BufferError`.
 * **Integrity**: a `.dat` without its `.json` is `incomplete` (never read); a `.dat` whose size disagrees with the `.json` shape is `truncated`; both are reported by `--status`, which also reports total bytes.

@@ -1,6 +1,7 @@
 # 2D Texture ROI Cache Implementation Plan — `rgb2d` Shards and Trimodal Stage 2
 
-Status: **PLANNED** (not implemented).
+Status: **IMPLEMENTED 2026-11-10** (Phases 0–6; suite 592 passed). Deviations
+from the plan as first written are listed under "As built" below.
 Scope: a NEW cache (`data/rgb2d_cache.py`), a NEW builder
 (`runners/run_build_2d_roi_cache.py`), a NEW dataset
 (`data/trimodal_dataset.py`), the `rgb2d` stream registration, one new HPC
@@ -32,6 +33,48 @@ This plan keeps all of it and changes only where the pixels are cut and what the
 artefact is keyed on, so the cache obeys the same doctrine as
 the TIR one: *the cache is ONE STEP of the pipeline and encodes no downstream
 decision*.
+
+## As built (2026-11-10)
+
+Delivered exactly as planned, with these recorded deviations:
+
+1. **`rgb2d_max_sway_px` defaults to 110 (`DEFAULT_RGB2D_MAX_SWAY_PX`) and the
+   Stage-2 config sets the same 110**, mirroring TIR's `DEFAULT_MAX_SWAY_PX = 40`;
+   `0` disables the gate. Phase 0 measured the curve on 1390 sessions / 7093
+   windows with the SAME statistic the dataset gates on
+   (`tir_resp_dataset.landmark_sway`, centroid excursion): p50 = 24 px, p90 =
+   96 px. The pinned 110 px is matched to the fixed TIR gate (`max_sway_px: 40`)
+   by `code/notes/eval/rgb2d/tir_rgb2d_sway_ratio.py`, which pairs both landmark
+   tracks on 1375 sessions: RGB reports 3.2× the TIR excursion for the same head
+   motion, and 110 px rejects the same fraction of clips (128 px by pure scale
+   matching). Two corrections along the way, both recorded in the eval note: an
+   earlier revision measured a hull SPAN instead of the gate statistic (2–3×
+   larger → a wrong 340 px), and a px threshold is modality-relative, so it can
+   never be copied between TIR and RGB2D.
+2. **`data/rgb_roi_dataset.py` gained two small additions** not in the plan:
+   `unreadable_archives()` and a guard in `discover_rgb_sessions`. They exist
+   because the corpus is **copied in place**: opening an archive that is still
+   arriving raises `BadZipFile`, which aborted discovery of ALL subjects (`F059`
+   during the first array run, then `F069`). Now such a subject is skipped for
+   that run, reported as "not readable yet", and **nothing permanent is
+   recorded** — writing a skip marker would outlive the copy and keep excluding
+   a subject whose pixels are on disk. (An earlier revision of this plan
+   recorded F069 as "a 0-byte placeholder, a corpus fact"; it was simply
+   mid-copy and completed to 41.78 GB — see `build_preflight.md` §6.)
+3. **Cache roots are deliberately absent from the YAML.** They follow the
+   existing env/CLI pattern (`TIR_ROI_CACHE` / `RGB2D_CACHE`); putting them in
+   the config would override the environment default and hard-code a scratch
+   path into a tracked file.
+4. **`tests/test_multimae_rgb2d.py` accepts `RuntimeError`** for a second visual
+   stream with a different grid: the model rejects it at the positional-embed
+   add (a shape error) rather than at an explicit geometry assertion. The
+   property under test — *loudly rejected, never silently cropped* — holds; no
+   model change was needed.
+5. **Step 5.2 exercised the join, not the caches.** `tests/test_trimodal_dataset.py`
+   builds a synthetic three-source tree and asserts the gates on the real
+   pipeline; a gate that empties the dataset raises `RuntimeError` naming the
+   counter that fired (the dataset refuses to be silently empty), so the two
+   "everything dropped" cases assert on that message.
 
 ## Decisions
 
@@ -67,6 +110,12 @@ reader will ask why the doc no longer matches its own first version.
    doctrine: a free `input_size`, a free hop, and per-clip tight framing. Phase 0
    measures the hull-side distribution so the disk budget is known **before** the
    build, and `--status` reports total bytes so it can be checked afterwards.
+   **MEASURED 2026-11-10** (`code/notes/eval/rgb2d/build_preflight.md`): the hull
+   is a TASK-WIDE envelope (union over every stride-1 window of the whole task),
+   so it is 621–1036 px, not ~250 px → 1.21 MB/frame, 1.37 GB/session,
+   **~1.9 TB of frames (~2.25 TB on disk)** and 10.3 core-hours (19 min per
+   element of `--array=0-31`). Disk is the only cost: the loader crops the
+   clip's own hull out of the stored task box before rescaling.
 3. **Frame boxes become a hull box.** Design §3 derives a box per frame. The
    artefact is ONE square hull over the stride-1 clip windows, which contains
    every clip box (invariant I2) and keeps the crop spatially static across a
@@ -213,6 +262,10 @@ control-signal cache, not for a hundred-MB pixel cache).
   landmark cloud, *without* clamping to the frame. ONE function used by
   `hull_box_2d` (build side) and by the dataset's clip-level area gate (load
   side), so the two can never disagree about what a clip's box is;
+- `in_frame_share(box, src_w, src_h)` → `(inter_w * inter_h) / box_area` for a
+  half-open box, `0.0` when it is fully outside and `1.0` when fully inside.
+  Called by the build-side task gate (Step 1.6.4) **and** the dataset's
+  per-clip gate (Step 3.1.3), so one rule serves both levels;
 - `hull_box_2d(...)`, `build_task(...)`;
 - `open_shard(path)` → `ShardHandle` opening `<S>_<T>.dat` and
   `<S>_<T>.lm.dat` with `np.memmap(dtype=..., mode='r', shape=meta[...])` —
@@ -270,14 +323,27 @@ streaming writer this is an **artefact-size** guard, not a RAM guard).
 3. Resolve the frame source per session with `rgb_roi_dataset.find_rgb_dir` /
    `zip_source` — directory when present, else zip members; **never extract**.
 4. Probe one frame → `(fh, fw)`; `hull_box_2d` → `(x0, x1, y0, y1)` in source
-   px, **possibly outside the frame**; reject when the **task-level** in-frame
-   share is `< 0.5` (`box_out_of_frame`). This is only the coarse gate; the
-   per-clip gate lives in the dataset (Step 3.1).
-5. Decode in `CHUNK_FRAMES` chunks; per frame: clamp the hull to the frame →
-   `copyMakeBorder` (black) back to the full hull extent → `cv2.cvtColor(BGR2RGB)`
-   → straight into the staging memmap. **No resize and no interpolation in the
-   builder** (decision 11): the stored pixel is a source pixel, so the artefact
-   carries no resampling decision and `input_size` stays out of the key.
+   px, **possibly outside the frame**; reject when
+   `in_frame_share(hull, fw, fh) < 0.5` (`box_out_of_frame`). This is only the
+   coarse gate; the per-clip gate lives in the dataset (Step 3.1).
+5. Decode in `CHUNK_FRAMES` chunks. For the hull `(x0, x1, y0, y1)` and the
+   source frame `(fh, fw)`, define the pad **explicitly** — it is the only
+   place the black bars come from:
+
+   ```
+   pad_top,   pad_left  = max(0, -y0),        max(0, -x0)
+   pad_bottom,pad_right = max(0, y1 - fh),    max(0, x1 - fw)
+   cy0, cy1 = max(0, y0), min(fh, y1)          # clamped extent to copy
+   cx0, cx1 = max(0, x0), min(fw, x1)
+   assert (x1 - x0) == (cx1 - cx0) + pad_left + pad_right    # same in y
+   ```
+
+   Per frame: copy `frame[cy0:cy1, cx0:cx1]` → `copyMakeBorder(pad_top,
+   pad_bottom, pad_left, pad_right, cv2.BORDER_CONSTANT, value=0)` →
+   `cv2.cvtColor(BGR2RGB)` → straight into the staging memmap. **No resize and
+   no interpolation in the builder** (decision 11): the stored pixel is a source
+   pixel, so the artefact carries no resampling decision and `input_size` stays
+   out of the key.
 6. Staging, **not** a payload: create the two raw arrays with
    `np.memmap(stage/<S>_<T>.dat, dtype=np.uint8, mode='w+',
    shape=(T, y1 - y0, x1 - x0, 3))` and
@@ -291,18 +357,27 @@ streaming writer this is an **artefact-size** guard, not a RAM guard).
    file maps at **offset 0** (page-aligned) and keeps `shape`/`dtype` in ONE
    place, the JSON commit marker, which is also what design §5.2 specifies
    ("raw binary arrays accompanied by JSON metadata").
-7. Metadata returned and written into `<S>_<T>.json`: `session, source,
-   n_frames, box int32[4]` (source px, may exceed the frame), `pad int32[4]`,
-   `src_hw, hull_hw`, `store_resolution`, `area_in_frac` (the task-level share,
-   for `--status`), plus the `frames` and `landmarks` shape/dtype so `--status`
-   can compare `os.path.getsize` against `prod(shape) * itemsize` (the raw
-   format's only integrity check) and report the running total. **The landmark
-   VALUES are not in the JSON**: at `T*49*2*4` bytes (~0.6 MB for 1500 frames)
-   they live in the sibling `<S>_<T>.lm.dat` and are read through
-   `open_shard(path).landmarks` — a second `np.memmap(mode='r')`, never the
-   `frames` mapping. That split is what lets the dataset run the clip envelope
-   gate (§3.1.3) by touching ~77 KB (`200 x 49 x 2 x 4 B`) per clip instead of
-   the whole clip.
+7. Metadata returned and written into `<S>_<T>.json` — **one schema, nested**
+   (this is what `open_shard` reads, and it is the only shape allowed):
+
+   ```
+   {"session": ..., "source": ..., "n_frames": T,
+    "box":  [x0, x1, y0, y1],            # source px, may exceed the frame
+    "pad":  [top, bottom, left, right],  # copyMakeBorder order; descriptive
+    "src_hw": [fh, fw], "hull_hw": [H, W],
+    "store_resolution": "native", "area_in_frac": <float>,
+    "frames":    {"shape": [T, H, W, 3], "dtype": "uint8",   "nbytes": ...},
+    "landmarks": {"shape": [T, 49, 2],   "dtype": "float32", "nbytes": ...}}
+   ```
+
+   The `nbytes` fields are what `--status` compares against
+   `os.path.getsize` (the raw format's only integrity check) and sums for the
+   running total. **The landmark VALUES are not in the JSON**: at
+   `T*49*2*4` bytes (~0.6 MB for 1500 frames) they live in the sibling
+   `<S>_<T>.lm.dat` and are read through `open_shard(path).landmarks` — a
+   second `np.memmap(mode='r')`, never the `frames` mapping. That split is what
+   lets the dataset run the clip envelope gate (§3.1.3) by touching ~77 KB
+   (`200 x 49 x 2 x 4 B`) per clip instead of the whole clip.
 8. `commit_shard` — PID-staged `.tmp/<S>_<T>.<pid>.*`. **Flush and drop both
    mappings before publishing** (`m.flush(); del m` — the `np.memmap`
    equivalent of `fclose`); replacing a still-dirty mapping can publish a
@@ -310,6 +385,23 @@ streaming writer this is an **artefact-size** guard, not a RAM guard).
    arrays and the `.json` **last**. A `.dat` without a `.json` is reported as
    `incomplete` by `--status` and never read; a `.dat` whose size disagrees
    with its `.json` shape is reported as `truncated`.
+
+**Coordinate frame (binding — exactly one convention, review round 5).** The
+stored array's origin **is** the hull origin `(x0, y0)`, padding included:
+`frames[i, r, c]` holds source pixel `(x0 + c, y0 + r)`, and the first
+`pad_left` columns / `pad_top` rows are the black bar. The load-side mapping is
+therefore
+
+```
+stored_index = source_coordinate - hull_origin        # NO pad term
+```
+
+`pad` is **descriptive** — it records where the black bars sit inside the stored
+array — and must **never** be added as an offset. Measured counter-example for a
+hull at `x0=-3, y0=-2` (`pad_left=3, pad_top=2`, stored `9x9`): source `(1,1)`
+holds 13 and sits at `stored[3, 4]`; adding the pad gives `stored[5, 7] = 40`,
+and the next sample runs off the array — so the "+pad" variant is wrong in any
+coordinate scheme, not just this one. Step 5.1 asserts both directions.
 
 Footprint: at a ~250 px square hull, `250*250*3 = 187.5 KB/frame` → ~280 MB per
 1500-frame session → **~0.4 TB for 1400 sessions** (the Phase-0 probe pins the
@@ -327,7 +419,7 @@ session means an evicted-but-unclosed handle leaks two file descriptors.
 ```
 class ShardHandle:
     def __init__(self, meta_path):          # tasks/<S>_<T>.json, already parsed
-        self.meta = json.loads(meta_path.read_text())
+        self.meta = json.loads(meta_path.read_text())      # schema: Step 1.6.7
         self.frames = np.memmap(frames_path, dtype=np.uint8, mode='r',
                                 shape=tuple(self.meta['frames']['shape']))
         self.landmarks = np.memmap(lm_path, dtype=np.float32, mode='r',
@@ -414,7 +506,7 @@ grid. Because storage is native it is a free load-time knob (decision 2), and
 nothing in the dataset compares it to a stored resolution.
   **`rgb2d_cache_lru` counts open `ShardHandle`s, not materialised shards**: an
   eviction calls `.close()` and releases its two file descriptors (~2 fds per
-  handle, so the default 16 keeps a worker at ~32 fds). Resident memory is ~0 —
+  handle, so the default 8 keeps a worker at ~16 fds). Resident memory is ~0 —
   the pages live in the OS page cache and are evictable, which is the whole
   point of the raw-memmap layout. Clips of one session are contiguous anyway, so a
   small handle LRU captures almost all of the reuse that the old array LRU was
@@ -443,11 +535,14 @@ nothing in the dataset compares it to a stored resolution.
      and no negative area when the box is entirely outside:
 
      ```
-     ix0, iy0 = max(x0, 0), max(y0, 0)
-     ix1, iy1 = min(x1, src_w), min(y1, src_h)
-     inter = max(0, ix1 - ix0) * max(0, iy1 - iy0)
-     share = inter / ((x1 - x0) * (y1 - y0))     # 0.0 outside, 1.0 inside
+     inter_w = max(0, min(x1, src_w) - max(x0, 0))
+     inter_h = max(0, min(y1, src_h) - max(y0, 0))
+     share = (inter_w * inter_h) / ((x1 - x0) * (y1 - y0))   # 0 outside, 1 inside
      ```
+
+     (identically `rgb2d_cache.in_frame_share(box, src_w, src_h)` — the SAME
+     helper the build-side task gate calls in Step 1.6.4, so the two levels
+     cannot drift apart).
 
      Drop when `share < rgb2d_area_min_frac` → `clips_dropped_2d_envelope`.
      **Neither the `frames` memmap nor the images are touched**: the box comes
@@ -474,9 +569,12 @@ h = self._shard(session)                        # ShardHandle, memmap mode='r'
 f0, f1 = entry['frame_start'], entry['frame_end']          # the SAME window as 'tir'
 hx0, hx1, hy0, hy1 = h.meta['box']                        # stored hull, source px
 x0, x1, y0, y1 = square_span_2d(track[f0:f1], padding, crop_rule)
+# The stored index IS source - hull origin. The black bars are ALREADY part of
+# the array (the builder sized it to the unclamped hull), so `pad` is NOT added.
 x0, x1, y0, y1 = x0 - hx0, x1 - hx0, y0 - hy0, y1 - hy0   # -> hull-local
 if min(x0, y0) < 0 or x1 > hx1 - hx0 or y1 > hy1 - hy0:
     raise IndexError('clip box outside the stored hull (I2)')   # never clamp or wrap
+assert (x1 - x0) == (y1 - y0), 'square clip box expected (crop_rule=square)'
 s = self.input_size
 interp = cv2.INTER_AREA if s <= min(x1 - x0, y1 - y0) else cv2.INTER_LINEAR
 out = np.empty((f1 - f0, s, s, 3), np.uint8)
@@ -495,6 +593,11 @@ hard shape assertion. Both visual streams therefore report `T == num_frames`
 - **Per frame, not per clip.** `np.ascontiguousarray` on the box slice (~0.19 MB
   at 250 px) gives cv2 a defined input and never materialises a whole clip. Peak
   per sample is the uint8 `[T,S,S,3]` (5.5 MB) plus the float32 tensor (22 MB).
+- **The pad is never an offset.** A clip box that reaches into the padded margin
+  reads a **black** pixel (correct: that pixel does not exist in the source), and
+  a box that would fall outside the stored array is an `IndexError` — the two
+  failure modes are distinguishable on purpose (Step 1.6's coordinate-frame
+  invariant, pinned by Step 5.1).
 - **The kernel follows `_roi_patches`**: `INTER_AREA` when downscaling (the
   normal case, ~250 → 96), `INTER_LINEAR` otherwise. Deliberate parity with TIR.
 - **This is the only resample in the 2D path**, and it depends solely on
@@ -596,7 +699,20 @@ a run log plus its YAML fully states which corpus and which geometry it saw.
   no `.tmp` residue after a successful commit, and `write_skip` creating its own
   staging dir;
 - black-pad case: a hull partly outside the frame stores the padded square with
-  a non-zero `pad` and zero border rows;
+  a non-zero `pad` and zero border rows — and
+  `(x1 - x0) == (cx1 - cx0) + pad_left + pad_right` (same in y), i.e. the stored
+  width is the unclamped hull, not the clamped one;
+- **coordinate-frame parity (the bug this rules out).** Build a shard whose hull
+  extends outside the frame (e.g. `x0=-3, y0=-2`), then for a clip box inside
+  the frame compare `handle.frames[i, y0-hy0:y1-hy0, x0-hx0:x1-hx0]` against the
+  live `extract_and_resize` result. They must be equal, and the variant that
+  adds `pad_top`/`pad_left` must be **wrong** (asserted explicitly: on the
+  9x9 fixture, source `(1,1)=13` sits at `stored[3, 4]`; `stored[5, 7]` is 40).
+  A clip box that falls in the pad margin must read zeros, not raise;
+  one that falls outside the stored array must raise `IndexError`;
+- `in_frame_share` is exercised at both levels (hull and clip) and both call
+  sites are asserted to be the same function object, so the two gates cannot
+  drift;
 - task-level `box_out_of_frame` skip when the hull's in-frame share is `< 0.5`;
 - **zip-only source**: a tree with `<S>.zip` and no extracted directory builds
   and creates no directory;
@@ -704,6 +820,15 @@ Phases 1–3 and 5.
 | `store_size` follows the **TIR doctrine: store native, rescale at load** | `store_size` (an integer) is **gone**, replaced by `store_resolution = 'native'`. Step 1.6 stores native hull pixels with **no interpolation**; the builder's `--store_size` flag and the `STORE_SIZE`/`INTERP` key fields are removed; the slug becomes `..._native_v1_...`. Step 3.2 now performs the TIR `_roi_patches` dance: per-clip square box → hull-local crop → one `INTER_AREA`/`INTER_LINEAR` resize to `input_size`. Per-clip tight framing is restored, so the old deviation 2 (*no per-clip re-crop*) is deleted. |
 | consequences accepted | storage rises from ~58 GB (prerendered) to **~0.4 TB** (native, ~0.19 MB/frame); the doc's 52.4x per-clip reduction becomes ~23x against raw frames; `--status` must report total bytes and Phase 0 must forecast the hull side **before** the array job. |
 
+### Round 5 (2026-11-10)
+
+| # | comment | resolution |
+|---|---|---|
+| 1 | Step 3.2 translate ignores the black padding; index with `- hull_origin + pad_top/left` (severity high) | **Rejected as specified, ambiguity accepted and closed.** Adding the pad double-shifts: the stored array is sized to the **unclamped** hull, so its origin already is `(x0, y0)` and `pad` only says where the black bars sit. Measured on a hull at `x0=-3, y0=-2` (`pad_left=3, pad_top=2`, stored 9x9): source `(1,1)=13` sits at `stored[3,4]`; the proposed `stored[3+2, 4+3]` reads 40 and the next sample runs off the array. Step 1.6 now carries a binding **coordinate-frame invariant** (`stored_index = source - hull_origin`, pad descriptive only) with that counter-example, Step 3.2's snippet says so inline, and Step 5.1 pins it with a parity test that also asserts the pad-adding variant is wrong. |
+| 2 | `pad_*` are never computed in Step 1.6.5 even though `pad` is in the metadata (severity medium) | **Accepted.** Step 1.6.5 now spells out `pad_top/left = max(0, -y0/-x0)`, `pad_bottom/right = max(0, y1-fh / x1-fw)`, the clamped copy extent, and the build-time assertion `(x1-x0) == (cx1-cx0) + pad_left + pad_right`. |
+| 3 | `meta['frames']['shape']` in Step 1.7 vs the flat wording in Step 1.6.7 (severity low) | **Accepted.** Step 1.6.7 now prints the **full nested JSON schema** (`frames{shape,dtype,nbytes}`, `landmarks{shape,dtype,nbytes}`, plus the scalars incl. `pad` in `copyMakeBorder` order), and Step 1.7 references it. One schema, no second reading. |
+| 4 | the intersection arithmetic is easy to mistype (severity low) | **Accepted.** Extracted to `rgb2d_cache.in_frame_share(box, src_w, src_h)`, used by the build gate (Step 1.6.4) and the clip gate (Step 3.1.3); the snippet in 3.1.3 uses named `inter_w`/`inter_h`. Step 5.1 asserts both call sites are the same function. |
+
 ## Verification
 
 1. `python -m compileall code` from the repository root.
@@ -772,3 +897,46 @@ Phases 1–3 and 5.
    remaining real cost is **build time** (~1400 sessions x ~1500 JPEG decodes)
    and Lustre metadata for ~4200 small files, so keep the 32-element array and
    verify `--status` bytes after element 0 rather than waiting for the job.
+
+## BDD Use Cases
+
+**Scenario 1: Building the cache for a valid session**
+* **Given** a session with 1500 frames and valid 49-point landmarks
+* **And** the computed native square hull is 90% inside the source frame
+* **When** the builder processes the session
+* **Then** it creates a `<S>_<T>.dat` memmap for frames and `<S>_<T>.lm.dat` for landmarks
+* **And** it writes a `<S>_<T>.json` commit marker containing the `pad` and `box` metadata
+* **And** the session is marked as successfully cached
+
+**Scenario 2: Rejecting a task during build due to out-of-frame hull**
+* **Given** a session where the subject is mostly off-camera
+* **And** the computed native square hull has an `in_frame_share` of 0.4 (40%)
+* **When** the builder processes the session
+* **Then** the build is skipped with reason `box_out_of_frame: 0.4`
+* **And** no `.dat` or `.json` files are committed for this session
+
+**Scenario 3: Dataset loading a valid clip**
+* **Given** a successfully cached session
+* **And** a clip window from `frame_start` to `frame_end`
+* **And** the clip's landmark sway is below `rgb2d_max_sway_px`
+* **And** the clip's `in_frame_share` is above `rgb2d_area_min_frac`
+* **When** the dataset `__getitem__` is called for this clip
+* **Then** it reads the native pixels from the `frames` memmap slice
+* **And** it resizes the crop to `input_size` (e.g., 96x96) using `INTER_AREA`
+* **And** it returns a tensor of shape `[3, T, 96, 96]`
+
+**Scenario 4: Dataset rejecting a clip due to the envelope gate**
+* **Given** a successfully cached session (task-level hull is valid)
+* **And** a clip window where the subject leans out of the frame
+* **And** the clip's specific square box has an `in_frame_share` of 0.3 (30%)
+* **When** the dataset filters entries during initialization
+* **Then** the clip is dropped
+* **And** the `clips_dropped_2d_envelope` counter is incremented
+
+**Scenario 5: Dataset rejecting a clip due to excessive sway**
+* **Given** a successfully cached session
+* **And** a clip window where the subject makes a sudden, large head movement
+* **And** the clip's landmark sway exceeds `rgb2d_max_sway_px`
+* **When** the dataset filters entries during initialization
+* **Then** the clip is dropped
+* **And** the `clips_dropped_2d_sway` counter is incremented

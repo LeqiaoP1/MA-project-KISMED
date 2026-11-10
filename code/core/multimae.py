@@ -88,7 +88,12 @@ __all__ = ['TubeletEmbed', 'MultiModalMAE', 'build_pretraining_model',
            'STREAM_CHANNELS']
 
 _EPS = 1e-6
-_VISUAL_STREAMS = ('rgb', 'tir')
+#: ``rgb2d`` (2026-11-10) is the BP4D+ 2D-TEXTURE face ROI served from the
+#: offline cache (``data/rgb2d_cache.py``). It is a distinct name from ``rgb``
+#: (the 224 px ``rgb_roi`` + BP arm) so a checkpoint can never be paired with the
+#: wrong front-end. Both visual streams must share ``input_size`` / ``tubelet`` /
+#: ``num_frames`` -- the model has ONE patch grid.
+_VISUAL_STREAMS = ('rgb', 'tir', 'rgb2d')
 _SIGNAL_STREAMS = ('bp', 'resp', 'eda')
 
 #: Default input channels per stream. ``tir`` is 3, NOT 1: the BP4D thermal
@@ -98,7 +103,7 @@ _SIGNAL_STREAMS = ('bp', 'resp', 'eda')
 #: Feeding luma only would discard the palette the camera wrote. Override per
 #: run with ``--tir_channels 1`` (legacy), but note that changes the TIR
 #: adapter geometry: Stage-2 checkpoints are only compatible within one setting.
-STREAM_CHANNELS = {'rgb': 3, 'tir': 3, 'bp': 1, 'resp': 1, 'eda': 1}
+STREAM_CHANNELS = {'rgb': 3, 'tir': 3, 'rgb2d': 3, 'bp': 1, 'resp': 1, 'eda': 1}
 
 #: Named multimodal encoder geometries. The NAME implies the geometry (the same
 #: timm-style convention as the ``project_vit_*`` family in :mod:`core.model`),
@@ -304,7 +309,7 @@ class MultiModalMAE(nn.Module):
         self.target_norm = target_norm
 
         # default asymmetric ratios (visual 50-75 %, signals 90 %+)
-        ratios = {'rgb': 0.75, 'tir': 0.50, 'bp': 0.90}
+        ratios = {'rgb': 0.75, 'tir': 0.50, 'rgb2d': 0.50, 'bp': 0.90}
         if mask_ratios:
             ratios.update(mask_ratios)
         self.mask_ratios = {s: ratios.get(s, 0.90) for s in self.streams}
@@ -1079,6 +1084,7 @@ def build_pretraining_model(args):
 
     ratios = {'rgb': float(getattr(args, 'mask_ratio_rgb', 0.75)),
               'tir': float(getattr(args, 'mask_ratio_tir', 0.50)),
+              'rgb2d': float(getattr(args, 'mask_ratio_rgb2d', 0.50)),
               'bp': float(getattr(args, 'mask_ratio_bp', 0.90)),
               'resp': float(getattr(args, 'mask_ratio_resp', 0.90)),
               'eda': float(getattr(args, 'mask_ratio_eda', 0.90))}

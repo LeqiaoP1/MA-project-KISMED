@@ -191,6 +191,43 @@ def get_args():
                              'rail_touch_v / min_signal_spread must be 0 (the '
                              'stored per-sample mask is the only validity '
                              'rule).')
+    parser.add_argument('--rgb2d_cache', default=env_or('RGB2D_CACHE', ''),
+                        type=str,
+                        help='tir_roi_resp_rgb2d / trimodal only: OUT_ROOT of an '
+                             'offline 2D-texture face-ROI cache '
+                             '(data/rgb2d_cache.py), i.e. the parent of the '
+                             'CACHE_KEY directories. REQUIRED for that '
+                             'data_set. Matched by KEY against this run of '
+                             'rgb2d_landmarks / roi_padding / crop_rule / '
+                             'clip_seconds / fps / corpus, and the run ABORTS on '
+                             'a mismatch. Stores NATIVE hull crops, so ONE cache '
+                             'serves any hop and any --input_size.')
+    parser.add_argument('--rgb2d_cache_lru', default=8, type=int,
+                        help='rgb2d only: number of OPEN shard handles per '
+                             'worker (2 fds each). Resident memory is ~0 -- the '
+                             'arrays are memory-mapped, not loaded.')
+    parser.add_argument('--rgb2d_landmarks', default='face', type=str,
+                        help="rgb2d only: 'face' (all 49 points, the default) or "
+                             'a preset / CSV from data/rgb_features.ROI_LANDMARKS_2D. '
+                             'MUST match the cache build (it is a cache-key field).')
+    parser.add_argument('--rgb2d_min_valid_ratio', default=1.0, type=float,
+                        help='rgb2d only: fraction of a window whose 49-point '
+                             'track must be finite. 1.0 (the default) = zero '
+                             'tolerance, matching the design contract.')
+    parser.add_argument('--rgb2d_max_sway_px', default=110.0, type=float,
+                        help='rgb2d only: max centroid excursion (source px) '
+                             'inside one window; 0 = gate off. Same statistic '
+                             'as --max_sway_px, in THIS camera\'s pixels: 110 px '
+                             'here == the TIR 40 px (RGB reports 3.2x the '
+                             'excursion for the same motion; see '
+                             'code/notes/eval/rgb2d/tir_rgb2d_sway_ratio.py). '
+                             'This is a LOAD-time selection rule and never a '
+                             'cache-key field.')
+    parser.add_argument('--rgb2d_area_min_frac', default=0.5, type=float,
+                        help='rgb2d only: minimum in-frame share of a CLIP box; '
+                             'below it the clip is dropped '
+                             '(clips_dropped_2d_envelope). Black padding would '
+                             'otherwise feed a mostly-empty clip to the model.')
     parser.add_argument('--decode_scale', default=1, type=int,
                         choices=[1, 2, 4, 8],
                         help='rgb_roi only: JPEG decode scale. 1 = native full '
@@ -236,6 +273,10 @@ def get_args():
                         help='tubelet (t, ph, pw) for the video tokenizer')
     parser.add_argument('--mask_ratio_rgb', default=0.75, type=float)
     parser.add_argument('--mask_ratio_tir', default=0.50, type=float)
+    parser.add_argument('--mask_ratio_rgb2d', default=0.50, type=float,
+                        help='rgb2d only: MASK ratio for the 2D-texture face ROI '
+                             '(the stream is `rgb2d`, NOT `rgb`). 0.50 keeps '
+                             '~18 of 36 patches visible at input_size 96.')
     parser.add_argument('--mask_ratio_bp', default=0.90, type=float)
     parser.add_argument('--mask_ratio_resp', default=0.90, type=float)
     parser.add_argument('--mask_ratio_eda', default=0.90, type=float)
@@ -421,9 +462,11 @@ def pin_roi_target_norm(args) -> bool:
 
     Returns ``True`` when the pin was applied. No effect on non-ROI paths.
     """
-    from data import RGB_ROI_DATA_SETS, TIR_ROI_DATA_SETS
+    from data import (RGB_ROI_DATA_SETS, TIR_ROI_DATA_SETS,
+                      TIR_ROI_RGB2D_DATA_SETS)
     data_set = str(getattr(args, 'data_set', '') or '').strip().lower()
-    if data_set not in TIR_ROI_DATA_SETS + RGB_ROI_DATA_SETS:
+    if data_set not in (TIR_ROI_DATA_SETS + RGB_ROI_DATA_SETS
+                        + TIR_ROI_RGB2D_DATA_SETS):
         return False
     if str(getattr(args, 'target_norm', 'token')) != 'none':
         print(f'[data] data_set {data_set!r}: the dataset owns the 1-D target '
