@@ -35,7 +35,7 @@ from .multimae import STREAM_CHANNELS, TubeletEmbed, _PosMask, multimae_variant
 __all__ = ['MultiModalWaveformRegressor', 'WaveformUpsampleHead',
            'build_waveform_model', 'load_stage2_encoder']
 
-_VISUAL_STREAMS = ('rgb', 'tir')
+_VISUAL_STREAMS = ('rgb', 'tir', 'rgb2d')
 
 
 def _parse_int_csv(v, dtype=int):

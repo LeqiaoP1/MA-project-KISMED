@@ -406,6 +406,41 @@ def _imread(source: str, flag: int) -> np.ndarray:
     return img
 
 
+def unreadable_archives(raw_root: str) -> List[Tuple[str, str]]:
+    """``(subject, why)`` for every ``2D+3D/<S>.zip`` that cannot be read RIGHT NOW.
+
+    Both cases are **transient delivery states**, not corpus facts: a 0-byte
+    file and a file without an end-of-central-directory are the same subject
+    minutes apart while the corpus is being copied in. Measured 2026-11-10:
+    ``F069.zip`` was 0 bytes, then 15 / 32 / 34.6 GB, then a complete 41.78 GB
+    archive with 36 906 members -- ~40 minutes end to end.
+
+    So the caller must treat this as "not available yet": report it, skip the
+    subject for THIS run, and record nothing permanent. Writing a skip marker
+    here would outlive the copy and keep excluding a perfectly good subject.
+
+    Detection is one ``zipfile.is_zipfile`` per archive (it reads only the end
+    record), so this is cheap enough to call before every build.
+    """
+    import zipfile
+    rgb_root = os.path.join(str(raw_root), RGB_TREE)
+    if not os.path.isdir(rgb_root):
+        return []
+    out: List[Tuple[str, str]] = []
+    for name in sorted(os.listdir(rgb_root)):
+        path = os.path.join(rgb_root, name)
+        if not (name.lower().endswith('.zip') and os.path.isfile(path)):
+            continue
+        size = os.path.getsize(path)
+        if size == 0:
+            out.append((name[:-4], 'not readable yet: 0 bytes'))
+        elif not zipfile.is_zipfile(path):
+            out.append((name[:-4], f'not readable yet: {size / 1e9:.1f} GB but '
+                                   f'no end-of-central-directory (copy in '
+                                   f'progress?)'))
+    return out
+
+
 def discover_rgb_sessions(raw_root: str,
                           subjects: Optional[Sequence[str]] = None,
                           tasks: Optional[Sequence[str]] = None,
@@ -451,7 +486,17 @@ def discover_rgb_sessions(raw_root: str,
         path = os.path.join(rgb_root, name)
         if os.path.isdir(path):
             sources.append((name, 'dir', path))
-        elif name.lower().endswith('.zip') and os.path.isfile(path):
+        elif (name.lower().endswith('.zip') and os.path.isfile(path)
+              and os.path.getsize(path) > 0):
+            # A 0-byte ``.zip`` is a subject that is not available YET (the
+            # corpus is copied in place): opening it raises ``BadZipFile`` and
+            # would make the WHOLE corpus undiscoverable, since one unreadable
+            # archive kills every other subject's enumeration. Skipping it keeps
+            # the rest usable; ``unreadable_archives()`` reports it so the
+            # omission is never silent. Nothing permanent is recorded for such a
+            # subject -- the archive may be complete minutes later. A non-zero
+            # archive that is still being copied is caught when it is opened,
+            # below.
             ext_zip.append((name[:-4], 'zip', path))
     have_dir = {s for s, _k, _p in sources}
     sources.extend(z for z in ext_zip if z[0] not in have_dir)
@@ -468,8 +513,20 @@ def discover_rgb_sessions(raw_root: str,
                 if os.path.isdir(path):
                     tasks[name] = path
         else:                                           # archived subject
-            tasks = {t: rec['prefix']
-                     for t, rec in zip_task_index(subj_src, subj).items()}
+            try:
+                tasks = {t: rec['prefix']
+                         for t, rec in zip_task_index(subj_src, subj).items()}
+            except Exception as exc:      # mid-copy or not delivered yet
+                # A corpus can be updated WHILE a run reads it: a 15 GB archive
+                # that is still being written has no end-of-central-directory
+                # yet, so ``ZipFile`` raises ``BadZipFile``. That must cost the
+                # subject ONE RUN, not the whole enumeration -- the subject is
+                # rebuilt from scratch once its archive is complete, and
+                # ``unreadable_archives()`` reports the omission.
+                print(f'[data] {RGB_TREE}/{subj}.zip not readable yet '
+                      f'({type(exc).__name__}); skipping that subject for this '
+                      f'run')
+                continue
         zip_index = (zip_task_index(subj_src, subj) if kind == 'zip' else {})
         for task in sorted(tasks):
             if want_task and task not in want_task:

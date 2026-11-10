@@ -47,6 +47,7 @@ import hashlib
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -251,12 +252,33 @@ def cache_root(out_root: str, key: str) -> Path:
 
 
 def write_params(root: Path, params: Dict) -> None:
-    """Write ``params.json`` atomically. Concurrent identical writes are safe."""
+    """Write ``params.json`` atomically. Concurrent identical writes are safe.
+
+    The staging name must be UNIQUE per writer. A shared ``params.json.tmp`` is
+    not safe even though the final step is ``os.replace``: with 32 array
+    elements all calling ``--init`` (as the rgb2d sbatch does, because the keyed
+    directory is created by whichever element wins the race) two writers
+    truncate the same staging file and the loser's ``os.replace`` raises
+    ``FileNotFoundError: params.json.tmp -> params.json``. Measured 2026-11-10:
+    elements 16/18/19 of job 56160572 died exactly there, all on one node.
+    ``mkstemp`` (same directory, so the replace stays within one filesystem)
+    makes the WRITE race-free; ``os.replace`` makes the PUBLICATION atomic.
+    """
+    root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
-    tmp = root / (PARAMS_NAME + '.tmp')
-    with open(tmp, 'w') as fh:
-        json.dump(params, fh, indent=2, sort_keys=True)
-    os.replace(tmp, root / PARAMS_NAME)
+    fd, tmp_name = tempfile.mkstemp(dir=str(root), prefix=PARAMS_NAME + '.',
+                                    suffix='.tmp')
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, 'w') as fh:
+            json.dump(params, fh, indent=2, sort_keys=True)
+        os.replace(tmp, root / PARAMS_NAME)
+    finally:
+        if tmp.exists():                 # only on a failed replace
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 def read_params(root: Path) -> Dict:
@@ -292,7 +314,8 @@ def loader_params(raw_root: str, corpus_sessions: Sequence[dict],
     return {k: full[k] for k in COMPARE_KEYS}
 
 
-def find_cache(out_root, want: Dict) -> Path:
+def find_cache(out_root, want: Dict,
+               keys: Sequence[str] = COMPARE_KEYS) -> Path:
     """Locate the cache directory whose parameters match ``want``.
 
     THIS IS THE FAIL-LOUDLY GATE (spec section 9.2). A run whose ``roi_*`` keys
@@ -302,6 +325,11 @@ def find_cache(out_root, want: Dict) -> Path:
 
     Raises with a field-by-field diff when nothing matches, and refuses an
     ambiguous match rather than picking one.
+
+    :param keys: the fields to compare. Defaults to :data:`COMPARE_KEYS`, which
+        keeps every existing caller bit-identical. A sibling cache with a
+        different field set (``data/rgb2d_cache.py``) passes its own tuple, so it
+        inherits this diff reporting without duplicating it.
     """
     out_root = Path(out_root)
     if not out_root.is_dir():
@@ -319,7 +347,7 @@ def find_cache(out_root, want: Dict) -> Path:
                 have = json.load(fh)
         except Exception:
             continue
-        diffs = {k: (have.get(k), want.get(k)) for k in COMPARE_KEYS
+        diffs = {k: (have.get(k), want.get(k)) for k in keys
                  if have.get(k) != want.get(k)}
         if diffs:
             near.append((d, diffs))
@@ -330,7 +358,7 @@ def find_cache(out_root, want: Dict) -> Path:
     if not matches:
         lines = [f'roi_cache: no cache under {out_root} matches this run. '
                  f'Wanted (key fields):']
-        lines += [f'    {k} = {want[k]!r}' for k in COMPARE_KEYS]
+        lines += [f"    {k} = {want[k]!r}" for k in keys]
         if near:
             lines.append('  Closest existing cache(es):')
             for d, diffs in near[:3]:

@@ -108,6 +108,28 @@ The session name encodes subject (`'F001_T1'.rsplit('_', 1)[0]` -> `'F001'`), en
 
 Per-frame AU occurrence labels; subject-disjoint split. Used exclusively by the AU probe.
 
+### 3.5 2D-Texture ROI stream (`rgb2d`) — cached (2026-11-10, PLANNED)
+
+A THIRD cached stream so Stage 2 can run `tir` + `rgb2d` + `resp` on ONE clip window. Contract: `design/2DTexture_ROI_cache_preprocessing.md` (v2). Build order: `plan/2DTexture_ROI_cache_implementation_plan.md`. Nothing in the existing TIR/RESP artefact changes value.
+
+| Piece | Name |
+|---|---|
+| Cache module | `data/rgb2d_cache.py` (an additive `keys=` parameter on `roi_cache.find_cache` is its only cross-module dependency) |
+| Builder | `runners/run_build_2d_roi_cache.py` (`--init/--build/--status/--index/--check N`, array via `--array_index`/`--array_count`) |
+| Dataset | `data/trimodal_dataset.py::TirRoiResp2DPretrainDataset` (subclasses `TirRoiRespPretrainDataset`) |
+| `data_set` | `tir_roi_resp_rgb2d`, `trimodal` — **Stage-2 only** |
+| Streams | `streams: tir,rgb2d,resp`; `_VISUAL_STREAMS = ('rgb','tir','rgb2d')` in `core/multimae.py` (+ `STREAM_CHANNELS['rgb2d'] = 3`) |
+
+**Artefact** (`<out_root>/<CACHE_KEY>/tasks/<S>_<T>.{dat,lm.dat,json}`): hull pixels `uint8 [T, H, W, 3]` RGB at **native** resolution, the 49-point track `float32 [T, 49, 2]`, and a `.json` of scalars (`box`, `pad`, `src_hw`, `hull_hw`, shapes, byte total) written LAST as the commit marker. Raw `np.memmap`, offset 0, **no `.npy` header** — `shape`/`dtype` come from the `.json`; a `.dat` without its `.json` is `incomplete`, a size mismatch is `truncated`. ~0.19 MB/frame at a ~250 px hull (~0.4 TB per corpus, ~23x smaller than the raw 1392x1040 JPEGs).
+
+**Cache key**: `rgb2droi_<landmark_set>_pad<p>_<crop_rule>_window-hull_clip<c>s_src<W>x<H>_native_v1_<10hex>`. IN: `store_resolution='native'`, `roi_padding`, `crop_rule`, `clip_seconds`, `fps`, `src_w/h`, landmark set, `valid_frame_rule='finite-excluded'`, `source_policy`. OUT: `input_size`, `clip_stride`, `temporal_stride`, `max_sway_px`, `min_valid_ratio`, the resize kernel — the TIR doctrine (*store native, rescale at load*) makes them all load-time knobs, so one cache serves every hop, fold and `input_size` (64/96/112).
+
+**Gates are DATASET-level**, counted per rule: `clips_dropped_2d_short` (window past `n_frames`), `_invalid` (`min_valid_ratio`, default 1.0, over finite target landmarks), `_envelope` (the clip's own box in-frame share `< area_min_frac`, default 0.5), `_sway` (`max_sway_px`, measured in Phase 0 — v1's 15 px is NOT adopted unmeasured). The builder skips only geometry-fatal sessions: `missing_2d_features`, `invalid_2d_features`, `image_count_mismatch` (`n_jpg != n_mat`), `missing_image_seq`, `undecodable_images`, `box_out_of_frame` (hull in-frame share `< 0.5`), `task_too_large`.
+
+**Load path**: `open_shard` returns a `ShardHandle` over two `np.memmap(mode='r')` mappings (context manager; `close()` drops the references, since `mmap.close()` behind a live numpy view raises `BufferError`). `__getitem__` computes the clip's own square box, maps it hull-local, asserts containment (I2 — `IndexError`, never clamp/wrap) and resizes ONCE to the shared `input_size` (`INTER_AREA` downscaling, `INTER_LINEAR` otherwise). `input_size` must equal the `tir` value because the model has ONE patch grid; 96 in the shipped config yields 6x6 = 36 patches per frame for both visual streams.
+
+**Frame source**: extracted `2D+3D/<S>/<T>/*.jpg` when present, else the members of `2D+3D/<S>.zip` decoded in memory via `cv2.imdecode` — `2D+3D` is **never extracted to disk**, so the cache is the only on-disk form of this stream.
+
 ---
 
 ## 4. Dataset Dispatcher — `data/datasets.py`
@@ -119,9 +141,10 @@ Per-frame AU occurrence labels; subject-disjoint split. Used exclusively by the 
 | `'bp4d+'`, `'paired'` | `PairedSessionDataset` |
 | `'tir_roi'`, `'tir_roi_resp'`, `'tir-roi'` | `TirRoiRespFinetuneDataset` |
 | `'rgb_roi'`, `'rgb_roi_resp'`, `'rgb-roi'` | `RGBRoiFinetuneDataset` |
+| `'tir_roi_resp_rgb2d'`, `'trimodal'` | Stage-2 only: `TirRoiResp2DPretrainDataset` (§3.5); `build_dataset` has no fine-tune view |
 | custom registered | `@register_dataset` decorator |
 
-`build_pretraining_dataset(args)` dispatches similarly for Stage-2.
+`build_pretraining_dataset(args)` dispatches similarly for Stage-2: `TIR_ROI_DATA_SETS` -> `build_tir_roi_pretrain_dataset`, `RGB_ROI_DATA_SETS` -> `build_rgb_roi_pretrain_dataset`, and `TIR_ROI_RGB2D_DATA_SETS` -> `build_tir_roi_rgb2d_pretrain_dataset` (in `data/trimodal_dataset.py`; it cannot reuse the TIR builder, which forwards `args.streams` into a class that refuses anything outside `('tir','resp')`).
 
 ---
 
@@ -138,6 +161,8 @@ Per-frame AU occurrence labels; subject-disjoint split. Used exclusively by the 
 
 ### Temporal Alignment
 `data/alignment.py` maps each RGB frame index to the nearest TIR frame to handle fps mismatch.
+
+**The `rgb2d` stream does NOT go through `alignment.py`** (§3.5): it assumes jpg index == thermal frame index == `IRFeatures` line index, exactly as the TIR and `rgb_roi` arms already do. The F037 lead-frame case (design §7) is an open item, not a solved problem — do not assume this stream is trigger-aligned.
 
 ---
 
@@ -202,6 +227,7 @@ DataLoader(dataset,
 | Stage | Type | Shape |
 |-------|------|-------|
 | Stage 2 | `{stream: Tensor}` | `{'rgb': [B,3,T,H,W], 'bp': [B,1,S], ...}` |
+| Stage 2 (`tir_roi_resp_rgb2d`, §3.5) | `{stream: Tensor}` | `{'tir': [B,3,T,96,96], 'rgb2d': [B,3,T,96,96], 'resp': [B,1,S]}` — **one shared window** for all three; both visual streams report `T` frames and `6x6 = 36` patches/frame |
 | Stage 3 | `(Tensor, Tensor)` | `([B,C,T,H,W], [B,output_len])` |
 | AU probe | `(Tensor, Tensor)` | `([B,C,T,H,W], [B,n_aus])` |
 

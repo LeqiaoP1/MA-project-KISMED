@@ -23,11 +23,17 @@ from typing import Callable, Dict, Optional
 import os
 
 __all__ = ['build_dataset', 'build_pretraining_dataset', 'register_dataset',
-           'list_datasets', 'TIR_ROI_DATA_SETS', 'RGB_ROI_DATA_SETS']
+           'list_datasets', 'TIR_ROI_DATA_SETS', 'RGB_ROI_DATA_SETS',
+           'TIR_ROI_RGB2D_DATA_SETS']
 
 #: ``data_set`` values that select the ADD-ON thermal-ROI + respiration Stage-2
 #: dataset (RAW tree) instead of the canonical paired layout.
 TIR_ROI_DATA_SETS = ('tir_roi', 'tir_roi_resp', 'tir-roi')
+
+#: ``data_set`` values that select the TRI-MODAL Stage-2 path (TIR-ROI + 2D
+#: texture + respiration, all three from offline caches). Stage 2 ONLY: there is
+#: no fine-tune view of the 2D stream yet, so ``build_dataset`` rejects it.
+TIR_ROI_RGB2D_DATA_SETS = ('tir_roi_resp_rgb2d', 'trimodal')
 
 #: ``data_set`` values that select the ADD-ON RGB face-ROI path (RAW tree): the
 #: visual stream is the landmark-defined face crop, so Stage 2 and Stage 3 share
@@ -153,6 +159,17 @@ def build_pretraining_dataset(args):
             usable = [s for s in discover_sessions(root, tasks=sel.tasks)
                       if s['ir_file'] and s['resp_file']]
             subs = sorted({s['subject'] for s in usable})
+        elif name in TIR_ROI_RGB2D_DATA_SETS:
+            from .tir_resp_dataset import default_raw_root, discover_sessions
+            root = (getattr(args, 'raw_root', None)
+                    or getattr(args, 'data_path', None) or default_raw_root())
+            sel = tgrp.resolve_task_selection(
+                tasks=getattr(args, 'tasks', None),
+                task_set=getattr(args, 'task_set', None),
+                task_groups=getattr(args, 'task_groups', None))
+            usable = [s for s in discover_sessions(root, tasks=sel.tasks)
+                      if s['ir_file'] and s['resp_file']]
+            subs = sorted({s['subject'] for s in usable})
         elif name in RGB_ROI_DATA_SETS:
             from .rgb_roi_dataset import default_raw_root, discover_rgb_sessions
             root = (getattr(args, 'raw_root', None)
@@ -225,6 +242,9 @@ def build_pretraining_dataset(args):
     if name in TIR_ROI_DATA_SETS:
         from .tir_resp_dataset import build_tir_roi_pretrain_dataset
         return build_tir_roi_pretrain_dataset(args)
+    if name in TIR_ROI_RGB2D_DATA_SETS:
+        from .trimodal_dataset import build_tir_roi_rgb2d_pretrain_dataset
+        return build_tir_roi_rgb2d_pretrain_dataset(args)
     if name in RGB_ROI_DATA_SETS:
         from .rgb_roi_dataset import build_rgb_roi_pretrain_dataset
         return build_rgb_roi_pretrain_dataset(args)
