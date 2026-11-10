@@ -1,5 +1,19 @@
 # Software Design Document: BP4D+ 2D Texture Facial ROI Ingestion and Preprocessing Pipeline
 
+**Version: v2 (2026-11-10).** v1 described prerendered clip stacks; v2 matches
+the artefact the implementation plan builds. Build order of record:
+`code/notes/plan/2DTexture_ROI_cache_implementation_plan.md`. Geometry doctrine
+shared with the thermal stream: `code/notes/design/ROI_crop_and_rescaling.md`.
+
+| v1 → v2 change | why |
+|---|---|
+| Cache stores **native-resolution hull pixels** per `<S>_<T>`, not `(N_clips, 200, 96, 96, 3)` clip stacks | the TIR doctrine: *store native, rescale at load*. Window selection and every quality gate stay in the DATASET, so one cache serves any hop, any `input_size`, any fold (decision 1/2/11 of the plan) |
+| Output resolution is a **load-time** property (`input_size`, pinned to 96 for every visual stream), not a cache property | `input_size` cannot change a stored byte, so it must not be in the cache key; the single resample happens at load |
+| Quality gates (validity, sway, out-of-frame) are **dataset-level** with counters, not build-time filters | a build-time filter would bake selection knobs into the artefact and force a rebuild per experiment |
+| Storage is a raw `.dat` memmap + a `.json` commit marker per session (~0.19 MB/frame), not a `.npz` | a materialising reader re-allocates hundreds of MB per sample under DataLoader shuffling; `.npz` cannot be memory-mapped |
+
+A v1 reader may not be used with a v2 artefact (different shape, different key).
+
 This document defines the software architecture, mathematical specifications, parametric configurations, locked architectural invariants, and implementation interfaces for the 2D facial texture video and landmark ingestion pipeline in the BP4D+ multimodal research framework. The pipeline extracts spatiotemporally aligned, standardized facial Regions of Interest (ROIs) from high-resolution 2D texture frames to serve as visual token inputs for multi-modal Masked Autoencoders (MultiMAE) alongside thermal video (TIR-ROI), respiration waveforms, and continuous arterial blood pressure signals.
 
 ---
@@ -14,10 +28,12 @@ The primary software objective of this pipeline is to ingest raw, uncompressed 2
 1. **Geometric Precision & Invariant Square Cropping**: Derive facial bounding boxes from tracked 49-point facial landmarks. Square bounding box enforcement is a **non-negotiable structural invariant** (`square_crop = true` hardcoded), preventing non-affine facial stretching during spatial downscaling.
 2. **Standardized Color Representation**: Output channel layout is locked strictly to **RGB format**, matching standard Vision Transformer pre-training backbones.
 3. **Zero-Tolerance Landmark Tracking Gating**: The validity ratio is locked to **`min_valid_ratio = 1.0`** (100% valid frames required per clip). Clips containing even a single missing or dropped tracking frame (`[]`) are rejected.
-4. **Target Resolution & Patch Divisibility**: Output spatial resolution is locked to **$96 \times 96$ pixels**, providing an exact $6 \times 6 = 36$ patch grid per frame under standard $16 \times 16$ Vision Transformer tokenization.
-5. **Fixed Anti-Aliasing Resampling**: Downsampling from high-resolution raw crops to target resolution is locked to OpenCV **`INTER_AREA`** resampling, guaranteeing consistent anti-aliasing without user configuration overhead.
-6. **Multimodal Temporal Synchronization**: Guarantee frame-level temporal alignment across the 25 frames-per-second (fps) 2D video, 25 fps thermal camera stream, and 100 Hz resampled physiological channels (respiration voltage and blood pressure mmHg).
+4. **Output Resolution & Patch Divisibility**: the model-side spatial resolution is **$96 \times 96$ pixels** for *every* video-like stream (`tir` and `rgb2d` share one grid), giving an exact $6 \times 6 = 36$ patch grid per frame under $16 \times 16$ tokenization. This is a **load-time** property (`input_size`), not a stored one.
+5. **One Resample, at Load**: the cache stores native source pixels; the only resampling in the pipeline is the per-clip `cv2.resize` from the clip box to `input_size`, locked to **`INTER_AREA`** when downscaling (`INTER_LINEAR` otherwise). No second resample is ever applied to already-resampled pixels.
+6. **Multimodal Temporal Synchronization**: Guarantee frame-level temporal alignment across the 25 frames-per-second (fps) 2D video, 25 fps thermal camera stream, and 100 Hz resampled physiological channels (respiration voltage and blood pressure mmHg). v2 assumes jpg index == thermal frame index == `IRFeatures` line index (the assumption both existing arms already make); the F037 lead-frame case is a documented open item.
 7. **I/O Throughput Optimization**: Alleviate filesystem bottlenecks caused by decoding individual high-resolution image frames ($1040 \times 1392$ pixels) on-the-fly during distributed model training through an offline caching subsystem.
+8. **Store Native, Rescale At Load**: the cached artefact holds *source-resolution* hull pixels (`store_resolution = "native"`). `input_size`, `clip_stride`, `temporal_stride`, `max_sway_px` and `min_valid_ratio` therefore never appear in the cache key.
+9. **Two-Level Out-of-Frame Gate**: a task whose hull is mostly outside the frame is skipped at build time, and a **clip** whose own box is mostly outside the frame is dropped at load time (50 % in-frame share). Black padding must never hand a mostly-empty clip to the model.
 
 ---
 
@@ -29,20 +45,25 @@ The ingestion engine cleanly separates **tunable experimental parameters** from 
 The following pipeline attributes are permanently fixed in the system architecture and are no longer user-configurable options:
 
 * **`square_crop = true`**: Bounding boxes are always expanded to a symmetric 1:1 aspect ratio based on $\max(w_t, h_t)$ before isotropic padding. Non-square cropping is unsupported.
-* **`min_valid_ratio = 1.0`**: Candidate clips must possess 100% valid, non-empty 49-point landmark annotations across every frame in the window. Partial or interpolated tracking is strictly forbidden.
+* **`min_valid_ratio = 1.0`**: Candidate clips must possess 100% valid, non-empty 49-point landmark annotations across every frame in the window. Partial or interpolated tracking is strictly forbidden. Applied at **load** (dataset filter), not at build.
 * **`color_space = "RGB"`**: All decoded frames are converted from raw OpenCV BGR order to standard RGB tensor representations.
-* **`target_size = [96, 96]`**: Standardized output resolution of $96 \times 96$ pixels, yielding 36 spatial patches of $16 \times 16$ per frame (saving ~43.75% token memory relative to $128 \times 128$).
-* **`interpolation = "area"`**: Hardcoded to `cv2.INTER_AREA`, providing optimal area relation pixel decimation without Moiré artifacts.
+* **`input_size = 96`**: model-side output resolution for every visual stream, yielding 36 spatial patches of $16 \times 16$ per frame. A load-time knob (valid alternatives: 64, 112 — the same cache serves them), pinned to 96 in the shipped config because `tir` and `rgb2d` must share a grid.
+* **`store_resolution = "native"`**: the cached artefact keeps source pixels. Locked: there is no integer `store_size`, because resampling in the builder would bake `input_size` into the artefact.
+* **`interpolation = "area"`**: at load, `cv2.INTER_AREA` when downscaling and `cv2.INTER_LINEAR` otherwise (TIR parity).
 
 ### 2. Configurable Parameter Taxonomy
 
 | Parameter Key | Type | Default Value | Valid Range | Architectural Role |
 | :--- | :--- | :--- | :--- | :--- |
-| `roi_padding` | float | `0.10` | `[0.0, 0.50]` | Fractional expansion applied to all four sides of the minimal facial landmark bounding box (10% isotropic margin). |
-| `clip_duration` | float | `8.0` | `[1.0, 30.0]` | Temporal window duration in seconds per training/evaluation sample ($8.0\text{ s} = 200\text{ frames}$). |
-| `stride_duration` | float | `2.0` | `[0.5, 10.0]` | Temporal shift between consecutive overlapping clips during session sliding-window assembly ($2.0\text{ s} = 50\text{ frames}$). |
-| `max_sway_px` | float | `15.0` | `[5.0, 100.0]` | Maximum allowable translation (Euclidean drift) of the face center point within a single clip window. |
-| `cache_format` | string | `npy_memmap` | `npy_memmap`, `h5`, `tar` | Binary serialization format utilized by the offline ROI cache builder. |
+| `roi_padding` | float | `0.10` | `[0.0, 0.50]` | Fractional expansion applied to all four sides of the minimal facial landmark bounding box (10% isotropic margin). **In the cache key** (it changes stored pixels). |
+| `clip_duration` | float | `8.0` | `[1.0, 30.0]` | Temporal window duration in seconds per training/evaluation sample ($8.0\text{ s} = 200\text{ frames}$). Load-time; only its value at build time (via `clip_seconds`) affects the hull. |
+| `stride_duration` | float | `2.0` | `[0.5, 10.0]` | Temporal shift between consecutive clips. **Load-time only** — never in the key. |
+| `max_sway_px` | float | measured (Phase 0) | `[5.0, 100.0]` | Maximum centroid excursion inside one window. Load-time selection rule. v1 proposed 15 px; at 1392x1040 that is ~0.06 face widths and is expected to be very aggressive, so the value is measured before being pinned. |
+| `min_valid_ratio` | float | `1.0` | `(0.0, 1.0]` | Fraction of the window's frames that must carry a finite 49-point track. Load-time. |
+| `area_min_frac` | float | `0.5` | `[0.0, 1.0]` | Minimum in-frame share of a clip's own box; below it the clip is dropped (`clips_dropped_2d_envelope`). Load-time. |
+| `input_size` | int | `96` | multiple of the patch size | Model-side resolution (load-time rescale target). **Not in the key.** |
+| `store_resolution` | string | `native` | `native` | Artefact resolution rule. **In the key.** |
+| `source_policy` | string | `dir-then-zip` | `dir-then-zip` | Frame source resolution: extracted directory when present, else zip members decoded in memory. `2D+3D` is never extracted to disk. In the key. |
 | `tubelet_t_size` | int | `2` | `1, 2, 4` | Number of consecutive temporal frames merged into a single 3D tubelet token. |
 
 
@@ -92,22 +113,42 @@ $$X_{1, t} = c_{x, t} - \frac{L_t}{2}, \quad X_{2, t} = c_{x, t} + \frac{L_t}{2}
 
 $$Y_{1, t} = c_{y, t} - \frac{L_t}{2}, \quad Y_{2, t} = c_{y, t} + \frac{L_t}{2}$$
 
-### 4. Boundary Clamping & Spatial Resizing to $96 \times 96$
-When a subject sits near the camera image boundary, $X_{1, t}$ or $Y_{1, t}$ may evaluate to negative values, or $X_{2, t}, Y_{2, t}$ may exceed the image margins. The coordinates are clamped to image boundaries:
+### 4. Boundary Padding and the Two Resolutions
+When a subject sits near the camera image boundary, $X_{1, t}$ or $Y_{1, t}$ may evaluate to negative values, or $X_{2, t}, Y_{2, t}$ may exceed the image margins. The coordinates are clamped to image boundaries for extraction, and the missing regions are zero-padded to preserve the strict square aspect ratio:
 
 $$\hat{X}_{1, t} = \max(0, \lfloor X_{1, t} \rfloor), \quad \hat{X}_{2, t} = \min(W_{\text{raw}}, \lceil X_{2, t} \rceil)$$
 
 $$\hat{Y}_{1, t} = \max(0, \lfloor Y_{1, t} \rfloor), \quad \hat{Y}_{2, t} = \min(H_{\text{raw}}, \lceil Y_{2, t} \rceil)$$
 
-The extracted sub-image $I_{\text{crop}, t} \in \mathbb{R}^{H_{\text{sub}} \times W_{\text{sub}} \times 3}$ is converted from raw BGR to RGB and resampled using area interpolation ($\text{INTER\_AREA}$) to yield the target tensor:
+A v2 artefact stores **source-resolution** pixels, so this section has two
+distinct products:
 
-$$I_{\text{target}, t} = \mathcal{R}_{[96, 96]}(I_{\text{crop}, t}) \in \mathbb{R}^{96 \times 96 \times 3}$$
+1. **Stored (build time).** The square **hull** $B$ over every stride-1 clip box
+   is cut from the frame and black-padded back to its own square extent, which
+   may extend past the frame. It is written **without any resampling**:
+   $$I_{\text{store}} \in \mathbb{R}^{T \times L \times L \times 3},\quad L = \text{hull side (native px)}$$
+2. **Model input (load time).** Each clip's own box $B_{\text{clip}} \subseteq B$
+   is cut out of the stored hull and resized **once**:
+   $$I_{\text{target}} = \mathcal{R}_{[s,s]}(I_{\text{store}}[B_{\text{clip}}]) \in \mathbb{R}^{s \times s \times 3},\quad s = \texttt{input\_size} = 96$$
+   with $\mathcal{R}$ = `INTER_AREA` when $s \le \min(w, h)$ and `INTER_LINEAR`
+   otherwise. Because the hull contains every clip box (invariant I2), the
+   translation $B_{\text{clip}} - B_{0}$ is always inside the stored array; a
+   violation is an `IndexError`, never a silent clamp or wrap.
+
+Consequence: the per-clip crop is **tight** (the face nearly fills the frame),
+v1's fixed hull-relative framing no longer applies, and `input_size` is free.
 
 ---
 
 ## 4. Temporal Alignment, Windowing & Invariant Quality Gating
 
 Because the video frames feed a multi-stream masked autoencoder requiring strict temporal synchrony, sequences are parsed into overlapping sliding windows with mathematical quality validation.
+
+**Every gate in this section runs at LOAD time, inside the dataset, and is
+counted per rule** (`clips_dropped_2d_invalid`, `_sway`, `_envelope`,
+`_short`). None of them is a cache-key field: the cache stores pixels, the
+dataset decides which windows are usable, so changing a threshold costs no
+rebuild.
 
 ### 1. Clip Frame Count Contract
 Given a sampling frequency of $f_{\text{video}} = 25.0\text{ fps}$, an $8.0\text{-second}$ clip requires an exact frame count:
@@ -118,8 +159,8 @@ With a temporal stride of $\Delta \tau = 2.0\text{ seconds}$, the frame offset b
 
 $$N_{\text{stride}} = \lfloor \text{stride\_duration} \cdot f_{\text{video}} \rfloor = \lfloor 2.0 \cdot 25.0 \rfloor = 50\text{ frames}$$
 
-### 2. Multi-Stream Token Alignment Contract ($96 \times 96$ Grid)
-For an $8.0\text{-second}$ clip with $200$ video frames, the temporal token structure across all four modalities aligns on a uniform grid:
+### 2. Multi-Stream Token Alignment Contract ($s \times s$ Grid, $s = 96$)
+For an $8.0\text{-second}$ clip with $200$ video frames, the temporal token structure across the visual and physiological streams aligns on a uniform grid:
 
 * **2D-RGB Texture Stream ($96 \times 96$)**: 
   * Spatial patches per frame ($16 \times 16$ kernel):
@@ -149,7 +190,7 @@ $$\bar{C} = \frac{1}{N_{\text{frames}}} \sum_{k=0}^{N_{\text{frames}}-1} C_{t_{\
 
 $$\Delta_{\text{sway}} = \max_{k \in [0, N_{\text{frames}}-1]} \| C_{t_{\text{start}} + k} - \bar{C} \|_2$$
 
-If $\Delta_{\text{sway}} > \text{max\_sway\_px} = 15.0\text{ px}$, the clip is flagged as motion-corrupted and rejected.
+If $\Delta_{\text{sway}} > \texttt{max\_sway\_px}$, the clip is flagged as motion-corrupted and rejected (`clips_dropped_2d_sway`). The threshold is a **load-time** value measured in Phase 0 of the plan; v1's fixed 15 px is not adopted without that measurement, because at 1392x1040 it corresponds to ~0.06 face widths (TIR keeps 96.8 % of clips at 40 px on 726x480, i.e. ~0.4 face widths).
 
 ---
 
@@ -158,34 +199,45 @@ If $\Delta_{\text{sway}} > \text{max\_sway\_px} = 15.0\text{ px}$, the clip is f
 Reading individual $1040 \times 1392$ `.jpg` files on-the-fly during distributed model training creates severe I/O bottlenecks. An uncompressed $8.0\text{-second}$ clip of 200 raw frames occupies approximately $290\text{ MB}$ on disk.
 
 ### 1. Offline Precomputation Subsystem
-An offline build utility (`runners/run_build_2d_roi_cache.py`) processes all participant tasks in parallel ahead of model training:
+An offline build utility (`runners/run_build_2d_roi_cache.py`) processes all participant tasks in parallel ahead of model training. It stores **pixels only** — it never selects windows and never applies a selection rule:
 
-1. **Dataset Traversal**: Inspect `/BP4D+/2D+3D/<Subject>/<Task>/` directories and corresponding `2DFeatures/<Subject>_<Task>.mat` files.
-2. **Quality & Motion Verification**: Enforce 100% landmark validity and sway displacement $\le 15.0\text{ px}$ across contiguous $8.0\text{-second}$ windows.
-3. **Optimized Cropping & Scaling**: Compute the invariant square padded bounding box with $\alpha = 0.10$, convert to RGB, and apply `cv2.resize` to $96 \times 96$ using invariant `INTER_AREA` interpolation.
-4. **Binary Serialization**: Save processed clip tensors into a unified, memory-mapped binary array per subject-task session.
+1. **Dataset Traversal**: `2DFeatures/<S>_<T>.mat` and the frame source for the same session (extracted `2D+3D/<S>/<T>/*.jpg`, else the members of `2D+3D/<S>.zip` decoded in memory). **Nothing is ever extracted to disk.**
+2. **Track Construction**: `parse_2d_features` → a `[n_jpg, 49, 2]` track with NaN where the 1-based `frame` field leaves a gap. An image/mat count mismatch skips the session (`image_count_mismatch`) — the v1 (`rgb_roi_dataset`) rule, kept so the cached track can never mis-align.
+3. **Storage Box**: the square **hull** over the stride-1 clip windows of valid rows, black-padded to its own square extent when it crosses the frame; a task whose in-frame share is $< 0.5$ is skipped (`box_out_of_frame`).
+4. **Crop & Serialize**: per frame, clamp → pad → `cv2.cvtColor(BGR2RGB)` → write straight into a memory-mapped `.dat`. **No resize.** A sibling `.lm.dat` holds the track and a `.json` holds the scalars; the `.json` is written last and is the commit marker.
 
-### 2. Binary Storage Layout & Memory-Mapping ($96 \times 96$)
-The cached arrays are stored as raw binary arrays accompanied by JSON metadata descriptors:
-* **Shape**: $(N_{\text{clips}}, N_{\text{frames}}, 96, 96, 3)$
-* **Data Type**: Unsigned 8-bit integer (`uint8`, values $0 \dots 255$)
-* **Storage Footprint**: An $8.0\text{-second}$ clip resized to $96 \times 96 \times 3$ occupies exactly:
-  $$200 \times 96 \times 96 \times 3 \text{ bytes} = 5,529,600\text{ bytes} \approx 5.53\text{ MB}$$
-  This represents a **52.4-fold reduction in data volume** compared to raw images while drastically cutting DataLoader memory pressure.
-* **Runtime Access**: PyTorch `DataLoader` workers access the `.dat` files using `numpy.memmap` in `r` (read-only) mode. This avoids heap allocations, allowing the operating system page cache to service data reads with zero serialization latency.
+Selection rules — `min_valid_ratio`, `max_sway_px`, the 50 % envelope gate, `clip_stride`, `input_size` — live in the **dataset**, not here. Skipping a session on a label/selection rule would make the cache depend on a knob it is supposed to be independent of.
+
+### 2. Binary Storage Layout & Memory-Mapping
+Per session `<S>_<T>`, under `<out_root>/<CACHE_KEY>/tasks/`:
+
+| file | content | dtype / shape |
+| :--- | :--- | :--- |
+| `<S>_<T>.dat` | hull pixels, RGB | `uint8`, $(T, L_y, L_x, 3)$, $L_x = L_y = L$ (square) |
+| `<S>_<T>.lm.dat` | the landmark track the shard was built from | `float32`, $(T, 49, 2)$ |
+| `<S>_<T>.json` | `session, source, n_frames, box, pad, src_hw, hull_hw, store_resolution, area_in_frac`, plus both shapes/dtypes and the byte total | scalars |
+
+* **Storage Footprint**: at $L \approx 250$ px, $250 \cdot 250 \cdot 3 = 187.5\text{ KB/frame}$ → $\approx 280\text{ MB}$ per 1500-frame session → $\approx 0.4\text{ TB}$ for the corpus, i.e. about **23x smaller than the raw** $1040 \times 1392$ frames. (v1's 5.53 MB-per-clip / 52.4x figures assumed prerendered 96 px pixels and no longer apply. Measured quota on the Lichtenberg scratch: 40 TB with 623 GB used, so this is ~1 % of headroom.)
+* **No header, offset 0**: `.npy` was rejected because `np.lib.format.open_memmap` writes a 128-byte header and maps from offset 128, and because `shape`/`dtype` would then live in two places. Here they live only in the `.json`.
+* **Runtime Access**: `np.memmap(path, dtype=..., mode="r", shape=...)`, sliced per clip. Nothing is materialised per shard; the OS page cache serves the reads and its pages are evictable. A `ShardHandle` (context manager) owns the two mappings and releases their file descriptors on `close()` — which drops the references, because calling `mmap.close()` behind a live numpy view raises `BufferError`.
+* **Integrity**: a `.dat` without its `.json` is `incomplete` (never read); a `.dat` whose size disagrees with the `.json` shape is `truncated`; both are reported by `--status`, which also reports total bytes.
 
 ---
 
-## 3. Only for illustration, not as reference of implementation interfaces
+## 6. Illustrative interfaces (NOT the implementation contract)
 
-### 1. Core Geometric Extractor Module (`data/roi_extractor.py`)
+The two sketches below show the *shape* of the geometry helpers. The build
+order and exact signatures live in
+`code/notes/plan/2DTexture_ROI_cache_implementation_plan.md`; when they
+disagree, the plan wins.
+
+### 1. Core Geometric Extractor Module (build side: box only, no resize)
 
 ```python
 """
-data/roi_extractor.py
-Robust bounding box computation and spatial ROI extraction for BP4D+ 2D texture images.
-Enforces invariant square cropping, RGB output conversion, fixed 96x96 resolution, 
-and invariant cv2.INTER_AREA interpolation.
+Illustrative: square-hull geometry for BP4D+ 2D texture crops.
+The BUILDER uses compute_bounding_box() only -- it stores native pixels.
+The DATASET uses extract_and_resize() with the clip's own box (see 6.2).
 """
 from typing import Tuple, Dict, Any
 import numpy as np
@@ -193,14 +245,14 @@ import cv2
 
 class FaceROIExtractor2D:
     # Locked Architectural Invariants
-    TARGET_SIZE: Tuple[int, int] = (96, 96)
-    INTERPOLATION = cv2.INTER_AREA
     SQUARE_CROP: bool = True
     COLOR_SPACE: str = "RGB"
 
     def __init__(self, config: Dict[str, Any]):
         # Configurable geometry padding (default 0.10)
         self.roi_padding = float(config.get("roi_padding", 0.10))
+        # Load-time only: the builder never resizes
+        self.input_size = int(config.get("input_size", 96))
 
     def compute_bounding_box(
         self, 
@@ -209,13 +261,16 @@ class FaceROIExtractor2D:
         img_w: int
     ) -> Tuple[int, int, int, int]:
         """
-        Computes the expanded, squared, clamped bounding box from 49 facial landmark coordinates.
+        SQUARE box from 49 facial landmarks -- NOT clamped to the frame.
+
+        Build side: the unclamped span is what the hull unions over, and the
+        builder black-pads wherever it leaves the image (invariant 9).
         Args:
-            landmarks: Array of shape (49, 2) in (x, y) pixel coordinates.
+            landmarks: Array of shape (N, 49, 2) in (x, y) source pixels.
             img_h: Image height in pixels (1040).
             img_w: Image width in pixels (1392).
         Returns:
-            Tuple (x1, y1, x2, y2) in integer image coordinates.
+            Half-open (x0, x1, y0, y1) in source pixels; may exceed the frame.
         """
         x_min, y_min = np.min(landmarks, axis=0)
         x_max, y_max = np.max(landmarks, axis=0)
@@ -234,13 +289,13 @@ class FaceROIExtractor2D:
         y1 = cy - side_padded / 2.0
         y2 = cy + side_padded / 2.0
             
-        # Boundary clamping to image limits
-        x1_clamp = max(0, int(np.floor(x1)))
-        y1_clamp = max(0, int(np.floor(y1)))
-        x2_clamp = min(img_w, int(np.ceil(x2)))
-        y2_clamp = min(img_h, int(np.ceil(y2)))
+        # Return exact square coordinates (may be out of bounds)
+        x1_sq = int(np.floor(x1))
+        y1_sq = int(np.floor(y1))
+        x2_sq = int(np.ceil(x2))
+        y2_sq = int(np.ceil(y2))
         
-        return x1_clamp, y1_clamp, x2_clamp, y2_clamp
+        return x1_sq, y1_sq, x2_sq, y2_sq
 
     def extract_and_resize(
         self, 
@@ -248,27 +303,55 @@ class FaceROIExtractor2D:
         bbox: Tuple[int, int, int, int]
     ) -> np.ndarray:
         """
-        Crops the bounding box from the frame, applies invariant RGB conversion, and downscales to 96x96.
+        LOAD TIME: crop one box, black-pad it square, RGB, resize once.
+
+        The only resampling in the 2D pipeline. ``input_size`` is the model's
+        spatial size, so the same cache serves 64 / 96 / 112.
         """
         x1, y1, x2, y2 = bbox
-        cropped = frame_bgr[y1:y2, x1:x2]
+        img_h, img_w = frame_bgr.shape[:2]
         
-        if cropped.size == 0:
-            raise ValueError(f"Extracted crop has zero area from bbox: {bbox}")
+        # Calculate clamping for extraction
+        x1_clamp = max(0, x1)
+        y1_clamp = max(0, y1)
+        x2_clamp = min(img_w, x2)
+        y2_clamp = min(img_h, y2)
+        
+        # Check area threshold (Completeness fix: Out-of-Frame Camera Disconnect)
+        area_bbox = (x2 - x1) * (y2 - y1)
+        area_clamp = (x2_clamp - x1_clamp) * (y2_clamp - y1_clamp)
+        if area_clamp < 0.5 * area_bbox:
+            raise ValueError(f"Crop area below 50% threshold from bbox: {bbox}")
             
-        # Invariant: Output color space is strictly RGB
-        cropped_rgb = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
-            
-        # Invariant: Resized to (96, 96) using INTER_AREA
-        resized = cv2.resize(
-            cropped_rgb, 
-            self.TARGET_SIZE, 
-            interpolation=self.INTERPOLATION
+        cropped = frame_bgr[y1_clamp:y2_clamp, x1_clamp:x2_clamp]
+        
+        # Pad to preserve square aspect ratio (Correctness fix)
+        pad_top = y1_clamp - y1
+        pad_bottom = y2 - y2_clamp
+        pad_left = x1_clamp - x1
+        pad_right = x2 - x2_clamp
+        
+        cropped_padded = cv2.copyMakeBorder(
+            cropped, pad_top, pad_bottom, pad_left, pad_right, 
+            cv2.BORDER_CONSTANT, value=[0, 0, 0]
         )
-        return resized
+        
+        # Invariant: Output color space is strictly RGB
+        cropped_rgb = cv2.cvtColor(cropped_padded, cv2.COLOR_BGR2RGB)
+            
+        # The ONLY resample: to the model's input_size, kernel by TIR parity
+        s = int(self.input_size)
+        h, w = cropped_rgb.shape[:2]
+        interp = cv2.INTER_AREA if s <= min(w, h) else cv2.INTER_LINEAR
+        return cv2.resize(cropped_rgb, (s, s), interpolation=interp)
 ```
 
-### 2. PyTorch Dataset Integration (`data/bp4d_2d_dataset.py`)
+### 2. PyTorch Dataset Integration (illustrative)
+
+The window (`frame_start`/`frame_end`) is **dataset-owned** and shared with the
+TIR and RESP streams; the cache stores no clip index. The dataset crops the
+clip's own square box out of the native hull and resizes it once (Step 3.2 of
+the plan for the exact containment checks).
 
 ```python
 """
@@ -278,12 +361,13 @@ PyTorch Dataset implementing memory-mapped 2D texture facial ROI retrieval.
 from typing import Dict, Any, List
 import json
 import os
+import cv2
 import torch
 from torch.utils.data import Dataset
 import numpy as np
 
 class BP4DPlus2DTextureDataset(Dataset):
-    TARGET_SIZE: tuple = (96, 96)
+    INPUT_SIZE: int = 96   # load-time; the artefact itself is native
 
     def __init__(self, manifest_path: str, config: Dict[str, Any], is_train: bool = True):
         self.config = config
@@ -293,6 +377,17 @@ class BP4DPlus2DTextureDataset(Dataset):
             self.index_records: List[Dict[str, Any]] = json.load(f)
             
         self.clip_frames = int(config.get("clip_duration", 8.0) * config.get("source_fps", 25.0))
+        self._mmap_cache: Dict[str, np.memmap] = {}
+
+    def _get_mmap(self, dat_path: str, shape: tuple) -> np.memmap:
+        if dat_path not in self._mmap_cache:
+            self._mmap_cache[dat_path] = np.memmap(
+                dat_path, 
+                dtype=np.uint8, 
+                mode="r", 
+                shape=shape
+            )
+        return self._mmap_cache[dat_path]
 
     def __len__(self) -> int:
         return len(self.index_records)
@@ -300,30 +395,30 @@ class BP4DPlus2DTextureDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         record = self.index_records[idx]
         dat_path = record["cache_file"]
-        clip_idx = record["clip_idx"]
+        f0, f1 = record["frame_start"], record["frame_end"]
+        y0, y1, x0, x1 = record["hull_local_box"]   # square_span_2d - hull origin
         
-        # Access memory-mapped binary array without loading whole file
-        mmap_arr = np.memmap(
-            dat_path, 
-            dtype=np.uint8, 
-            mode="r", 
-            shape=tuple(record["mmap_shape"])
-        )
+        # Access memory-mapped binary array using cached handle
+        mmap_arr = self._get_mmap(dat_path, tuple(record["mmap_shape"]))
         
-        # Sliced array shape: (clip_frames, 96, 96, 3)
-        clip_raw = np.array(mmap_arr[clip_idx], dtype=np.float32)
+        # Crop each frame's own square box out of the native hull, resize once.
+        # (f0, f1) come from the dataset entry; (y0:y1, x0:x1) is hull-local.
+        s = self.INPUT_SIZE
+        clip_u8 = np.stack([
+            cv2.resize(np.ascontiguousarray(mmap_arr[f0 + i, y0:y1, x0:x1]),
+                       (s, s), interpolation=cv2.INTER_AREA)
+            for i in range(f1 - f0)])
         
-        # Transform to PyTorch standard tensor layout: (C, T, H, W) -> (3, 200, 96, 96)
-        clip_tensor = torch.from_numpy(clip_raw).permute(3, 0, 1, 2)
+        # (T, s, s, C) uint8 -> PyTorch layout (C, T, s, s)
+        clip_tensor = torch.from_numpy(clip_u8.transpose(3, 0, 1, 2))
         
-        # Per-clip normalization (Scale to [0, 1] then Standardize mean=0, std=1)
+        # Dataset contract: [0, 1]. The MODEL z-scores the clip
+        # (core/input_adapters.zscore_clip); a dataset-level standardisation
+        # would be a second, undocumented normalisation.
         clip_tensor = clip_tensor / 255.0
-        mean = clip_tensor.mean(dim=(1, 2, 3), keepdim=True)
-        std = clip_tensor.std(dim=(1, 2, 3), keepdim=True).clamp(min=1e-6)
-        clip_tensor = (clip_tensor - mean) / std
 
         return {
-            "video_2d": clip_tensor,  # Shape: (3, 200, 96, 96)
+            "video_2d": clip_tensor,  # Shape: (3, T, 96, 96)
             "subject_id": record["subject_id"],
             "task_id": record["task_id"],
             "start_frame": record["start_frame"]
@@ -332,7 +427,7 @@ class BP4DPlus2DTextureDataset(Dataset):
 
 ---
 
-## 4. Edge Cases, Failure Modes & Validation Rules
+## 7. Edge Cases, Failure Modes & Validation Rules
 
 The software pipeline enforces explicit boundary and numerical guards against data anomalies documented in the BP4D+ corpus.
 
@@ -340,16 +435,18 @@ The software pipeline enforces explicit boundary and numerical guards against da
 
 | Fault Condition | Dataset Source Indicator | Pipeline Detection Mechanism | Software Mitigation / Resolution |
 | :--- | :--- | :--- | :--- |
-| **Empty Landmark Array** | `fit(t).pts_2d == []` | Check `len(pts_2d) == 0` during frame ingestion. | **Strict Invariant**: Drop candidate clip immediately (`min_valid_ratio = 1.0`). |
-| **Out-of-Frame Camera Disconnect** | Subjects F027_T4, F041_T7, M035_T6 | Visual coordinates evaluate outside $[0, W_{\text{raw}}]$ or $[0, H_{\text{raw}}]$. | Boundary clamping preserves in-bounds regions. If $\text{area}_{\text{clamp}} < 0.5 \cdot \text{area}_{\text{bbox}}$, discard clip. |
-| **Asymmetric Multi-Stream Start** | Subject F037 (T1, T2) | Initial frame index discrepancy between 2D and thermal metadata. | Enforce synchronization by trimming lead frames to match the physiological Biopac trigger index. |
-| **Extreme Participant Sway** | Elicitation Tasks T7, T8, T9 | $\Delta_{\text{sway}} > \text{max\_sway\_px} = 15.0\text{ px}$ across the 200-frame window. | Filter clip from pre-training dataset to prevent ViT positional embedding corruption. |
-| **Non-Zero Amplifier Clamping** | Physiological grounding | Sensor flatline or saturation $(-10\text{ V})$. | Discard physiological clip pairing if respiration or BP waveforms rail. |
+| **Empty Landmark Field** | `fit(t).pts_2d` is `[]` | `~np.isfinite(pts)` on the target subset (`valid_rows_2d`). | **Load-time gate**: a window whose invalid-frame fraction exceeds `1 - min_valid_ratio` (default 1.0, i.e. zero tolerance) is dropped as `clips_dropped_2d_invalid`. |
+| **Image / Track Count Mismatch** | `n_jpg != n_mat`, or a `frame` field pointing outside the jpg range | Build-time count check; out-of-range rows discarded and their jpg indices left NaN. | Session skipped at build (`image_count_mismatch`), so the cached track can never mis-align with the images. |
+| **Out-of-Frame Camera Disconnect** | Subjects F027_T4, F041_T7, M035_T6 | Two levels: the hull's in-frame share at build, then each **clip's** own box at load. | Black padding keeps the crop square; share $< 0.5$ skips the task (`box_out_of_frame`) or drops the clip (`clips_dropped_2d_envelope`). |
+| **Asymmetric Multi-Stream Start** | Subject F037 (T1, T2) | Initial frame index discrepancy between 2D and thermal metadata. | **Open item**: v2 assumes index alignment (as both existing arms do). A landmark-only F037 check must be documented before the corpus build. |
+| **Extreme Participant Sway** | Elicitation Tasks T7, T8, T9 | $\Delta_{\text{sway}} > \texttt{max\_sway\_px}$ across the window. | **Load-time gate** (`clips_dropped_2d_sway`). The threshold is MEASURED (Phase 0), not fixed at v1's 15 px; a selection rule never enters the cache key. |
+| **Non-Zero Amplifier Clamping** | Physiological grounding | Sensor flatline or saturation ($-10\text{ V}$). | Discard physiological clip pairing if respiration or BP waveforms rail (existing RESP gate; unchanged by this stream). |
 
 ### Automated Unit Test Specification
 Before initiating multi-fold training, the data engineering suite executes the following programmatic sanity checks:
 
 1. **Aspect Ratio Preservation Test**: Feed synthetic landmark coordinates with extreme aspect ratios ($w/h = 2.5$). Verify that `compute_bounding_box()` produces a strict $1:1$ bounding box using the invariant square crop logic.
-2. **Deterministic Resizing Test**: Ingest test frames from Subject `F001_T1`. Confirm that `extract_and_resize()` outputs an RGB array of exact shape $(96, 96, 3)$ with non-zero variance.
-3. **Memory-Map Concurrency Test**: Spawn 16 parallel processes accessing distinct offsets in the same `.dat` file. Assert zero segmentation faults and verify read throughput exceeding $1.5\text{ GB/sec}$.
-4. **Token Divisibility Test**: Validate that `TARGET_SIZE = (96, 96)` is strictly divisible by the ViT patch size ($16\text{ px}$), yielding an integer number of spatial patches $N_p = (96/16) \times (96/16) = 6 \times 6 = 36$ patches per frame.
+2. **One-Resample Test**: `extract_and_resize()` on a synthetic hull produces exactly `cv2.resize(crop, (s, s), INTER_AREA)` for $s \in \{64, 96, 112\}$ — the same artefact serving three `input_size` values.
+3. **Memory-Map Concurrency Test**: Spawn 16 parallel processes accessing distinct offsets in the same `.dat` file. Assert zero segmentation faults and that a clip slice is a **view** (`s.base is not None`, `s.flags.owndata is False`).
+4. **Token Divisibility Test**: Validate that $s = 96$ is strictly divisible by the ViT patch size ($16\text{ px}$), yielding $N_p = (96/16) \times (96/16) = 6 \times 6 = 36$ patches per frame — and that the same holds for `tir` so both visual streams report one grid.
+5. **Hull Containment Test (I2)**: every stride-1 clip box is inside the stored hull, and a box one pixel outside raises `IndexError` rather than wrapping or clamping.
