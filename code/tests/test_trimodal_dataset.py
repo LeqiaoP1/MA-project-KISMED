@@ -149,7 +149,8 @@ def build_2d_cache(raw: str, out: str, **kw) -> str:
     """Two invocations, exactly as the sbatch wrapper does (init then build)."""
     common = ['--raw_root', raw, '--out_root', out,
               '--clip_seconds', str(kw.pop('clip_seconds', CLIP_S)),
-              '--fps', str(FPS)]
+              '--fps', str(FPS),
+              '--store_resolution', str(kw.pop('store', 'native'))]
     assert r2d.main(['--init'] + common) == 0
     assert r2d.main(['--build'] + common) == 0
     return out
@@ -170,6 +171,7 @@ def dataset_args(raw: str, cache: str, **kw) -> argparse.Namespace:
         max_clips=None, max_entries=None,
         roi_cache=None, resp_cache=None,
         rgb2d_cache=cache, rgb2d_cache_lru=kw.pop('lru', 4),
+        rgb2d_store=kw.pop('store', c2d.STORE_RESOLUTION),
         rgb2d_landmarks='face',
         rgb2d_min_valid_ratio=kw.pop('min_valid_ratio', 1.0),
         rgb2d_max_sway_px=kw.pop('max_sway_px_2d', 40.0),
@@ -215,6 +217,25 @@ def test_sample_carries_three_streams_on_the_same_frames(built):
     assert item['rgb2d'].shape[1] == t == int(round(CLIP_S * FPS))
     assert item['resp'].shape[-1] == int(round(CLIP_S * RESP_FS))
     assert item['rgb2d'].min() >= 0.0 and item['rgb2d'].max() <= 1.0
+
+
+def test_pixel_store_serves_the_same_clips_and_is_kept_apart(tmp_path):
+    """A ``px112`` store produces the same sample shape as the native one."""
+    raw = make_corpus(str(tmp_path / 'raw'))
+    out = str(tmp_path / 'cache')
+    build_2d_cache(raw, out, store=112)
+    ds = td.build_tir_roi_rgb2d_pretrain_dataset(
+        dataset_args(raw, out, store=112, sig_kernel=SIG_KERNEL))
+    assert 'px112' in ds.rgb2d_cache_root
+    item = ds[0]
+    assert tuple(item['rgb2d'].shape) == (3, 4, INPUT_SIZE, INPUT_SIZE)
+    assert item['rgb2d'].shape[1] == item['tir'].shape[1]
+    assert item['rgb2d'].min() >= 0.0 and item['rgb2d'].max() <= 1.0
+    # asking for the NATIVE store against a px112-only tree fails loudly
+    # instead of silently attaching the wrong pixels
+    with pytest.raises(ValueError, match='Closest existing cache'):
+        td.build_tir_roi_rgb2d_pretrain_dataset(
+            dataset_args(raw, out, store='native', sig_kernel=SIG_KERNEL))
 
 
 def test_temporal_stride_shortens_both_visual_streams(built):

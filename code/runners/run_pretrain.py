@@ -206,6 +206,16 @@ def get_args():
                         help='rgb2d only: number of OPEN shard handles per '
                              'worker (2 fds each). Resident memory is ~0 -- the '
                              'arrays are memory-mapped, not loaded.')
+    parser.add_argument('--rgb2d_store', default=env_or('RGB2D_STORE', 'native'),
+                        type=str,
+                        help='rgb2d only: WHICH store to attach. native '
+                             '(default) = source pixels, input_size stays free. '
+                             'A pixel size (112 / px112) selects a cache the '
+                             'builder RESIZED to N x N: 42x less I/O per clip '
+                             '(the native store reads ~316 MB/clip and made '
+                             'the tri-modal run I/O-bound), at the price of '
+                             'input_size <= N. It is a cache-key field, so a '
+                             'mismatch fails loudly instead of mixing stores.')
     parser.add_argument('--rgb2d_landmarks', default='face', type=str,
                         help="rgb2d only: 'face' (all 49 points, the default) or "
                              'a preset / CSV from data/rgb_features.ROI_LANDMARKS_2D. '

@@ -49,6 +49,12 @@
 #   CACHE_SUBJECTS        comma list ('' = all)
 #   CACHE_LIMIT           first N subject-tasks (0 = all)
 #   CACHE_MAX_TASK_GB     refuse a larger single task  default: unset -> 12
+#   CACHE_STORE           'native' (source pixels; one artefact serves every
+#                         input_size) or a pixel size such as 112. A pixel
+#                         store is resized at BUILD time: 7.5 MB/clip instead
+#                         of 316 MB (42x less I/O, measured 2026-11-12), but
+#                         it is a KEY field, so input_size must be <= that size.
+#                         The two stores live in DIFFERENT cache dirs.
 #
 # Anything after the script name is forwarded to the runner verbatim.
 #SBATCH --job-name=rgb2dcache
@@ -99,9 +105,11 @@ ARGS+=(--fps "${CACHE_FPS:-25}")
 [ -n "${CACHE_SUBJECTS:-}" ]      && ARGS+=(--subjects "$CACHE_SUBJECTS")
 [ -n "${CACHE_LIMIT:-}" ]         && ARGS+=(--limit "$CACHE_LIMIT")
 [ -n "${CACHE_MAX_TASK_GB:-}" ]   && ARGS+=(--max_task_gb "$CACHE_MAX_TASK_GB")
+ARGS+=(--store_resolution "${CACHE_STORE:-native}")
 
 echo "[rgb2d_cache] raw_root  : $RAW_DATA_PATH"
 echo "[rgb2d_cache] out_root  : $OUT_ROOT"
+echo "[rgb2d_cache] store     : ${CACHE_STORE:-native}"
 echo "[rgb2d_cache] array     : ${SLURM_ARRAY_TASK_ID:-0}/${SLURM_ARRAY_TASK_COUNT:-1}"
 echo "[rgb2d_cache] node      : $(hostname)"
 echo

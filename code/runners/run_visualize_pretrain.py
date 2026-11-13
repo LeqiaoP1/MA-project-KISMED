@@ -35,9 +35,21 @@ Usage (from ``code/``)::
     python runners/run_visualize_pretrain.py --checkpoint <ckpt> \
         --mask_mode ratio --mask_ratio_tir 0.90 --mask_ratio_resp 0.50
 
+    # SAME subject+task as an earlier figure, different masking: pin the sessions
+    # (one clip each, order kept; `--samples` is then ignored)
+    python runners/run_visualize_pretrain.py --checkpoint <ckpt> \
+        --sessions F053_T3,M012_T1,M058_T3 --mask_mode kept \
+        --kept_tir 0.75 --kept_resp 0.75
+
+    # ... and pin the EXACT clip the earlier figure showed (`@<t_start seconds>`)
+    python runners/run_visualize_pretrain.py --checkpoint <ckpt> \
+        --sessions F053_T3@54,M012_T1@8,M058_T3@40 --mask_mode kept \
+        --kept_tir 0.25 --kept_resp 0.25
+
 Geometry, streams, caches and the masking knobs all come from the CHECKPOINT
 (``ckpt['args']``), so the figure can never disagree with the weights; only
-``--mask_mode``/``--seed`` change what is drawn for the TEST clips.
+``--mask_mode``/``--sessions``/``--seed`` change what is drawn for the TEST
+clips.
 """
 import argparse
 import os
@@ -69,6 +81,14 @@ def get_args(argv=None):
     p.add_argument('--split', default='test', choices=('test', 'corpus'),
                    help="'test' (default) = clips from the checkpoint fold's "
                         'HELD-OUT subjects; \'corpus\' = any clip')
+    p.add_argument('--sessions', default='',
+                   help='comma-separated session tags (<SUBJECT>_<TASK>, e.g. '
+                        'F053_T3,M012_T1) drawn ONE clip each, in this order. '
+                        'Append @<t_start seconds> (F053_T3@54) to pin the EXACT '
+                        'clip an earlier figure used. Used to re-show the same '
+                        'subject+task under a different masking; overrides '
+                        '--samples. The tag must exist in the chosen split (so '
+                        '--split test still enforces held-out subjects).')
     p.add_argument('--fold_manifest', default='',
                    help='fold_manifest.json of the training run (default: '
                         '<run_dir>/fold_manifest.json beside the checkpoint)')
@@ -233,6 +253,63 @@ def _recorded_subjects(value) -> set:
     return {t.strip(" '\"") for t in text.split(',') if t.strip(" '\"")}
 
 
+def _pin_session_indices(pool, sessions, want, seed, starts=None):
+    """One clip per requested session, in the ORDER given.
+
+    A session holds many overlapping windows (a clip is 8 s at a 2 s hop), so a
+    tag still needs a clip choice. By default it is a SEEDED pick inside that
+    session's pool entries; append ``@<t_start seconds>`` to a tag
+    (``F053_T3@54``) to pin the EXACT window instead -- that is how a new masking
+    setting is rendered on the SAME clip an earlier figure showed.
+
+    :param pool: candidate dataset indices, already filtered to the split.
+    :param sessions: ``{dataset index: session tag}`` for every pool entry.
+    :param want: session specs to pin, in display order (``TAG`` or ``TAG@t``).
+    :param seed: RNG seed (same seed -> same clip per session).
+    :param starts: ``{dataset index: t_start}``; required only for a ``TAG@t``
+        spec.
+    :returns: one dataset index per spec, in ``want`` order.
+    :raises SystemExit: an empty request, a tag with no clip in the pool, or a
+        ``@t`` that matches no window of that session (the available starts are
+        listed).
+    """
+    if not want:
+        raise SystemExit('[viz] --sessions was given but lists no session tag')
+    by_sess = {}
+    for i in pool:
+        by_sess.setdefault(str(sessions.get(i, '')), []).append(i)
+    g = torch.Generator().manual_seed(int(seed))
+    picks = []
+    for spec in want:
+        tag, _, raw_t = str(spec).partition('@')
+        tag = tag.strip()
+        cand = sorted(by_sess.get(tag, []))
+        if not cand:
+            raise SystemExit(
+                '[viz] --sessions: no clip in this pool for {!r} (pool has {} '
+                'session(s), e.g. {})'.format(tag, len(by_sess), sorted(by_sess)[:3]))
+        if not raw_t.strip():
+            picks.append(cand[int(torch.randperm(len(cand), generator=g)[0])])
+            continue
+        if starts is None:
+            raise SystemExit('[viz] --sessions {}: @t_start needs the clip '
+                             'starts'.format(spec))
+        try:
+            want_t = float(raw_t)
+        except ValueError:
+            raise SystemExit('[viz] --sessions {}: t_start is not a number'
+                             .format(spec))
+        hit = [i for i in cand
+               if abs(float(starts.get(i, float('nan'))) - want_t) < 1e-3]
+        if not hit:
+            have = sorted({float(starts.get(i, float('nan'))) for i in cand})
+            raise SystemExit(
+                '[viz] --sessions {}: {} has no clip at t_start={:g}s; available: '
+                '{}'.format(spec, tag, want_t, have))
+        picks.append(hit[0])
+    return picks
+
+
 def _held_out_subjects(cargs, manifest_path=None):
     """``(test, train, source)`` subject sets of the checkpoint's fold.
 
@@ -287,6 +364,9 @@ def main(argv=None):
     import matplotlib.pyplot as plt
     import numpy as np
 
+    if args.sessions and args.source == 'random':
+        raise SystemExit('[viz] --sessions selects REAL clips; drop --source random')
+
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
@@ -327,6 +407,9 @@ def main(argv=None):
         tags = ['noise {}'.format(i) for i in range(B)]
     else:
         from data import build_pretraining_dataset
+        if args.sessions and args.split == 'corpus':
+            print('[viz] NOTE: --split corpus with --sessions draws the clip from '
+                  'ANY subject, including the checkpoint TRAIN subjects')
         # The checkpoint carries the RESOLVED run arguments: run_pretrain writes
         # the fold's train-subject list back into ``args.subjects``, and the
         # builder expects a CSV string. Draw from the whole corpus and select the
@@ -363,9 +446,24 @@ def main(argv=None):
                   'none of them in the {}-subject train list'.format(
                       len(found), len(train)))
 
-        g = torch.Generator().manual_seed(args.seed)
-        order = torch.randperm(len(pool), generator=g).tolist()
-        idx = [pool[k] for k in order[:B]]
+        if args.sessions:
+            want = [t.strip() for t in args.sessions.split(',') if t.strip()]
+            idx = _pin_session_indices(
+                pool, {i: str(ds.entries[i].get('session', '')) for i in pool},
+                want, args.seed,
+                starts={i: float(ds.entries[i].get('t_start', float('nan')))
+                        for i in pool})
+            B = len(idx)
+            print('[viz] --sessions pinned {} session(s), 1 clip each, order kept '
+                  '(--samples ignored): {}'.format(
+                      len(idx), ', '.join('{}@{:g}s'.format(
+                          ds.entries[i].get('session'),
+                          float(ds.entries[i].get('t_start', float('nan'))))
+                          for i in idx)))
+        else:
+            g = torch.Generator().manual_seed(args.seed)
+            order = torch.randperm(len(pool), generator=g).tolist()
+            idx = [pool[k] for k in order[:B]]
         items = [ds[i] for i in idx]
         batch = {s: torch.stack([it[s] for it in items]) for s in items[0]}
         tags = []

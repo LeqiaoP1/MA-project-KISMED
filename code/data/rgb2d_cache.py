@@ -11,11 +11,13 @@ nothing else:
 * :func:`cache_key` covers ONLY what changes the STORED PIXELS -- the ROI
   contract (landmark set, padding, crop rule), the box rule, the valid-frame
   rule, the source frame size, the pixel format, the store-resolution RULE
-  (always ``'native'``), the source policy and the corpus identity.
+  (``'native'`` or ``'px<N>'``), the source policy and the corpus identity.
 * Everything that SELECTS WINDOWS (``clip_stride``, ``max_sway_px``,
-  ``min_valid_ratio``, ``task_set``) or RESIZES (``input_size``) is absent from
-  the key AND from the writer, because both happen at load. That is what lets
-  ONE cache serve any hop, any fold and any ``input_size`` (64/96/112).
+  ``min_valid_ratio``, ``task_set``) or RESIZES to the MODEL input
+  (``input_size``) is absent from the key AND from the writer, because both
+  happen at load. The native store therefore serves any hop, any fold and any
+  ``input_size`` (64/96/112); a ``px<N>`` store serves any hop/fold and any
+  ``input_size <= N`` (see ``STORE_RESOLUTION`` for why it exists).
 * The gate is GEOMETRY-ONLY: a session is skipped only when there is no pixel to
   crop, never because a clip is slow-moving or mostly out of frame -- those are
   dataset-level rules with their own counters.
@@ -51,8 +53,11 @@ The ``.json`` is written LAST and is the commit marker: a ``.dat`` without it is
 **Coordinate frame (binding).** The stored array's origin IS the hull origin
 ``(x0, y0)``, padding included: ``frames[i, r, c]`` holds source pixel
 ``(x0 + c, y0 + r)``, so the load-side mapping is
-``stored_index = source_coordinate - hull_origin`` with **no** pad term. ``pad``
-only records where the black bars sit inside the stored array.
+``stored_index = (source_coordinate - hull_origin) * store_scale`` with **no**
+pad term. ``pad`` only records where the black bars sit inside the stored
+rectangle, and ``store_scale`` is ``1.0`` for the native store (which is what
+makes that the identity mapping). ``meta['hull_hw']`` is ALWAYS the SOURCE hull
+size, so the scale survives a resized store.
 """
 import json
 import math
@@ -95,6 +100,14 @@ PIXEL_FORMAT = 'rgb8'
 #: The resolution RULE. ``'native'`` means the builder performs NO resampling:
 #: the stored pixel is a source pixel, which is what keeps ``input_size`` a free
 #: load-time knob (and out of the key).
+#:
+#: ``'px<N>'`` (e.g. ``'px112'``) instead stores the hull RESIZED so its
+#: SHORTER side is N px (isotropic: the longer side keeps the aspect ratio).
+#: The native store costs ~316 MB of reads per 8-s clip (measured 2026-11-12:
+#: median hull 725 px x 200 frames), i.e. ~4.9 TB per fold-0 epoch, which made
+#: the tri-modal Stage-2 run I/O-bound (22.6 s/it). Storing at 112 px is
+#: 7.5 MB/clip (42x less). The price is that N becomes part of the KEY: one
+#: cache then serves only ``input_size <= N`` (docs: design §13/§14).
 STORE_RESOLUTION = 'native'
 
 #: Frame source resolution: extracted ``2D+3D/<S>/<T>/`` first, else the members
@@ -189,6 +202,46 @@ def valid_rows_2d(landmarks: np.ndarray,
     return pts[keep][:, idx, :]
 
 
+def parse_store_resolution(value) -> str:
+    """Normalise a store-resolution request to ``'native'`` or ``'px<N>'``.
+
+    ``'native'`` (the default) keeps source pixels and a free ``input_size``.
+    ``112`` / ``'112'`` / ``'px112'`` store the hull resized to 112 x 112 at
+    BUILD time, which removes the native store's 40-70x read amplification but
+    pins ``N`` into the cache key. ``None``/``''`` mean ``'native'``.
+    """
+    if value is None:
+        return STORE_RESOLUTION
+    if isinstance(value, bool):
+        raise ValueError(f'store_resolution must be a string or an int, '
+                         f'got {value!r}')
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ('', 'native', 'none'):
+            return STORE_RESOLUTION
+        if text.startswith('px'):
+            text = text[2:]
+    else:
+        text = str(int(value))
+    try:
+        size = int(text)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"store_resolution must be 'native' or a pixel size "
+            f"(112 / '112' / 'px112'); got {value!r}")
+    if size < 16:
+        raise ValueError(
+            f'store_resolution: {size} px is too small to be a face ROI; use '
+            f"'native' or >= 16")
+    return f'px{size}'
+
+
+def store_size_of(resolution) -> Optional[int]:
+    """``None`` for the native store, else the stored SHORT side in px."""
+    res = parse_store_resolution(resolution)
+    return None if res == STORE_RESOLUTION else int(res[2:])
+
+
 def build_params(raw_root: str, sessions: Sequence[dict],
                  target_landmarks: Sequence[int], roi_padding: float,
                  src_w: int, src_h: int, crop_rule: str = 'square',
@@ -196,11 +249,12 @@ def build_params(raw_root: str, sessions: Sequence[dict],
                  store_resolution: str = STORE_RESOLUTION,
                  source_policy: str = SOURCE_POLICY) -> Dict:
     """The FROZEN parameter set. Everything here changes stored pixels."""
-    if store_resolution != STORE_RESOLUTION:
+    store = parse_store_resolution(store_resolution)
+    if store != STORE_RESOLUTION and crop_rule != 'square':
         raise ValueError(
-            f'rgb2d_cache: store_resolution must be {STORE_RESOLUTION!r}; got '
-            f'{store_resolution!r}. The 2D stream follows the TIR doctrine '
-            f'(store native, rescale at load) so there is no integer store size.')
+            f'rgb2d_cache: store_resolution={store!r} needs crop_rule '
+            f"'square' (one isotropic scale); got crop_rule={crop_rule!r}. "
+            f'An anisotropic store would change the aspect ratio.')
     if crop_rule not in trd.CROP_RULES:
         raise ValueError(f'crop_rule must be one of {list(trd.CROP_RULES)}, '
                          f'got {crop_rule!r}')
@@ -220,7 +274,7 @@ def build_params(raw_root: str, sessions: Sequence[dict],
         'src_w': int(src_w),
         'src_h': int(src_h),
         'pixel_format': PIXEL_FORMAT,
-        'store_resolution': store_resolution,
+        'store_resolution': store,
         'source_policy': str(source_policy),
     }
 
@@ -243,6 +297,7 @@ def loader_params(raw_root: str, corpus_sessions: Sequence[dict],
                   target_landmarks: Sequence[int], roi_padding: float,
                   crop_rule: str = 'square', clip_seconds: float = 8.0,
                   fps: float = 25.0,
+                  store_resolution: str = STORE_RESOLUTION,
                   source_policy: str = SOURCE_POLICY) -> Dict:
     """The subset of the frozen parameters a loader can compute on its own.
 
@@ -252,6 +307,7 @@ def loader_params(raw_root: str, corpus_sessions: Sequence[dict],
     full = build_params(raw_root, corpus_sessions, target_landmarks,
                         roi_padding, 0, 0, crop_rule=crop_rule,
                         clip_seconds=clip_seconds, fps=fps,
+                        store_resolution=store_resolution,
                         source_policy=source_policy)
     return {k: full[k] for k in COMPARE_KEYS}
 
@@ -436,7 +492,8 @@ def probe_frame_size(spec: dict) -> Tuple[int, int, int]:
 def build_task(spec: dict, target_labels: Sequence[int], padding: float,
                stage_dir, crop_rule: str = 'square',
                clip_seconds: float = 8.0, fps: float = 25.0,
-               max_task_bytes: int = 0
+               max_task_bytes: int = 0,
+               store_resolution: str = STORE_RESOLUTION
                ) -> Tuple[Optional[Dict], Optional[str]]:
     """Write ONE session's ``.dat``/``.lm.dat`` into ``stage_dir`` -> metadata.
 
@@ -498,11 +555,30 @@ def build_task(spec: dict, target_labels: Sequence[int], padding: float,
         f'{session}: hull height {y1 - y0} != clamped {cy1 - cy0} + pads'
 
     h, w = int(y1 - y0), int(x1 - x0)
-    nbytes = int(n_jpg) * h * w * 3
+    store = parse_store_resolution(store_resolution)
+    s_store = store_size_of(store)
+    # A pixel store is an ISOTROPIC resize of the hull RECTANGLE whose SHORTER
+    # side becomes ``s_store`` (the hull is the union of SQUARE clip boxes at
+    # different offsets, so it is a rectangle -- 769x795 on F001_T1 -- and
+    # squashing it to SxS would apply a per-axis scale). Using the short side as
+    # the reference is also what keeps every square clip box in range: a clip
+    # side is <= min(hull_w, hull_h).
+    if s_store is not None and min(h, w) <= s_store:
+        # The hull is already at or below the store size: downscaling is the
+        # ONLY thing a pixel store is for, so keep source pixels (upsampling
+        # invents detail). ``meta['store_size']`` records the per-session truth
+        # and the reader derives its scale from the shapes either way.
+        s_store = None
+    out_h, out_w = (h, w)
+    if s_store is not None:
+        scale = float(s_store) / float(min(h, w))
+        out_h = max(1, int(round(h * scale)))
+        out_w = max(1, int(round(w * scale)))
+    nbytes = int(n_jpg) * out_h * out_w * 3
     if max_task_bytes and nbytes > max_task_bytes:
         return None, (f'too_large_for_memory: the artefact alone would be '
                       f'{nbytes / 1e9:.2f} GB > {max_task_bytes / 1e9:.2f} GB '
-                      f'budget ({n_jpg} frames at {w}x{h})')
+                      f'budget ({n_jpg} frames at {out_w}x{out_h})')
 
     # --- 3. stream the frames straight into a staging memmap ---------------
     stage_dir = Path(stage_dir)
@@ -510,7 +586,7 @@ def build_task(spec: dict, target_labels: Sequence[int], padding: float,
     s_frames = stage_dir / f'{session}{FRAMES_SUFFIX}'
     s_lm = stage_dir / f'{session}{LANDMARKS_SUFFIX}'
     mm_frames = np.memmap(str(s_frames), dtype=np.uint8, mode='w+',
-                          shape=(int(n_jpg), h, w, 3))
+                          shape=(int(n_jpg), out_h, out_w, 3))
     mm_lm = np.memmap(str(s_lm), dtype=np.float32, mode='w+',
                       shape=(int(n_jpg), rf.NUM_LANDMARKS_2D, 2))
     try:
@@ -528,7 +604,12 @@ def build_task(spec: dict, target_labels: Sequence[int], padding: float,
                 pad = cv2.copyMakeBorder(crop, pad_top, pad_bottom,
                                          pad_left, pad_right,
                                          cv2.BORDER_CONSTANT, value=[0, 0, 0])
-                mm_frames[i] = cv2.cvtColor(pad, cv2.COLOR_BGR2RGB)
+                rgb = cv2.cvtColor(pad, cv2.COLOR_BGR2RGB)
+                if s_store is not None:
+                    # ONE downsample, at BUILD time, isotropic (INTER_AREA).
+                    rgb = cv2.resize(rgb, (out_w, out_h),
+                                     interpolation=cv2.INTER_AREA)
+                mm_frames[i] = rgb
             mm_frames.flush()
             mm_lm.flush()
     except Exception as exc:
@@ -548,10 +629,11 @@ def build_task(spec: dict, target_labels: Sequence[int], padding: float,
         'box': [int(v) for v in hull],
         'pad': [int(pad_top), int(pad_bottom), int(pad_left), int(pad_right)],
         'src_hw': [int(fh), int(fw)],
-        'hull_hw': [int(h), int(w)],
-        'store_resolution': STORE_RESOLUTION,
+        'hull_hw': [int(h), int(w)],          # SOURCE px, always
+        'store_resolution': store,
+        'store_size': (int(s_store) if s_store is not None else None),
         'area_in_frac': float(share),
-        'frames': {'shape': [int(n_jpg), h, w, 3], 'dtype': 'uint8',
+        'frames': {'shape': [int(n_jpg), out_h, out_w, 3], 'dtype': 'uint8',
                    'nbytes': nbytes},
         'landmarks': {'shape': [int(n_jpg), rf.NUM_LANDMARKS_2D, 2],
                       'dtype': 'float32',
@@ -642,6 +724,27 @@ class ShardHandle:
     def src_hw(self) -> Tuple[int, int]:
         return tuple(int(v) for v in self.meta['src_hw'])
 
+    @property
+    def store_scale(self) -> float:
+        """Stored pixels per SOURCE pixel (``1.0`` for the native store).
+
+        The stored array's origin IS the hull origin and it covers the SAME
+        source rectangle either way, so a source-space offset ``d`` maps to
+        stored index ``d * store_scale``. Deriving it from the shapes (rather
+        than a stored scalar) means a legacy ``.json`` without ``store_size``
+        still yields exactly 1.0.
+        """
+        shape = (self.meta.get('frames') or {}).get('shape') or []
+        hull = self.meta.get('hull_hw') or []
+        if len(shape) < 2 or not hull or not int(hull[0]):
+            return 1.0
+        return float(shape[1]) / float(int(hull[0]))
+
+    @property
+    def store_size(self) -> Optional[int]:
+        """Effective SHORT side of the stored hull, or ``None`` if native."""
+        return self.meta.get('store_size')
+
     def __enter__(self) -> 'ShardHandle':
         return self
 
@@ -688,7 +791,7 @@ def open_shard(root, session: str) -> ShardHandle:
 
 
 def shard_metadata(root, sessions: Sequence[dict]) -> Dict[str, Dict]:
-    """Per-session ``{box, pad, n_frames, hull_hw, src_hw}`` -- JSON only."""
+    """Per-session ``{box, pad, n_frames, hull_hw, src_hw, store_size}``."""
     out: Dict[str, Dict] = {}
     for s in sessions:
         name = str(s['session'])
@@ -704,7 +807,8 @@ def shard_metadata(root, sessions: Sequence[dict]) -> Dict[str, Dict]:
                      'pad': tuple(int(v) for v in meta['pad']),
                      'n_frames': int(meta['n_frames']),
                      'hull_hw': tuple(int(v) for v in meta['hull_hw']),
-                     'src_hw': tuple(int(v) for v in meta['src_hw'])}
+                     'src_hw': tuple(int(v) for v in meta['src_hw']),
+                     'store_size': meta.get('store_size')}
     return out
 
 

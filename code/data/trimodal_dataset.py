@@ -20,6 +20,7 @@ of them is a cache-key field, so changing one costs no rebuild.
 """
 import collections
 import json
+import math
 import os
 import sys
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -70,6 +71,7 @@ class TirRoiResp2DPretrainDataset(trd.TirRoiRespPretrainDataset):
                  streams: Sequence[str] = ('tir', 'rgb2d', 'resp'),
                  rgb2d_cache: Optional[str] = None,
                  rgb2d_cache_lru: int = 8,
+                 rgb2d_store: str = c2d.STORE_RESOLUTION,
                  rgb2d_landmarks: Sequence[int] = FACE_LANDMARKS,
                  rgb2d_min_valid_ratio: float = 1.0,
                  rgb2d_max_sway_px: float = DEFAULT_RGB2D_MAX_SWAY_PX,
@@ -123,11 +125,18 @@ class TirRoiResp2DPretrainDataset(trd.TirRoiRespPretrainDataset):
         # Like --roi_cache/--resp_cache, the flag takes the OUT ROOT (parent of
         # the <CACHE_KEY> directory); find_cache resolves the directory.
         self.rgb2d_out_root = str(rgb2d_cache)
+        # Which STORE to attach. 'native' keeps the historical artefact;
+        # 112/'px112' selects a cache built resized at BUILD time (42x less I/O
+        # per clip, at the price of input_size <= N). It is a key field, so a
+        # wrong value fails loudly in find_cache instead of silently reading a
+        # different resolution.
+        self.rgb2d_store = c2d.parse_store_resolution(rgb2d_store)
         self._rgb2d_expected = c2d.loader_params(
             self.base.raw_root, c2d.discover_sessions(self.base.raw_root),
             self.rgb2d_landmarks, self.base.roi_padding,
             crop_rule=self.base.crop_rule,
-            clip_seconds=self.base.clip_seconds, fps=self.base.fps)
+            clip_seconds=self.base.clip_seconds, fps=self.base.fps,
+            store_resolution=self.rgb2d_store)
         _root = c2d.find_cache(self.rgb2d_out_root, self._rgb2d_expected)
         c2d.check_params_compatible(_root, c2d.read_params(_root))
         self.rgb2d_cache_root = str(_root)
@@ -286,20 +295,34 @@ class TirRoiResp2DPretrainDataset(trd.TirRoiRespPretrainDataset):
         hx0, hx1, hy0, hy1 = h.box
         bx0, bx1, by0, by1 = c2d.square_span_2d(
             track[f0:f1], float(self.base.roi_padding), str(self.base.crop_rule))
-        # Coordinate frame (binding): the stored index IS source - hull origin.
-        # The black bars are already part of the array, so `pad` is NOT added.
-        x0, x1 = bx0 - hx0, bx1 - hx0
-        y0, y1 = by0 - hy0, by1 - hy0
-        if min(x0, y0) < 0 or x1 > hx1 - hx0 or y1 > hy1 - hy0:
+        # Coordinate frame (binding): the stored index IS
+        # ``(source - hull origin) * store_scale``, and the black bars are
+        # already part of the array, so `pad` is NOT added. Containment (I2) is
+        # checked in SOURCE px -- that is the invariant the build guarantees --
+        # and the crop itself is taken in STORED px with ONE side length, so a
+        # resized store still applies exactly one isotropic scale (I6).
+        sx0, sx1 = bx0 - hx0, bx1 - hx0
+        sy0, sy1 = by0 - hy0, by1 - hy0
+        if min(sx0, sy0) < 0 or sx1 > hx1 - hx0 or sy1 > hy1 - hy0:
             raise IndexError(
                 f'{session}: clip box {(bx0, bx1, by0, by1)} is not inside the '
                 f'stored hull {(hx0, hx1, hy0, hy1)} (I2) -- the cache was built '
                 f'for a different clip length or crop rule. Refusing to clamp.')
-        if (x1 - x0) != (y1 - y0):
+        if (bx1 - bx0) != (by1 - by0):
             raise ValueError(
                 f'{session}: crop_rule={self.base.crop_rule!r} but the box is '
-                f'{x1 - x0}x{y1 - y0}; a non-square box would apply a per-axis '
-                f'scale (I6).')
+                f'{bx1 - bx0}x{by1 - by0}; a non-square box would apply a '
+                f'per-axis scale (I6).')
+
+        scale = float(h.store_scale)
+        stored_h, stored_w = int(h.frames.shape[1]), int(h.frames.shape[2])
+        side = int(math.ceil((bx1 - bx0) * scale))
+        side = max(1, min(side, stored_h, stored_w))
+        cx = (sx0 + sx1) / 2.0 * scale
+        cy = (sy0 + sy1) / 2.0 * scale
+        x0 = min(max(0, int(math.floor(cx - side / 2.0))), stored_w - side)
+        y0 = min(max(0, int(math.floor(cy - side / 2.0))), stored_h - side)
+        x1, y1 = x0 + side, y0 + side
 
         cv2 = rrd._cv2()
         s = int(self.input_size)
@@ -405,6 +428,8 @@ def build_tir_roi_rgb2d_pretrain_dataset(args) -> TirRoiResp2DPretrainDataset:
         resp_cache=resp_cache,
         rgb2d_cache=rgb2d_cache,
         rgb2d_cache_lru=int(getattr(args, 'rgb2d_cache_lru', 8) or 8),
+        rgb2d_store=str(getattr(args, 'rgb2d_store', None)
+                        or c2d.STORE_RESOLUTION),
         rgb2d_landmarks=landmarks,
         rgb2d_min_valid_ratio=float(
             getattr(args, 'rgb2d_min_valid_ratio', 1.0)),

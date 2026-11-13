@@ -80,3 +80,70 @@ def test_recorded_subjects_parses_every_saved_form():
     assert _recorded_subjects("['F001', 'M002']") == {'F001', 'M002'}
     assert _recorded_subjects('F001, M002') == {'F001', 'M002'}
     assert _recorded_subjects('') == set()
+
+
+# --------------------------------------------------------------------------- #
+# "--sessions": re-show the SAME subject+task under a different masking
+# --------------------------------------------------------------------------- #
+def _session_pool():
+    """5 clips of F053_T3, 3 of M012_T1, 2 of M058_T3 (indices are the pool)."""
+    tags = (['F053_T3'] * 5) + (['M012_T1'] * 3) + (['M058_T3'] * 2)
+    return list(range(len(tags))), dict(enumerate(tags))
+
+
+def test_pin_session_indices_one_clip_per_tag_in_the_given_order():
+    from runners.run_visualize_pretrain import _pin_session_indices
+
+    pool, sessions = _session_pool()
+    want = ['M058_T3', 'F053_T3', 'M012_T1']
+    idx = _pin_session_indices(pool, sessions, want, seed=0)
+    assert len(idx) == 3
+    assert [sessions[i] for i in idx] == want          # ORDER is the ask
+    # same seed -> same clips (the figure stays reproducible)
+    assert _pin_session_indices(pool, sessions, want, seed=0) == idx
+
+
+def test_pin_session_indices_never_leaves_the_session():
+    """Every pick must stay INSIDE its session (the split filter is upstream)."""
+    from runners.run_visualize_pretrain import _pin_session_indices
+
+    pool, sessions = _session_pool()
+    for seed in range(8):
+        idx = _pin_session_indices(pool, sessions, ['F053_T3', 'M012_T1'], seed)
+        assert sessions[idx[0]] == 'F053_T3' and sessions[idx[1]] == 'M012_T1'
+
+
+def test_pin_session_indices_rejects_a_tag_outside_the_pool():
+    """A tag absent from the (split-filtered) pool must ABORT, not silently leak.
+
+    This is what keeps ``--split test --sessions X`` honest: X is only reachable
+    when its subject is in the fold's held-out list.
+    """
+    import pytest
+
+    from runners.run_visualize_pretrain import _pin_session_indices
+
+    pool, sessions = _session_pool()
+    with pytest.raises(SystemExit):
+        _pin_session_indices(pool, sessions, ['F053_T3', 'M001_T2'], seed=0)
+    with pytest.raises(SystemExit):
+        _pin_session_indices(pool, sessions, [], seed=0)
+
+
+def test_pin_session_indices_pins_an_exact_clip_start():
+    """``TAG@t`` must select THAT window (the point of re-using an earlier clip)."""
+    from runners.run_visualize_pretrain import _pin_session_indices
+
+    pool, sessions = _session_pool()
+    # F053_T3 clips at 0/2/4..8 s, M012_T1 at 0/2/4 s, M058_T3 at 0/2 s
+    starts = {i: float(2 * (i if sessions[i] == 'F053_T3' else
+                            i - 5 if sessions[i] == 'M012_T1' else i - 8))
+              for i in pool}
+    idx = _pin_session_indices(pool, sessions, ['F053_T3@4', 'M058_T3@2'],
+                               seed=0, starts=starts)
+    assert [sessions[i] for i in idx] == ['F053_T3', 'M058_T3']
+    assert [starts[i] for i in idx] == [4.0, 2.0]
+    # an unknown start must abort (and name the spec), never fall back to a pick
+    import pytest
+    with pytest.raises(SystemExit):
+        _pin_session_indices(pool, sessions, ['F053_T3@99'], seed=0, starts=starts)

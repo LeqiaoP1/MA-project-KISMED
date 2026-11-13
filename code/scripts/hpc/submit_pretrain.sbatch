@@ -39,6 +39,11 @@
 #               When active it also forces --min_signal_spread 0 and
 #               --rail_touch_v 0: the cached per-sample mask is the ONLY
 #               validity rule (the configs' legacy thresholds would raise).
+#   RGB2D_CACHE offline 2D-TEXTURE face-ROI cache OUT_ROOT (default:
+#               $WORK_SCRATCH/rgb2d_roi_cache). REQUIRED by every config whose
+#               data_set is tir_roi_resp_rgb2d / trimodal (the dataset raises
+#               without it), inert for the other data sets. Built once by
+#               `sbatch scripts/hpc/submit_2d_roi_cache.sbatch`.
 #   FRESH=1      start from scratch: move OUT_DIR/checkpoints aside to
 #               checkpoints.precache_<timestamp> instead of auto-resuming.
 #   Anything after the script name is forwarded to the runner verbatim.
@@ -193,6 +198,20 @@ if [ -n "$RESP_CACHE" ] && [ ! -d "$RESP_CACHE" ]; then
     exit 1
 fi
 
+# ---- 2D-TEXTURE (rgb2d) face-ROI cache (required by the trimodal data_set) - #
+# Only validated for the data sets that actually serve that stream, so the
+# tir_roi-only jobs keep working on a cluster where the 2D cache was never built.
+RGB2D_CACHE="${RGB2D_CACHE-${WORK_SCRATCH:-$OUTPUT_DIR}/rgb2d_roi_cache}"
+# The YAML lines carry trailing comments, so the optional "#..." tail is part of the match.
+if grep -qE '^data_set:[[:space:]]*(tir_roi_resp_rgb2d|trimodal)([[:space:]]*#.*)?$' "$CONFIG"; then
+    if [ -z "$RGB2D_CACHE" ] || [ ! -d "$RGB2D_CACHE" ]; then
+        echo "ERROR: RGB2D_CACHE='$RGB2D_CACHE' is missing, but $CONFIG serves" >&2
+        echo "       the rgb2d stream (the dataset refuses to build without it)." >&2
+        echo "       Build it with:  sbatch scripts/hpc/submit_2d_roi_cache.sbatch" >&2
+        exit 1
+    fi
+fi
+
 # ---- runner args: assembled PER FOLD inside run_fold --------------------- #
 # You normally do NOT need --resume: run_pretrain.py auto-resumes from
 # OUT_DIR/checkpoints. An explicit path can still be appended via "$@" below.
@@ -241,6 +260,7 @@ run_fold() {
     [ -n "${CLIP_STRIDE:-}" ] && args+=(--clip_stride "$CLIP_STRIDE")
     [ -n "${NUM_WORKERS:-}" ] && args+=(--num_workers "$NUM_WORKERS")
     [ -n "$ROI_CACHE" ]       && args+=(--roi_cache "$ROI_CACHE")
+    [ -n "$RGB2D_CACHE" ]     && args+=(--rgb2d_cache "$RGB2D_CACHE")
     if [ -n "$RESP_CACHE" ]; then
         args+=(--resp_cache "$RESP_CACHE" --min_signal_spread 0 \
                --rail_touch_v 0)
@@ -257,6 +277,7 @@ run_fold() {
     echo "[fold $fold] weights  : $INITIAL_MODELS_DIR"
     echo "[fold $fold] output   : $out_dir"
     echo "[fold $fold] roi_cache: ${ROI_CACHE:-<disabled: decode .wmv>}"
+    echo "[fold $fold] rgb2d_cache: ${RGB2D_CACHE:-<disabled / unused>}"
     echo "[fold $fold] resp_cache: ${RESP_CACHE:-<disabled: read Resp_Volts.txt>}"
     echo "[fold $fold] wandb     : ${WANDB_MODE} (dir: $out_dir/wandb)"
     echo "[fold $fold] world    : ${SLURM_NTASKS} task(s) on $(hostname)"
