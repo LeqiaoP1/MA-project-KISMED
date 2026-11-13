@@ -65,6 +65,15 @@ roi_landmarks: ''                  # '' = the TIR 12-point nose+mouth set
 # log (clips_dropped_2d_*) so the corpus this run saw is auditable afterwards.
 rgb2d_landmarks: face              # all 49 points. MUST match the cache build
                                    #   (this one IS a key field).
+rgb2d_store: 112                   # the 2D cache is stored RESIZED to 112 px at
+                                   #   BUILD time (7.5 MB/clip) instead of native
+                                   #   (316 MB/clip). MEASURED 2026-11-12: the
+                                   #   native store read 4.9 TB per fold-0 epoch
+                                   #   and made this run I/O-bound at 22.6 s/it
+                                   #   (~225 h for 150 epochs); 112 px is ~42x
+                                   #   less I/O. KEY field: requires a cache
+                                   #   built with CACHE_STORE=112 and
+                                   #   input_size <= 112 (this run is 96).
 rgb2d_cache_lru: 8                 # OPEN shard handles per worker (2 fds each);
                                    #   memory-mapped, so this is not a RAM knob
 rgb2d_min_valid_ratio: 1.0         # zero tolerance: a window must have a finite

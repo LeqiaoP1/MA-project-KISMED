@@ -150,10 +150,35 @@ def test_key_changes_on_pixel_fields_and_ignores_load_time_knobs(tmp_path):
         assert k not in params_for(raw), k
 
 
-def test_store_resolution_must_be_native(tmp_path):
+def test_store_resolution_grammar_and_key(tmp_path):
+    """Native is the default; a pixel store is a DIFFERENT key."""
     raw = make_tree(tmp_path)
-    with pytest.raises(ValueError, match='store native'):
-        params_for(raw, store_resolution='96')
+    assert c2d.parse_store_resolution(None) == 'native'
+    assert c2d.parse_store_resolution('') == 'native'
+    assert c2d.parse_store_resolution('native') == 'native'
+    assert c2d.parse_store_resolution(112) == 'px112'
+    assert c2d.parse_store_resolution('112') == 'px112'
+    assert c2d.parse_store_resolution('px112') == 'px112'
+    assert c2d.store_size_of('native') is None
+    assert c2d.store_size_of('px112') == 112
+    for bad in ('huge', 0, 8, -1):
+        with pytest.raises(ValueError):
+            c2d.parse_store_resolution(bad)
+    # the SAME pixels rule, but a different stored artefact -> different key
+    native = c2d.cache_key(params_for(raw))
+    px = c2d.cache_key(params_for(raw, store_resolution=112))
+    assert '_native_' in native and '_px112_' in px
+    assert native != px
+    # ... and a loader asking for one never matches the other
+    assert c2d.loader_params(
+        raw, sessions(raw), LABELS, 0.10, store_resolution=112
+    )['store_resolution'] == 'px112'
+
+
+def test_pixel_store_needs_a_square_crop_rule(tmp_path):
+    raw = make_tree(tmp_path)
+    with pytest.raises(ValueError, match='square'):
+        params_for(raw, crop_rule='box', store_resolution=112)
 
 
 def test_find_cache_matches_and_explains_a_miss(tmp_path):
@@ -243,6 +268,46 @@ def test_shard_round_trip_keeps_native_resolution(built):
         assert s.base is not None and s.flags.owndata is False
         assert s.flags.writeable is False
         assert np.shares_memory(s, h.frames)
+
+
+def test_pixel_store_resizes_at_build_and_reports_the_scale(built, tmp_path):
+    """A ``px<N>`` store: the HULL stays in source px, the ARRAY is resized."""
+    raw, root, native, spec = built
+    short = min(native['hull_hw'])
+    store = max(16, short // 2)          # a real downscale of THIS synthetic hull
+    assert store < short, 'the synthetic hull must be larger than the store'
+    stage = root / c2d.SUBDIR_TMP / 'stage_px'
+    meta, reason = c2d.build_task(spec, LABELS, 0.10, stage,
+                                  clip_seconds=CLIP_S, fps=FPS,
+                                  store_resolution=store)
+    assert reason is None, reason
+    assert meta['store_resolution'] == f'px{store}'
+    assert meta['store_size'] == store
+    assert meta['hull_hw'] == native['hull_hw'], 'SOURCE hull is unchanged'
+    sh, sw = meta['frames']['shape'][1:3]
+    assert min(sh, sw) == store, 'the SHORT side is the store size'
+    assert max(sh, sw) >= store, 'isotropic: the long side keeps the aspect'
+    assert (sh, sw) != tuple(native['hull_hw'][:2])
+    assert meta['frames']['nbytes'] == N_FRAMES * sh * sw * 3
+    c2d.commit_shard(root, str(spec['session']), meta, stage)
+    with c2d.open_shard(root, str(spec['session'])) as h:
+        assert h.store_size == store
+        # source -> stored mapping the dataset applies (one isotropic scale)
+        assert h.store_scale == pytest.approx(store / short, rel=1e-3)
+        assert h.box == tuple(meta['box']), 'hull box stays in SOURCE px'
+
+
+def test_pixel_store_never_upsamples(built):
+    """A hull already smaller than the store size keeps source pixels."""
+    raw, root, native, spec = built
+    huge = 512
+    stage = root / c2d.SUBDIR_TMP / 'stage_up'
+    meta, reason = c2d.build_task(spec, LABELS, 0.10, stage,
+                                  clip_seconds=CLIP_S, fps=FPS,
+                                  store_resolution=huge)
+    assert reason is None, reason
+    assert meta['store_size'] is None, 'upsampling would invent detail'
+    assert meta['frames']['shape'][1:3] == native['hull_hw'][:2]
 
 
 def test_commit_marker_and_truncation_are_detected(built):

@@ -93,6 +93,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument('--fps', type=float, default=25.0)
     p.add_argument('--source_policy', default=c.SOURCE_POLICY,
                    choices=[c.SOURCE_POLICY])
+    p.add_argument('--store_resolution', default=c.STORE_RESOLUTION,
+                   help="'native' (source pixels, input_size stays free) or a "
+                        'pixel size (112 / px112) to store the hull RESIZED at '
+                        'BUILD time. A pixel store is 42x less I/O per clip but '
+                        'is a KEY field: input_size must be <= that size.')
     p.add_argument('--array_index', type=int, default=-1)
     p.add_argument('--array_count', type=int, default=0)
     p.add_argument('--overwrite', action='store_true')
@@ -149,7 +154,8 @@ def make_params(args, corpus: Sequence[dict]) -> Dict:
     return c.build_params(args.raw_root, corpus, resolve_landmarks(
         args.roi_landmarks), args.roi_padding, fw, fh,
         crop_rule=args.crop_rule, clip_seconds=args.clip_seconds,
-        fps=args.fps, source_policy=args.source_policy)
+        fps=args.fps, source_policy=args.source_policy,
+        store_resolution=args.store_resolution)
 
 
 def _open_root(args) -> Tuple[Path, Dict, List[dict]]:
@@ -159,7 +165,8 @@ def _open_root(args) -> Tuple[Path, Dict, List[dict]]:
                            resolve_landmarks(args.roi_landmarks),
                            args.roi_padding, crop_rule=args.crop_rule,
                            clip_seconds=args.clip_seconds, fps=args.fps,
-                           source_policy=args.source_policy)
+                           source_policy=args.source_policy,
+                           store_resolution=args.store_resolution)
     root = c.find_cache(args.out_root, want)
     params = c.read_params(root)
     subjects = [s.strip() for s in str(args.subjects or '').split(',')
@@ -223,7 +230,8 @@ def mode_build(args) -> int:
             meta, reason = c.build_task(
                 spec, labels, pad, stage, crop_rule=params['crop_rule'],
                 clip_seconds=float(params['clip_seconds']),
-                fps=float(params['fps']), max_task_bytes=max_bytes)
+                fps=float(params['fps']), max_task_bytes=max_bytes,
+                store_resolution=params['store_resolution'])
             if meta is None:
                 c.write_skip(root, session, reason or 'unknown')
                 n_skip += 1
@@ -233,6 +241,8 @@ def mode_build(args) -> int:
                 n_ok += 1
                 print(f'  [{k}/{len(mine)}] ok   {session} '
                       f'{meta["hull_hw"][0]}x{meta["hull_hw"][1]} '
+                      f'-> {meta["frames"]["shape"][2]}x'
+                      f'{meta["frames"]["shape"][1]} '
                       f'x{meta["n_frames"]}f = '
                       f'{meta["frames"]["nbytes"] / 1e6:.1f} MB')
         except (IOError, OSError, ValueError) as exc:
@@ -330,7 +340,8 @@ def mode_check(args) -> int:
         meta, reason = c.build_task(
             spec, labels, pad, stage, crop_rule=params['crop_rule'],
             clip_seconds=float(params['clip_seconds']),
-            fps=float(params['fps']), max_task_bytes=max_bytes)
+            fps=float(params['fps']), max_task_bytes=max_bytes,
+            store_resolution=params['store_resolution'])
         if meta is None:
             fails.append(f'{session}: rebuild failed ({reason})')
             continue
