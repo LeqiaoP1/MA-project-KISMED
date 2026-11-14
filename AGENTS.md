@@ -5,8 +5,8 @@
 - **Domain**: PyTorch-based Deep Learning research and development (Focus: MultiMAE and VideoMAE with multi-modal dataset).
 - **Goal**: High-performance, modular, and reproducible neural network architectures and training pipelines.
 - **AI Agent Context**:
-  - Implemenation code is generated and execution script managed by DeepSeek v4.1 Flash
-  - Desgin architecture, feature auditing, and reviews are handled by Gemini 3.1 Pro or Claude 4.6 Sonnet.
+  - Implementation code is generated and execution script managed by DeepSeek v4.1 Flash
+  - Design architecture, feature auditing, and reviews are handled by Gemini 3.1 Pro or Claude 4.6 Sonnet.
 
 ## 2. Execution Environments & Workflows
 
