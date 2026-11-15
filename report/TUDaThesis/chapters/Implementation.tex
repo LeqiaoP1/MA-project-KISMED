@@ -1,4 +1,5 @@
 
+% !TeX root = ../main.tex
 
 %*****************************************
 \chapter{Implementation}
@@ -12,6 +13,141 @@
 4. How do the components interact with each other?  \\
 5. What are limitations of the implementation? }
 \section{Design Decisions}
+\label{sec:impl-design}
+
+This section records the implementation-level decisions that shape the source code under
+\texttt{code/}. The conceptual rationale for the overall approach is developed in
+Chapter~\ref{ch:design}; here the focus is on the concrete choices made when translating
+that design into executable PyTorch, and on the trade-offs that motivated each choice.
+Where a decision follows an established method from the literature this is stated
+explicitly; otherwise the decision is specific to this project.
+
+\subsection{Three-Stage Pipeline Structure}
+\label{sec:impl-design-pipeline}
+
+The implementation is organised as three sequential stages, each with its own runner,
+engine, and model class, so that a stage can be re-executed without re-running the stages
+that precede it. Stage~1 is not a training stage in this codebase: it supplies frozen
+pretrained encoder weights from the VideoMAE ViT-Base family~\cite{tong2022videomae},
+loaded through \texttt{core/multimae.py} and selected by the \texttt{pretrained\_encoder}
+configuration key. The two candidate corpora (K400 and SSV2) are compared only as initial
+weights; the encoder is not retrained in Stage~1. Stage~2 trains the
+\texttt{MultiModalMAE} model (\texttt{core/multimae.py}) via the runner
+\texttt{runners/run\_pretrain.py} and the training loop in \texttt{engines/pretrain.py}.
+Stage~3 trains the \texttt{MultiModalWaveformRegressor} (\texttt{core/waveform\_model.py})
+via \texttt{runners/run\_waveform.py}; the Stage-3 training loop is implemented directly in
+the runner rather than in a separate engine module. A diagnostic AU-occurrence probe
+(\texttt{core/au\_probe.py}) is provided as an add-on that reads Stage-2 encoder weights
+without modifying them.
+
+\subsection{Asymmetric Multi-Modal Masking}
+\label{sec:impl-design-amm}
+
+The central masking decision is that visual and physiological streams are masked
+asymmetrically. Visual streams (RGB and thermal-infrared) are masked so that at most 25\%
+of their tokens are kept visible, leaving a large masked region for the decoder to
+reconstruct, following the masked-reconstruction objective of
+MAE~\cite{he2021maskedMAE} and VideoMAE~\cite{tong2022videomae}. Physiological streams are
+masked without such a cap, so that a stream may be fully masked (a kept ratio of zero) when
+the random draw requires it. The per-stream kept ratios are drawn from a single Dirichlet
+distribution per optimisation step and shared across the whole batch, so that all samples
+in a batch are masked with the same per-stream budget. A co-existence constraint requires
+that at least one visual and at least one physiological stream be active in every batch;
+this is enforced at construction time, so that a stream list containing only one kind of
+stream is rejected rather than silently repaired. A further decision is that the
+ViT~encoder~\cite{dosovitskiy2021image} operates on visible tokens only: no mask
+placeholder tokens are inserted into the encoder input, which removes the quadratic
+attention cost~\cite{vaswani2017attention} of attending over masked positions. Mask tokens
+are re-inserted only for the decoder.
+
+\subsection{Span Masking for Physiological Streams}
+\label{sec:impl-design-span}
+
+For one-dimensional physiological signals, the default masking is random per-token masking,
+which preserves bit-for-bit agreement with earlier runs. An opt-in span-masking mode is
+also provided. The motivation is that scattered random masking at moderate ratios can be
+solved by temporal interpolation of the visible signal alone, without using the video, which
+would let the model learn a shortcut that does not transfer to the sensor-failure setting.
+Masking contiguous spans removes the surrounding visible context that interpolation relies
+on. The span length and the number of spans are drawn once per step and shared across the
+batch; this is a load-bearing invariant, because the encoder consumes the batch-maximum of
+the per-sample mask, and a per-sample span draw would leak masked tokens into the encoder.
+
+\subsection{Model Registry and Single Entry Point}
+\label{sec:impl-design-registry}
+
+All models are constructed through a single factory function, \texttt{create\_model} in
+\texttt{models/build.py}, which dispatches on a registered model name. Model classes
+register themselves through a \texttt{@register\_model} decorator in
+\texttt{core/registry.py}. Stage~3 and the AU probe use dedicated builder functions rather
+than the generic factory. This keeps model construction in one place and makes the set of
+available models explicit.
+
+\subsection{Configuration System}
+\label{sec:impl-design-config}
+
+Experiments are configured with YAML files that supply \emph{defaults only} to the
+\texttt{argparse} parser. The precedence order is: an explicit command-line flag overrides
+a YAML value, which in turn overrides the hard-coded default. This means a YAML file is a
+named starting point rather than a fixed recipe, and any single run can be varied without
+editing the file. The same mechanism is shared by all runners through a common helper in
+\texttt{runners/\_common.py}.
+
+\subsection{Reproducibility: Distributed Setup, Seeding, and Precision}
+\label{sec:impl-design-repro}
+
+Distributed bootstrap is centralised in \texttt{utils/dist.py}; each runner calls a common
+\texttt{init\_env} helper that initialises the NCCL backend and the device. Random seeding
+is likewise centralised: the base seed is offset by the per-process rank, so that each
+distributed rank draws a distinct but deterministic stream. Mixed precision is opt-in,
+selected by an \texttt{amp\_dtype} flag whose default (\texttt{none}) runs in full
+32-bit floating point and is bit-identical to the unflagged path; when enabled, a custom
+loss scaler in \texttt{utils/native\_scaler.py} performs loss scaling and returns the
+gradient norm.
+
+\subsection{Normalisation Ownership}
+\label{sec:impl-design-norm}
+
+A deliberate decision is to place label normalisation in the dataset rather than in the
+model. For the region-of-interest data lineages, the dataset applies a per-clip z-score to
+the physiological target, and the model is pinned to an identity normalisation so that it
+never re-normalises. The retired normalisation options are explicitly refused by a check
+function rather than silently ignored, so that a stale configuration fails loudly.
+
+\subsection{Subject-Disjoint Cross-Validation}
+\label{sec:impl-design-cv}
+
+Evaluation uses a subject-disjoint K-fold scheme: subjects are partitioned once into
+folds, and each fold in turn serves as the test set while the remaining folds form the
+training set, so that no subject appears in both the training and test sets of any fold.
+A small validation split is optionally carved from the training folds with a fixed
+per-fold seed. The partition rule (seed and optional stratification by sex) is recorded in
+a manifest file so that Stage~2 and Stage~3 can be run with the identical split.
+
+\subsection{Attention Implementation}
+\label{sec:impl-design-attention}
+
+Self-attention is implemented with the fused scaled-dot-product-attention kernel rather
+than a hand-written attention. At the full 224-pixel input resolution the token count is
+large enough that the naive path is impractical in memory, so the fused kernel is a
+requirement at that resolution rather than an optimisation.
+
+\subsection{Stage-2 / Stage-3 Geometry Lock}
+\label{sec:impl-design-geometry}
+
+Because Stage~3 transfers Stage-2 encoder weights verbatim, the two stages must operate on
+identical token geometry. A check at load time verifies that the tubelet size, input
+resolution, and frame count match, and that the signal window per token is consistent with
+the video temporal stride; a mismatch raises an error at load rather than producing a
+silently misaligned model.
+
+\subsection{Metric Logging Discipline}
+\label{sec:impl-design-logging}
+
+Training metrics are recorded through a single metric-logger utility in
+\texttt{utils/logger.py}. A standing rule is that tensor values are converted to Python
+scalars before being stored, so that the autograd graph is not retained in GPU memory; this
+prevents out-of-memory growth during long runs.
 
 \section{Architecture}
 

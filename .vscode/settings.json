@@ -1,0 +1,39 @@
+{
+    "makefile.configureOnOpen": false,
+
+    // This VS Code window is a WSL remote. There is no TeX distribution inside
+    // WSL, so LaTeX Workshop's default `latexmk` call fails (spawn latexmk
+    // ENOENT). The Windows MiKTeX installation is reachable through WSL interop,
+    // which is what the tools below use.
+    "latex-workshop.latex.tools": [
+        {
+            "name": "latexmk (MiKTeX via WSL interop)",
+            "command": "/mnt/c/Users/peng_/AppData/Local/Programs/MiKTeX/miktex/bin/x64/latexmk.exe",
+            "args": [
+                "-synctex=1",
+                "-interaction=nonstopmode",
+                "-file-line-error",
+                "-lualatex",
+                "-outdir=build",
+                "%DOCFILE%"
+            ],
+            "env": {}
+        }
+    ],
+    "latex-workshop.latex.recipes": [
+        {
+            "name": "latexmk (lualatex)",
+            "tools": [
+                "latexmk (MiKTeX via WSL interop)"
+            ]
+        }
+    ],
+    "latex-workshop.latex.recipe.default": "first",
+
+    // The thesis has exactly one root document. Restricting the root-file search
+    // stops LaTeX Workshop from treating chapters/Appendix.tex (which mentions
+    // \documentclass inside a verbatim block) as a second candidate root.
+    "latex-workshop.latex.search.rootFiles.include": [
+        "report/TUDaThesis/main.tex"
+    ]
+}
