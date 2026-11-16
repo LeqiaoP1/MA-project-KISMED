@@ -1,18 +1,15 @@
 ---
-name: Analyze experiment for thesis
+name: analyze-experiment
 description: Explain an existing experiment using its recorded protocol and outputs.
+argument-hint: Specify the experiment config or output directory
 ---
 
-Analyze the experiment identified in my request.
+Analyze the experiment identified in the request. Inspect its YAML configuration, evaluation code, logs, and recorded `.npy`/`.json` outputs. Do not execute jobs.
 
-Inspect its configuration, evaluation code, logs, and recorded result files. Do not run training or evaluation unless explicitly requested.
-
-Report:
-- Research question and comparison being made.
-- Dataset/split and modality condition, only where documented.
-- Model/checkpoint and relevant configuration.
-- Metrics and exact values from the recorded output.
-- Supported interpretation, separated from hypotheses.
-- Limitations, missing metadata, and reproducibility concerns.
-
-Do not invent missing values or infer statistical significance from point estimates. Do not regenerate tables or figures. If a result file is ambiguous, ask for clarification rather than guessing.
+### Report Structure
+1. **Research Objective**: Question addressed and comparison being made.
+2. **Dataset & Conditions**: Documented split, modality condition (`--streams rgb,tir`), and temporal stride.
+3. **Model & Checkpoint**: Architecture, pre-trained weights, and geometry.
+4. **Verified Metrics**: Exact values extracted from recorded output files (Tier 1/2/3).
+5. **Supported Findings vs. Hypotheses**: Separate empirical evidence from theoretical interpretations.
+6. **Limitations & Missing Metadata**: Reproducibility gaps or undocumented parameters.
