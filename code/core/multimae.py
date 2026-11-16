@@ -339,28 +339,7 @@ class MultiModalMAE(nn.Module):
         self.mask_span_tokens: Dict[str, int] = {}
         self.mask_n_spans: Dict[str, int] = {}
         if self.physio_mask == 'span':
-            spec = parse_mask_span(mask_span_s)
-            wildcard = spec.get('*')
-            for s in self.signal:
-                secs = spec.get(s, wildcard)
-                if secs is None:
-                    secs = MASK_SPAN_DEFAULTS.get(s, self.seq_len / self.fs)
-                span = max(1, int(round(float(secs) * self.fs / self.sig_kernel)))
-                span = min(span, max(1, self.n_signal - 1))
-                n = max(1, int(round(self.mask_ratios[s] * self.n_signal / span)))
-                n = max(1, min(n, max(1, (self.n_signal - 1) // span)))
-                self.mask_span_s[s] = float(secs)
-                self.mask_span_tokens[s] = span
-                self.mask_n_spans[s] = n
-                eff = n * span / self.n_signal
-                note = ('' if abs(eff - self.mask_ratios[s]) < 0.02
-                        else f'  [NOTE: configured ratio '
-                             f'{self.mask_ratios[s]:.3f} -> effective '
-                             f'{eff:.3f}; adjust mask_span_s/mask_ratio_*]')
-                print(f'[mask] {s}: span {secs:g} s = {span} tokens '
-                      f'({span * self.sig_kernel / self.fs:.2f} s) x {n} '
-                      f'span(s) -> effective masked fraction {eff:.3f}'
-                      f'{note}')
+            self.configure_span_mask(mask_span_s)
 
         # ---- masking POLICY: fixed per-stream mask ratio, or AMMM ---------- #
         # 'ratio' (default) = the historical path: ``mask_ratio_*`` are MASK
@@ -394,41 +373,11 @@ class MultiModalMAE(nn.Module):
                 raise NotImplementedError(
                     'MultiModalMAE: modality dropout is plan Phase 2; '
                     'masking=\'ammm\' currently supports modality_dropout: 0.0')
-            video_caps = parse_kept_cap(video_kept_cap)
-            physio_caps = parse_kept_cap(physio_kept_cap)
-            for s in self.streams:
-                kind = ammm.VISUAL if s in self.visual else ammm.SIGNAL
-                n_units = (self.grid_h * self.grid_w
-                           if kind == ammm.VISUAL else self.n_signal)
-                self.ammm_specs.append(ammm.StreamSpec(s, kind, n_units))
-                knob = video_caps if kind == ammm.VISUAL else physio_caps
-                default = 0.25 if kind == ammm.VISUAL else 1.0
-                self.ammm_caps[s] = float(knob.get(s, knob.get('*', default)))
-            alpha_spec = parse_kept_cap(dirichlet_alpha)
-            self.ammm_alpha = {s: float(alpha_spec.get(s, alpha_spec.get('*', 1.0)))
-                               for s in self.streams}
-            ov = parse_kept_cap(kept_ratio_override)
-            if '*' in ov:      # a wildcard pins every declared stream
-                self.ammm_overrides = {s: float(ov['*']) for s in self.streams}
-            else:
-                self.ammm_overrides = {k: float(v) for k, v in ov.items()}
-            # fail at CONSTRUCTION on an invalid declared set / cap / override,
-            # instead of on the first forward (plan Phase 1, gate G12/G19).
-            ammm.plan_step(self.ammm_specs, caps=self.ammm_caps,
-                           alpha=self.ammm_alpha,
-                           min_kept=self.ammm_min_kept,
-                           overrides=self.ammm_overrides,
-                           generator=torch.Generator().manual_seed(0))
-            limits = {
-                s.name: (s.n_units if s.kind == ammm.SIGNAL
-                         else min(s.n_units,
-                                  int(math.floor(self.ammm_caps[s.name]
-                                                 * s.n_units))))
-                for s in self.ammm_specs}
-            print(f'[mask] policy=ammm  caps={self.ammm_caps}  '
-                  f'kept limits={limits}  alpha={self.ammm_alpha}  '
-                  f'min_kept={self.ammm_min_kept}  '
-                  f'override={self.ammm_overrides or None}')
+            self.configure_ammm(video_kept_cap=video_kept_cap,
+                                physio_kept_cap=physio_kept_cap,
+                                dirichlet_alpha=dirichlet_alpha,
+                                kept_ratio_override=kept_ratio_override,
+                                min_kept=min_kept)
 
         # per-modality weights of the final weighted masked-MSE sum.
         # default policy: lambda = 1.0 for the visual streams (rgb/tir) and
@@ -632,6 +581,94 @@ class MultiModalMAE(nn.Module):
     # ------------------------------------------------------------------ #
     # masking (masks == 1 => masked / to reconstruct)
     # ------------------------------------------------------------------ #
+    def configure_ammm(self, video_kept_cap=0.25, physio_kept_cap=1.0,
+                       dirichlet_alpha=1.0, kept_ratio_override=None,
+                       min_kept=0, verbose: bool = True):
+        """Build the AMMM stream specs/caps and VALIDATE the declared set.
+
+        Called from ``__init__`` when ``masking='ammm'``, and callable later by
+        an evaluator that wants to pin a policy on a ``'ratio'`` checkpoint
+        (the specs are otherwise empty, so ``make_masks`` would have nothing to
+        plan over). Validation runs one ``plan_step`` so an invalid cap set or
+        override fails HERE rather than on the first forward (plan G12/G19).
+        """
+        self.ammm_specs = []
+        self.ammm_caps = {}
+        self.ammm_min_kept = int(min_kept or 0)
+        video_caps = parse_kept_cap(video_kept_cap)
+        physio_caps = parse_kept_cap(physio_kept_cap)
+        for s in self.streams:
+            kind = ammm.VISUAL if s in self.visual else ammm.SIGNAL
+            n_units = (self.grid_h * self.grid_w
+                       if kind == ammm.VISUAL else self.n_signal)
+            self.ammm_specs.append(ammm.StreamSpec(s, kind, n_units))
+            knob = video_caps if kind == ammm.VISUAL else physio_caps
+            default = 0.25 if kind == ammm.VISUAL else 1.0
+            self.ammm_caps[s] = float(knob.get(s, knob.get('*', default)))
+        alpha_spec = parse_kept_cap(dirichlet_alpha)
+        self.ammm_alpha = {s: float(alpha_spec.get(s, alpha_spec.get('*', 1.0)))
+                           for s in self.streams}
+        ov = parse_kept_cap(kept_ratio_override)
+        if '*' in ov:      # a wildcard pins every declared stream
+            self.ammm_overrides = {s: float(ov['*']) for s in self.streams}
+        else:
+            self.ammm_overrides = {k: float(v) for k, v in ov.items()}
+        # fail at CONSTRUCTION on an invalid declared set / cap / override,
+        # instead of on the first forward (plan Phase 1, gate G12/G19).
+        ammm.plan_step(self.ammm_specs, caps=self.ammm_caps,
+                       alpha=self.ammm_alpha,
+                       min_kept=self.ammm_min_kept,
+                       overrides=self.ammm_overrides,
+                       generator=torch.Generator().manual_seed(0))
+        limits = {
+            s.name: (s.n_units if s.kind == ammm.SIGNAL
+                     else min(s.n_units,
+                              int(math.floor(self.ammm_caps[s.name]
+                                             * s.n_units))))
+            for s in self.ammm_specs}
+        if verbose:
+            print(f'[mask] policy=ammm  caps={self.ammm_caps}  '
+                  f'kept limits={limits}  alpha={self.ammm_alpha}  '
+                  f'min_kept={self.ammm_min_kept}  '
+                  f'override={self.ammm_overrides or None}')
+        return limits
+
+    def configure_span_mask(self, mask_span_s=None, verbose: bool = True):
+        """(Re)derive the span geometry from the CURRENT ``mask_ratios``.
+
+        Called once from ``__init__`` and again by an evaluator that pins a
+        different ratio (the span COUNT depends on it). Formulas, unchanged:
+        ``span_tokens = round(span_s * fs / sig_kernel)`` and
+        ``n_spans = round(ratio * n_signal / span_tokens)``, both clamped so at
+        least one token of the stream stays visible (a fully masked 1-D stream
+        has no path to the encoder at all otherwise).
+        """
+        spec = parse_mask_span(mask_span_s)
+        wildcard = spec.get('*')
+        for s in self.signal:
+            secs = spec.get(s, wildcard)
+            if secs is None:
+                secs = MASK_SPAN_DEFAULTS.get(s, self.seq_len / self.fs)
+            span = max(1, int(round(float(secs) * self.fs / self.sig_kernel)))
+            span = min(span, max(1, self.n_signal - 1))
+            n = max(1, int(round(self.mask_ratios[s] * self.n_signal / span)))
+            n = max(1, min(n, max(1, (self.n_signal - 1) // span)))
+            self.mask_span_s[s] = float(secs)
+            self.mask_span_tokens[s] = span
+            self.mask_n_spans[s] = n
+            eff = n * span / self.n_signal
+            note = ('' if abs(eff - self.mask_ratios[s]) < 0.02
+                    else f'  [NOTE: configured ratio '
+                         f'{self.mask_ratios[s]:.3f} -> effective '
+                         f'{eff:.3f}; adjust mask_span_s/mask_ratio_*]')
+            if verbose:
+                print(f'[mask] {s}: span {secs:g} s = {span} tokens '
+                      f'({span * self.sig_kernel / self.fs:.2f} s) x {n} '
+                      f'span(s) -> effective masked fraction {eff:.3f}'
+                      f'{note}')
+        return {s: (self.mask_span_tokens[s], self.mask_n_spans[s])
+                for s in self.signal}
+
     def _tube_mask(self, B: int, device, mask_ratio: float):
         """Random subset of spatial patches, replicated across all frames."""
         n_spatial = self.grid_h * self.grid_w
@@ -751,6 +788,19 @@ class MultiModalMAE(nn.Module):
                 if spec.kind == ammm.VISUAL:
                     masks[s] = self._tube_keep_mask(B, device, spec.n_units,
                                                     plan.kept_units[s])
+                elif (self.physio_mask == 'span'
+                      and self.mask_span_tokens.get(s)):
+                    # Contiguous placement for a 1-D stream under AMMM: the
+                    # masked block cannot be interpolated from its own
+                    # neighbours, which is what makes a cross-modal comparison
+                    # meaningful (SpanMask design §4). The span geometry comes
+                    # from ``configure_span_mask`` -- the COUNT still comes from
+                    # the plan, so ``kept_units`` and the span budget must be
+                    # consistent (callers configure the span from the same
+                    # ratio; ``_span_mask`` clamps to n_units - 1 regardless).
+                    masks[s] = self._span_mask(B, device, spec.n_units,
+                                               self.mask_n_spans[s],
+                                               self.mask_span_tokens[s])
                 else:
                     masks[s] = self._random_keep_mask(B, device, spec.n_units,
                                                       plan.kept_units[s])
