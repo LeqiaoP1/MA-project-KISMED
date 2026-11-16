@@ -2,73 +2,94 @@
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.1%2B-brightgreen)](https://pytorch.org/)
+[![Tests: pytest](https://img.shields.io/badge/tests-pytest-green)](code/tests/)
+[![Dataset: BP4D+](https://img.shields.io/badge/dataset-BP4D%2B-lightgrey)](data/README.md)
 
 Research code for reconstructing contact-based physiological waveforms from
-contactless RGB and thermal-infrared video. The project combines VideoMAE-style
-visual initialization with MultiMAE-style multimodal masked pre-training on
-BP4D+, followed by task-specific waveform fine-tuning.
+contactless RGB and thermal-infrared (TIR) facial video. The project combines
+VideoMAE-style visual initialization with MultiMAE-style multimodal masked
+pre-training on BP4D+, followed by task-specific waveform fine-tuning under a
+simulated contact-sensor-failure setting.
 
-The current downstream branches target:
+The downstream branches target:
 
-- **BP**: blood-pressure waveform reconstruction
-- **RESP**: respiration waveform reconstruction
-- **EDA**: electrodermal-activity waveform reconstruction
+- **BP** — blood-pressure (pulse) waveform reconstruction
+- **RESP** — respiration waveform reconstruction
+- **EDA** — electrodermal-activity waveform reconstruction
 
-An optional action-unit occurrence probe and thermal-ROI respiration pipeline are
-also included.
+Optional add-ons include an action-unit (AU) occurrence probe, a thermal-ROI
+respiration pipeline, and RGB face-ROI / 2D-texture experiments.
+
+```mermaid
+flowchart LR
+    A[BP4D+ RGB/TIR video + physiology] --> B[Canonical session conversion]
+    B --> C[Stage 1 - VideoMAE ViT-B init]
+    C --> D[Stage 2 - multimodal masked pre-training]
+    D --> E[Stage 3 - BP / RESP / EDA waveform fine-tuning]
+    E --> F[Tier 1-3 offline evaluation]
+```
 
 > **Data and research status:** BP4D+ data and model checkpoints are not stored
 > in this repository. Obtain access through the appropriate dataset and model
-> providers before running the pipelines.
+> providers before running the pipelines. See
+> [License and data use](#license-and-data-use).
 
-## Key features
+## Why this project is useful
 
-- **Three-stage progressive pipeline** — VideoMAE-style visual initialisation,
+- **Three-stage progressive pipeline** — VideoMAE-style visual initialization,
   MultiMAE-style multimodal masked pre-training, and task-specific waveform
-  fine-tuning, all orchestrated through a single CLI interface.
-- **Flexible modality contract** — configure any combination of video streams
-  (`rgb`, `tir`) and physiological signals (`bp`, `resp`, `eda`) via a
-  comma-separated `--streams` flag; no code changes needed for ablations.
+  fine-tuning, orchestrated through one CLI.
+- **Flexible modality contract** — any combination of video streams (`rgb`,
+  `tir`) and 1-D signals (`bp`, `resp`, `eda`) through `--streams`; ablations
+  are a YAML change.
 - **Asymmetric per-stream masking** — independent mask ratios per modality
-  (50–75 % for video, 90 %+ for 1-D signals) with span-based masking for
-  physiological streams.
-- **Multi-tier waveform evaluation** — Tier 1 (temporal MAE/RMSE/Pearson),
-  Tier 2 (Welch PSD consistency), and Tier 3 (clinical HRV via NeuroKit2),
-  all offline and reproducible from saved prediction arrays.
-- **Thermal-ROI respiration pipeline** — landmark-derived mouth/nose crops
-  from thermal video with a dedicated respiration label cache, session-level
-  preprocessing, and per-clip z-score normalisation.
-- **DDP-ready and HPC-ready** — distributed training works out of the box
-  under `torchrun` or Slurm; local single-GPU smoke scripts are provided for
-  every major pipeline stage.
-- **Extensive project context** — generated architecture specs, design
-  decisions with review verdicts, experiment plans, and measured evaluations
-  are versioned alongside the code in [`code/notes/`](code/notes/).
+  (50–75 % for video, 90 %+ for 1-D signals) with span-based signal masking.
+- **Multi-tier waveform evaluation** — Tier 1 temporal metrics (MAE/RMSE/
+  Pearson), Tier 2 Welch PSD consistency, and Tier 3 clinical HRV metrics for
+  the BP branch via NeuroKit2.
+- **ROI-aware pipelines** — thermal mouth/nose ROI crops, RGB face-ROI crops,
+  offline ROI/2D-texture and respiration caches, and session-level
+  preprocessing.
+- **Honest evaluation protocols** — subject-disjoint splits, leave-one-subject-
+  out sweeps, and k-fold evaluation runners.
+- **DDP- and HPC-ready** — distributed training under `torch.distributed` or
+  Slurm, with local single-GPU smoke scripts for every major stage.
+- **Evidence-based project context** — generated specifications, design
+  decisions, experiment plans, and measured evaluation verdicts live in
+  [`code/notes/`](code/notes/).
 
 ## What is included
 
 | Path | Purpose |
 | --- | --- |
-| [`code/core/`](code/core/) | Multimodal models, adapters, losses, and model primitives |
-| [`code/data/`](code/data/) | BP4D+ conversion, video/physiology loading, masking, and datasets |
+| [`code/core/`](code/core/) | Models, adapters, losses, registry, and waveform heads |
+| [`code/data/`](code/data/) | BP4D+ conversion, video/physiology loading, ROI datasets, masking, and caches |
 | [`code/engines/`](code/engines/) | Training, validation, inference, and visualization loops |
-| [`code/evaluation/`](code/evaluation/) | Temporal, spectral, and clinical waveform metrics |
+| [`code/evaluation/`](code/evaluation/) | Temporal, spectral, clinical, and assembled session metrics |
 | [`code/runners/`](code/runners/) | Command-line entry points |
-| [`code/configs/`](code/configs/) | YAML experiment configurations |
-| [`code/scripts/`](code/scripts/) | Local and Slurm/HPC environment and launch scripts |
+| [`code/configs/pretrain/`](code/configs/pretrain/) | Stage-2 YAML configurations |
+| [`code/configs/finetune/`](code/configs/finetune/) | Stage-3 YAML configurations |
+| [`code/scripts/local/`](code/scripts/local/) | Single-GPU smoke wrappers |
+| [`code/scripts/hpc/`](code/scripts/hpc/) | Slurm launch and preprocessing jobs |
 | [`code/tests/`](code/tests/) | Pytest coverage for data, models, losses, and runners |
-| [`code/notes/`](code/notes/) | Architecture specifications, design decisions, plans, and evaluations |
-| [`notebooks/`](notebooks/) | Exploratory notebooks and pipeline guidance |
+| [`code/notes/spec/`](code/notes/spec/) | Generated architecture, data, and training contracts |
+| [`notebooks/`](notebooks/) | Thermal-ROI pipeline notebook and guide |
+| [`report/`](report/) | LaTeX thesis source |
+| [`presentation/`](presentation/) | Presentation source and figures |
 
 ## Requirements
 
 - Linux or WSL with Python **3.10 or newer**
 - Python packages listed in [`code/requirements.txt`](code/requirements.txt)
-- A CUDA-capable GPU for practical model training
+- A CUDA-capable GPU for practical training (`torch>=2.1`)
+- `ffmpeg` / `decord` support for thermal `.wmv` decoding
 - BP4D+ raw data for preprocessing and training
+- Optional: NeuroKit2 for Tier-3 clinical metrics (listed in the requirements
+  file and imported lazily)
 - Optional: a Slurm cluster for multi-GPU/HPC experiments
 
-The repository does not package or download BP4D+ automatically. Keep raw data
+The repository does not package or download BP4D+ automatically. Raw data and
+trained checkpoints are excluded by [`.gitignore`](.gitignore), so keep them
 outside version control.
 
 ## Installation
@@ -82,6 +103,9 @@ source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r code/requirements.txt
 ```
+
+Tier 1/2 evaluation only needs NumPy and SciPy; the Tier-3 clinical metrics use
+NeuroKit2 when available and report a clear error if it is missing.
 
 For local runs, configure the environment from the `code/` directory:
 
@@ -110,13 +134,28 @@ source scripts/env_local.sh
 
 All Python entry points are intended to be run from [`code/`](code/).
 
+### 0. Download Stage-1 encoder weights (once)
+
+Stage 2 starts from a published VideoMAE ViT-Base checkpoint. Download it on a
+machine with internet (on a cluster, use a login node):
+
+```bash
+cd code
+python runners/run_download_weights.py --list
+python runners/run_download_weights.py videomae:k400   # Kinetics-400
+python runners/run_download_weights.py videomae:ssv2   # optional A/B
+```
+
+Weights are cached under `models/initial/`; override the location with
+`--weights_dir` or `$INITIAL_MODELS_DIR`. The VideoMAE checkpoints are
+CC-BY-NC 4.0 — review their terms before use.
+
 ### 1. Prepare and inspect the data
 
 The converter expects the raw BP4D+ trees `2D+3D/`, `Thermal/`, and
 `Physiology/`. It writes one synchronized canonical directory per session.
 
 ```bash
-cd code
 python data/prepare_bp4d.py \
   --raw_root ../data/raw/BP4D \
   --out_root ../data/processed/bp4d_canonical \
@@ -135,21 +174,31 @@ Remove `--limit_sessions` for a complete conversion. Use
 ### 2. Run multimodal masked pre-training
 
 Configs are loaded as argument defaults, and explicit command-line arguments
-override YAML values.
+override YAML values. Start with the local wiring smoke, then the VideoMAE
+inheritance run:
 
 ```bash
-python runners/run_pretrain.py \
-  -c configs/pretrain/stage2_local_pretrained.yaml
+python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml
+python runners/run_pretrain.py -c configs/pretrain/stage2_local_pretrained.yaml
 ```
 
+Other Stage-2 entry points:
+
+- `configs/pretrain/stage2_local_pretrained_ssv2.yaml` — SSV2 twin for the
+  K400-vs-SSV2 comparison.
+- `configs/pretrain/stage2_multimodal.yaml` — canonical multi-stream run.
+- `configs/pretrain/stage2_*_tir_roi_resp*.yaml` — thermal-ROI + respiration
+  datasets, including the asymmetric multimodal masking (AMMM) variants.
+
 The local configurations are intentionally small smoke or milestone runs.
-Before a long experiment, check the selected data path, output directory,
-streams, model geometry, and pretrained encoder checkpoint.
+Before a long experiment, check the data path, output directory, streams, model
+geometry, and pretrained encoder checkpoint.
 
 ### 3. Fine-tune a waveform branch
 
 Fine-tuning requires a compatible Stage-2 checkpoint. The Stage-3 geometry and
-ROI settings must match the checkpoint’s recorded configuration.
+ROI settings must match the checkpoint’s recorded configuration; mismatches
+abort the run.
 
 ```bash
 python runners/run_waveform.py -c configs/finetune/bp.yaml
@@ -179,8 +228,28 @@ python runners/run_evaluate.py \
   --out metrics.json
 ```
 
-Tier 1 reports temporal MAE/RMSE/Pearson metrics. Tier 2 reports Welch PSD
-consistency. Tier 3 reports clinical BP/HRV metrics and requires NeuroKit2.
+Tier 1 reports temporal MAE/RMSE/Pearson metrics, Tier 2 reports Welch PSD
+consistency, and Tier 3 reports clinical HRV metrics (BP branch only). For
+subject-level, session-level, and k-fold summaries, use
+`runners/run_evaluate_subject.py`, `runners/run_evaluate_session.py`, and
+`runners/run_evaluate_kfold.py`.
+
+### 5. Optional add-on workflows
+
+```bash
+# Thermal-ROI -> respiration pre-training and fine-tuning
+python runners/run_pretrain.py \
+  -c configs/pretrain/stage2_local_tir_roi_resp.yaml
+python runners/run_waveform.py \
+  -c configs/finetune/resp_tir_roi_local.yaml --val_subject F004
+
+# AU-occurrence probe on a frozen Stage-2 encoder
+python runners/run_au_probe.py -c configs/finetune/au_local.yaml
+
+# Reconstruction inspection and pretraining visualization
+python runners/run_eval_recon.py --help
+python runners/run_visualize_pretrain.py --help
+```
 
 ## HPC and multi-GPU runs
 
@@ -191,12 +260,17 @@ resource specification. Then submit the relevant Slurm job from `code/`:
 ```bash
 cd code
 source scripts/env_hpc.sh
-sbatch scripts/hpc/<job>.sbatch
+bash scripts/hpc/download_weights.sh   # once, on a login node
+sbatch scripts/hpc/submit_pretrain.sbatch
+sbatch scripts/hpc/submit_waveform.sbatch
 ```
 
-The HPC profile is a template and contains site-specific values that must be
-reviewed before submission. Local scripts under `code/scripts/local/` are
-single-process smoke wrappers; they do not require a DDP launcher.
+The `submit_*.sbatch` wrappers expose overrides such as `CONFIG`, `RUN_NAME`,
+`OUT_ROOT`, `WEIGHTS_DIR`, and corpus filters; read the header of the job you
+intend to run. The HPC profile is a template and contains site-specific values
+that must be reviewed before submission. Local scripts under
+`code/scripts/local/` are single-process smoke wrappers; they do not require a
+DDP launcher.
 
 ## Testing
 
@@ -205,6 +279,8 @@ Run the test suite from `code/`:
 ```bash
 cd code
 python -m pytest
+python -m pytest tests/test_waveform_losses.py -q   # targeted
+python -m pytest --cov=data --cov=evaluation --cov=runners --cov=utils
 ```
 
 For a syntax-only check:
@@ -213,7 +289,7 @@ For a syntax-only check:
 python -m compileall .
 ```
 
-## Documentation and support
+## Where to get help
 
 - [`code/README.md`](code/README.md): implementation layout and experiment
   commands
@@ -223,18 +299,25 @@ python -m compileall .
   verdicts
 - [`code/notes/plan/`](code/notes/plan/): current experiment plans
 - [`code/notes/eval/`](code/notes/eval/): measurements and evaluation verdicts
+- [`code/notes/explanation/`](code/notes/explanation/): result interpretations
 - [`notebooks/TirROI_Resp_Guide.md`](notebooks/TirROI_Resp_Guide.md): thermal-ROI
   respiration workflow
-- [`docs/`](docs/): project and thesis reference material
+- [`report/TUDaThesis/`](report/TUDaThesis/): thesis source and bibliography
+- [`docs/`](docs/): project and literature reference material
+- [`AGENTS.md`](AGENTS.md): repository-wide development conventions
 
 If a command or configuration is unclear, first check its `--help` output and
 the corresponding YAML file. For reproducible bugs or proposed improvements,
-open a GitHub issue with the command, configuration, environment, and concise
-error output. Do not attach BP4D+ data or private checkpoints.
+open an issue at <https://github.com/LeqiaoP1/MA-project-KISMED/issues> with the
+command, configuration, environment, and concise error output. Do not attach
+BP4D+ data or private checkpoints.
 
-## Contributing and maintenance
+## Who maintains and contributes
 
-This is a research/thesis repository maintained by the KIS*MED project team.
+This is a research/thesis repository maintained by the KIS*MED project team at
+TU Darmstadt. The primary maintainer is Leqiao Peng
+(<leqiao.peng@stud.tu-darmstadt.de>).
+
 Contributions should remain focused and reproducible:
 
 1. Create a branch for the change.
@@ -246,18 +329,27 @@ Contributions should remain focused and reproducible:
    validation performed.
 
 Architecture changes should also update the relevant specification, design, or
-evaluation note. See [`AGENTS.md`](AGENTS.md) for repository-wide development
-conventions.
+evaluation note. Never commit BP4D+ data, private checkpoints, credentials, or
+cluster-specific paths.
+
+## License and data use
+
+No standalone `LICENSE` file is bundled with this repository. Unless a separate
+agreement applies, all rights are reserved; contact the maintainers before
+redistributing the code or derived artifacts. BP4D+ data and published model
+checkpoints are governed by their own access and use terms. In particular, the
+VideoMAE weights downloaded by `run_download_weights.py` are CC-BY-NC 4.0.
 
 ## Project structure
 
 ```text
+.github/       Agent instructions and reusable prompt files
+code/          Python package, runners, configs, tests, scripts, and notes
 data/          Raw, interim, and processed datasets (not committed)
-models/        Initial and trained model weights
-output/        Training outputs and evaluation artifacts
-code/          Python package, runners, configs, tests, and scripts
-notebooks/     Exploratory analysis
-docs/          Reference material
-report/        Thesis source
-presentation/  Presentation source and assets
+docs/          Reference PDFs and literature
+models/        Initial and trained model weights (not committed)
+notebooks/     Thermal-ROI notebook and exploratory analysis
+output/        Training outputs and evaluation artifacts (not committed)
+presentation/  Presentation source and generated figures
+report/        LaTeX thesis source
 ```
