@@ -1,5 +1,8 @@
 # KISMED Multimodal Physiological Waveform Recovery
 
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.1%2B-brightgreen)](https://pytorch.org/)
+
 Research code for reconstructing contact-based physiological waveforms from
 contactless RGB and thermal-infrared video. The project combines VideoMAE-style
 visual initialization with MultiMAE-style multimodal masked pre-training on
@@ -17,6 +20,30 @@ also included.
 > **Data and research status:** BP4D+ data and model checkpoints are not stored
 > in this repository. Obtain access through the appropriate dataset and model
 > providers before running the pipelines.
+
+## Key features
+
+- **Three-stage progressive pipeline** — VideoMAE-style visual initialisation,
+  MultiMAE-style multimodal masked pre-training, and task-specific waveform
+  fine-tuning, all orchestrated through a single CLI interface.
+- **Flexible modality contract** — configure any combination of video streams
+  (`rgb`, `tir`) and physiological signals (`bp`, `resp`, `eda`) via a
+  comma-separated `--streams` flag; no code changes needed for ablations.
+- **Asymmetric per-stream masking** — independent mask ratios per modality
+  (50–75 % for video, 90 %+ for 1-D signals) with span-based masking for
+  physiological streams.
+- **Multi-tier waveform evaluation** — Tier 1 (temporal MAE/RMSE/Pearson),
+  Tier 2 (Welch PSD consistency), and Tier 3 (clinical HRV via NeuroKit2),
+  all offline and reproducible from saved prediction arrays.
+- **Thermal-ROI respiration pipeline** — landmark-derived mouth/nose crops
+  from thermal video with a dedicated respiration label cache, session-level
+  preprocessing, and per-clip z-score normalisation.
+- **DDP-ready and HPC-ready** — distributed training works out of the box
+  under `torchrun` or Slurm; local single-GPU smoke scripts are provided for
+  every major pipeline stage.
+- **Extensive project context** — generated architecture specs, design
+  decisions with review verdicts, experiment plans, and measured evaluations
+  are versioned alongside the code in [`code/notes/`](code/notes/).
 
 ## What is included
 
