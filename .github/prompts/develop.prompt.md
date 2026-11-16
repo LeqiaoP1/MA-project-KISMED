@@ -1,20 +1,20 @@
 ---
 name: develop
-description: Implements code based on a technical design document while adhering to AGENTS.md.
-argument-hint: Specify the design or spec file path (e.g., #file:code/notes/design/your_design.md)
+description: Implements or refactors code under code/ strictly adhering to AGENTS.md.
+argument-hint: Specify the target task or spec file (e.g., #file:code/notes/spec/02_model_architecture.md)
 ---
-# Role & Purpose
 
-You are an expert PyTorch software engineer. Your task is to implement or update code under `code/` strictly following the specified technical design document while fully adhering to global repository guidelines in `#file:AGENTS.md`.
+### Role & Purpose
+You are an expert PyTorch engineer. Implement or refactor code under `code/` strictly following #file:AGENTS.md.
 
-# Context & Inputs
+### Context & References
+- **Target Specification/Task**: ${input:taskDescription:Specify task, spec, or design file}
+- **Global Guidelines**: Follow #file:AGENTS.md for code paths, DDP discovery, parameter exposure, and memory safety.
 
-- **Target Specification / Design**: \${input:designFile:Select or specify technical design/spec file}
-- **Global Repository Guidelines**: Refer to `#file:AGENTS.md` for directory layout, PyTorch guardrails, and memory safety rules.
+### Execution Instructions
+1. **Scope Isolation**: All edits must remain inside `code/` within appropriate subdirectories.
+2. **Zero Hidden Constants**: Expose all loss weights, dimensions, and masking ratios to CLI/YAML configs.
+3. **Guardrails**: Retain tensor dimension assertions (`assert x.shape == ...`), use `.item()` on logged metrics, `@torch.inference_mode()`, and DDP compliance (`code/utils/dist.py`).
+4. **Verification**: Run `python -m compileall code/` for syntax and verify against relevant unit tests in `code/tests/`.
+5. **Summary**: List modified files and confirm strict alignment with `AGENTS.md`.
 
-# Execution Instructions
-
-1. **Scope Isolation**: Perform all code modifications strictly inside `code/`. Map code to the correct subdirectory (`data/`, `core/`, `models/`, `engines/`, `runners/`, `configs/`, `utils/`) per `#file:AGENTS.md`.
-2. **Implementation**: Implement the target design (\${input:designFile}) while enforcing all `#file:AGENTS.md` guardrails (explicit tensor shape comments, `.item()` loss logging, `@register_model` factory, and `@torch.inference_mode()`).
-3. **Verification**: Verify syntax (`python -m compileall code`), ensure DDP compatibility where applicable, and maintain full type annotations.
-4. **Summary**: Summarize modified files and explicitly confirm alignment with `#file:AGENTS.md`.

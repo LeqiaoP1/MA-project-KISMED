@@ -1,42 +1,28 @@
-# Thesis documentation instructions
+# Thesis Documentation Guidelines (TUDaThesis)
 
-This repository contains a graduate research project on multimodal AI.
+Apply the repository-wide engineering principles, execution workflows, and directory boundaries defined in `AGENTS.md`.
 
-## Working rules
+## 1. Code-Grounding & Academic Integrity
 
-- Treat source code, experiment configurations, and recorded outputs as evidence. Do not infer implementation details that are not present.
-- Never invent metrics, dataset counts, citations, paper titles, author names, or experimental outcomes.
-- Distinguish published findings, implementation facts, hypotheses, and results produced by this project.
-- For thesis work, read the relevant files under `code/notes/` and inspect the relevant source/configuration/results before drafting.
-- Make focused edits only to the files requested. Do not rewrite unrelated chapters or change the thesis structure without asking.
-- Before editing, summarize the files you intend to inspect and modify when the task is substantial.
-- After editing, summarize changed files and list unresolved factual questions or citation gaps.
-- Do not run training jobs, submit HPC jobs, delete data, or overwrite experiment outputs unless explicitly requested.
-- Do not run thesis result-generation scripts unless the user explicitly asks. Result generation is intentionally manual.
-- Never commit changes or push to GitHub unless explicitly asked.
+- **Evidence-Based Writing**: Every architecture specification, hyperparameter, dataset split, and evaluation metric reported in the thesis must trace directly to active implementations under `code/` or verified experiment logs.
+- **No Conceptual Drift**: The executable code in `code/core/` and active configurations in `code/configs/` are the ground truth. If earlier thesis drafts contradict current code, update the LaTeX text to match the real implementation.
+- **Strict Verification**: Never invent citations, sample counts, or baseline comparison numbers. Use only verified keys in `report/TUDaThesis/bib.bib` (insert `% TODO-CITATION: ...` if a reference is missing).
+- **Scope Discipline**: Edit only the designated `.tex` sections. Do not alter document templates or `main.tex` without explicit instructions.
 
-## LaTeX
+## 2. LaTeX Scope & Structure
 
-- The thesis source is located in directory "report/TUDaThesis".
-- Keep chapters in directory "report/TUDaThesis/chapters".
-- Store figures in directory "report/TUDaThesis/gfx".
-- Store generated tables in directory "report/TUDaThesis/generated".
-- Use BibTeX citations as in file "report/TUDaThesis/bib.bib".
-- Do not modify main.tex unless requested.
+- **Target Root**: `report/TUDaThesis/`
+  - Chapters: `chapters/` (e.g., `3_methodology.tex`, `4_experiments.tex`)
+  - Figures: `gfx/`
+  - Generated tables: `generated/`
+  - Bibliography: `bib.bib`
+- **Mathematical Exactness**:
+  - Equations for composite losses (e.g., L1, Pearson correlation, temporal smoothness, waveform recovery) must reflect the exact PyTorch operations (reduction types, scaling factors, normalization) implemented in `code/core/criterion.py` and `code/core/waveform_losses.py`.
+- **Consistent Terminology**:
+  - Adhere strictly to standardized project terminology: standard RGB, thermal-infrared (TIR), masked autoencoding, asymmetric masking, zero-shot evaluation, and physiological waveform reconstruction (BP, RESP, EDA).
 
-## Research integrity
+## 3. Working Protocol for Copilot
 
-- Use actual implementation details from the repository.
-- Distinguish established literature from our own contributions.
-- Clearly identify assumptions and limitations.
-- Never fabricate references, metrics, or experimental findings.
-
-## Academic writing
-
-- Use formal, precise academic English.
-- Prefer specific, testable statements over promotional language.
-- Explain abbreviations at first use.
-- Use consistent terminology for RGB, thermal, modality availability, missing modalities, masking, and occlusion.
-- Do not claim that a method is robust, superior, or state-of-the-art without supporting evidence.
-- Use only verified BibTeX keys already present in `report/TUDaThesis/bib.bib`. If a source is needed but unavailable, insert a clear `% TODO-CITATION: ...` comment instead of fabricating a citation.
-- Preserve the institution's official thesis template and formatting requirements.
+- Before drafting or editing methodology chapters, inspect the corresponding model definitions in `code/core/` and active parameters in `code/configs/`.
+- Summarize the specific files inspected before making substantial LaTeX modifications.
+- Do not run training scripts, submit HPC jobs, delete data, or modify git tracking unless explicitly instructed.
