@@ -183,6 +183,21 @@ modalities (while keeping the ≥1 video + ≥1 physio rule) is a YAML-only
 change. Per-stream mask ratios: visual `mask_ratio_rgb/tir` 50–75 %, signals
 `mask_ratio_bp/resp/eda` 90 %+.
 
+**Choosing the visible stream (`rgb` vs `rgb2d`).** `rgb` is **not deprecated**
+— it is the only visible stream served by `PairedSessionDataset` (`data_set:
+bp4d+`), the AU probe and every Stage-3 config. But it **cannot** be fused with
+`tir` inside one model: `MultiModalMAE` holds ONE global `input_size`
+(`core/multimae.py:202`, `:265`) and `_check_space_time_alignment` (`:463`)
+rejects a second visual stream on another patch grid, so the 224 px canonical
+`rgb` (or the 64 px `rgb_roi` crop) never matches the 96 px TIR ROI. Prefer
+**`rgb2d`** whenever `tir` is in the same run: it lives on the TIR grid by
+construction (same `input_size` / `tubelet` / `num_frames`) and is cropped from
+the **same frames** as the TIR ROI, which makes `streams: tir,rgb2d,resp`
+(`configs/pretrain/stage2_hpc_tir_roi_resp_rgb2d.yaml`) the only visible+thermal
+fusion configuration. Cost: `rgb2d` needs the offline cache
+(`runners/run_build_2d_roi_cache.py`), and the native store is I/O heavy
+(~316 MB per 8-s clip) — use a `px112` store for throughput.
+
 Implemented and run so far (see the thesis-plan table below): canonical BP4D
 conversion, the aligned `PairedSessionDataset` (+ overlapping windows via
 `clip_stride`), the multimodal masked autoencoder `core/multimae.py`

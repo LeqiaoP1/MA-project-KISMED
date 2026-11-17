@@ -24,8 +24,8 @@ the code disagree, the code wins and this file is the bug.
 
 | Canonical Term | Legacy / Forbidden Alias | Since | Scope | Rationale |
 | :--- | :--- | :--- | :--- | :--- |
-| **`rgb`** | — (**not** deprecated) | — | `code/core/`, `code/data/`, `code/configs/` | The 224 px `rgb_roi` + BP visual arm. A **distinct stream** from `rgb2d`; both are live in `_VISUAL_STREAMS` (`code/core/multimae.py:96`), e.g. `streams: rgb,bp,resp`. |
-| **`rgb2d`** | `RGB2d`, "RGB2D", "RGB texture" (prose only) | 2026-11-10 | `code/core/multimae.py`, `code/data/rgb2d_cache.py`, `code/configs/` | BP4D+ 2D-texture face ROI served from the offline cache. Lower-case identifier; a distinct name from `rgb` so a checkpoint can never be paired with the wrong front-end. |
+| **`rgb`** | — (**not** deprecated; prose "RGB" is a *modality name*, not a stream identifier) | — | `code/core/`, `code/data/`, `code/configs/` | **(S1, 2026-11-17) Legacy-but-supported — NOT deprecated.** The canonical 224 px / `rgb_roi` 64 px visible-light stream, and the ONLY visible input for `PairedSessionDataset` (`data_set: bp4d+`), the AU probe and every Stage-3 config. **Not preferred for fusion:** it cannot share a patch grid with `tir`, so any visible+thermal run must use `rgb2d` (see §2). |
+| **`rgb2d`** | `RGB2d`, "RGB2D", "RGB texture" (prose only) | 2026-11-10 | `code/core/multimae.py`, `code/data/rgb2d_cache.py`, `code/data/trimodal_dataset.py`, `code/configs/` | BP4D+ 2D-texture face ROI served from the offline cache. Lower-case identifier; a distinct name from `rgb` so a checkpoint can never be paired with the wrong front-end. **(S1) PREFERRED visible stream whenever `tir` is in the run** — the only visible stream defined on the TIR patch grid. |
 | **`tir`** | `thermal`, `IR`, `FLIR` (in prose/identifiers) | 2026-09 | Everywhere **except** the carve-out below | Standardises on thermal-infrared. |
 | **`Thermal/`, `find_thermal_video`, `run_inspect_thermal`** | — (**frozen**, do not rename) | — | `data/raw/BP4D/Thermal/`, `code/data/tir_resp_dataset.py:225`, `code/runners/run_inspect_thermal.py` | Raw-tree path literal and published API symbols; renaming breaks data discovery. |
 | **`roi_landmarks`** (with `ROI_LANDMARK_PRESETS`) | `resp_roi`, `crop_face`, `roi_crop` (never existed in code) | 2026-10 | `code/data/tir_resp_dataset.py:185` | Canonical ROI selector: presets `nose_mouth` \| `nostrils` \| `nostril_mouth` \| `nose_tip`, or a CSV of 1-indexed landmark labels. |
@@ -41,9 +41,9 @@ Closed stream set: visual `('rgb', 'tir', 'rgb2d')`, physiological
 
 | Term | Shape | Channels | Notes |
 | :--- | :--- | :--- | :--- |
-| **`rgb`** | `[B, 3, T, H, W]` | 3 | 224 px `rgb_roi` arm (`stage2_local_pretrained.yaml`: `streams: rgb,bp,resp`). |
+| **`rgb`** | `[B, 3, T, H, W]` | 3 | Canonical 224 px / `rgb_roi` 64 px visible-light arm (`stage2_local_pretrained.yaml`: `streams: rgb,bp,resp`). Legacy-but-supported; **cannot** coexist with `tir` in one model (ONE global `input_size`) — use `rgb2d` for fusion. |
 | **`tir`** | `[B, 3, T, H, W]` | 3 default / 1 legacy (`--tir_channels 1`) | **False-colour (rainbow) rendering** with a burned-in degC legend — not luma, not a "3-channel duplicate". |
-| **`rgb2d`** | `[B, 3, T, H, W]` | 3 | 2D-texture face ROI from the offline cache (`store_resolution='native'`). Must share `input_size` / `tubelet` / `num_frames` with `tir`. |
+| **`rgb2d`** | `[B, 3, T, H, W]` | 3 | 2D-texture face ROI from the offline cache (`store_resolution='native'`). Must share `input_size` / `tubelet` / `num_frames` with `tir`, and is cropped from the **same frames**. **Preferred visible stream in any `tir`-containing run** (`streams: tir,rgb2d,resp`). |
 | **`bp` / `resp` / `eda`** | `[B, 1, L]` | 1 | 1-D physiological waveform, length `L = round(kept_seconds * fs)`. |
 
 - **TIR**: thermal-infrared; captures surface temperature dynamics and
@@ -52,6 +52,15 @@ Closed stream set: visual `('rgb', 'tir', 'rgb2d')`, physiological
   airflow derived). **EDA**: electrodermal activity / galvanic skin response.
 - **Stage-2 contract**: >=1 visual stream **and** >=1 physiological stream;
   all-visual / all-signal lists are rejected at model build.
+- **Visible-stream preference (S1, 2026-11-17)**: `rgb` is **not deprecated** —
+  it remains the only visible stream for `PairedSessionDataset` (`data_set:
+  bp4d+`), the AU probe (`data_set: bp4d+`) and every Stage-3 config. Prefer
+  `rgb2d` whenever `tir` is in the same run: `MultiModalMAE` holds ONE global
+  `input_size` (`code/core/multimae.py:202`, enforced by
+  `_check_space_time_alignment`), so a 224/64 px `rgb` can never be paired with
+  the 96 px TIR ROI, whereas `rgb2d` shares `input_size` / `tubelet` /
+  `num_frames` with `tir` by construction. `streams: tir,rgb2d,resp` is the only
+  visible+thermal fusion configuration.
 - **Stage-3**: `streams: tir` (visual input only) plus a single 1-D **target**
   (`target: resp`) — `resp` is not a stream there.
 - **`tir_channels`**: 3 is the shipped default; `1` only reproduces
