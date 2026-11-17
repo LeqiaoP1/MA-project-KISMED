@@ -19,7 +19,7 @@ Apply the repository-wide engineering principles, execution workflows, and direc
 - **Mathematical Exactness**:
   - Equations for composite losses (e.g., L1, Pearson correlation, temporal smoothness, waveform recovery) must reflect the exact PyTorch operations (reduction types, scaling factors, normalization) implemented in `code/core/criterion.py` and `code/core/waveform_losses.py`.
 - **Consistent Terminology**:
-  - Adhere strictly to standardized project terminology: standard RGB, thermal-infrared (TIR), masked autoencoding, asymmetric masking, zero-shot evaluation, and physiological waveform reconstruction (BP, RESP, EDA).
+  - Adhere strictly to canonical canonical names and symbols from `code/notes/GLOSSARY.md` for all variables, tensor shapes, and loss weights in equations and figure captions. When encountering legacy names in older drafts, migrate them to their canonical counterparts.
 
 ## 3. Working Protocol for Copilot
 

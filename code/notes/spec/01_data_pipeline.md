@@ -86,6 +86,8 @@ The session name encodes subject (`'F001_T1'.rsplit('_', 1)[0]` -> `'F001'`), en
 
 **Builders**: `build_rgb_roi_pretrain_dataset(args)`, `build_rgb_roi_finetune_dataset(is_train, test_mode, args)`.
 
+**Role (S1 terminology, 2026-11-17).** This lineage emits the `rgb` stream and is **not deprecated**: it is the only visible stream reachable from `PairedSessionDataset` (`data_set: bp4d+`), the AU probe and Stage 3. It is, however, the BP-arm Stage-2 source only, and it can never be fused with `tir` (the model has ONE global `input_size`), so any visible+thermal run uses `rgb2d` instead (§3.5).
+
 ### 3.3 TIR-ROI + Respiration — `data/tir_resp_dataset.py`
 
 | Class | Stage | Notes |
@@ -108,7 +110,7 @@ The session name encodes subject (`'F001_T1'.rsplit('_', 1)[0]` -> `'F001'`), en
 
 Per-frame AU occurrence labels; subject-disjoint split. Used exclusively by the AU probe.
 
-### 3.5 2D-Texture ROI stream (`rgb2d`) — cached (2026-11-10, PLANNED)
+### 3.5 2D-Texture ROI stream (`rgb2d`) — cached (2026-11-10, SHIPPED)
 
 A THIRD cached stream so Stage 2 can run `tir` + `rgb2d` + `resp` on ONE clip window. Contract: `design/2DTexture_ROI_cache_preprocessing.md` (v2). Build order: `plan/2DTexture_ROI_cache_implementation_plan.md`. Nothing in the existing TIR/RESP artefact changes value.
 

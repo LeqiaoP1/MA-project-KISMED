@@ -37,6 +37,7 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `stage2_local_pretrained_ssv2.yaml` | Twin of the above with VideoMAE **SSV2** init (the corpus A/B) |
 | `stage2_local_rgb_roi_bp.yaml` | RGB face-ROI + BP, raw tree |
 | `stage2_local_tir_roi_resp.yaml` | TIR-ROI + RESP, raw tree |
+| `stage2_hpc_tir_roi_resp_rgb2d.yaml` | TIR-ROI + `rgb2d` + RESP (`streams: tir,rgb2d,resp`) — the only visible+thermal fusion run, HPC |
 | `stage2_multimodal.yaml` | HPC full-data template, 800 epochs, input_size 224 |
 | `example.yaml` | Annotated reference template |
 

@@ -131,7 +131,7 @@ Default: `sig_kernel=8`, `S=400` -> `Ns=50`.
 
 | Modality | Type | Shape | Function |
 |----------|------|-------|----------|
-| RGB / TIR (video) | 3-D sincos (t,h,w) | `[1, Gt*Gh*Gw, D]` | `get_3d_sincos_pos_embed` |
+| `rgb` / `tir` / `rgb2d` (video) | 3-D sincos (t,h,w) | `[1, Gt*Gh*Gw, D]` | `get_3d_sincos_pos_embed` |
 | BP / RESP / EDA | 1-D sincos (temporal) | `[1, Ns, D]` | Same time block as 3-D |
 | `ProjectViT` | 2-D sincos | `[1, N+1, D]` | `get_2d_sincos_pos_embed` |
 
