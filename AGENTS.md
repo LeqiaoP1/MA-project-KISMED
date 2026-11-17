@@ -28,3 +28,4 @@
 - **Tensor Shape Assertions**: Retain explicit shape annotations and runtime assertions across all spatial-temporal transformations (Video: `[B, C, T, H, W]`, Tokens: `[B, N, D]`).
 - **Memory & Dist**: Use `@torch.inference_mode()`, AMP scaler (`code/utils/native_scaler.py`), `.item()` for metric logging, and seed init via `code/runners/_common.py:init_env`.
 - **Model Factory**: Register modules with `@register_model` in `code/core/registry.py` and instantiate via `create_model()` in `code/models/build.py`.
+- **Terminology Grounding**: Refer to `code/notes/GLOSSARY.md` for canonical naming. Never introduce deprecated aliases or ad-hoc abbreviations in code or comments.
