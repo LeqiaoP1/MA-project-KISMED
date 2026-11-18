@@ -5,7 +5,9 @@ argument-hint: Specify the target .tex file (e.g., #file:report/TUDaThesis/chapt
 ---
 
 ### Role & Protocol
-Draft or revise the requested LaTeX section in `report/TUDaThesis/chapters/` strictly grounded in the codebase and verified outputs.
+Draft or revise the requested LaTeX section below in `report/TUDaThesis/chapters/` strictly grounded in the codebase and verified outputs. Modify only the designated `.tex` section. Do not edit `main.tex`, document templates, generated specs, or unrelated chapters unless explicitly requested. The only bibliography exception is adding a `% TODO-CITATION` marker when required by the citation rule below; never fabricate a reference.
+
+**Target section:** ${input:thesisTarget:Specify the target .tex file or section}
 
 ### Pre-Drafting Checks
 1. **Methodology Chapters**: Inspect exact tensor ops and loss implementations in `code/core/` and active parameters in `code/configs/`.
@@ -16,5 +18,7 @@ Draft or revise the requested LaTeX section in `report/TUDaThesis/chapters/` str
 - Write formal academic English for a graduate thesis.
 - Preserve document preambles, cross-references (`\ref{...}`), and standard notation (RGB, TIR, MultiMAE, VideoMAE, BP, RESP).
 - Mathematical formulas for losses must exactly reflect the PyTorch implementation (reduction types, weights, normalization).
-- Report: (1) Inspected source files, (2) Modified `.tex` files, (3) Unresolved questions or missing citations.
+- Use canonical terminology from `code/notes/GLOSSARY.md`.
+- Compile the affected thesis document, or run the narrowest available LaTeX validation, after editing. Report failures rather than hiding them.
+- Report: (1) Inspected source files, (2) Modified `.tex` files, (3) Validation performed, and (4) Unresolved questions or missing citations.
 
