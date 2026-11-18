@@ -13,8 +13,8 @@ You are an expert PyTorch engineer. Implement or refactor code under `code/` str
 
 ### Execution Instructions
 1. **Scope Isolation**: All edits must remain inside `code/` within appropriate subdirectories.
-2. **Zero Hidden Constants**: Expose all loss weights, dimensions, and masking ratios to CLI/YAML configs.
-3. **Guardrails**: Retain tensor dimension assertions (`assert x.shape == ...`), use `.item()` on logged metrics, `@torch.inference_mode()`, and DDP compliance (`code/utils/dist.py`).
-4. **Verification**: Run `python -m compileall code/` for syntax and verify against relevant unit tests in `code/tests/`.
+2. **Zero Hidden Constants**: Expose user-tunable loss weights, dimensions, masking ratios, and thresholds to CLI/YAML configs. Derived values and private implementation details do not need separate flags.
+3. **Guardrails**: Retain meaningful tensor dimension checks using dimensions defined by the surrounding code, use `.item()` on logged metrics, apply `@torch.inference_mode()` only to evaluation or inference paths, and preserve DDP compliance (`code/utils/dist.py`).
+4. **Verification**: Run a focused syntax, type, lint, or unit-test check for the touched code. Use `python -m compileall` on the relevant touched files when appropriate, rather than requiring a full-tree compile for every change.
 5. **Summary**: List modified files and confirm strict alignment with `AGENTS.md`.
 
