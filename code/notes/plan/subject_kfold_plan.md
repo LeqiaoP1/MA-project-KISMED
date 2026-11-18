@@ -5,7 +5,7 @@
 > scenarios are pinned by `code/tests/test_kfold_splits.py`.
 >
 > **Relationship to the other docs.** The *requirement* lives in
-> `code/notes/design/kfold_val_strategy_design_v2.md`. This file is the *plan*:
+> `code/notes/design/ADR-001-subject-disjoint-split-and-selection.md`. This file is the *plan*:
 > where the code changes go, in what order, and what must be verified. The
 > evaluation protocol that consumes the result is
 > `code/notes/design/Evaluation_RespWaveform_protocol.md` §3.2, which links here.

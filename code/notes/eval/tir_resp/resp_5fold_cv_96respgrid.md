@@ -2,7 +2,7 @@
 
 > Measured 2026-11-01 → 2026-11-06 · protocol
 > `code/notes/design/Evaluation_RespWaveform_protocol.md` §3.2 ·
-> partition design `code/notes/design/kfold_val_strategy_design_v2.md`
+> partition design `code/notes/design/ADR-001-subject-disjoint-split-and-selection.md`
 >
 > Run dirs `$WORK_SCRATCH/{pretrain/stage2_hpc_tir_roi_resp_96respgrid,finetune/resp_tir_roi_hpc_96respgrid}_fold{0..4}`
 > (Lichtenberg scratch; `$PROJ_DIR/output` is a symlink to it) ·

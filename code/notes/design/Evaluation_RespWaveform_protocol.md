@@ -1,8 +1,11 @@
 # Evaluation Protocol — Respiration Waveform Reconstruction (tested subject)
 
-> Status: **active** · authored 2026-10-12 · revised **2026-11-01** (k-fold
-> cross-validation implemented; reference must come from the respiration cache;
-> **amplitude retired as a metric**)
+> Status: **active** · authored 2026-10-12 · revised **2026-11-18** (the split and
+> selection protocol is fixed by `ADR-001-subject-disjoint-split-and-selection.md`:
+> `K = 5`, train/validation/test = 70/10/20 by subject, validation role mandatory in
+> every stage; the earlier 80/0/20 allocation and the Option A/B wording are retired)
+> · earlier revision 2026-11-01 (k-fold cross-validation implemented; reference must
+> come from the respiration cache; **amplitude retired as a metric**)
 > · scope: Stage-3 respiration output (the final task of the whole model).
 
 ## 1. Objective
@@ -36,13 +39,13 @@ per tested subject**, and aggregate across subjects.
   fold membership cannot drift with `--subjects`, `--tasks`, `--max_sessions`
   or the rail/spread filters. Each run writes `fold_manifest.json` (fold,
   n_folds, stage, roles) so a Stage-2 vs Stage-3 mismatch is visible.
-- **Model selection and reporting are separated** (design Option A): with
-  `n_folds > 1` and no small val role there is **no val loader**, no `best.pth`,
-  and the schedule is fixed-epoch; `metrics_final.json` records
-  `selection: 'fixed_epoch'` and `eval_role: 'test'`, so the absence of
-  selection is auditable off the artefact. (The legacy `n_folds = 0` path still
-  checkpoints `best_pearson` on the same val split it reports — that is
-  selection leakage and must not be the headline.)
+- **Model selection reads only the validation role** (`ADR-001`): every run has a
+  val role, and `metrics_final.json` records the rule actually used —
+  `selection: 'best_val' | 'fixed_epoch'` — with the selected epoch and criterion
+  value, plus `eval_role: 'test'`. Absence of selection is therefore auditable off
+  the artefact, and no run selects on the test role. (The legacy `n_folds = 0` path
+  checkpoints and reports on the same split — selection leakage, off-protocol, never
+  a headline.)
 - `--test_subjects F001,F002,...` is now only a **manual override** on a legacy
   single-split run; it filters predictions *after* training and therefore cannot
   create a fold (see §3.2).
@@ -51,31 +54,34 @@ per tested subject**, and aggregate across subjects.
 
 - Mechanism and rollout: `code/notes/plan/subject_kfold_plan.md` (all seven
   phases landed; the requirement lives in
-  `code/notes/design/kfold_val_strategy_design_v2.md`). Roles per fold from
+  `code/notes/design/ADR-001-subject-disjoint-split-and-selection.md`). Roles per fold from
   `utils/splits.py::get_stage_splits`:
 
-  | role | Option A (default) | Option B (`--use_small_val`) |
+  | role | share | subjects |
   |---|---|---|
-  | `test` | `F_k` | `F_k` |
-  | `val` | empty (no loader) | ~10 % of the non-test pool |
-  | `train` | `∪_{i≠k} F_i` | non-test pool minus val |
+  | `test` | 20 % | the block `F_k` |
+  | `val` | 10 % | drawn from the four non-test blocks, frozen per fold |
+  | `train` | 70 % | the four non-test blocks minus the val block |
+
+  The realised counts are recorded per run; rounding may move a role by one
+  subject.
 
 - One run per fold: `--n_folds 5 --fold k`, submitted as a Slurm array
   (`FOLD=$SLURM_ARRAY_TASK_ID`), each fold writing its own run directory
-  (`resp_tir_roi_hpc_fold<k>`). Stage 2 is fold-aware as well
-  (`pretrain_split: fold` removes the test fold from the pretrain corpus), so
-  neither stage ever sees the held-out subjects.
-- `n_folds = 0/1` is the legacy path: `train`/`val` behave exactly as before and
-  there is no `test` role — this is the compatibility guarantee, not a second
-  protocol.
+  (`resp_tir_roi_hpc_fold<k>`). Stage 2 is fold-aware as well: its corpus excludes
+  both the test block and that fold's validation block (`ADR-001`), so neither stage
+  trains on a subject it validates or is tested on.
+- `n_folds` is the protocol constant `5` (`ADR-001`). `n_folds = 0/1` remains the
+  legacy single-split compatibility path: it has no `test` role and is
+  off-protocol — it may not carry a headline claim.
 - **Pooling** — `runners/run_evaluate_kfold.py` reads the per-fold
   `preds.npy` + `entries.json`, **asserts the folds form a subject-disjoint
   partition** (raises on any overlap or duplicated subject), scores every
   session, aggregates per subject → bootstrap CI, and writes one
   `kfold_<run_prefix>.json` with `protocol`, `per_fold`, `per_subject`,
   `per_task`, `per_group`, `overall` and `rate_overall`.
-- Leave-one-subject-out is the k = N limit; k = 5–10 folds of ~14–28 subjects
-  each balances rigor and budget.
+- `k = 5` is fixed for the thesis. Leave-one-subject-out or any other fold count
+  is a separate study and needs its own ADR.
 - **Read the per-fold column with care.** Folds are contiguous over sorted ids
   (`F001–F028`, `F029–F056`, …), so some folds are 100 % female / 100 % male and
   a per-fold difference is a *cohort* difference, not a fold effect. The pooled
@@ -168,7 +174,7 @@ literature-standard numbers, computed per window and pooled:
 
 | Role | Metric | Definition |
 |---|---|---|
-| **Headline** | **MAE (BPM / breaths·min⁻¹)** | `mean(|rate_pred - rate_ref|)` in physical units — the universal reporting standard |
+| **Headline** | **MAE (BPM / breaths·min⁻¹)** | `mean(\|rate_pred - rate_ref\|)` in physical units — the universal reporting standard |
 | Acceptance | **% within 10 %** | fraction of windows with `\|err\| ≤ 0.10 · rate_ref` (ICMI-2023 style; relative to the contact-sensor reading) |
 | Supporting | RMSE (BPM), bias (BPM) | signed error / spread |
 
@@ -236,8 +242,8 @@ For the pooled cross-validation (headline of a k-fold study):
 |---|---|
 | subject-fold partition, roles, manifest | `utils/splits.py` (`subject_folds`, `get_stage_splits`, `write_fold_manifest`) |
 | fold-aware datasets / Stage-2 corpus | `data/tir_resp_dataset.py`, `data/rgb_roi_dataset.py`, `data/datasets.py` |
-| fold CLI (`--n_folds/--fold/--use_small_val/--split_role`) | `runners/_common.py::add_split_args` |
-| fixed-epoch selection + test-fold eval | `runners/run_waveform.py` |
+| fold CLI (`--n_folds` fixed at 5, `--fold`, `--split_role`) | `runners/_common.py::add_split_args` |
+| selection record (`best_val` or `fixed_epoch`) + test-role eval | `runners/run_waveform.py` |
 | band-pass + band-limited Pearson + template + bootstrap | `evaluation/metrics.py` |
 | session assembly (Hann OLA), affine calibration (diagnostics only) | `evaluation/assemble.py` |
 | subject-level runner | `runners/run_evaluate_subject.py` |
@@ -274,8 +280,9 @@ python runners/run_evaluate_subject.py --pred_dir OUT_DIR --waveform resp \
   anything else correlated with id order) is confounded with the fold index. The
   pooled number is unaffected, but a per-fold *effect* claim needs a round-robin
   or stratified partition — not implemented.
-- **Option B (small val) is specified but not used** by the shipped configs; it
-  reintroduces `best_pearson` selection and must then be reported as such.
+- The validation role is **mandatory** in every stage (`ADR-001`); a run that
+  selects on it must report `selection: 'best_val'` with the selected epoch. The
+  retired no-val variant (former "Option A") is off-protocol.
 - Clinical HRV (Tier 3) is BP-only and out of scope for respiration.
 - Statistical test *between* two models (e.g. std vs smoothl1) is a paired
   subject-level comparison — a follow-up, not part of the single-model report.
