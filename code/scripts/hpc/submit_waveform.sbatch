@@ -39,7 +39,7 @@ cd "$CODE_DIR"
 export MASTER_ADDR="${MASTER_ADDR:-$(scontrol show hostname "$SLURM_JOB_NODELIST" | head -n1)}"
 export MASTER_PORT="${MASTER_PORT:-29500}"
 
-TARGET="${TARGET:-bp}"   # bp | resp | eda
+TARGET="${TARGET:-bp}"   # bp | resp
 mkdir -p "$OUTPUT_DIR/finetune/$TARGET"
 
 # one task per GPU; utils/dist.py reads SLURM_* env to init DDP

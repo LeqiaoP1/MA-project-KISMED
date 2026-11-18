@@ -29,7 +29,7 @@ SPEC.mkdir(parents=True, exist_ok=True)
 
 This project implements a **multi-stage multi-modal masked autoencoder** for physiological waveform regression from facial video, operating on the **BP4D+** dataset (Binghamton University spontaneous facial behaviour database, biological signals edition).
 
-The scientific goal is to reconstruct continuous 1-D physiological waveforms — **blood pressure (BP)**, **respiration (RESP)**, and **electrodermal activity (EDA)** — from:
+The scientific goal is to reconstruct continuous 1-D physiological waveforms — **blood pressure (BP)** and **respiration (RESP)** — from:
 - **RGB** facial video (JPEG frame sequences, ~25 fps)
 - **Thermal-IR (TIR)** video (`.wmv` false-colour rainbow rendering, ~25 fps)
 
@@ -61,7 +61,7 @@ Stage 1  ──►  Stage 2  ──►  Stage 3
 - **Model**: `MultiModalMAE` (`core/multimae.py`)
 - **Runner**: `runners/run_pretrain.py`
 - **Engine**: `engines/pretrain.py::train_one_epoch`
-- **Contract**: ≥1 visual stream (rgb / tir) AND ≥1 physiological 1-D signal (bp / resp / eda). All-visual or all-signal stream lists are rejected at construction time.
+- **Contract**: ≥1 visual stream (rgb / tir) AND ≥1 physiological 1-D signal (bp / resp). All-visual or all-signal stream lists are rejected at construction time.
 - **Objective**: Asymmetric masked reconstruction (VideoMAE-style `norm_pix`) — visual streams masked 50–75 %, physiological signals masked 90 %+. Per-modality `MaskedMSELoss`, combined as a weighted sum. There is **no spectral term in Stage 2** — the optional MR-STFT loss was removed 2026-11-09; MR-STFT lives only in Stage 3.
 
 ### Stage 3 — Waveform Regression Fine-tuning
@@ -85,14 +85,14 @@ data/raw/BP4D/
   <subject>/<task>/
     2D+3D/         (RGB JPEG frames)
     Thermal/       (TIR .wmv, false-colour)
-    Physiology/    (CSV: time, bp, resp, eda)
+    Physiology/    (CSV: time, bp, resp)
         |
         v  data/prepare_bp4d.py
 data/processed/bp4d_canonical/
   <session>/
     rgb/           (ordered JPEG frames)
     tir.wmv        (single ~60 s video)
-    signals.csv    (header: time, bp, resp, eda)
+    signals.csv    (header: time, bp, resp)
         |
         v  code/data/  (paired_dataset.py / rgb_roi_dataset.py / tir_resp_dataset.py)
   Dataset.__getitem__()
@@ -178,7 +178,7 @@ data/raw/BP4D/
     <Task>/           e.g. T1 .. T10
       2D+3D/          JPEG frames (1392x1040, ~25 fps)
       Thermal/        TIR .wmv (false-colour WMV3/yuv420p, ~25 fps)
-      Physiology/     signals CSV: [time, bp, resp, eda]
+      Physiology/     signals CSV: [time, bp, resp]
       2DFeatures/     landmark tracks (IRFeatures for TIR ROI)
 ```
 
@@ -194,7 +194,7 @@ Output of `data/prepare_bp4d.py` -> `data/processed/bp4d_canonical/`:
 <session>/           e.g. F001_T1
   rgb/               ordered JPEG frames
   tir.wmv            single ~60 s video
-  signals.csv        header: [time, bp, resp, eda] at fs Hz
+  signals.csv        header: [time, bp, resp] at fs Hz
 ```
 
 The session name encodes subject (`'F001_T1'.rsplit('_', 1)[0]` -> `'F001'`), enabling subject-disjoint splits.
@@ -229,7 +229,6 @@ The session name encodes subject (`'F001_T1'.rsplit('_', 1)[0]` -> `'F001'`), en
   'tir':  FloatTensor [C_tir, T, H, W],  # C_tir = 3 (default) or 1
   'bp':   FloatTensor [1, seq_len],
   'resp': FloatTensor [1, seq_len],
-  'eda':  FloatTensor [1, seq_len],
 }
 ```
 
@@ -335,7 +334,7 @@ All return `torch.LongTensor [num_patches]`, `1` = masked (to reconstruct), `0` 
 | `TubeMaskingGenerator(input_size, mask_ratio)` | Same spatial patches across all frames | Video (mask_ratio 0.50–0.90) |
 | `MultiModalMaskingGenerator(stream_generators)` | Compose one per stream | Stage-2 |
 
-Default Stage-2 mask ratios (from configs): RGB 0.90, TIR 0.90, BP/RESP/EDA 0.90.
+Default Stage-2 mask ratios (from configs): RGB 0.90, TIR 0.90, BP/RESP 0.90.
 
 > At `input_size=64`, `patch_size=16`: 4x4=16 spatial patches. Tube mask 0.90 keeps 1–2 visible per frame — <=12.5% of spatial context.
 
@@ -345,7 +344,7 @@ Default Stage-2 mask ratios (from configs): RGB 0.90, TIR 0.90, BP/RESP/EDA 0.90
 
 `_load_signals_csv` infers `fs` from median `diff(t)` of the time column. `nan_to_num` applied to all columns.
 
-Column aliases: `bp <- (bp, ppg, pulse)`, `resp <- (resp, respiration)`, `eda <- (eda, gsr, scr, electrodermal)`.
+Column aliases: `bp <- (bp, ppg, pulse)`, `resp <- (resp, respiration)`.
 
 **Space-time alignment** (enforced by `MultiModalMAE._check_space_time_alignment`):
 
@@ -506,7 +505,7 @@ Default: `sig_kernel=8`, `S=400` -> `Ns=50`.
 | Modality | Type | Shape | Function |
 |----------|------|-------|----------|
 | `rgb` / `tir` / `rgb2d` (video) | 3-D sincos (t,h,w) | `[1, Gt*Gh*Gw, D]` | `get_3d_sincos_pos_embed` |
-| BP / RESP / EDA | 1-D sincos (temporal) | `[1, Ns, D]` | Same time block as 3-D |
+| BP / RESP | 1-D sincos (temporal) | `[1, Ns, D]` | Same time block as 3-D |
 | `ProjectViT` | 2-D sincos | `[1, N+1, D]` | `get_2d_sincos_pos_embed` |
 
 3-D embedding dim split (VideoMAE convention): `d_t = d_h = 2*(D//6)`, `d_w = D - 2*d_t`. For D=768: d_t=d_h=256, d_w=256.
@@ -1141,7 +1140,7 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `resp.yaml` | RESP | canonical, HPC |
 | `resp_tir_roi_local.yaml` | RESP | TIR ROI, 8 s clip, stride 2, fft 128,256,512 |
 | `resp_tir_roi_local_matched.yaml` | RESP | TIR ROI, Stage-3 recipe from the local shared-encoder model (`transposed_conv`, `head_init: none`, `layer_decay 0.75`) |
-| `eda.yaml` | EDA | canonical, HPC |
+| `resp.yaml` | RESP | canonical, HPC |
 | `au_local.yaml` | AU probe | canonical, multi-label BCE |
 | `au_local_pretrained.yaml` | AU probe | canonical, with Stage-2 encoder init |
 | `example.yaml` | Annotated reference template |
@@ -1170,7 +1169,7 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `streams` | str | Comma-separated: e.g. `rgb,tir,bp,resp,eda` |
+| `streams` | str | Comma-separated: e.g. `rgb,tir,bp,resp` |
 | `tubelet` | str | `t,ph,pw`: e.g. `2,16,16` |
 | `input_size` | int | Square frame px: 64 (local) / 224 (HPC) |
 | `fps` / `fs` | float | Video fps / signal sample rate Hz |
@@ -1178,7 +1177,7 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `temporal_stride` | int | Frame decimation inside window (1 = every frame) |
 | `seq_len` | int | Signal samples; 0 = `clip_duration * fs` |
 | `pos_init` | str | `sincos3d` or `random` |
-| `mask_ratio_{rgb\|tir\|bp\|resp\|eda}` | float | Per-stream masking ratio |
+| `mask_ratio_{rgb\|tir\|bp\|resp}` | float | Per-stream masking ratio |
 | `signal_weight` | float | Loss weight for physio streams (default 0.5) |
 | `target_norm` | str | `token` (per-token z-score), `clip` (per-clip z-score) or `none` (IDENTITY). **NON-ROI paths only** (e.g. `bp4d+`): for the RAW-tree ROI lineages (`tir_roi` = TIR-ROI+RESP, `rgb_roi` = RGB+BP) the DATASET owns the normalisation and `run_pretrain.py` pins this to `none` |
 | `physio_norm` (Stage 2) | str | The 1-D target normalisation for `tir_roi` / `rgb_roi`: `clip` (= `zscore`) per-clip z-score. That is the ONLY value — `none` / `ac` / `session` were removed and are REFUSED (`data.tir_resp_dataset.check_physio_norm`). Applied by the dataset; the model never re-normalises |
@@ -1192,7 +1191,7 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `target` | str | `bp` / `resp` / `eda` |
+| `target` | str | `bp` / `resp` |
 | `finetune` | str | Path to Stage-2 checkpoint |
 | `sig_kernel` | int | Signal window size per token; must satisfy `sig_kernel/fs == tubelet_t*stride/fps` |
 | `physio_norm` | str | `clip` (= `zscore`) per-clip z-score — the SAME setting, name and values as the ROI Stage-2 paths, so one clip yields one identical target in both stages. `none` / `ac` / `session` were removed and are REFUSED |
@@ -1344,10 +1343,10 @@ print("wrote 04_configs_and_execution.md")
 
 | Location | Value | Risk |
 |----------|-------|------|
-| `STREAM_CHANNELS = {'rgb':3,'tir':3,'rgb2d':3,'bp':1,'resp':1,'eda':1}` | Default channel counts | A new modality requires updating this dict. |
+| `STREAM_CHANNELS = {'rgb':3,'tir':3,'rgb2d':3,'bp':1,'resp':1}` | Default channel counts | A new modality requires updating this dict. |
 | `dec_depth=2` (constructor default) | Decoder depth | Not exposed as a YAML key; changing requires a code edit or explicit CLI override. |
 | `_VISUAL_STREAMS = ('rgb','tir','rgb2d')` | Valid visual stream names | Hardcoded tuple; adding a new visual modality requires editing two constants. |
-| `_SIGNAL_STREAMS = ('bp','resp','eda')` | Valid signal stream names | Same risk. |
+| `_SIGNAL_STREAMS = ('bp','resp')` | Valid signal stream names | Same risk. |
 
 ### `utils/dist.py`
 

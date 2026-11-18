@@ -61,7 +61,7 @@ def _resolve_fft_sizes(fft_sizes, output_len, fs=100.0):
     if not sizes:
         raise SystemExit('--fft_sizes is empty: the MR-STFT term needs at least '
                          'one window (per-modality defaults: bp 64,128,256 / '
-                         'resp 128,256,512 / eda 256,512,1024).')
+                         'resp 128,256,512).')
     kept = [n for n in sizes if n <= output_len]
     dropped = [n for n in sizes if n > output_len]
     if not kept:
@@ -70,7 +70,7 @@ def _resolve_fft_sizes(fft_sizes, output_len, fs=100.0):
             f'waveform ({output_len} samples = {output_len / fs:.2f} s at fs '
             f'{fs:g} Hz), and torch.stft would zero-pad instead of raising. Use '
             f'a longer clip (--clip_duration) or smaller windows. Per-modality '
-            f'defaults: bp 64,128,256 / resp 128,256,512 / eda 256,512,1024.')
+            f'defaults: bp 64,128,256 / resp 128,256,512.')
     return tuple(kept), tuple(dropped)
 
 
@@ -361,7 +361,7 @@ def get_args():
                         help='feed TIR as a second visual stream (default off: '
                              'the Stage-2 run in this project is rgb+bp, so '
                              'the TIR adapter has no trained weights).')
-    parser.add_argument('--target', default='bp', choices=['bp', 'resp', 'eda'],
+    parser.add_argument('--target', default='bp', choices=['bp', 'resp'],
                         help='which physiological waveform branch to train')
     parser.add_argument('--seq_len', default=0, type=int,
                         help='length of the predicted output waveform (samples). '

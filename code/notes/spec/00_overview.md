@@ -9,7 +9,7 @@
 
 This project implements a **multi-stage multi-modal masked autoencoder** for physiological waveform regression from facial video, operating on the **BP4D+** dataset (Binghamton University spontaneous facial behaviour database, biological signals edition).
 
-The scientific goal is to reconstruct continuous 1-D physiological waveforms — **blood pressure (BP)**, **respiration (RESP)**, and **electrodermal activity (EDA)** — from:
+The scientific goal is to reconstruct continuous 1-D physiological waveforms — **blood pressure (BP)** and **respiration (RESP)** — from:
 - **RGB** facial video (JPEG frame sequences, ~25 fps)
 - **Thermal-IR (TIR)** video (`.wmv` false-colour rainbow rendering, ~25 fps)
 
@@ -41,7 +41,7 @@ Stage 1  ──►  Stage 2  ──►  Stage 3
 - **Model**: `MultiModalMAE` (`core/multimae.py`)
 - **Runner**: `runners/run_pretrain.py`
 - **Engine**: `engines/pretrain.py::train_one_epoch`
-- **Contract**: ≥1 visual stream (rgb / tir) AND ≥1 physiological 1-D signal (bp / resp / eda). All-visual or all-signal stream lists are rejected at construction time.
+- **Contract**: ≥1 visual stream (rgb / tir) AND ≥1 physiological 1-D signal (bp / resp). All-visual or all-signal stream lists are rejected at construction time.
 - **Objective**: Asymmetric masked reconstruction (VideoMAE-style `norm_pix`) — visual streams masked 50–75 %, physiological signals masked 90 %+. Per-modality `MaskedMSELoss`, combined as a weighted sum. There is **no spectral term in Stage 2** — the optional MR-STFT loss was removed 2026-11-09; MR-STFT lives only in Stage 3.
 
 ### Stage 3 — Waveform Regression Fine-tuning
@@ -65,14 +65,14 @@ data/raw/BP4D/
   <subject>/<task>/
     2D+3D/         (RGB JPEG frames)
     Thermal/       (TIR .wmv, false-colour)
-    Physiology/    (CSV: time, bp, resp, eda)
+    Physiology/    (CSV: time, bp, resp)
         |
         v  data/prepare_bp4d.py
 data/processed/bp4d_canonical/
   <session>/
     rgb/           (ordered JPEG frames)
     tir.wmv        (single ~60 s video)
-    signals.csv    (header: time, bp, resp, eda)
+    signals.csv    (header: time, bp, resp)
         |
         v  code/data/  (paired_dataset.py / rgb_roi_dataset.py / tir_resp_dataset.py)
   Dataset.__getitem__()

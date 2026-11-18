@@ -250,7 +250,7 @@ def get_args():
     parser.add_argument('--phys_fs', default=1000.0, type=float,
                         help='rgb_roi only: sample rate of the RAW 1-D files '
                              'under Physiology/<S>/<T>/ (BP_mmHg.txt, '
-                             'Resp_Volts.txt, EDA_microsiemens.txt). 1000 Hz '
+                             'Resp_Volts.txt). 1000 Hz '
                              'nominal; they are resampled onto the --fs grid.')
     parser.add_argument('--fs', default=100.0, type=float,
                         help='signal sample rate (Hz)')
@@ -277,8 +277,8 @@ def get_args():
     parser.add_argument('--streams', default='rgb,tir,bp', type=str,
                         help='comma list of pretraining streams. Stage-2 '
                              'requires >=2: >=1 of rgb,tir (video) AND >=1 '
-                             'of bp,resp,eda (1-D physio, Stage-3 target), '
-                             'e.g. rgb,bp or rgb,tir,bp,resp,eda')
+                             'of bp,resp (1-D physio, Stage-3 target), '
+                             'e.g. rgb,bp or rgb,tir,bp,resp')
     parser.add_argument('--tubelet', default='2,16,16', type=str,
                         help='tubelet (t, ph, pw) for the video tokenizer')
     parser.add_argument('--mask_ratio_rgb', default=0.75, type=float)
@@ -289,7 +289,6 @@ def get_args():
                              '~18 of 36 patches visible at input_size 96.')
     parser.add_argument('--mask_ratio_bp', default=0.90, type=float)
     parser.add_argument('--mask_ratio_resp', default=0.90, type=float)
-    parser.add_argument('--mask_ratio_eda', default=0.90, type=float)
     # 1-D masking PATTERN. 'random' (default) = the historical scattered
     # dropout, byte-identical for every existing config. 'span' = contiguous
     # blocks, which removes the "interpolate the gap from the visible
@@ -307,7 +306,7 @@ def get_args():
                              "either one value for all physio streams, a "
                              "stream=seconds CSV ('resp=4.0,bp=1.0'), or a "
                              "YAML mapping. Empty = per-stream defaults "
-                             "(bp 1.0, resp 4.0, eda 8.0 = one target period)"
+                             "(bp 1.0, resp 4.0 = one target period)"
                              ". The span COUNT is derived (n_spans = "
                              "round(ratio * n_signal / span_tokens)) so that "
                              "ratio x clip length is preserved.")

@@ -125,7 +125,7 @@ class SemSegInputAdapter(nn.Module):
 
 
 class SignalInputAdapter(nn.Module):
-    """Patch-embed a 1D physiological signal stream (BP / RESP / EDA).
+    """Patch-embed a 1D physiological signal stream (BP / RESP).
 
     Mirrors ``PatchedInputAdapter`` but along the time axis. A 1D convolution
     doubles as segmentation-into-windows + linear projection:

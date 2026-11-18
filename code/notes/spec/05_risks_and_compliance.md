@@ -28,10 +28,10 @@
 
 | Location | Value | Risk |
 |----------|-------|------|
-| `STREAM_CHANNELS = {'rgb':3,'tir':3,'rgb2d':3,'bp':1,'resp':1,'eda':1}` | Default channel counts | A new modality requires updating this dict. |
+| `STREAM_CHANNELS = {'rgb':3,'tir':3,'rgb2d':3,'bp':1,'resp':1}` | Default channel counts | A new modality requires updating this dict. |
 | `dec_depth=2` (constructor default) | Decoder depth | Not exposed as a YAML key; changing requires a code edit or explicit CLI override. |
 | `_VISUAL_STREAMS = ('rgb','tir','rgb2d')` | Valid visual stream names | Hardcoded tuple; adding a new visual modality requires editing two constants. |
-| `_SIGNAL_STREAMS = ('bp','resp','eda')` | Valid signal stream names | Same risk. |
+| `_SIGNAL_STREAMS = ('bp','resp')` | Valid signal stream names | Same risk. |
 
 ### `utils/dist.py`
 

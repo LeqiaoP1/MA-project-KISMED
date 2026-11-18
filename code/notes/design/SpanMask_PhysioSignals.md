@@ -146,20 +146,19 @@ Three conclusions that shape the design:
 (`grep -rn span core/*.py` returns only the time-*span* alignment docstrings), and
 `make_masks` masks every non-visual stream with `_random_mask`. The only
 per-modality masking parameter that exists is the **ratio**:
-`--mask_ratio_bp / _resp / _eda` (`run_pretrain.py:89-93`), collected into
+`--mask_ratio_bp / _resp` (`run_pretrain.py:89-93`), collected into
 `MultiModalMAE.mask_ratios`. So the honest status is "missing", not
 "hardcoded".
 
 **The two new knobs must be per stream**, because the masking threshold is set by
 the *target's own correlation time* and the thesis' bands differ by ~1-2 orders
-of magnitude (`bp` 1-2.5 Hz, `resp` 0.16-0.4 Hz, `eda` aperiodic with a 2-10 s
-tonic scale). One global `mask_span_s` cannot be right for all three.
+of magnitude (`bp` 1-2.5 Hz, `resp` 0.16-0.4 Hz). One global `mask_span_s`
+cannot be right for both.
 
 | stream   | band (plan §2)         | period / correlation time | `mask_span_s` default | tokens @160 ms |
 | -------- | ----------------------- | ------------------------- | ----------------------- | -------------- |
 | `bp`   | 1-2.5 Hz                | 0.4-1.0 s                 | **1.0**           | 6              |
 | `resp` | 0.16-0.4 Hz             | 2.5-6.25 s                | **4.0**           | 25             |
-| `eda`  | aperiodic, tonic 2-10 s | 2-10 s                    | **8.0**           | 50             |
 
 Proposed surface (additive, mirroring the existing per-stream conventions —
 `MultiModalMAE` already takes `spectral_weights` as a **dict keyed by stream
@@ -185,8 +184,7 @@ span_s <= ratio * clip_seconds        (since n_spans >= 1)
 
 At `ratio 0.5` a 4 s span is only reachable with an 8 s clip and `n_spans == 1`
 — which is exactly the shipped configuration. A 4 s gap **with visible context on
-both sides** needs a 12-16 s clip, and the `eda` default (8 s) is unreachable at
-8 s clips, so the EDA branch would need longer windows.
+both sides** needs a 12-16 s clip.
 
 **How to determine the values (a measurement, not a guess):** the design goal is
 "the gap must not be fillable from its own visible edges". Pick the *smallest*

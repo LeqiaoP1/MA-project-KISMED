@@ -385,7 +385,7 @@ The engine is combination-agnostic, so the arms differ **only in `data_set` +
 | arm | `data_set` / `streams` | dataset | new code |
 |---|---|---|---|
 | **A — TIR-ROI + Resp** (current study) | `tir_roi` / `tir,resp` | `TirRoiRespPretrainDataset` (exists) | none — `stage2_{local,hpc}_tir_roi_resp.yaml` geometry |
-| **B — RGB + BP** (next) | `rgb_roi` / `rgb,bp` | `RGBRoiPretrainDataset` (exists, `signals` = any of bp/resp/eda) | none — `stage2_local_rgb_roi_bp.yaml` geometry |
+| **B — RGB + BP** (next) | `rgb_roi` / `rgb,bp` | `RGBRoiPretrainDataset` (exists, `signals` = `bp` or `resp`) | none — `stage2_local_rgb_roi_bp.yaml` geometry |
 | **C — two visual streams + physio** (design superset) | canonical / `rgb,tir,bp,resp` at one size | `PairedPretrainDataset` (exists) | none; geometry values only |
 | **D — two visual streams, two sizes** (design-faithful) | combined ROI / `rgb,tir,bp,resp` with 128 / 96 | **missing** | new `data/combined_roi_dataset.py` (Phase 3 prerequisite) |
 

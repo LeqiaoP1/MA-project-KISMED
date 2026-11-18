@@ -2,7 +2,7 @@
 # Lichtenberg HPC: Stage-3 waveform fine-tuning -- TIR-ROI -> RESPIRATION.
 #
 # Dedicated to the RAW-tree thermal-ROI branch. scripts/hpc/submit_waveform.sbatch
-# is the CANONICAL-branch job (bp / resp / eda): it hardcodes
+# is the CANONICAL-branch job (bp / resp): it hardcodes
 # `configs/finetune/$TARGET.yaml` and `--data_path "$DATA_PATH"` (= the canonical
 # tree), so it cannot drive a `data_set: tir_roi_resp` config, which needs
 # `--data_path "$RAW_DATA_PATH"`.

@@ -107,7 +107,6 @@ mask_ratio_resp: 0.50              # a physio stream's only gradient path is its
                                    #   VISIBLE tokens
 mask_ratio_rgb: 0.90               # unused while streams=tir,rgb2d,resp
 mask_ratio_bp: 0.50                # unused
-mask_ratio_eda: 0.50               # unused
 # ---- 1-D masking PATTERN (see code/notes/design/SpanMask_PhysioSignals.md) ----
 physio_mask: random
 mask_span_s: {resp: 4.0}

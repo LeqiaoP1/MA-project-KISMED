@@ -2,7 +2,7 @@
 
 ``code/notes/design/SolutionC_EarlyTokenMixing_stage3.md`` and
 ``code/notes/plan/RGB_BP_plan.md`` §1: Stage 3 simulates a COMPLETE 1-D sensor failure:
-no BP/RESP/EDA is fed, only the visual stream(s) drive the prediction. This
+no BP/RESP is fed, only the visual stream(s) drive the prediction. This
 module therefore
 
 * re-uses the Stage-2 multimodal *encoder* verbatim -- ``adapters.<s>``

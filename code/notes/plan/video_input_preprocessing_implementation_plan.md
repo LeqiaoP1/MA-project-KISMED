@@ -63,7 +63,7 @@ xhat = (x - mu) / sqrt(var + eps)
 * `float32` in, `float32` out; shape and dtype preserved.
 * Per-sample statistics ⇒ **no cross-rank reduction**, so the transform is
   bit-identical under any DDP world size.
-* 1-D streams (`resp`/`bp`/`eda`) are NOT touched: their label normalisation is
+* 1-D streams (`resp`/`bp`) are NOT touched: their label normalisation is
   the dataset's per-clip z-score (`data.tir_resp_dataset.TARGET_NORM`) and the
   model stays identity (`target_norm='none'` for the ROI lineages).
 

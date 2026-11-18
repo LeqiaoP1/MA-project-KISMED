@@ -14,7 +14,7 @@ Draft or revise the requested LaTeX section in `report/TUDaThesis/chapters/` str
 
 ### Writing Constraints
 - Write formal academic English for a graduate thesis.
-- Preserve document preambles, cross-references (`\ref{...}`), and standard notation (RGB, TIR, MultiMAE, VideoMAE, BP, RESP, EDA).
+- Preserve document preambles, cross-references (`\ref{...}`), and standard notation (RGB, TIR, MultiMAE, VideoMAE, BP, RESP).
 - Mathematical formulas for losses must exactly reflect the PyTorch implementation (reduction types, weights, normalization).
 - Report: (1) Inspected source files, (2) Modified `.tex` files, (3) Unresolved questions or missing citations.
 

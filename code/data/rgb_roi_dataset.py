@@ -110,7 +110,6 @@ PHYS_TREE = 'Physiology'
 SIGNAL_FILES = {
     'bp': 'BP_mmHg.txt',
     'resp': 'Resp_Volts.txt',
-    'eda': 'EDA_microsiemens.txt',
 }
 
 DEFAULT_FPS = 25.0
@@ -589,8 +588,7 @@ class RGBRoiDataset(Dataset):
     :param raw_root: raw BP4D root (default :func:`default_raw_root`).
     :param subjects, tasks: optional subset, e.g. ``['F001']`` / ``['T1','T2']``.
     :param signals: 1-D streams to serve; subset of :data:`SIGNAL_FILES`
-        (``'bp'`` = ``BP_mmHg.txt``, ``'resp'`` = ``Resp_Volts.txt``,
-        ``'eda'`` = ``EDA_microsiemens.txt``).
+        (``'bp'`` = ``BP_mmHg.txt``, ``'resp'`` = ``Resp_Volts.txt``).
     :param clip_seconds: clip length in seconds (``clip_frames =
         round(clip_seconds * fps)``).
     :param fps: nominal frame rate used for the frame<->time mapping (25 Hz).
@@ -1059,7 +1057,7 @@ class RGBRoiPretrainDataset(Dataset):
         if not sig:
             raise ValueError(
                 'RGBRoiPretrainDataset: Stage 2 needs at least one 1-D stream '
-                f'(bp/resp/eda) next to rgb; got {self.streams}.')
+                f'(bp/resp) next to rgb; got {self.streams}.')
         unknown = [s for s in sig if s not in SIGNAL_FILES]
         if unknown:
             raise ValueError(f'RGBRoiPretrainDataset: unknown stream(s) {unknown}; '
@@ -1529,7 +1527,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument('--raw_root', default=default_raw_root())
     p.add_argument('--subject', default=None, help='comma list, e.g. F001')
     p.add_argument('--task', default=None, help='comma list, e.g. T1,T2')
-    p.add_argument('--signals', default='resp', help='comma list bp,resp,eda')
+    p.add_argument('--signals', default='resp', help='comma list bp,resp')
     p.add_argument('--clip_seconds', type=float, default=DEFAULT_CLIP_SECONDS)
     p.add_argument('--clip_stride', type=float, default=None)
     p.add_argument('--input_size', type=int, default=DEFAULT_INPUT_SIZE)

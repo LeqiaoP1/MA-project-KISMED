@@ -28,8 +28,9 @@ session assembly is the deployment shape, not a training stage.
 **EDA is out of scope.** It is not observed by any camera (it is the electrical
 conductance of skin, driven by sudomotor activity), the BP4D+ label is a
 finger/palm contact measurement, and every remote estimate would be a surrogate
-for a *palmar* process. `configs/finetune/eda.yaml` remains as a legacy branch
-and is not part of this study.
+for a *palmar* process. The EDA branch (config, stream, target and
+raw-data inspection) was removed from the codebase on 2026-11-18 and is not part
+of this study.
 
 ---
 

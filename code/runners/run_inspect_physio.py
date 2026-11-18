@@ -18,14 +18,13 @@ figure(s) and a JSON summary into::
         overview.png                        # stacked native-rate traces (>=2 channels)
 
 Channel selection (``--channel``, case-insensitive, comma-separated or ``all``)
-is by canonical name. The three canonical channels map to raw files through
+is by canonical name. The two canonical channels map to raw files through
 ``data.prepare_bp4d.CHANNEL_FILES`` -- the SAME table the canonical converter
 uses, so the inspector and the converter can never disagree. HR is an
 inspector-only extra (see ``raw_file`` below)::
 
     BP  (bp)  <- BP_mmHg.txt            [mmHg]  pulse-pressure surrogate
     Resp (resp) <- Resp_Volts.txt         [V]     respiration belt
-    EDA  (eda)  <- EDA_microsiemens.txt   [uS]    skin conductance
     HR   (hr)   <- Pulse Rate_BPM.txt     [BPM]   vendor heart rate
 
 HR IS NOT A WAVEFORM, so it is analysed differently. ``Pulse Rate_BPM.txt`` is a
@@ -100,9 +99,9 @@ Usage (from ``code/``)::
     # just the vendor heart rate (writes HR.png)
     python runners/run_inspect_physio.py --subject F001 --task T1 --channel HR
 
-    # just respiration + EDA, several sessions, estimated sample rate
+    # just respiration, several sessions, estimated sample rate
     python runners/run_inspect_physio.py --subject F001,F002 --task T1,T2 \
-        --channel Resp,EDA --phys_fs 0
+        --channel Resp --phys_fs 0
 
     # what is on disk? (marks session dirs that hold no channel file)
     python runners/run_inspect_physio.py --list
@@ -136,13 +135,12 @@ from data import prepare_bp4d as prep
 # ``band`` is the physiological band the dominant-frequency search is limited
 # to; searching the full spectrum would just find the DC/drift peak.
 # ``periodic`` says whether a "dominant frequency" is a meaningful quantity for
-# the channel at all (EDA is an event/slow-drift signal, not an oscillation).
+# the channel at all.
 # ``analysis`` picks the rate analysis that actually applies to the channel:
 #   'spectral' -- continuous waveform: Welch peak + autocorrelation + counting
 #   'step'     -- vendor per-beat series held between beats: value-change rate,
 #                 and NO spectral estimate at all (a staircase pins the Welch
 #                 peak to the band edge -- see step_update_rate)
-#   'slow'     -- non-oscillatory drift (EDA): tonic/phasic split, no rate
 # ``raw_file`` is an inspector-LOCAL override of the raw-file needle, used by HR.
 # HR is deliberately NOT added to ``prepare_bp4d.CHANNEL_FILES``: that table also
 # drives the canonical signals.csv -- both its columns (`['time'] +
@@ -168,15 +166,6 @@ CHANNEL_META = {
         'periodic': True,
         'analysis': 'spectral',
     },
-    'eda': {
-        'name': 'EDA',
-        'unit': 'uS',
-        'label': 'skin conductance',
-        'band': (0.01, 0.50),
-        'band_note': 'slow/phasic band (NOT a periodic rate)',
-        'periodic': False,
-        'analysis': 'slow',
-    },
     'hr': {
         'name': 'HR',
         'unit': 'BPM',
@@ -191,7 +180,7 @@ CHANNEL_META = {
         'analysis': 'step',
     },
 }
-CHANNEL_ORDER = ['bp', 'resp', 'eda', 'hr']
+CHANNEL_ORDER = ['bp', 'resp', 'hr']
 
 # CLI aliases -> canonical channel key. NOTE 'pulse' stays mapped to bp (the
 # blood-pulse waveform, as documented); the RATE channel answers to
@@ -201,8 +190,6 @@ CHANNEL_ALIASES = {
     'blood_pulse': 'bp', 'pressure': 'bp',
     'resp': 'resp', 'respiration': 'resp', 'resp_volts': 'resp',
     'breathing': 'resp',
-    'eda': 'eda', 'gsr': 'eda', 'eda_microsiemens': 'eda',
-    'skin_conductance': 'eda',
     'hr': 'hr', 'heart_rate': 'hr', 'heartrate': 'hr', 'pulse_rate': 'hr',
     'bpm': 'hr',
 }
@@ -739,42 +726,6 @@ def step_update_rate(x: np.ndarray, fs: float) -> dict:
     return out
 
 
-def eda_tonic_phasic(x: np.ndarray, fs: float) -> dict:
-    """Split EDA into its slow (tonic) and fast (phasic) components.
-
-    Deliberately NOT an event detector. Counting "SCRs" here was tried and
-    removed: with NeuroKit2 absent the only option was a peak-picking heuristic,
-    and on these recordings it produced meaningless rates (2-20 "events"/min,
-    including 14.9/min on F001_T1 whose whole range is 0.13 uS of ADC
-    quantisation). A labelled-but-bogus number is worse than no number, so the
-    report keeps only descriptors that are robust at any amplitude: where the
-    slow level drifted to, and how much fast activity rides on top of it.
-    """
-    finite = x[np.isfinite(x)]
-    if finite.size < 16 or fs <= 0:
-        return {}
-    window_s = 20.0                                # ~ the 0.05 Hz split
-    k = int(max(1, round(window_s * fs)))
-    if 1 < k < finite.size:
-        tonic = np.convolve(finite, np.ones(k) / k, mode='same')
-    else:
-        tonic = np.full_like(finite, np.nanmean(finite))
-    phasic = finite - tonic
-    out = {
-        'tonic_phasic_split_s': window_s,
-        'tonic_mean': float(np.mean(tonic)),
-        'tonic_ptp': float(np.ptp(tonic)),
-        'tonic_std': float(np.std(tonic)),
-        'phasic_std': float(np.std(phasic)),
-        'phasic_ptp': float(np.ptp(phasic)),
-        'note': f'simple split at a {window_s:g} s moving average; NOT a '
-                f'validated EDA decomposition and NOT an SCR event count',
-    }
-    out['phasic_to_tonic_std'] = (float(out['phasic_std'] / out['tonic_std'])
-                                  if out['tonic_std'] > 0 else None)
-    return out
-
-
 # --------------------------------------------------------------------------- #
 # plotting
 # --------------------------------------------------------------------------- #
@@ -1181,18 +1132,6 @@ def inspect_session(raw_root: str, subject: str, task: str, channels,
             # when --band moved the spectral search band, so the reference
             # estimate stays stable while the user tunes the spectrum
             rep['frequency'].update(cycle_count_rate(x, fs, meta['band']))
-        elif meta['analysis'] == 'slow':
-            # EDA is an event/slow-drift signal: neither a "dominant frequency"
-            # nor an autocorrelation period is a meaningful study variable for
-            # it, so those fields (and the cross-method agreement metric built
-            # on them) are dropped rather than reported and misread. Only the
-            # descriptive in-band spectral peak and the SCR rate are kept.
-            rep['frequency']['periodic'] = False
-            rep['frequency']['band_note'] = meta['band_note']
-            for drop in ('autocorr_hz', 'autocorr_per_min', 'autocorr_peak_r',
-                         'autocorr_at_band_edge', 'method_agreement_pct'):
-                rep['frequency'].pop(drop, None)
-            rep['extra'] = eda_tonic_phasic(x, fs)
         fq = rep['frequency']
         if meta['periodic'] and (fq.get('welch_peak_at_band_edge')
                                  or fq.get('autocorr_at_band_edge')):
@@ -1321,7 +1260,7 @@ def _parse_channels(spec: str):
             continue
         if t not in CHANNEL_ALIASES:
             raise SystemExit(
-                f'unknown channel {tok!r}; use BP, Resp, EDA or all '
+                f'unknown channel {tok!r}; use BP, Resp, HR or all '
                 f'(aliases: {", ".join(sorted(CHANNEL_ALIASES))})')
         k = CHANNEL_ALIASES[t]
         if k not in out:
@@ -1360,7 +1299,7 @@ def get_args(argv=None):
                    help='task id(s), comma-separated (T1) or "all"')
     p.add_argument('--channel', '--channels', '--target', dest='channel',
                    default='all',
-                   help='channel(s): BP | Resp | EDA | all (comma-separated; '
+                   help='channel(s): BP | Resp | HR | all (comma-separated; '
                         'case-insensitive) - default all')
     p.add_argument('--raw_root', default=default_raw_root(),
                    help='raw BP4D root (default: $RAW_DATA_PATH, else the '

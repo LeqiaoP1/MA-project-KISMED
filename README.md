@@ -15,7 +15,6 @@ The downstream branches target:
 
 - **BP** — blood-pressure (pulse) waveform reconstruction
 - **RESP** — respiration waveform reconstruction
-- **EDA** — electrodermal-activity waveform reconstruction
 
 Optional add-ons include an action-unit (AU) occurrence probe, a thermal-ROI
 respiration pipeline, and RGB face-ROI / 2D-texture experiments.
@@ -25,7 +24,7 @@ flowchart LR
     A[BP4D+ RGB/TIR video + physiology] --> B[Canonical session conversion]
     B --> C[Stage 1 - VideoMAE ViT-B init]
     C --> D[Stage 2 - multimodal masked pre-training]
-    D --> E[Stage 3 - BP / RESP / EDA waveform fine-tuning]
+    D --> E[Stage 3 - BP / RESP waveform fine-tuning]
     E --> F[Tier 1-3 offline evaluation]
 ```
 
@@ -40,7 +39,7 @@ flowchart LR
   MultiMAE-style multimodal masked pre-training, and task-specific waveform
   fine-tuning, orchestrated through one CLI.
 - **Flexible modality contract** — any combination of video streams (`rgb`,
-  `tir`) and 1-D signals (`bp`, `resp`, `eda`) through `--streams`; ablations
+  `tir`) and 1-D signals (`bp`, `resp`) through `--streams`; ablations
   are a YAML change.
 - **Asymmetric per-stream masking** — independent mask ratios per modality
   (50–75 % for video, 90 %+ for 1-D signals) with span-based signal masking.
@@ -203,7 +202,6 @@ abort the run.
 ```bash
 python runners/run_waveform.py -c configs/finetune/bp.yaml
 python runners/run_waveform.py -c configs/finetune/resp.yaml
-python runners/run_waveform.py -c configs/finetune/eda.yaml
 ```
 
 For the thermal-ROI respiration branch:

@@ -103,14 +103,6 @@ encode different aspects of autonomic and circulatory activity:
         exhibits a slower, more sustained dynamic that arises from vascular tone
         and peripheral resistance, requiring models that capture long-range
         temporal dependencies.
-
-    \item \textbf{Electrodermal Activity (EDA):} Unlike periodic cardiac signals,
-        EDA measures skin conductance in microsiemens and reflects sympathetic
-        nervous system arousal. It is characterized by more sporadic, tonic, and
-        phasic changes, which makes its reconstruction particularly challenging:
-        models must capture transient, event-driven dynamics rather than steady
-        rhythmic patterns, and must contend with a signal that is both slowly
-        drifting and punctuated by rapid responses.
 \end{itemize}
 
 \section{Spectral and Geometric Multimodality}
@@ -197,7 +189,7 @@ affective and motor activity.
         static but fluctuate with internal emotional states, ranging from
         amusement and surprise to physical pain and disgust. These fluctuations
         are mediated by the autonomic nervous system, which modulates
-        cardiovascular, respiratory, and electrodermal activity according to the
+        cardiovascular and respiratory activity according to the
         level of affective arousal. For signal reconstruction, this implies that
         the target signal is embedded in a state-dependent baseline that varies
         across subjects and over time; reconstruction models must therefore

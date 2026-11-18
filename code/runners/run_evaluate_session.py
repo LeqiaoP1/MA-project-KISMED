@@ -78,7 +78,7 @@ def read_raw_series(path, raw_fs, fs):
 
 
 def read_reference(path, name, fs=None, raw_fs=None):
-    """Read the target series named ``name`` (bp/resp/eda) at ``fs``.
+    """Read the target series named ``name`` (bp/resp) at ``fs``.
 
     Two layouts are supported:
 

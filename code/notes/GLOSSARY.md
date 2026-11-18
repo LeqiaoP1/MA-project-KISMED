@@ -36,7 +36,7 @@ the code disagree, the code wins and this file is the bug.
 ## 2. Modalities & Streams
 
 Closed stream set: visual `('rgb', 'tir', 'rgb2d')`, physiological
-`('bp', 'resp', 'eda')`; per-stream channels in `STREAM_CHANNELS`
+`('bp', 'resp')`; per-stream channels in `STREAM_CHANNELS`
 (`code/core/multimae.py:106`).
 
 | Term | Shape | Channels | Notes |
@@ -44,12 +44,12 @@ Closed stream set: visual `('rgb', 'tir', 'rgb2d')`, physiological
 | **`rgb`** | `[B, 3, T, H, W]` | 3 | Canonical 224 px / `rgb_roi` 64 px visible-light arm (`stage2_local_pretrained.yaml`: `streams: rgb,bp,resp`). Legacy-but-supported; **cannot** coexist with `tir` in one model (ONE global `input_size`) — use `rgb2d` for fusion. |
 | **`tir`** | `[B, 3, T, H, W]` | 3 default / 1 legacy (`--tir_channels 1`) | **False-colour (rainbow) rendering** with a burned-in degC legend — not luma, not a "3-channel duplicate". |
 | **`rgb2d`** | `[B, 3, T, H, W]` | 3 | 2D-texture face ROI from the offline cache (`store_resolution='native'`). Must share `input_size` / `tubelet` / `num_frames` with `tir`, and is cropped from the **same frames**. **Preferred visible stream in any `tir`-containing run** (`streams: tir,rgb2d,resp`). |
-| **`bp` / `resp` / `eda`** | `[B, 1, L]` | 1 | 1-D physiological waveform, length `L = round(kept_seconds * fs)`. |
+| **`bp` / `resp`** | `[B, 1, L]` | 1 | 1-D physiological waveform, length `L = round(kept_seconds * fs)`. |
 
 - **TIR**: thermal-infrared; captures surface temperature dynamics and
   micro-vascular emissions.
 - **BP**: blood-pressure waveform (1-D). **RESP**: respiration (1-D, chest /
-  airflow derived). **EDA**: electrodermal activity / galvanic skin response.
+  airflow derived).
 - **Stage-2 contract**: >=1 visual stream **and** >=1 physiological stream;
   all-visual / all-signal lists are rejected at model build.
 - **Visible-stream preference (S1, 2026-11-17)**: `rgb` is **not deprecated** —
@@ -87,7 +87,7 @@ construction-time):
 
 **Masking terms**
 - **Asymmetric masking**: one ratio per stream, applied independently.
-- **Shipped ratios** (configs are authoritative): visual `0.90`; `resp` / `eda`
+- **Shipped ratios** (configs are authoritative): visual `0.90`; `resp`
   `0.50`; `bp` `0.50` (TIR arm) or `0.70` (`stage2_local_rgb_roi_bp.yaml`). A
   physio ratio near 1.0 is forbidden in practice — a 1-D stream's only gradient
   path to the encoder is its VISIBLE tokens.
@@ -171,7 +171,7 @@ $$L_\text{joint} = \alpha L_\text{time} + \beta L_\text{Pearson} + \gamma L_\tex
 | Concept | Symbol | Tensor Shape in Code | Description |
 | :--- | :--- | :--- | :--- |
 | Batch size | $B$ | `x.shape[0]` | Independent samples per step. |
-| Channel count | $C$ | `x.shape[1]` | 3 for `rgb` / `tir` / `rgb2d`, 1 for `bp` / `resp` / `eda`. |
+| Channel count | $C$ | `x.shape[1]` | 3 for `rgb` / `tir` / `rgb2d`, 1 for `bp` / `resp`. |
 | Video frames | $T$ | `x.shape[2]` | Post-`temporal_stride` frames in a clip. |
 | Signal length | $L$ | `x.shape[-1]` (1-D streams) | `L = round(kept_seconds * fs)`; distinct from $T$. |
 | Spatial extent | $H \times W$ | `x.shape[3:]` | Video height / width. |

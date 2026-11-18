@@ -29,8 +29,8 @@ pretrained_encoder: videomae:ssv2  # VideoMAE ViT-B corpus: ssv2
                                    # configs/pretrain/stage2_local_pretrained.yaml
 
 # ---- streams & tokenizer geometry (small for a local GPU) ----
-# Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bp/resp/eda).
-# All five = rgb,tir,bp,resp,eda; ablate by trimming (e.g. rgb,bp).
+# Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bp/resp).
+# All four = rgb,tir,bp,resp; ablate by trimming (e.g. rgb,bp).
 streams: rgb,bp,resp
 #streams: tir, resp
 
@@ -68,7 +68,6 @@ mask_ratio_tir: 0.90
 # while 0.50 gives ~25.
 mask_ratio_bp: 0.50
 mask_ratio_resp: 0.50
-mask_ratio_eda: 0.50               # waveform family (unused while streams=rgb,bp,resp)
 
 # ---- loss: per-modality masked MSE (masked positions only), then a weighted
 # sum. lambda = 1.0 for rgb/tir; lambda = signal_weight for each physio stream

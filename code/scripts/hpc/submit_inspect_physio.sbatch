@@ -8,7 +8,7 @@
 # Env-style overrides (propagated by sbatch's default --export=ALL):
 #   INSPECT_SUBJECTS  subject id(s)          default F001
 #   INSPECT_TASKS     task id(s) or "all"    default T1
-#   INSPECT_CHANNEL   BP|Resp|EDA|HR|all     default all
+#   INSPECT_CHANNEL   BP|Resp|HR|all     default all
 #   PHYS_FS           raw sample rate in Hz; 0 = estimate from RGB frames
 #   INSPECT_OUTPUT_DIR  write under $WORK instead of the $HOME default
 # Anything after the script name is forwarded to the runner verbatim (a trailing

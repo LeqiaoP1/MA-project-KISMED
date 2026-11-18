@@ -71,7 +71,6 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local_pretrained.yaml
 # (2) Stage-3 waveform fine-tuning per branch (needs a Stage-2 encoder ckpt)
 python runners/run_waveform.py -c configs/finetune/bp.yaml
 python runners/run_waveform.py -c configs/finetune/resp.yaml
-python runners/run_waveform.py -c configs/finetune/eda.yaml
 # thermal-ROI-only input (the Stage-2 TIR-ROI encoder; leave-one-subject-out fold)
 python runners/run_waveform.py -c configs/finetune/resp_tir_roi_local.yaml \
     --val_subject F004
@@ -170,18 +169,18 @@ it is scored on the FINAL waveform. `--spectral_weight`, `--spectral_weights`,
 The pretraining modalities are configured with `--streams` (or `streams:` in
 the YAML under `configs/pretrain/`) as a comma list. The **Stage-2 contract**
 requires at least TWO streams: **≥1 video** (`rgb` and/or `tir`) **plus ≥1
-physiological 1-D signal** (`bp`, `resp`, `eda` — the waveform later
+physiological 1-D signal** (`bp`, `resp` — the waveform later
 regressed in Stage 3). Video-only, signal-only, single-modality, empty or
 unknown lists are rejected consistently in `MultiModalMAE.__init__`,
 `build_pretraining_model` (`core/multimae.py`) and
 `PairedPretrainDataset`/`build_pretraining_dataset` (`data/`).
 
 `PairedPretrainDataset` serves **exactly** the requested streams: e.g.
-`streams: rgb,bp` returns only `{'rgb','bp'}`, while the default five-stream
-configs return all of `{'rgb','tir','bp','resp','eda'}`. So trimming/ablating
+`streams: rgb,bp` returns only `{'rgb','bp'}`, while the default four-stream
+configs return all of `{'rgb','tir','bp','resp'}`. So trimming/ablating
 modalities (while keeping the ≥1 video + ≥1 physio rule) is a YAML-only
 change. Per-stream mask ratios: visual `mask_ratio_rgb/tir` 50–75 %, signals
-`mask_ratio_bp/resp/eda` 90 %+.
+`mask_ratio_bp/resp` 90 %+.
 
 **Choosing the visible stream (`rgb` vs `rgb2d`).** `rgb` is **not deprecated**
 — it is the only visible stream served by `PairedSessionDataset` (`data_set:
@@ -488,8 +487,8 @@ Not yet implemented: a finer Stage-3 temporal decoder, and **model-side sliding
 inference** over an arbitrary recording (one command that runs the net window by
 window over a whole file). The *stitching* of an existing prediction dump is
 implemented and is what every reported session/subject number goes through —
-see §"Whole-session waveform reconstruction" below. (RESP/EDA streams in Stage 2
-*are* implemented — the local configs now train all five streams, see the
+see §"Whole-session waveform reconstruction" below. (RESP streams in Stage 2
+*are* implemented — the local configs now train the four streams, see the
 flexible-modalities subsection above.)
 
 ## Thesis plan alignment (`code/notes/plan/RGB_BP_plan.md`)
@@ -503,15 +502,14 @@ flexible-modalities subsection above.)
 | Plan stage                                                                            | Supported here                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Still to port (thesis work)                                                                                                                                                                                                                                                                                                                           |
 | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Stage 1 — ImageNet init of ViT-Base encoder                                          | `core/model.py` entrypoints (`project_vit_base_patch16_224`)                                                                                                                                                                                                                                                                                                                                                                                                                     | official ImageNet-1K timm classifier converter; encoder inheritance IMPLEMENTED (`core/multimae.py::load_pretrained_encoder` + `canonicalise_vit_state_dict` -- 3-D tubelet kernel transferred verbatim; K400 vs SSV2 corpus selectable via `--videomae_dataset` / `videomae:k400` / `videomae:ssv2`; blank/random is rejected) via `--pretrained_encoder`; variant specs (`small |
-| Stage 2 — multimodal masked pre-training on BP4D+ (RGB/TIR 50-75%, BP/RESP/EDA 90%+) | `core/input_adapters.py` (`SignalInputAdapter`), `data/masking_generator.py` (`MultiModalMaskingGenerator` asymmetric), `core/criterion.py` (`MaskedMSELoss`), configs `configs/pretrain/stage2_local.yaml` (wiring smoke) + `stage2_local_pretrained.yaml` (VideoMAE K400 + Stage-1 init) + `stage2_local_pretrained_ssv2.yaml` (SSV2 twin) + HPC template `stage2_multimodal.yaml`; implemented local milestone: `core/multimae.py` (`MultiModalMAE`) + `PairedPretrainDataset` + `runners/run_pretrain.py` | separate deeper decoders; full-data HPC run at larger 224 geometry. Local five-stream milestone (rgb+tir+bp+resp+eda) is implemented & run:`core/multimae.py` (`MultiModalMAE`), `data/paired_dataset.PairedPretrainDataset`, `runners/run_pretrain.py`, `configs/pretrain/stage2_local{,_pretrained,_pretrained_ssv2}.yaml`                         |
-| Stage 3 — three branches BP, RESP & EDA, unified spatio-temporal-spectral loss       | `core/waveform_losses.py` (`WaveformJointLoss`: L1 + Pearson + MR-STFT; 64/128/256 for BP/RESP, 256/512/1024 for EDA), regression head (`ProjectViT(output_len=...)`, baseline CLS->seq), `runners/run_waveform.py`, configs `configs/finetune/{bp,resp,eda}.yaml`                                                                                                                                                                                                         | lightweight conv decoder over all tokens for finer temporal resolution; model-side sliding inference over an arbitrary recording (the evaluation-time stitching of a prediction dump IS implemented — `evaluation/assemble.py`)                                                                                                                                                                                |
+| Stage 2 — multimodal masked pre-training on BP4D+ (RGB/TIR 50-75%, BP/RESP 90%+) | `core/input_adapters.py` (`SignalInputAdapter`), `data/masking_generator.py` (`MultiModalMaskingGenerator` asymmetric), `core/criterion.py` (`MaskedMSELoss`), configs `configs/pretrain/stage2_local.yaml` (wiring smoke) + `stage2_local_pretrained.yaml` (VideoMAE K400 + Stage-1 init) + `stage2_local_pretrained_ssv2.yaml` (SSV2 twin) + HPC template `stage2_multimodal.yaml`; implemented local milestone: `core/multimae.py` (`MultiModalMAE`) + `PairedPretrainDataset` + `runners/run_pretrain.py` | separate deeper decoders; full-data HPC run at larger 224 geometry. Local four-stream milestone (rgb+tir+bp+resp) is implemented & run:`core/multimae.py` (`MultiModalMAE`), `data/paired_dataset.PairedPretrainDataset`, `runners/run_pretrain.py`, `configs/pretrain/stage2_local{,_pretrained,_pretrained_ssv2}.yaml`                         |
+| Stage 3 — two branches BP & RESP, unified spatio-temporal-spectral loss       | `core/waveform_losses.py` (`WaveformJointLoss`: L1 + Pearson + MR-STFT; 64/128/256 for BP, 128/256/512 for RESP), regression head (`ProjectViT(output_len=...)`, baseline CLS->seq), `runners/run_waveform.py`, configs `configs/finetune/{bp,resp}.yaml`                                                                                                                                                                                                         | lightweight conv decoder over all tokens for finer temporal resolution; model-side sliding inference over an arbitrary recording (the evaluation-time stitching of a prediction dump IS implemented — `evaluation/assemble.py`)                                                                                                                                                                                |
 | Evaluation — Tier 1/2/3 post-processing                                              | `evaluation/metrics.py` (MAE/RMSE/Pearson; Welch PSD), `evaluation/clinical.py` (NeuroKit2 RMSSD/pNN50/MedianNN/ShanEn), `runners/run_evaluate.py`                                                                                                                                                                                                                                                                                                                             | —                                                                                                                                                                                                                                                                                                                                                    |
 
 ```bash
 # Stage 3 example (needs a Stage-2 encoder ckpt)
 python runners/run_waveform.py -c configs/finetune/bp.yaml
 python runners/run_waveform.py -c configs/finetune/resp.yaml
-python runners/run_waveform.py -c configs/finetune/eda.yaml
 # Offline post-processing on saved predictions
 python runners/run_evaluate.py --pred_path out.npy --target_path gt.npy \
     --fs 100 --tier 1,2,3 --waveform bp
@@ -625,7 +623,7 @@ criteria and the stop rule derived from those numbers are in
 <data_path>/<session>/
     rgb/            # ordered jpg frames  (25 fps nominal)
     tir.wmv         # single WMV ~60 s    (25 fps nominal)
-    signals.csv     # header: [time,] bp, resp, eda   at fs Hz
+    signals.csv     # header: [time,] bp, resp   at fs Hz
 ```
 
 Readers (`data/video_io.py`), temporal registration (`data/alignment.py`) and
@@ -975,9 +973,8 @@ HPC the compute nodes have no internet - pre-fetch on a login node and keep
 **Canonical data layout.** The raw BP4D layout (`2D+3D/`, `Thermal/`,
 `Physiology/*.txt`) is converted once into the per-session layout consumed by
 `data/paired_dataset.py` using `data/prepare_bp4d.py`:
-`<session>/{rgb/, tir.wmv, signals.csv (time,bp,resp,eda), meta.json}`.
-Channel mapping: `bp <- BP_mmHg.txt`, `resp <- Resp_Volts.txt`,
-`eda <- EDA_microsiemens.txt`; raw physiology `.txt` is anti-alias resampled to
+`<session>/{rgb/, tir.wmv, signals.csv (time,bp,resp), meta.json}`.
+Channel mapping: `bp <- BP_mmHg.txt`, `resp <- Resp_Volts.txt`; raw physiology `.txt` is anti-alias resampled to
 `--fs` (default 100 Hz; raw rate `--phys_fs`, default 1000 Hz, or auto with `0`).
 
 **Quick local smoke / data inspection (few sessions, data only):**
@@ -1030,9 +1027,9 @@ the estimated frequency, with one figure + JSON per channel:
 
 ```bash
 source scripts/env_local.sh
-# one session, every channel (BP | Resp | EDA | all, case-ctinsensitive)
+# one session, every channel (BP | Resp | HR | all, case-insensitive)
 python runners/run_inspect_physio.py --subject F001 --task T1 --channel all
-python runners/run_inspect_physio.py --subject F001,F002 --task T1,T2 --channel Resp,EDA
+python runners/run_inspect_physio.py --subject F001,F002 --task T1,T2 --channel Resp
 python runners/run_inspect_physio.py --list          # what is on disk?
 bash scripts/local/inspect_physio.sh                 # SUBJECT/TASK/CHANNEL env-style
 ```
@@ -1104,7 +1101,7 @@ reports this and it raises a warning. Neither file is read by
 
 Channels map through the same `data.prepare_bp4d.CHANNEL_FILES` table the
 converter uses, so the two can never disagree: `BP <- BP_mmHg.txt` [mmHg],
-`Resp <- Resp_Volts.txt` [V], `EDA <- EDA_microsiemens.txt` [uS]. The derived
+`Resp <- Resp_Volts.txt` [V]. The derived
 `Pulse Rate_BPM.txt` / `Respiration Rate_BPM.txt` are deliberately excluded from
 that mapping.
 
@@ -1148,10 +1145,7 @@ Known caveats, measured on the 19 raw sessions: respiration estimates land at
 recordings are only 9-25 s long (vs ~65 s for `T6`-`T8`), which widens the
 spectral bins, and the vendor `Respiration Rate_BPM.txt` is a coarse STEP
 function (it holds one value for seconds at a time) that can read ~half the
-cycle count -- do not use it as ground truth. `EDA` gets no frequency claim: it
-is reported with a plain 20 s moving-average tonic/phasic split plus the LSB
-step (an attempt to report SCR events/min was removed -- without NeuroKit2 it
-produced meaningless 2-20 /min rates on traces whose whole range was ADC noise).
+cycle count -- do not use it as ground truth.
 
 **Raw AU occurrence coding (`AUCoding/AU_OCC/*.csv`) -- corpus statistics:**
 
