@@ -41,8 +41,8 @@ by whether they move that number.
 | visual mask | tube `0.90` | `design/SolutionC_EarlyTokenMixing_stage2.md` |
 | 1-D mask | `0.50` **scattered** in every shipped config; `physio_mask: span` + `mask_span_s {resp: 4.0}` is the designed alternative (W1) | `design/SpanMask_PhysioSignals.md` §4 |
 | Stage-2 loss | per-stream masked MSE, `λ_tir 1.0`, `λ_resp = signal_weight 0.5`; **MR-STFT 0.0** (it belongs to Stage 3) | `design/SpanMask_PhysioSignals.md` §5, §7 |
-| Stage-3 | `streams: tir`, `head_hidden 0`, `alpha/beta/gamma = 1.0`, `fft_sizes 128,256,512`, `eval_band 0.1–0.6`, fixed-epoch (Option A), `clip_stride 2.0` | `design/Evaluation_RespWaveform_protocol.md` §3, `design/kfold_val_strategy_design_v2.md` §3.3 |
-| split | subject-disjoint, `n_folds 5`, `split_role train/val/test`; Stage 2 uses `pretrain_split: fold` so the test fold is excluded | `design/kfold_val_strategy_design_v2.md` §2 |
+| Stage-3 | `streams: tir`, `head_hidden 0`, `alpha/beta/gamma = 1.0`, `fft_sizes 128,256,512`, `eval_band 0.1–0.6`, fixed-epoch (Option A), `clip_stride 2.0` | `design/Evaluation_RespWaveform_protocol.md` §3, `design/ADR-001-subject-disjoint-split-and-selection.md` |
+| split | subject-disjoint, `n_folds 5`, `split_role train/val/test`; Stage 2 uses `pretrain_split: fold` so the test fold is excluded | `design/ADR-001-subject-disjoint-split-and-selection.md` §2 |
 | evaluation | Hann overlap-add assembly → per-subject median → median + bootstrap 95 % CI over subjects | `design/Evaluation_RespWaveform_protocol.md` §4–§6 |
 
 The two lineages (`96 px` HPC, `64 px` local) are **not checkpoint-compatible**:
@@ -162,7 +162,7 @@ Ordered by expected information per unit compute.
 | **W1** | **Span-mask ladder E1–E3** on the shipped geometry (`physio_mask: span`, 1.5 / 2 / 4 s). Scattered masking on a ~30–60× oversampled band-limited signal is locally solvable, which is why the 1-D stream currently contributes no encoder signal after the ramp. | `core/multimae.py::_span_mask`; configs | A1 moves; report the span geometry printed at build |
 | **W2** | **Amplitude.** The output is ~3× under-scaled. An earlier A/B between an amplitude-only `L_time` and the point-wise term moved band-Pearson only marginally and did not close the scale gap, so the remaining choice is a scale-aware loss term versus a deployable per-session calibration. **Decided 2026-11-01:** `L_time` is the point-wise Huber (no selector). That settles which `L_time` ships, NOT this item — the amplitude gap is still open. | `core/waveform_losses.py`, `utils/optim_factory.py` | A3 met with a non-oracle calibration |
 | **W3** | **Rate.** The rate claim needs a stable spectral peak, not just phase locking: harmonic tracking over overlapping 30 s windows, reported as BPM. | `evaluation/metrics.py` (`estimate_rate_bpm`, `rate_metrics`) | A2 met |
-| **W4** | **Fold cohort confound.** `subject_folds` splits sorted ids into contiguous blocks, so fold membership is confounded with sex/recording cohort (`eval/tir_resp/resp_t3_spread_sources.md` §2). Pooled numbers are unaffected; per-fold spreads are not a variance estimate. | `utils/splits.py`, `design/kfold_val_strategy_design_v2.md` §2.2 | fold assignment is stratified/interleaved, and the pooled number is unchanged |
+| **W4** | **Fold cohort confound.** `subject_folds` splits sorted ids into contiguous blocks, so fold membership is confounded with sex/recording cohort (`eval/tir_resp/resp_t3_spread_sources.md` §2). Pooled numbers are unaffected; per-fold spreads are not a variance estimate. | `utils/splits.py`, `design/ADR-001-subject-disjoint-split-and-selection.md` §2.2 | fold assignment is stratified/interleaved, and the pooled number is unchanged |
 | **W5** | **Optional bounded retry** on an on-face nostril/lip tile, cleared by all three of: rank/Spearman gate, local-motion partialling, gradient/sign-flip test. | `code/notes/eval/tir_resp/` tools | a gate pass, or it is not pursued |
 | **W6** | **Doc/spec sync** after any geometry change: `roi_geometry_ledger.py` must still exit 0, and the change must be hand-applied to `code/notes/spec/` (`scripts/project/write_specs.py` still contains stale text and overwrites hand edits — read its warning before running it). | `code/notes/spec/`, `scripts/project/write_specs.py` | ledger PASS + spec diff reviewed |
 
@@ -226,7 +226,7 @@ lines).
 | span masking design + experiment ladder | `design/SpanMask_PhysioSignals.md` |
 | shared-encoder MAE (historical name "Solution C"; `SolutionC_*` filenames retained for link stability) | `design/SolutionC_EarlyTokenMixing_stage2.md`, `design/SolutionC_EarlyTokenMixing_stage3.md` |
 | evaluation protocol | `design/Evaluation_RespWaveform_protocol.md` |
-| folds | `design/kfold_val_strategy_design_v2.md` |
+| folds | `design/ADR-001-subject-disjoint-split-and-selection.md` |
 | task tiers rationale | `design/TIR_ROI_RESP_TasksDistortion.md` |
 | headline numbers | `eval/tir_resp/resp_5fold_cv.md` |
 | physical gate / verdict | `eval/tir_resp/FINDINGS.md` |

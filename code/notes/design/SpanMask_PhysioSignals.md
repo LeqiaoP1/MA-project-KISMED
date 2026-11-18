@@ -567,7 +567,8 @@ Unit/self-test for the masking invariants (silent failures otherwise):
 
 ## 7. Acceptance criteria and falsification
 
-**A span-masked Stage 2 is working when, on a fixed held-out clip set:**
+**A span-masked Stage 2 is working when, on the validation role of the fold
+(subject-disjoint and frozen, `ADR-001-subject-disjoint-split-and-selection.md`):**
 
 1. `mse_resp` beats **both** no-video floors of its own pattern — i.e. below the
    interpolation baseline (4 s span: `1.46`) **and** below the constant

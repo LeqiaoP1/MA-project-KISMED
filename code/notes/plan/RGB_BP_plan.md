@@ -281,7 +281,7 @@ names the decision, so the gap is visible instead of implicit.
 | D1 | **BP-specific physical-basis note** — which waveform properties are claimed (rate, phase, amplitude, morphology) and at what bandwidth | §6/G5 is unanswerable without it; the rPPG gate covers detection, not morphology | new note in `code/notes/design/` |
 | D2 | **Sliding-window CHROM/POS** as the reference extractor | the measured ceiling (skill +0.278) is estimator-bound, so a model result is compared against an under-powered baseline | new note in `code/notes/design/` |
 | D3 | **Deployable amplitude calibration** | every amplitude number today is oracle-calibrated | new note in `code/notes/design/` |
-| D4 | **RGB fold assignment** | `utils/splits.py::subject_folds` splits sorted ids into contiguous blocks, which confounds fold with sex/cohort (`eval/tir_resp/resp_t3_spread_sources.md` §2) | `design/kfold_val_strategy_design_v2.md` |
+| D4 | **RGB fold assignment** | `utils/splits.py::subject_folds` splits sorted ids into contiguous blocks, which confounds fold with sex/cohort (`eval/tir_resp/resp_t3_spread_sources.md` §2) | `design/ADR-001-subject-disjoint-split-and-selection.md` |
 
 ---
 
@@ -297,7 +297,7 @@ names the decision, so the gap is visible instead of implicit.
 | span masking for 1-D streams | `design/SpanMask_PhysioSignals.md` |
 | ROI + rescale contract (RGB port pending, W4 — satisfied for the `rgb2d` cache path 2026-11-10) | `design/ROI_crop_and_rescaling.md` |
 | evaluation protocol | `design/Evaluation_RespWaveform_protocol.md` |
-| folds | `design/kfold_val_strategy_design_v2.md` |
+| folds | `design/ADR-001-subject-disjoint-split-and-selection.md` |
 | rPPG evidence | `code/notes/eval/rgb_bp/FINDINGS.md` |
 | throughput | `code/notes/eval/batch_size_sweep.md` |
 | generated contract | `code/notes/spec/01_data_pipeline.md`, `code/notes/spec/02_model_architecture.md`, `code/notes/spec/03_engine_and_loss.md` |

@@ -3,7 +3,7 @@
 > **Status: runbook (2026-11-01).** Executable order of operations for a full
 > `Stage-2 -> Stage-3 -> eval -> pooled k-fold` run. It defines no intent.
 > Authority: `code/notes/spec/` (what it must be) ->
-> `code/notes/design/kfold_val_strategy_design_v2.md` and
+> `code/notes/design/ADR-001-subject-disjoint-split-and-selection.md` and
 > `code/notes/design/Evaluation_RespWaveform_protocol.md` (intent) ->
 > `code/notes/plan/TirROI_Resp_plan.md` (code placement) ->
 > `code/notes/eval/tir_resp/resp_5fold_cv.md` (measured facts).
