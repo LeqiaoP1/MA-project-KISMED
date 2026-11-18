@@ -98,7 +98,6 @@ mask_ratio_tir: 0.90
 mask_ratio_resp: 0.50
 mask_ratio_rgb: 0.90
 mask_ratio_bp: 0.50
-mask_ratio_eda: 0.50
 physio_mask: random                # span-inside-AMMM is not implemented
 mask_span_s: {resp: 4.0}
 

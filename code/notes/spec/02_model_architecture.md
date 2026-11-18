@@ -132,7 +132,7 @@ Default: `sig_kernel=8`, `S=400` -> `Ns=50`.
 | Modality | Type | Shape | Function |
 |----------|------|-------|----------|
 | `rgb` / `tir` / `rgb2d` (video) | 3-D sincos (t,h,w) | `[1, Gt*Gh*Gw, D]` | `get_3d_sincos_pos_embed` |
-| BP / RESP / EDA | 1-D sincos (temporal) | `[1, Ns, D]` | Same time block as 3-D |
+| BP / RESP | 1-D sincos (temporal) | `[1, Ns, D]` | Same time block as 3-D |
 | `ProjectViT` | 2-D sincos | `[1, N+1, D]` | `get_2d_sincos_pos_embed` |
 
 3-D embedding dim split (VideoMAE convention): `d_t = d_h = 2*(D//6)`, `d_w = D - 2*d_t`. For D=768: d_t=d_h=256, d_w=256.
@@ -303,7 +303,6 @@ Critical invariant: `span` and `n_spans` are drawn **once per step** and shared 
 |--------|------|--------------|---------------|
 | `bp` | 1–2.5 Hz | 1.0 s | 6 |
 | `resp` | 0.16–0.4 Hz | 4.0 s | 25 |
-| `eda` | aperiodic | 8.0 s | 50 |
 
 Parameterisation (scheme A — recommended): `mask_ratio` and `mask_span_s` are the primaries; `n_spans = round(mask_ratio * clip_seconds / mask_span_s)` is derived and logged.
 

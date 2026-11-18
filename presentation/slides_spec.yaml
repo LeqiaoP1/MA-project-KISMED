@@ -31,7 +31,7 @@ slides:
     bullets:
       - "**Corpus:** BP4D+ multimodal spontaneous emotion corpus [3]."
       - "**Subjects:** 140 subjects, 8 sessions each, 40 clips per session."
-      - "**Modalities:** RGB, thermal infrared (TIR), depth, audio, and physiological signals (ECG, EMG, EDA, respiration)."
+      - "**Modalities:** RGB, thermal infrared (TIR), depth, audio, and physiological signals (ECG, EMG, respiration)."
       - "**Focus:**** Different Auxiliary tasks (T1-T10): facial expression, head pose, gaze, and action units."
 
   # Data and physiological targets

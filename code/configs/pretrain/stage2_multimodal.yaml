@@ -8,7 +8,7 @@ pretrained_encoder: videomae:k400  # Stage-1 VideoMAE ViT-B corpus: k400
                                    # (Something-Something-v2).
 
 # ---- streams & tokenizer geometry ----
-# Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bp/resp/eda).
+# Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bp/resp).
 streams: rgb,bp
 
 tir_channels: 3                    # thermal is a false-colour render, not gray
@@ -35,7 +35,6 @@ mask_ratio_rgb: 0.90
 mask_ratio_tir: 0.90
 mask_ratio_bp: 0.90
 mask_ratio_resp: 0.90
-mask_ratio_eda: 0.90
 
 # ---- loss: weighted sum of per-modality masked MSE (see stage2_local_pretrained.yaml) ----
 signal_weight: 0.5

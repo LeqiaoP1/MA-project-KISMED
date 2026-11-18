@@ -11,8 +11,8 @@ pretrained_encoder: videomae:k400  # Stage-1 VideoMAE ViT-B corpus: k400
                                    # Blank/random is rejected (no blank path).
 
 # ---- streams & tokenizer geometry ----
-# Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bp/resp/eda).
-streams: rgb,tir,bp,resp,eda
+# Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bp/resp).
+streams: rgb,tir,bp,resp
 tubelet: 2,16,16
 fs: 100.0
 fps: 25.0

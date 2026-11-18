@@ -116,6 +116,27 @@ def test_stage2_carries_no_spectral_keys(monkeypatch):
             assert not hasattr(args, name), f'{rel}: stale {name}'
 
 
+#: Stage-2 options DELETED with the EDA modality (2026-11-18). A stale YAML key
+#: is a hard error in ``parse_args_with_config``, so the runner must not define
+#: it AND no shipped pretrain config may mention it.
+REMOVED_EDA_KEYS = ('mask_ratio_eda',)
+
+
+def test_stage2_carries_no_eda_keys(monkeypatch):
+    """The EDA modality is gone from the Stage-2 runner AND from the configs."""
+    a = _stage2(monkeypatch)
+    for name in REMOVED_EDA_KEYS:
+        assert not hasattr(a, name), f'run_pretrain still defines --{name}'
+    assert PRETRAIN_CONFIGS
+    for cfg in PRETRAIN_CONFIGS:
+        rel = os.path.relpath(cfg, CODE_DIR)
+        args = _args_for(cfg, monkeypatch)
+        for name in REMOVED_EDA_KEYS:
+            assert not hasattr(args, name), f'{rel}: stale {name}'
+        assert 'eda' not in [s.strip() for s in args.streams.split(',')], (
+            f'{rel}: EDA is no longer a supported stream ({args.streams!r})')
+
+
 def test_every_pretrain_config_declares_a_videomae_init(monkeypatch):
     """Stage 1 has no blank path: every shipped Stage-2 config must name a
     VideoMAE corpus (never '' / random / scratch / mae / timm / large)."""

@@ -6,7 +6,7 @@ consumes (see its module docstring):
     <data_path>/<session>/
         rgb/            # ordered jpg frames      (fps_rgb)
         tir.wmv         # single thermal video    (fps_tir)
-        signals.csv     # header: time,bp,resp,eda   at fs Hz
+        signals.csv     # header: time,bp,resp   at fs Hz
         meta.json       # provenance + probed rates/counts
 
 Raw BP4D layout handled here::
@@ -18,7 +18,6 @@ Raw BP4D layout handled here::
 Channel mapping (canonical column <- raw file):
     bp  <- BP_mmHg.txt        (continuous pulse-pressure surrogate)
     resp <- Resp_Volts.txt     (raw respiration belt)
-    eda  <- EDA_microsiemens.txt
 
 The raw physiology .txt files carry no time column. The script assumes the
 dataset's nominal physiology sample rate (``--phys_fs``, default 1000 Hz, see
@@ -54,7 +53,6 @@ from data import video_io as vio
 CHANNEL_FILES = {
     'bp': 'BP_mmHg.txt',
     'resp': 'Resp_Volts.txt',
-    'eda': 'EDA_microsiemens.txt',
 }
 
 

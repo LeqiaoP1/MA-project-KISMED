@@ -77,7 +77,7 @@ pretrained_encoder: videomae:k400  # VideoMAE ViT-B corpus: k400 (Kinetics-400)
                                    # tokenizer transfers VERBATIM.
 
 # --------------------------------------------- streams & tokenizer geometry
-# Stage-2 contract: >=1 video (rgb/tir) AND >=1 1-D physio (bp/resp/eda).
+# Stage-2 contract: >=1 video (rgb/tir) AND >=1 1-D physio (bp/resp).
 streams: rgb,bp                    # RGB face ROI -> BP waveform
 tubelet: 2,16,16                   # first value MUST match the geometry below
 fs: 100.0                          # BP is resampled 1000 -> 100 Hz
@@ -153,7 +153,7 @@ mask_ratio_bp: 0.70                # a physio stream reaches the encoder ONLY
                                    # 1.0 is NEVER valid: the model's clamp
                                    # forbids a fully masked stream (k=0 removes
                                    # that stream's encoder gradient entirely).
-# mask_ratio_tir / mask_ratio_resp / mask_ratio_eda are UNUSED while
+# mask_ratio_tir / mask_ratio_resp are UNUSED while
 # streams: rgb,bp -- leave them at their defaults.
 # ---- 1-D masking PATTERN (see code/notes/design/SpanMask_PhysioSignals.md) ----
 # ACTIVE: contiguous spans are the measured fix for the"interpolate the gap from

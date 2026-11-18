@@ -12,7 +12,7 @@ data/raw/BP4D/
     <Task>/           e.g. T1 .. T10
       2D+3D/          JPEG frames (1392x1040, ~25 fps)
       Thermal/        TIR .wmv (false-colour WMV3/yuv420p, ~25 fps)
-      Physiology/     signals CSV: [time, bp, resp, eda]
+      Physiology/     signals CSV: [time, bp, resp]
       2DFeatures/     landmark tracks (IRFeatures for TIR ROI)
 ```
 
@@ -28,7 +28,7 @@ Output of `data/prepare_bp4d.py` -> `data/processed/bp4d_canonical/`:
 <session>/           e.g. F001_T1
   rgb/               ordered JPEG frames
   tir.wmv            single ~60 s video
-  signals.csv        header: [time, bp, resp, eda] at fs Hz
+  signals.csv        header: [time, bp, resp] at fs Hz
 ```
 
 The session name encodes subject (`'F001_T1'.rsplit('_', 1)[0]` -> `'F001'`), enabling subject-disjoint splits.
@@ -68,7 +68,6 @@ The session name encodes subject (`'F001_T1'.rsplit('_', 1)[0]` -> `'F001'`), en
   'tir':  FloatTensor [C_tir, T, H, W],  # C_tir = 3 (default) or 1
   'bp':   FloatTensor [1, seq_len],
   'resp': FloatTensor [1, seq_len],
-  'eda':  FloatTensor [1, seq_len],
 }
 ```
 
@@ -178,7 +177,7 @@ All return `torch.LongTensor [num_patches]`, `1` = masked (to reconstruct), `0` 
 | `TubeMaskingGenerator(input_size, mask_ratio)` | Same spatial patches across all frames | Video (mask_ratio 0.50–0.90) |
 | `MultiModalMaskingGenerator(stream_generators)` | Compose one per stream | Stage-2 |
 
-Default Stage-2 mask ratios (from configs): RGB 0.90, TIR 0.90, BP/RESP/EDA 0.90.
+Default Stage-2 mask ratios (from configs): RGB 0.90, TIR 0.90, BP/RESP 0.90.
 
 > At `input_size=64`, `patch_size=16`: 4x4=16 spatial patches. Tube mask 0.90 keeps 1–2 visible per frame — <=12.5% of spatial context.
 
@@ -188,7 +187,7 @@ Default Stage-2 mask ratios (from configs): RGB 0.90, TIR 0.90, BP/RESP/EDA 0.90
 
 `_load_signals_csv` infers `fs` from median `diff(t)` of the time column. `nan_to_num` applied to all columns.
 
-Column aliases: `bp <- (bp, ppg, pulse)`, `resp <- (resp, respiration)`, `eda <- (eda, gsr, scr, electrodermal)`.
+Column aliases: `bp <- (bp, ppg, pulse)`, `resp <- (resp, respiration)`.
 
 **Space-time alignment** (enforced by `MultiModalMAE._check_space_time_alignment`):
 

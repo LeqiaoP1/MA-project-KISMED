@@ -126,7 +126,7 @@ DEFAULT_ROI_PADDING = 0.1
 DEFAULT_SIGNAL = 'bp'
 
 #: display units of the raw physiology files (see ``rrd.SIGNAL_FILES``)
-SIGNAL_UNITS = {'bp': 'mmHg', 'resp': 'V', 'eda': 'uS'}
+SIGNAL_UNITS = {'bp': 'mmHg', 'resp': 'V'}
 
 #: colours for the anatomy groups of the ROI landmark set, in the order
 #: ``rgb_features.GROUP_RANGES`` lists them

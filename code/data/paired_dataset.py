@@ -5,13 +5,13 @@ Expected per-session layout under ``data_path``::
     <data_path>/<session>/
         rgb/            # ordered jpg frames  (25 fps nominal)
         tir.wmv         # single video ~60 s  (25 fps nominal)
-        signals.csv     # header: [time,] bp, resp, eda  at fs Hz
+        signals.csv     # header: [time,] bp, resp  at fs Hz
 
 ``PairedSessionDataset`` returns ``(samples, target)`` per clip:
   * ``samples`` : float tensor [3+C, T, H, W]  (RGB 3ch + TIR ``C``ch, temporal
     stack; ``C = tir_channels``, default 3 -> 6 channels, because the TIR
     stream is a false-colour rendering -- see ``video_io`` and ``tir_channels``)
-  * ``target``  : float tensor [seq_len]       (chosen waveform: BP, RESP or EDA)
+  * ``target``  : float tensor [seq_len]       (chosen waveform: BP or RESP)
 
 Both videos are read on a single common time grid (see ``data/alignment.py``),
 handling any RGB/TIR fps mismatch; 1D signals are sliced on the same axis and
@@ -42,8 +42,7 @@ PAIRED_DATA_SETS = ('bp4d+', 'paired')
 
 _CSV_DELIM = ','
 _SIGNAL_ALIASES = {'bp': ('bp', 'ppg', 'pulse'),
-                   'resp': ('resp', 'respiration'),
-                   'eda': ('eda', 'gsr', 'scr', 'electrodermal')}
+                   'resp': ('resp', 'respiration')}
 
 #: visual stream names the Stage-2 dataset can serve (RGB 3ch, TIR 1ch)
 _PRETRAIN_VISUAL_STREAMS = ('rgb', 'tir')
@@ -68,7 +67,7 @@ def _first_col(header: List[str], aliases: Tuple[str, ...]) -> Optional[str]:
 
 
 def _canonical_signals(cols: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-    """Map raw csv columns -> canonical stream names ``{'bp','resp','eda'}``.
+    """Map raw csv columns -> canonical stream names ``{'bp','resp'}``.
 
     Only streams whose csv column resolves via :data:`_SIGNAL_ALIASES` are
     included; missing streams are simply absent from the returned dict (callers
@@ -165,7 +164,7 @@ class PairedSessionDataset(Dataset):
                  tir_channels: int = 3,
                  use_tir: bool = True,
                  physio_norm: str = 'zscore'):
-        assert target in ('bp', 'resp', 'eda'), target
+        assert target in ('bp', 'resp'), target
         assert int(tir_channels) in (1, 3), \
             f'tir_channels must be 1 or 3, got {tir_channels}'
         if physio_norm not in ('zscore', 'clip'):
@@ -257,7 +256,7 @@ class PairedSessionDataset(Dataset):
             sig_path = s['signals_file']
             cols, fs_real = _load_signals_csv(sig_path, self.fs)
             s['fs'] = fs_real                      # per-session true sample rate
-            # cache EVERY canonical signal stream present (bp/resp/eda) from
+            # cache EVERY canonical signal stream present (bp/resp) from
             # a single csv parse, so subclasses (Stage-2 multimodal pretraining)
             # can read extra streams without re-parsing the file.
             canon = _canonical_signals(cols)
@@ -404,11 +403,11 @@ class PairedPretrainDataset(PairedSessionDataset):
 
         streams = ('rgb', 'bp')       -> video + physio (Stage-2 minimum)
         streams = ('rgb','tir','bp')  -> two video + one physio
-        streams = ('rgb','tir','bp','resp','eda') -> all five
+        streams = ('rgb','tir','bp','resp') -> all four
 
     Stage-2 CONTRACT: ``streams`` must contain at least TWO modalities --
     >=1 video (``rgb``/``tir``) AND >=1 physiological 1-D signal
-    (``bp``/``resp``/``eda``, the waveform later regressed in Stage 3);
+    (``bp``/``resp``, the waveform later regressed in Stage 3);
     video-only or signal-only lists are rejected. Split policy =
     PRETRAIN-ON-ALL: every session is used (``train_ratio=1.0``). Masking is
     applied inside the model forward, not here.
@@ -421,7 +420,7 @@ class PairedPretrainDataset(PairedSessionDataset):
                  seq_len: Optional[int] = None,
                  input_size: int = 64, rgb_dir: str = 'rgb',
                  tir_file: str = 'tir.wmv', signals_file: str = 'signals.csv',
-                 streams: Sequence[str] = ('rgb', 'tir', 'bp', 'resp', 'eda'),
+                 streams: Sequence[str] = ('rgb', 'tir', 'bp', 'resp'),
                  max_sessions: Optional[int] = None,
                  max_clips: Optional[int] = None,
                  max_entries: Optional[int] = None,
@@ -444,7 +443,7 @@ class PairedPretrainDataset(PairedSessionDataset):
         self.signal_streams = tuple(
             s for s in streams if s not in _PRETRAIN_VISUAL_STREAMS)
         # Stage-2 contract: >=1 video (rgb/tir) AND >=1 1-D physiological
-        # (bp/resp/eda); the physio stream(s) are the Stage-3 targets.
+        # (bp/resp); the physio stream(s) are the Stage-3 targets.
         if not self.visual_streams or not self.signal_streams:
             raise ValueError(
                 'PairedPretrainDataset: Stage-2 requires >=1 video stream '

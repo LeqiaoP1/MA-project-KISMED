@@ -13,8 +13,8 @@ pretrained_encoder: videomae:k400  # Stage-1 VideoMAE ViT-B corpus: k400
                                    #   (Kinetics-400) or videomae:ssv2
 
 # ---- streams & tokenizer geometry ----
-# Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bp/resp/eda).
-# All five = rgb,tir,bp,resp,eda; ablate by trimming (e.g. rgb,bp).
+# Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bp/resp).
+# All four = rgb,tir,bp,resp; ablate by trimming (e.g. rgb,bp).
 streams: rgb,bp
 
 tir_channels: 3                    # thermal is a false-colour render, not gray
@@ -49,7 +49,6 @@ mask_ratio_tir: 0.90
 # 1-D physio streams are masked hardest (90%+) in Stage 2
 mask_ratio_bp: 0.90
 mask_ratio_resp: 0.90
-mask_ratio_eda: 0.90
 
 # ---- loss: per-modality masked MSE (masked positions only), then a weighted
 # sum. lambda = 1.0 for rgb/tir; lambda = signal_weight for each physio stream.

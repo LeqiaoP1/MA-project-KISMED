@@ -5,7 +5,7 @@ Dispatch on ``args.data_set`` / the domain config and return a
 datasets here following these references:
 
 - **BP4D+ (target of this thesis)**: multimodal RGB + Thermal-IR video with
-  synchronised 1D physiological streams (BP / RESP / EDA). Register it, e.g.
+  synchronised 1D physiological streams (BP / RESP). Register it, e.g.
   ``@register_dataset('bp4d+')``, and implement the paired (visual, signal,
   mask) collation described in code/notes/plan/RGB_BP_plan.md §3.2.
 - VideoMAE   ``tmp/videomae/datasets.py`` + ``kinetics.py`` + ``ssv2.py``
@@ -119,7 +119,7 @@ def build_pretraining_dataset(args):
 
     For the paired path: the dataset serves exactly the modalities listed in
     ``args.streams``. Stage-2 CONTRACT: at least TWO modalities -- >=1 video
-    (``rgb``/``tir``) AND >=1 physiological 1-D signal (``bp``/``resp``/``eda``,
+    (``rgb``/``tir``) AND >=1 physiological 1-D signal (``bp``/``resp``,
     the Stage-3 reconstruction target). PRETRAIN-ON-ALL: no split, every session
     is used. Per-stream masks are produced inside the multimodal MAE forward
     pass.
@@ -258,7 +258,7 @@ def build_pretraining_dataset(args):
         raise ValueError(
             'build_pretraining_dataset: --streams must name at least two '
             'modalities (>=1 video rgb/tir and >=1 physiological 1-D '
-            'bp/resp/eda); got an empty list.')
+            'bp/resp); got an empty list.')
 
     return PairedPretrainDataset(
         data_path=getattr(args, 'data_path', ''),

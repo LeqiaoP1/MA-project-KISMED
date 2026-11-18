@@ -53,7 +53,6 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `resp.yaml` | RESP | canonical, HPC |
 | `resp_tir_roi_local.yaml` | RESP | TIR ROI, 8 s clip, stride 2, fft 128,256,512 |
 | `resp_tir_roi_local_matched.yaml` | RESP | TIR ROI, Stage-3 recipe from the local shared-encoder model (`transposed_conv`, `head_init: none`, `layer_decay 0.75`) |
-| `eda.yaml` | EDA | canonical, HPC |
 | `au_local.yaml` | AU probe | canonical, multi-label BCE |
 | `au_local_pretrained.yaml` | AU probe | canonical, with Stage-2 encoder init |
 | `example.yaml` | Annotated reference template |
@@ -82,7 +81,7 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `streams` | str | Comma-separated: e.g. `rgb,tir,bp,resp,eda` |
+| `streams` | str | Comma-separated: e.g. `rgb,tir,bp,resp` |
 | `tubelet` | str | `t,ph,pw`: e.g. `2,16,16` |
 | `input_size` | int | Square frame px: 64 (local) / 224 (HPC) |
 | `fps` / `fs` | float | Video fps / signal sample rate Hz |
@@ -90,7 +89,7 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `temporal_stride` | int | Frame decimation inside window (1 = every frame) |
 | `seq_len` | int | Signal samples; 0 = `clip_duration * fs` |
 | `pos_init` | str | `sincos3d` or `random` |
-| `mask_ratio_{rgb\|tir\|bp\|resp\|eda}` | float | Per-stream masking ratio |
+| `mask_ratio_{rgb\|tir\|bp\|resp}` | float | Per-stream masking ratio |
 | `signal_weight` | float | Loss weight for physio streams (default 0.5) |
 | `target_norm` | str | `token` (per-token z-score), `clip` (per-clip z-score) or `none` (IDENTITY). **NON-ROI paths only** (e.g. `bp4d+`): for the RAW-tree ROI lineages (`tir_roi` = TIR-ROI+RESP, `rgb_roi` = RGB+BP) the DATASET owns the normalisation and `run_pretrain.py` pins this to `none` |
 | `physio_norm` (Stage 2) | str | The 1-D target normalisation for `tir_roi` / `rgb_roi`: `clip` (= `zscore`) per-clip z-score. That is the ONLY value — `none` / `ac` / `session` were removed and are REFUSED (`data.tir_resp_dataset.check_physio_norm`). Applied by the dataset; the model never re-normalises |
@@ -108,7 +107,7 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `target` | str | `bp` / `resp` / `eda` |
+| `target` | str | `bp` / `resp` |
 | `finetune` | str | Path to Stage-2 checkpoint |
 | `sig_kernel` | int | Signal window size per token; must satisfy `sig_kernel/fs == tubelet_t*stride/fps` |
 | `physio_norm` | str | `clip` (= `zscore`) per-clip z-score — the SAME setting, name and values as the ROI Stage-2 paths, so one clip yields one identical target in both stages. `none` / `ac` / `session` were removed and are REFUSED |

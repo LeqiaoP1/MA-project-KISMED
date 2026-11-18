@@ -152,7 +152,7 @@ def get_args():
                    help='where to write figures/ + inspect_summary.json; '
                         'default: $OUTPUT_DIR/inspect_data, else '
                         '<project_root>/output/inspect_data')
-    p.add_argument('--target', default='bp', choices=['bp', 'resp', 'eda'])
+    p.add_argument('--target', default='bp', choices=['bp', 'resp'])
     # small-data controls (dev/smoke)
     p.add_argument('--max_sessions', default=3, type=int,
                    help='cap the number of sessions loaded')
@@ -362,9 +362,10 @@ def _make_figure(args, clip, sample, target, sig_cols, sig_fs, split='train'):
         
     axes[1, 0].axis('off')
     axes[2, 0].axis('off')
+    axes[2, 1].axis('off')                      # no third 1-D stream to plot
 
     t_tgt = np.arange(target.size) / args.fs
-    names = ['bp', 'resp', 'eda']
+    names = ['bp', 'resp']
     # vertical reference lines (every second) + shared x-range so the panels
     # line up: lets you eyeball that blue (raw window) and orange (resampled
     # dataset target) features occur at the same times in every row
@@ -383,7 +384,7 @@ def _make_figure(args, clip, sample, target, sig_cols, sig_fs, split='train'):
         ax.set_xlim(0, args.clip_duration)
         ax.set_title(f'{col} (blue=window, orange=dataset target)'
                      if col == args.target else f'{col} window')
-        if row == 2:
+        if row == len(names) - 1:
             ax.set_xlabel('time (s)')
 
     # --- metadata block in the empty bottom-left panel ---------------------- #
