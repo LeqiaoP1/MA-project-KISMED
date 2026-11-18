@@ -45,7 +45,7 @@ pretrain_split: all                # Stage 2 never splits (self-supervised)
 # subjects (the runner's guard compares fold/n_folds only, not the role lists).
 # split_seed null (or split_stratify: none) = the legacy rule, where sorted ids
 # are cut into contiguous blocks and therefore fold == sex block (F001.. sorts
-# before M001..). See code/notes/plan/subject_kfold_plan.md.
+# before M001..). See code/notes/plan/ADR-001-subject-kfold-plan.md.
 split_seed: 42                     # seed of the draw; null = legacy blocks
 split_stratify: sex                # shuffle within stratum, then interleave
 tasks: ''                          # '' = all tasks; UNIONED with task_set below

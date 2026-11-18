@@ -32,7 +32,7 @@ pretrain_split: all                # the sbatch overrides this to `fold` per fol
 # decide HOW the subjects are GROUPED. Stage 3 must carry the SAME pair, else
 # fold k's encoder was pre-trained on fold k's test subjects.
 # split_seed null (or split_stratify: none) = the legacy contiguous blocks,
-# where fold == sex block. See code/notes/plan/subject_kfold_plan.md.
+# where fold == sex block. See code/notes/plan/ADR-001-subject-kfold-plan.md.
 split_seed: 42                     # seed of the draw; null = legacy blocks
 split_stratify: sex                # shuffle within stratum, then interleave
 tasks: ''                          # '' = all tasks; UNIONED with task_set below

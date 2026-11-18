@@ -291,7 +291,7 @@ names the decision, so the gap is visible instead of implicit.
 |---|---|
 | this plan | `code/notes/plan/RGB_BP_plan.md` |
 | local 64 px two-branch setup (commands, checkpoint, lineage lock) | `code/notes/plan/local_downstream_plan.md` |
-| k-fold rollout | `code/notes/plan/subject_kfold_plan.md` |
+| k-fold rollout | `code/notes/plan/ADR-001-subject-kfold-plan.md` |
 | AMP rollout | `code/notes/plan/hpc_AMP_implementation.md` |
 | Stage-2 / Stage-3 architecture | `design/SolutionC_EarlyTokenMixing_stage2.md`, `design/SolutionC_EarlyTokenMixing_stage3.md` |
 | span masking for 1-D streams | `design/SpanMask_PhysioSignals.md` |

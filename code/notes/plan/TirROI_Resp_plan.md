@@ -220,7 +220,7 @@ lines).
 | respiration label build order | `code/notes/plan/RESP_session_preprocess_implementation_plan.md` |
 | respiration label artefact — measured impact + accounting delta | `eval/tir_resp/resp_preprocess_impact.md` |
 | task-tier regrouping | `code/notes/plan/task_tiers_regroup_plan.md` |
-| k-fold rollout | `code/notes/plan/subject_kfold_plan.md` |
+| k-fold rollout | `code/notes/plan/ADR-001-subject-kfold-plan.md` |
 | AMP rollout | `code/notes/plan/hpc_AMP_implementation.md` |
 | ROI + rescale contract | `design/ROI_crop_and_rescaling.md` |
 | span masking design + experiment ladder | `design/SpanMask_PhysioSignals.md` |

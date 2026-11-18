@@ -52,8 +52,8 @@ per tested subject**, and aggregate across subjects.
 
 ### 3.2 k-fold subject-disjoint cross-validation — IMPLEMENTED (2026-10-18)
 
-- Mechanism and rollout: `code/notes/plan/subject_kfold_plan.md` (all seven
-  phases landed; the requirement lives in
+- Mechanism and rollout: `code/notes/plan/ADR-001-subject-kfold-plan.md` (the
+  requirement lives in
   `code/notes/design/ADR-001-subject-disjoint-split-and-selection.md`). Roles per fold from
   `utils/splits.py::get_stage_splits`:
 
