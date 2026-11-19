@@ -1,10 +1,11 @@
 """Selection rule and the validation-pass determinism contract (I6, I7).
 
-ADR-001 section 2.3 names the interface (``val_select``, ``eval_freq``,
-``val_kept_<stream>``) and section 2.2 I7 requires the rule, the selected epoch
-and the criterion value to be recorded. This module is the only place a
-selection decision is made, so ``best.pth`` can only ever come from a validation
-record.
+ADR-001 section 2.3 names the interface (``val_select``, ``eval_freq``) and
+section 2.2 I7 requires the rule, the selected epoch and the criterion value to
+be recorded. The masking side of I6 is ADR-002 §6: the validation pass replays a
+fixed-seed mode/count/placement sequence (``val_mask_seed`` below) instead of
+pinning a kept fraction per stream. This module is the only place a selection
+decision is made, so ``best.pth`` can only ever come from a validation record.
 """
 from typing import Any, Dict, Mapping, Optional
 

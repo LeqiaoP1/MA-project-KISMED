@@ -304,7 +304,7 @@ def test_motion_gates_are_the_measured_pair():
     assert td.DEFAULT_RGB2D_MAX_SWAY_PX == 110.0
     assert trd.DEFAULT_MAX_SWAY_PX == 40.0
     cfg_path = os.path.join(CODE_DIR, 'configs', 'pretrain',
-                            'stage2_hpc_tir_roi_resp_rgb2d.yaml')
+                            'stage2_budget_tir_roi_resp_rgb2d.yaml')
     with open(cfg_path) as fh:
         cfg = yaml.safe_load(fh)
     assert cfg['max_sway_px'] == trd.DEFAULT_MAX_SWAY_PX

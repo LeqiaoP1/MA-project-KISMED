@@ -71,9 +71,9 @@ def add_common_args(parser: argparse.ArgumentParser):
     add_amp_args(parser)
 
 
-#: Stream names a ``val_kept_<stream>`` flag can pin (ADR-001 section 2.3).
+#: Stream names a run can declare (the model's own taxonomy).
 #: Declared once so every runner's parser exposes the same keys and a YAML uses
-#: exactly the names the ADR lists.
+#: exactly the names the taxonomy lists.
 PROTOCOL_STREAMS = ('rgb', 'tir', 'rgb2d', 'bp', 'resp')
 
 
@@ -116,46 +116,10 @@ def add_protocol_args(parser: argparse.ArgumentParser):
     parser.add_argument('--val_criterion', default='joint_loss', type=str,
                         choices=list(CRITERIA),
                         help='what best_val minimises/maximises')
-    for stream in PROTOCOL_STREAMS:
-        parser.add_argument(f'--val_kept_{stream}', default=None, type=float,
-                            help=f'pinned kept fraction of stream {stream!r} '
-                                 f'for the validation pass (I6). Required '
-                                 f'when that stream is masked and '
-                                 f'--eval_freq > 0; range [0, 1].')
     parser.add_argument('--dev_smoke', action='store_true', default=False,
                         help='plumbing runs only: tolerates a corpus that '
                              'cannot hold 70/10/20 and writes '
                              'partition.dev.json, which can never be pooled')
-
-
-def resolve_val_kept(args, streams, eval_freq=None):
-    """``{stream: kept}`` pins for the validation pass, with the D6 refusal.
-
-    A validation evaluation of a stochastic forward path is only comparable
-    across epochs when every masked stream is pinned (I6), so a missing
-    ``val_kept_<stream>`` is an error rather than a silent default — but only
-    when an evaluation will actually run.
-    """
-    if eval_freq is None:
-        eval_freq = int(getattr(args, 'eval_freq', 0) or 0)
-    streams = [str(s).strip() for s in streams if str(s).strip()]
-    kept = {}
-    for stream in streams:
-        value = getattr(args, f'val_kept_{stream}', None)
-        if value is not None:
-            if not 0.0 <= float(value) <= 1.0:
-                raise SystemExit(
-                    f'--val_kept_{stream} must be in [0, 1]; got {value!r}')
-            kept[stream] = float(value)
-    missing = sorted(set(streams) - set(kept))
-    if missing and eval_freq > 0:
-        raise SystemExit(
-            f'--eval_freq {eval_freq} > 0 but no pinned kept fraction for '
-            f'{missing}: a validation pass under a stochastic forward path is '
-            f'not comparable across epochs (ADR-001 I6). Pass '
-            + ' '.join(f'--val_kept_{s} <kept>' for s in missing)
-            + ', or set --eval_freq 0 with --val_select fixed_epoch.')
-    return kept
 
 
 def load_or_create_plan(args, *, stage: str = ''):
@@ -212,8 +176,8 @@ def _check_config_keys(parser: argparse.ArgumentParser, cfg: dict, path: str):
     (``roi_paddingg``) or a key that was renamed/removed in code becomes a
     silent no-op: the run proceeds with the argparse default instead and looks
     perfectly healthy. A key that is misspelled into a *different valid* default
-    is the worst case -- e.g. dropping ``mask_ratio_resp: 0.50`` silently falls
-    back to 0.90, or a lost ``pretrained_encoder`` silently trains from scratch.
+    is the worst case -- e.g. dropping ``physio_cap_ratio: 0.25`` silently falls
+    back to 0.50, or a lost ``pretrained_encoder`` silently trains from scratch.
 
     So the one soft spot of the "YAML supplies defaults" design is turned into a
     hard error here. Keys with a close match get a spelling hint.

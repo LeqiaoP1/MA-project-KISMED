@@ -34,7 +34,7 @@ class _FakeRun:
 
 def _args(tmp_path, **over):
     kw = dict(log_wandb=True, wandb_project='thesis-project',
-              output_dir=str(tmp_path / 'stage2_ammm_fold3'),
+              output_dir=str(tmp_path / 'stage2_budget_fold3'),
               data_set='tir_roi', masking='ammm', n_folds=5, fold=3,
               epochs=150, input_size=96, lr=3.75e-5)
     kw.update(over)
@@ -104,14 +104,14 @@ def test_enabled_builds_one_run_with_the_args_as_config(tmp_path, fake_wandb):
     assert log.enabled is True
     init = fake_wandb['init']
     assert init['project'] == 'thesis-project'
-    assert init['name'] == 'stage2_ammm_fold3'        # per-fold run name
+    assert init['name'] == 'stage2_budget_fold3'        # per-fold run name
     assert init['job_type'] == 'pretrain'
     assert init['tags'] == ['tir_roi', 'ammm']
     assert init['config']['masking'] == 'ammm'
     assert init['config']['input_size'] == 96
     assert init['config']['data/steps_per_epoch'] == 255
     # wandb adds its own ``wandb/`` level, so dir = the RUN dir (not run/wandb)
-    assert init['dir'] == str(tmp_path / 'stage2_ammm_fold3')
+    assert init['dir'] == str(tmp_path / 'stage2_budget_fold3')
 
 
 def test_offline_is_the_default_inside_a_slurm_job(tmp_path, fake_wandb,

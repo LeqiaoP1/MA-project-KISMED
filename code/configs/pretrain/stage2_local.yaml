@@ -15,7 +15,7 @@ pretrained_encoder: videomae:k400  # Stage-1 VideoMAE ViT-B corpus: k400
 # ---- streams & tokenizer geometry ----
 # Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bp/resp).
 # All four = rgb,tir,bp,resp; ablate by trimming (e.g. rgb,bp).
-streams: rgb,bp
+streams: rgb,tir,bp                # EXACTLY two visual + >=1 physiological
 
 tir_channels: 3                    # thermal is a false-colour render, not gray
 tubelet: 2,16,16                   # (temporal, H, W) tubelet
@@ -43,12 +43,21 @@ pos_init: sincos3d
 # visual information (VideoMAE's 0.90 is normally used on a 14x14 grid at
 # input_size 224). Raise to 224 or drop to 0.75 for the local 64 px debug.
 
-# ---- asymmetric masking (visual 50-75%, signals 90%+) ----
-mask_ratio_rgb: 0.90
-mask_ratio_tir: 0.90
-# 1-D physio streams are masked hardest (90%+) in Stage 2
-mask_ratio_bp: 0.90
-mask_ratio_resp: 0.90
+# ---- MASKING: ADR-002 constant-budget policy (the whole surface) -----------
+# See code/notes/design/ADR-002-asymmetric-multimodal-masking.md. Two visual
+# streams are REQUIRED (contract 5), hence streams: rgb,tir,bp above.
+# 4x4 grid / 100 frames / tubelet_t 2 => T = 50 tokens per tube, M = 4 tubes,
+# n_signal = 400/8 = 50 tokens. NOTE the 0.5 cap is below one tubelet on this
+# 100 Hz grid, so Mode 2 could only ever keep 0 tokens; the ADR arm runs at
+# 1000 Hz (R = 10) where 0.5 = 5 tubelets. Here the cap is 1.0 instead.
+n_budget: 300                      # 6 tubes; 2m=4 <= 6 <= 2M=8
+video_cap_ratio: 0.25
+physio_cap_ratio: 1.0              # geometry artefact, see the note above
+video_min_tubes: 2
+p_virtual_sensing: 0.5
+spatial_patches: 16                # tokenizer-derived, asserted at build
+physio_tokens: 50                  # tokenizer-derived, asserted at build
+physio_placement: scattered
 
 # ---- loss: per-modality masked MSE (masked positions only), then a weighted
 # sum. lambda = 1.0 for rgb/tir; lambda = signal_weight for each physio stream.

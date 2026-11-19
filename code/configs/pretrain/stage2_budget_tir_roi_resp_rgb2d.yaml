@@ -1,0 +1,122 @@
+# Stage 2 -- ADR-002 constant-budget masking arm:
+#   TIR-ROI + 2D-texture ROI + Resp_Volts -> constant 350-token encoder input.
+#
+# Design of record: code/notes/design/ADR-002-asymmetric-multimodal-masking.md
+# Plan:            code/notes/plan/ADR-002-constant-budget-masking-plan.md
+#
+# ONE masking policy. Each step draws a mode and one kept-token count per
+# stream; the counts of all streams sum to `n_budget`, so the encoder input has
+# a constant length. Mode 1 keeps no physiological token (pure virtual sensing);
+# Mode 2 keeps a drawn fraction of the waveform and inpaints the rest. The seven
+# policy keys below are the whole surface -- there is no ratio/mask_ratio_*
+# fallback to switch back to.
+#
+# GEOMETRY (ADR-002 §5 -- the policy is DEFINED over these units):
+#   visual : input_size 96, tubelet 4x16x16 -> 6x6 = 36 spatial tubes,
+#            100 frames / tubelet_t 4 = 25 tokens per tube (T = 25)
+#   signal : fs 1000 Hz over the 8 s window, sig_kernel 32 ->
+#            8000/32 = 250 tokens, i.e. R = 250/25 = 10 signal tokens per
+#            visual token (32 ms vs 320 ms)
+#   => 36 tubes x 25 tokens = 900 tokens per visual stream, 250 per physio
+#      stream, and the 2-tube floor / 9-tube cap / 125-token physio cap are the
+#      ADR's own numbers.
+#
+# REQUIRES the Phase-3 respiration cache: `fs: 1000` invalidates the 100 Hz
+# artefact, so the cache key changes and a stale artefact cannot be reused
+# silently. Rebuild the resp cache (`data/resp_cache.py`) before launching.
+#
+# Run from code/ (ALWAYS with `-u`, else stdout is block-buffered through tee):
+#     python -u runners/run_pretrain.py \
+#         -c configs/pretrain/stage2_budget_tir_roi_resp_rgb2d.yaml \
+#         --exp_root <exp_root> --fold 0 \
+#         2>&1 | tee ../output/pretrain/stage2_budget_fold0/train.log
+# Smoke first (--warmup_epochs 0: epochs < warmup trips the cosine_scheduler):
+#     python -u runners/run_pretrain.py \
+#         -c configs/pretrain/stage2_budget_tir_roi_resp_rgb2d.yaml \
+#         --exp_root /tmp/budget_probe --fold 0 --dev_smoke \
+#         --epochs 1 --warmup_epochs 0 --max_clips 100 --batch_size 8 \
+#         --num_workers 0 --output_dir /tmp/budget_probe/out
+
+# ---------------------------------------------------------------- data source
+data_set: tir_roi_resp_rgb2d       # TIR-ROI + 2D-texture ROI + Resp_Volts.txt
+subjects: ''                       # '' = every discoverable subject
+# ---- ADR-001 roles (train / val / test) -- MUST mirror the Stage-3 sibling ---
+# TRAIN + VAL come from <exp_root>/fold<k>/partition.json; TEST is never loaded.
+split_seed: 42
+split_stratify: sex
+# Validation replays a FIXED-SEED mask sequence (ADR-002 §6): no per-stream
+# fraction is pinned, so the curve stays comparable across epochs without
+# hard-coding counts.
+eval_freq: 5
+val_select: fixed_epoch
+val_criterion: joint_loss
+tasks: ''
+# ---- task GROUPS ("distortion levels") --------------------------------------
+task_groups:
+  low: [T2, T3, T5]                # passive viewing + short yes/no answers
+  moderate: [T1, T4]               # laughter / facial expression + startle
+  high: [T6, T7, T8, T9, T10]      # singing, threat, pain, anger, disgust
+task_set: ''
+
+# ------------------------------------------------------- model / initialisation
+model: project_multimae_base       # 768-d / 12-layer -- MUST match pretrained_encoder
+pretrained_encoder: videomae:k400  # pre-fetch ONCE on a login node
+                                   #   (scripts/hpc/download_weights.sh).
+
+# ---- streams & tokenizer geometry (ADR-002 §5) ----
+streams: tir,rgb2d,resp            # EXACTLY two visual + one physiological
+tir_channels: 3                    # thermal is a false-colour render, not gray
+tubelet: 4,16,16                   # 4-frame tubelet: 100 frames -> 25 tokens
+fs: 1000.0                         # Phase-3 grid: 8 s x 1000 Hz = 8000 samples
+fps: 25.0
+clip_duration: 8.0                 # 200 source frames -> 100 after decimation
+clip_stride: 2.0                   # window hop (s); NOT part of the ROI contract
+temporal_stride: 2                 # 12.5 fps effective; one tubelet = 320 ms
+seq_len: 0                         # 0 => round(kept_seconds * fs) = 8000 samples
+sig_kernel: 32                     # 32 ms signal token; 250 tokens per stream
+input_size: 96                     # SHARED by tir and rgb2d (one patch grid)
+pos_init: sincos3d
+roi_padding: 0.10                  # frozen CACHE KEY (both caches)
+crop_rule: square                  # frozen CACHE KEY; one isotropic rescale
+max_sway_px: 40                    # TIR motion gate (source px; 0 = off)
+roi_landmarks: ''                  # '' = the TIR 12-point nose+mouth set
+
+# ---- 2D-TEXTURE (rgb2d) SELECTION GATES -- load-time, never cache-key fields --
+rgb2d_landmarks: face              # all 49 points. MUST match the cache build
+rgb2d_store: 112                   # cache stored RESIZED to 112 px (input_size <= 112)
+rgb2d_cache_lru: 8
+rgb2d_min_valid_ratio: 1.0         # zero tolerance on the 49-point track
+rgb2d_area_min_frac: 0.5           # drop a clip whose box is <50 % in-frame
+rgb2d_max_sway_px: 110             # matched to the TIR gate (see the TIR twin)
+
+# ---- 1-D label validity ----
+min_signal_spread: 0.1             # VOLTS: dead-signal guard
+rail_touch_v: 9.900                # VOLTS: recorder-rail guard
+
+# ---- MASKING: the ADR-002 constant-budget policy (the whole surface) --------
+n_budget: 350                      # visible encoder tokens on EVERY step
+video_cap_ratio: 0.25              # <= 9 of 36 tubes per visual stream (225 tok)
+physio_cap_ratio: 0.50             # <= 125 of 250 tokens per physio stream
+video_min_tubes: 2                 # >= 2 tubes (50 tokens) per visuals stream
+p_virtual_sensing: 0.50            # Mode-1 probability (no physio token encoded)
+spatial_patches: 36                # tokenizer-derived; asserted at build
+physio_tokens: 250                 # tokenizer-derived; asserted at build
+# placement of the kept 1-D tokens (a RUN setting, recorded with the run)
+physio_placement: scattered        # 'scattered' | 'span'
+physio_span_tokens: 0              # required only when physio_placement: span
+
+# ---- loss: per-modality masked MSE (masked positions only) ----
+signal_weight: 0.5
+# THE label normalisation (the ONLY one in the pipeline): the DATASET z-scores
+# each respiration target with its OWN mean/std; the model never touches it
+# (run_pretrain.py pins target_norm='none' for every ROI lineage).
+physio_norm: zscore
+
+# ---- training (full corpus: derive the LR from blr, do NOT set an absolute lr) ----
+epochs: 150
+batch_size: 16                     # per GPU; lr = blr * batch * world / 256
+save_ckpt_freq: 10
+opt: adamw
+blr: 1.5e-4
+min_lr: 0.0
+warmup_epochs: 10                  # MUST be < epochs

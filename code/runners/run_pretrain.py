@@ -23,9 +23,9 @@ import torch
 from engines import train_one_epoch_pretrain
 from engines.pretrain import evaluate_pretrain
 from runners._common import (add_common_args, add_protocol_args,
-                             check_loader_not_empty, env_or, init_env,
-                             load_or_create_plan, make_data_loader,
-                             parse_args_with_config, resolve_val_kept)
+                             check_loader_not_empty, env_or, get_rank,
+                             init_env, load_or_create_plan, make_data_loader,
+                             parse_args_with_config)
 
 
 def str2bool(value) -> bool:
@@ -276,73 +276,50 @@ def get_args():
                              'e.g. rgb,bp or rgb,tir,bp,resp')
     parser.add_argument('--tubelet', default='2,16,16', type=str,
                         help='tubelet (t, ph, pw) for the video tokenizer')
-    parser.add_argument('--mask_ratio_rgb', default=0.75, type=float)
-    parser.add_argument('--mask_ratio_tir', default=0.50, type=float)
-    parser.add_argument('--mask_ratio_rgb2d', default=0.50, type=float,
-                        help='rgb2d only: MASK ratio for the 2D-texture face ROI '
-                             '(the stream is `rgb2d`, NOT `rgb`). 0.50 keeps '
-                             '~18 of 36 patches visible at input_size 96.')
-    parser.add_argument('--mask_ratio_bp', default=0.90, type=float)
-    parser.add_argument('--mask_ratio_resp', default=0.90, type=float)
-    # 1-D masking PATTERN. 'random' (default) = the historical scattered
-    # dropout, byte-identical for every existing config. 'span' = contiguous
-    # blocks, which removes the "interpolate the gap from the visible
-    # neighbours" shortcut of a scattered mask (see
-    # code/notes/design/SpanMask_PhysioSignals.md). Span geometry is per stream and derived
-    # from mask_span_s + the stream's ratio; only the span PLACEMENT is random.
-    parser.add_argument('--physio_mask', default='random', type=str,
-                        choices=['random', 'span'],
-                        help="1-D masking pattern: 'random' (default, "
-                             "scattered) or 'span' (contiguous blocks; then "
-                             "span length x count are derived from "
-                             "--mask_span_s and the per-stream mask ratio)")
-    parser.add_argument('--mask_span_s', default='', type=str,
-                        help="span masking only: span length in SECONDS, "
-                             "either one value for all physio streams, a "
-                             "stream=seconds CSV ('resp=4.0,bp=1.0'), or a "
-                             "YAML mapping. Empty = per-stream defaults "
-                             "(bp 1.0, resp 4.0 = one target period)"
-                             ". The span COUNT is derived (n_spans = "
-                             "round(ratio * n_signal / span_tokens)) so that "
-                             "ratio x clip length is preserved.")
-    # ---- AMMM masking engine (masking='ammm'); see
-    # code/notes/plan/Asymmetric_MultiModal_Masking_plan.md Phase 1.
-    # 'ratio' (default) keeps the historical mask_ratio_* path untouched.
-    parser.add_argument('--masking', default='ratio', type=str,
-                        choices=['ratio', 'ammm'],
-                        help="masking policy: 'ratio' (default) = fixed "
-                             'per-stream mask_ratio_*; ammm = Asymmetric '
-                             'Multi-Modal Masking (kept ratios drawn per step '
-                             'from a Dirichlet, video kept-capped, 1-D '
-                             'uncapped). All --*-kept/alpha/override/min_kept '
-                             'flags are inert unless ammm.')
-    parser.add_argument('--dirichlet_alpha', default=1.0, type=float,
-                        help='AMMM only: Dirichlet concentration for the '
-                             'DRAWN streams (one value; per-stream via a '
-                             'YAML mapping).')
-    parser.add_argument('--video_kept_cap', default=0.25, type=float,
-                        help='AMMM only: kept-ratio ceiling for every VISUAL '
-                             'stream (0.25 => >= 75 %% masked). Per-stream '
-                             "form: 'tir=0.15,rgb=0.25' (YAML mapping allowed).")
-    parser.add_argument('--physio_kept_cap', default=1.0, type=float,
-                        help='AMMM only: kept-ratio ceiling for every SIGNAL '
-                             'stream (1.0 = uncapped, the design default).')
-    parser.add_argument('--modality_dropout', default=0.0, type=float,
-                        help='AMMM only: probability that a stream is dropped '
-                             'from a step. NOT IMPLEMENTED YET (plan Phase 2); '
-                             'only 0.0 is accepted.')
-    parser.add_argument('--min_kept', default=0, type=int,
-                        help='AMMM only: lower bound for Dirichlet-DRAWN '
-                             'streams. 0 (default) lets any stream be 100 %% '
-                             'masked; 1 is the historical "every active stream '
-                             'reaches the encoder" variant. Streams pinned by '
-                             '--kept_ratio_override are exempt.')
-    parser.add_argument('--kept_ratio_override', default='', type=str,
-                        help='AMMM only: fixed kept ratio per stream, used '
-                             'VERBATIM and outside the Dirichlet (e.g. '
-                             "'tir=0.0' pins the thermal stream at 100 %% "
-                             'masked). Empty = no pins. An override must be '
-                             'inside that stream\'s kept cap.')
+    # ---- masking policy (ADR-002 constant-budget apportioner) ------------ #
+    # These seven keys are the ONLY policy parameters. Each step draws a mode
+    # and one kept-token count per stream; the counts of all streams sum to
+    # n_budget. YAML keys mirror the flag names. See
+    # code/notes/design/ADR-002-asymmetric-multimodal-masking.md §2.
+    parser.add_argument('--n_budget', default=350, type=int,
+                        help='constant number of visible encoder tokens per '
+                             'step (ADR-002 contract 1). Every step feeds '
+                             'exactly this many tokens to the encoder.')
+    parser.add_argument('--video_cap_ratio', default=0.25, type=float,
+                        help='kept-ratio ceiling per VISUAL stream (0.25 => '
+                             'at least 75 %% masked); the cap in tubes is '
+                             'floor(ratio * spatial_patches).')
+    parser.add_argument('--physio_cap_ratio', default=0.50, type=float,
+                        help='kept-ratio ceiling per PHYSIOLOGICAL stream '
+                             '(0.50 => at least half of every waveform is a '
+                             'reconstruction target).')
+    parser.add_argument('--video_min_tubes', default=2, type=int,
+                        help='kept-tube floor per visual stream: the smallest '
+                             'allocation that still carries spatial context.')
+    parser.add_argument('--p_virtual_sensing', default=0.50, type=float,
+                        help='probability of Mode 1 (pure virtual sensing: no '
+                             'physiological token reaches the encoder). The '
+                             'other steps run Mode 2 (waveform inpainting).')
+    parser.add_argument('--spatial_patches', default=0, type=int,
+                        help='tokenizer-derived (default 0 = derive from '
+                             'input_size/tubelet); pass it only to ASSERT the '
+                             'identity, the run fails on a mismatch.')
+    parser.add_argument('--physio_tokens', default=0, type=int,
+                        help='tokenizer-derived (default 0 = derive from '
+                             'seq_len/sig_kernel); pass it only to ASSERT the '
+                             'identity, the run fails on a mismatch.')
+    # ---- placement: WHICH tokens survive (not how many) ------------------ #
+    parser.add_argument('--physio_placement', default='scattered', type=str,
+                        choices=['scattered', 'span'],
+                        help="1-D placement of the kept tokens: 'scattered' "
+                             "(uniform without replacement, default) or "
+                             "'span' (contiguous blocks, which removes the "
+                             "local-interpolation shortcut). The choice is "
+                             'recorded with the run.')
+    parser.add_argument('--physio_span_tokens', default=0, type=int,
+                        help="span placement only: length of one contiguous "
+                             'block in tokens (required when '
+                             '--physio_placement span).')
     parser.add_argument('--loss_weights', default='', type=str,
                         help='FULL per-stream override of the per-modality '
                              'masked-MSE weights: comma list, ONE value per '
@@ -543,11 +520,6 @@ def main(args):
     # Persisted into every checkpoint of this run: Stage 3 refuses a pair whose
     # digests differ, because two partitions can share a fold index.
     args.partition_digest = plan.digest
-    # Every stream that draws a mask must be pinned for the validation pass
-    # (I6); `resolve_val_kept` refuses an unpinned run instead of silently
-    # producing a curve that cannot be compared across epochs.
-    kept = resolve_val_kept(
-        args, str(getattr(args, 'streams', '') or '').split(','))
     dataset_train = build_pretraining_dataset(args, plan, role='train')
     # Record the respiration cache IDENTITY (directory name, machine-
     # independent) on the args so the checkpoint carries it: it is a corpus-
@@ -638,10 +610,12 @@ def main(args):
     # ``--log_wandb`` used to be parsed but never consumed, so the flag was a
     # silent no-op; utils/wandb_logger.py is its consumer. The run name is the
     # output-dir basename, i.e. one W&B run per FOLD of a sweep.
+    budget_tag = 'n_budget{}'.format(int(getattr(args, 'n_budget', 350)))
     wandb_logger = WandbLogger.from_args(
         args, job_type='pretrain',
         tags=(str(getattr(args, 'data_set', '')),
-              str(getattr(args, 'masking', 'ratio')),
+              budget_tag,
+              str(getattr(args, 'physio_placement', 'scattered')),
               f'fold{plan.fold}', f'digest{plan.digest[:8]}'),
         extra={'data/steps_per_epoch': steps_per_epoch,
                'data/n_samples': len(dataset_train),
@@ -661,6 +635,11 @@ def main(args):
         dev_smoke=bool(getattr(args, 'dev_smoke', False)))
     mask_base = int(getattr(args, 'val_seed', None)
                     or getattr(args, 'split_seed', 42))
+    # Mask RNG of the training loop (ADR-002 §6). The COUNTS generator is
+    # seeded from a rank-independent key, so every rank derives the same plan
+    # without a collective; the PLACEMENT generator includes the rank, so the
+    # samples differ across ranks. ``get_rank()`` is 0 outside DDP.
+    rank = get_rank()
     metrics_path = os.path.join(args.output_dir, 'metrics.jsonl')
     selection_path = os.path.join(args.output_dir, 'selection.json')
     for epoch in range(start_epoch, args.epochs):
@@ -674,7 +653,9 @@ def main(args):
             max_norm=args.clip_grad, update_freq=args.update_freq,
             lr_schedule_values=lr_schedule_values,
             start_steps=epoch * steps_per_epoch,
-            amp_config=amp_config)
+            amp_config=amp_config,
+            mask_base=mask_base, steps_per_epoch=steps_per_epoch,
+            rank=rank)
         epoch_seconds = time.time() - _t_epoch
         print(f'Epoch {epoch} stats: {stats}')
         wandb_logger.log({**{f'train/{k}': v for k, v in stats.items()},
@@ -684,8 +665,7 @@ def main(args):
         if tracker.should_eval(epoch):
             _t_val = time.time()
             val = evaluate_pretrain(model, data_loader_val, device,
-                                    mask_base=mask_base,
-                                    kept_override=kept or None)
+                                    mask_base=mask_base)
             improved = tracker.observe(epoch, val['val_loss'])
             record = make_eval_record(
                 epoch=epoch, value_kind=tracker.criterion,
@@ -717,7 +697,7 @@ def main(args):
             save_model(args, epoch, model, model_without_ddp, optimizer,
                        loss_scaler)
     if is_main_process():
-        selection = tracker.record(pinned=kept or None)
+        selection = tracker.record(pinned=None)
         selection['partition_digest'] = plan.digest
         write_selection(selection_path, selection)
         print(f'[selection] {selection["rule"]}: epoch '

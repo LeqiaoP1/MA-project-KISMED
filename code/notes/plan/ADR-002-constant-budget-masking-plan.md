@@ -10,7 +10,20 @@
 > **State.** This is a **new implementation**. Nothing here preserves, adapts or stays
 > bit-compatible with the existing masking paths (`masking: ratio`, `masking: ammm`,
 > `code/core/ammm_masking.py` and its knobs); those are superseded by this design and are removed
-> or replaced in the same change. Nothing of this ADR is implemented yet.
+> or replaced in the same change.
+>
+> **Implementation status (2026-11-19).** Phases 1, 2, 4, 5, 6 and 7 are implemented:
+> `code/core/budget_masking.py` (engine + `plan_from_counts`), `code/core/mask_placement.py`
+> (placement + the rank/step seed derivation), the `MultiModalMAE` integration
+> (constant-budget gather, per-sample decoder conditioning on `z`, the integer token-ratio rule),
+> the runner's seven keys + placement settings, the arm config, the tests of §8 (G1-G17 at the
+> unit/model level) and the spec/glossary rewrite. The superseded modules, configs, flags and
+> tests were deleted. **Outstanding: Phase 3's data work** — the respiration cache must be rebuilt
+> at 1000 Hz (`fs: 1000`, `sig_kernel: 32`) before the arm can train at the ADR geometry, and the
+> two T1-scale smoke runs of §8 must be executed on that corpus. Legacy configs whose data source
+> serves one visual stream (`stage2_hpc_tir_roi_resp.yaml`, `stage2_local_tir_roi_resp.yaml`,
+> `stage2_local_rgb_roi_bp.yaml`) are retained as records and are refused at build by contract 5;
+> the bp4d+ templates were migrated to two visual streams.
 >
 > **Judged by** the ADR's own criteria (§8): invariants under sampling, the operating-regime
 > distribution, and a constant encoder length. Downstream accuracy is reported, not gated.

@@ -2,33 +2,33 @@
 
 No fine-tuning, no Stage-3: the checkpoint is used as it was saved (shared
 encoder + per-stream decoders), the ``resp`` stream is masked with a PINNED
-ratio, and the reconstruction is scored on the MASKED positions against the
-dataset's own respiration target (the ROI lineage z-scores each clip, so the
-target and the prediction live in the same per-clip z space and Pearson is
-scale-invariant).
+allocation of the constant budget, and the reconstruction is scored on the
+MASKED positions against the dataset's own respiration target (the ROI lineage
+z-scores each clip, so the target and the prediction live in the same per-clip
+z space and Pearson is scale-invariant).
 
 WHY THIS EXISTS -- the RGB2D question
 -------------------------------------
 "Does the extra 2D-texture stream improve respiration reconstruction?" is
 answered with two complementary, controlled comparisons:
 
-1. WITHIN-MODEL (exactly paired, the strongest statement).
-   Same weights, same clips, same seeds; only ``mask_ratio_rgb2d`` changes:
-   ``0.50`` (visible) vs ``1.00`` (rgb2d contributes NO encoder token). The
-   mask draws for the other streams are BIT-IDENTICAL, because
-   ``_tube_mask``/``_random_mask`` consume one ``torch.rand(B, N)`` whatever the
-   ratio is -- so the only difference is whether rgb2d reached the encoder.
-       --checkpoint <tri-modal ckpt> --mask_ratio_rgb2d 0.50 --label with_rgb2d
-       --checkpoint <tri-modal ckpt> --mask_ratio_rgb2d 1.00 --label no_rgb2d
+1. WITHIN-MODEL (paired).  Same weights, same clips, same seed; only the
+   per-stream kept TOKENS change. ADR-002 fixes the total budget and the visual
+   floor, so the smallest rgb2d allocation the policy can express is
+   ``video_min_tubes`` (the floor exists so the encoder always has visual
+   evidence); a physiological stream CAN be pinned to exactly 0, which is what
+   makes the pure-virtual-sensing probe possible.
+       --checkpoint <ckpt> --kept_rgb2d 0.50 --label rgb2d_half
+       --checkpoint <ckpt> --kept_rgb2d 0.05 --label rgb2d_floor
 
 2. ACROSS-MODEL (different training runs, same evaluation set).
    The tri-modal checkpoint vs the TIR+RESP twin checkpoint. ``--data_checkpoint``
    pins the DATASET (and therefore the clip set) to one checkpoint's arguments,
    so both arms score exactly the same clips; the 2-stream model simply ignores
    the extra ``rgb2d`` key of the batch.
-       --checkpoint .../stage2_hpc_tir_roi_resp_rgb2d_fold0/checkpoints/checkpoint-0149.pth
-       --checkpoint .../stage2_hpc_tir_roi_resp_96respgrid_fold0/checkpoints/checkpoint-0149.pth \
-           --data_checkpoint .../stage2_hpc_tir_roi_resp_rgb2d_fold0/checkpoints/checkpoint-0149.pth
+       --checkpoint .../stage2_budget_tir_roi_resp_rgb2d_fold0/checkpoints/checkpoint-0149.pth
+       --checkpoint .../stage2_hpc_tir_roi_resp_fold0/checkpoints/checkpoint-0149.pth \
+           --data_checkpoint .../stage2_budget_tir_roi_resp_rgb2d_fold0/checkpoints/checkpoint-0149.pth
 
 Metrics (per clip, then aggregated over clips; each clip is scored over
 ``--repeats`` independent mask draws and averaged FIRST, so a clip is never
@@ -47,8 +47,7 @@ Usage (from ``code/``)::
 
     python -u runners/run_eval_recon.py --checkpoint <ckpt> --device cuda \
         --label with_rgb2d --out out.json \\
-        --mask_mode ratio --mask_ratio_tir 0.90 --mask_ratio_rgb2d 0.50 \\
-        --mask_ratio_resp 0.50 --repeats 5
+        --kept_tir 0.10 --kept_rgb2d 0.50 --kept_resp 0.0 --repeats 5
 """
 import argparse
 import json
@@ -114,8 +113,9 @@ def get_args(argv=None):
                         'budget but as ONE contiguous block (not '
                         "interpolatable -- the informative probe); 'hidden' "
                         'masks it completely (no cross-modal prior at all).')
-    p.add_argument('--mask_span_s', default=4.0, type=float,
-                   help='--resp_probe span: block length in seconds')
+    p.add_argument('--span_seconds', default=4.0, type=float,
+                   help='--resp_probe span: block length in seconds (converted '
+                        'to whole signal tokens with the checkpoint geometry)')
     # ---- evaluation loop ---------------------------------------------------
     p.add_argument('--repeats', default=5, type=int,
                    help='independent mask draws per clip; the masks are seeded '
@@ -157,59 +157,82 @@ def build_model(ckpt: Dict, device: torch.device):
     return model.to(device).eval()
 
 
-def pin_masking(model, a, cargs) -> str:
-    """Pin the KEPT ratio of every stream; return a caption.
+def pin_masking(model, a):
+    """State the kept-token COUNTS of one reconstruction probe; return a caption.
 
-    AMMM overrides are used VERBATIM (``0 <= r <= cap``), are exempt from
-    ``min_kept`` and are outside the Dirichlet draw, which is what makes the
-    per-stream masks reproducible and the comparison paired.
+    ADR-002 replaces the old per-stream ratio pins with ONE budget: the visible
+    tokens of all streams must sum to ``model.n_budget`` and every visual stream
+    keeps at least ``video_min_tubes``. The ``--kept_*`` fractions are therefore
+    a REQUEST: they are converted to whole counts (visual streams to whole
+    tubes, each clamped into its floor and cap) and whatever the budget still
+    needs is added to, or taken from, the visual streams in declared order.
+    A stream's floor is mandatory -- the policy cannot express "0 visual tubes",
+    because the floor exists so the encoder always has visual evidence -- while
+    a physiological stream CAN be pinned to exactly 0 (that is Mode 1).
+
+    :return: ``(plan, caption)``; the realised counts are what the caption and
+        the report record, never the requested fractions.
     """
-    pins = {}
+    want = {}
     for s in model.streams:
         if s == 'tir':
-            v = float(a.kept_tir)
+            want[s] = float(a.kept_tir)
         elif s == 'rgb2d':
-            v = float(a.kept_rgb2d)
+            want[s] = float(a.kept_rgb2d)
         elif s == 'resp':
-            v = (0.0 if a.resp_probe == 'hidden' else float(a.kept_resp))
-        else:                      # unused declared stream: keep it visible
-            v = 1.0
-        if not 0.0 <= v <= 1.0:
-            raise SystemExit(f'--kept_{s} must be in [0, 1]; got {v}')
-        pins[s] = v
-    if all(v == 0.0 for v in pins.values()):
-        raise SystemExit('[eval] every stream pinned at 0 kept units -- the '
-                         'encoder would receive nothing')
-    # A 'ratio'-trained checkpoint carries no AMMM specs, so derive the caps from
-    # its own args (same defaults the model uses) and raise any cap that would
-    # reject a pin. configure_ammm() then builds the specs AND validates the
-    # pinned set immediately (it runs one plan_step).
-    caps = {}
-    for s in model.streams:
-        if s in model.visual:
-            base = float(getattr(cargs, 'video_kept_cap', 0.25) or 0.25)
+            want[s] = 0.0 if a.resp_probe == 'hidden' else float(a.kept_resp)
+        else:                      # a declared stream with no flag: keep it all
+            want[s] = 1.0
+        if not 0.0 <= want[s] <= 1.0:
+            raise SystemExit(f'--kept_{s} must be in [0, 1]; got {want[s]}')
+
+    app = model.apportioner
+    floor = model.video_min_tubes
+    counts: Dict[str, int] = {}
+    for spec in model.specs:
+        k = int(round(want[spec.name] * spec.n_units))
+        if spec.kind == 'visual':
+            k = max(floor, min(k, app.video_cap_units[spec.name]))
+            counts[spec.name] = k * int(spec.tokens_per_unit)
         else:
-            base = float(getattr(cargs, 'physio_kept_cap', 1.0) or 1.0)
-        if pins[s] > base:
-            print(f'[eval] raising {s} KEPT cap {base:.2f} -> {pins[s]:.2f} '
-                  f'to allow the pin')
-            base = pins[s]
-        caps[s] = base
-    model.configure_ammm(video_kept_cap=caps, physio_kept_cap=caps,
-                         kept_ratio_override=pins, min_kept=0, verbose=False)
-    model.ammm_min_kept = 0
-    model.masking = 'ammm'
-    # Placement of a 1-D stream: contiguous spans are what remove the
-    # interpolate-from-neighbours shortcut. The span COUNT is derived from the
-    # MASK ratio, i.e. 1 - kept, so it matches the pinned plan.
+            counts[spec.name] = max(0, min(k, app.physio_cap_tokens[spec.name]))
+
+    residual = int(model.n_budget) - sum(counts.values())
+    for spec in model.specs:
+        if residual == 0 or spec.kind != 'visual':
+            continue
+        lo = floor * int(spec.tokens_per_unit)
+        hi = app.video_cap_units[spec.name] * int(spec.tokens_per_unit)
+        room = hi - counts[spec.name] if residual > 0 \
+            else counts[spec.name] - lo
+        take = min(room, abs(residual))
+        counts[spec.name] += take if residual > 0 else -take
+        residual += -take if residual > 0 else take
+    if residual:
+        raise SystemExit(
+            f'[eval] the requested masking cannot reach the constant budget '
+            f'{model.n_budget}: {residual:+d} token(s) left after filling every '
+            f'visual stream to its cap/floor ({counts}). Adjust --kept_* or '
+            f'evaluate a checkpoint with another --n_budget.')
+    plan = model.plan_from_counts(counts)
+
+    # 1-D placement: contiguous spans remove the interpolate-from-neighbours
+    # shortcut, which is the informative probe; the span length is a RUN setting
+    # expressed in tokens (never a hidden default).
     if a.resp_probe == 'span':
-        model.physio_mask = 'span'
-        model.mask_ratios = {s: 1.0 - pins[s] for s in model.streams}
-        model.configure_span_mask(a.mask_span_s)
+        model.physio_placement = 'span'
+        model.physio_span_tokens = max(
+            1, int(round(float(a.span_seconds) * model.fs / model.sig_kernel)))
     else:
-        model.physio_mask = 'random'
-    return (f'KEPT ' + ' '.join(f'{s}={v:.2f}' for s, v in pins.items())
-            + f'  placement={model.physio_mask}')
+        model.physio_placement = 'scattered'
+
+    kept = {s: counts[s] for s in model.streams}
+    caption = ('KEPT ' + ' '.join(f'{s}={v}' for s, v in kept.items())
+               + f' tokens  mode={plan.mode}  budget={model.n_budget}'
+               + f'  placement={model.physio_placement}')
+    if a.resp_probe == 'span':
+        caption += f' (span {model.physio_span_tokens} tokens)'
+    return plan, caption
 
 
 def build_eval_dataset(data_cargs, a, held: Optional[set]):
@@ -312,7 +335,7 @@ def main(argv=None):
                 break
 
     model = build_model(ckpt, dev)
-    caption = pin_masking(model, a, cargs)
+    plan, caption = pin_masking(model, a)
     print(f'[eval] {label}')
     print(f'[eval] weights   : {a.checkpoint} (epoch {ckpt.get("epoch")})')
     print(f'[eval] streams   : {model.streams}  (2-stream ckpts ignore rgb2d)')
@@ -345,15 +368,18 @@ def main(argv=None):
     per_clip: List[Dict] = []
     B = int(a.batch_size)
     for rep in range(max(1, int(a.repeats))):
-        torch.manual_seed(a.seed + rep)     # identical masks across arms
+        # identical masks across arms: the PLAN is stated above and the
+        # PLACEMENT is seeded per repeat, so two runs with the same --seed see
+        # the same kept indices.
         rep_rows: List[Dict] = []
         for start in range(0, len(idx), B):
             chunk = idx[start:start + B]
             items = [ds[i] for i in chunk]
             batch = {k: torch.stack([it[k] for it in items]).to(dev).float()
                      for k in items[0]}
+            gen = torch.Generator().manual_seed(int(a.seed) + rep)
             with torch.inference_mode():
-                out = model(batch)
+                out = model(batch, plan=plan, placement_generator=gen)
             rep_rows.extend(score_batch(out, batch, model.sig_kernel))
         # average the clip over its draws FIRST, then aggregate over clips
         if rep == 0:

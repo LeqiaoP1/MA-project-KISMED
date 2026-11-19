@@ -8,8 +8,10 @@ later regressed in Stage 3). All-visual or all-signal stream lists are
 rejected. Pipeline inside ``MultiModalMAE.forward``:
 
   * per-stream adapters -> tokens (+ learned positional embedding)
-  * per-stream ASYMMETRIC masks: tube masks for the videos, random-window for
-    the signal (visual 50-75 %, signals 90 %+); masks == 1 => "masked / to
+  * ONE masking policy (ADR-002, ``core.budget_masking``): every step draws a
+    mode and one kept-token count per stream, and the counts of all streams sum
+    to the CONSTANT budget ``n_budget``; placement (which tubes / which tokens)
+    is drawn per sample by ``core.mask_placement``. masks == 1 => "masked / to
     reconstruct" (matches ``MaskedMSELoss``)
   * visible tokens of ALL streams are concatenated into ONE shared transformer
   * a shared lightweight decoder re-inserts a learned [MASK] token at every
@@ -77,10 +79,13 @@ import torch.nn as nn
 from torch import Tensor
 
 from .blocks import Block, trunc_normal_
+from .budget_masking import SIGNAL as _SIGNAL_KIND
+from .budget_masking import VISUAL as _VISUAL_KIND
+from .budget_masking import BudgetPlan, ConstantBudgetApportioner, StreamSpec
 from .criterion import MaskedMSELoss
 from .input_adapters import zscore_clip
 from .registry import register_model
-from . import ammm_masking as ammm
+from . import mask_placement as placement
 
 __all__ = ['TubeletEmbed', 'MultiModalMAE', 'build_pretraining_model',
            'load_pretrained_encoder', 'canonicalise_vit_state_dict',
@@ -203,20 +208,19 @@ class MultiModalMAE(nn.Module):
                  sig_kernel: int = 8, seq_len: int = 400,
                  fps: float = 25.0, fs: float = 100.0,
                  temporal_stride: int = 1,
-                 mask_ratios: Optional[Dict[str, float]] = None,
+                 n_budget: int = 350,
+                 video_cap_ratio: float = 0.25,
+                 physio_cap_ratio: float = 0.50,
+                 video_min_tubes: int = 2,
+                 p_virtual_sensing: float = 0.50,
+                 spatial_patches: Optional[int] = None,
+                 physio_tokens: Optional[int] = None,
                  signal_weight: float = 0.5,
                  loss_weights: Optional[Dict[str, float]] = None,
                  pos_init: str = 'sincos3d',
                  target_norm: str = 'token',
-                 physio_mask: str = 'random',
-                 mask_span_s=None,
-                 masking: str = 'ratio',
-                 dirichlet_alpha=1.0,
-                 video_kept_cap=0.25,
-                 physio_kept_cap=1.0,
-                 modality_dropout: float = 0.0,
-                 min_kept: int = 0,
-                 kept_ratio_override=None):
+                 physio_placement: str = 'scattered',
+                 physio_span_tokens: int = 0):
         super().__init__()
         self.streams = list(streams)
         # per-stream input channels (tir = 3 by default; see STREAM_CHANNELS)
@@ -308,76 +312,70 @@ class MultiModalMAE(nn.Module):
                 f"'none'; got {target_norm!r}")
         self.target_norm = target_norm
 
-        # default asymmetric ratios (visual 50-75 %, signals 90 %+)
-        ratios = {'rgb': 0.75, 'tir': 0.50, 'rgb2d': 0.50, 'bp': 0.90}
-        if mask_ratios:
-            ratios.update(mask_ratios)
-        self.mask_ratios = {s: ratios.get(s, 0.90) for s in self.streams}
-
-        # ---- 1-D masking pattern: scattered dropout or contiguous SPANS ---- #
-        # 'random' (default) = the historical `_random_mask`, byte-identical
-        # behaviour for every existing config. 'span' = contiguous blocks, which
-        # removes the "interpolate the gap from its visible neighbours" shortcut
-        # that makes a scattered mask locally solvable -- see
-        # code/notes/design/SpanMask_PhysioSignals.md.
+        # ---- masking policy: ONE constant-budget apportioner (ADR-002) ----- #
+        # There is exactly one policy. Each step samples a mode and one
+        # kept-token count per stream such that the visible tokens of all
+        # streams sum to ``n_budget``; ``core.mask_placement`` then draws which
+        # tubes / which temporal tokens per sample. Design of record:
+        # ``code/notes/design/ADR-002-asymmetric-multimodal-masking.md``.
         #
-        # The span geometry is resolved ONCE here, per stream, from
-        # ``mask_span_s`` (seconds, per stream) and the stream's mask ratio:
-        #     span_tokens = round(span_s * fs / sig_kernel)
-        #     n_spans     = round(ratio * n_signal / span_tokens)   (>= 1)
-        # Both are CONSTANTS of the run (not drawn per sample), which keeps the
-        # visible-token count identical for every sample in a batch. That is
-        # required, not cosmetic: `forward` gathers visible tokens with a
-        # BATCH-MAX k, so unequal counts would leak masked tokens into the
-        # encoder. Only the span PLACEMENT is random per sample.
-        self.physio_mask = str(physio_mask or 'random').lower()
-        if self.physio_mask not in ('random', 'span'):
+        # ``spatial_patches`` and ``physio_tokens`` are TOKENIZER-DERIVED: they
+        # come from ``input_size``/``tubelet`` and ``seq_len``/``sig_kernel``.
+        # Passing them explicitly is allowed only when it agrees, so a stale
+        # config fails loudly instead of silently masking a different grid.
+        self.n_budget = int(n_budget)
+        self.video_cap_ratio = float(video_cap_ratio)
+        self.physio_cap_ratio = float(physio_cap_ratio)
+        self.video_min_tubes = int(video_min_tubes)
+        self.p_virtual_sensing = float(p_virtual_sensing)
+        self.spatial_patches = int(self.grid_h * self.grid_w)
+        self.physio_tokens = int(self.n_signal)
+        if spatial_patches is not None and int(spatial_patches) != self.spatial_patches:
             raise ValueError(
-                f"physio_mask must be 'random' or 'span', got "
-                f"{self.physio_mask!r}")
-        self.mask_span_s: Dict[str, float] = {}
-        self.mask_span_tokens: Dict[str, int] = {}
-        self.mask_n_spans: Dict[str, int] = {}
-        if self.physio_mask == 'span':
-            self.configure_span_mask(mask_span_s)
+                f'MultiModalMAE: spatial_patches={int(spatial_patches)} but the '
+                f'tokenizer produces (input_size/ph)*(input_size/pw) = '
+                f'{self.input_size}/{ph} x {self.input_size}/{pw} = '
+                f'{self.spatial_patches}. Drop the override or fix the '
+                f'geometry.')
+        if physio_tokens is not None and int(physio_tokens) != self.physio_tokens:
+            raise ValueError(
+                f'MultiModalMAE: physio_tokens={int(physio_tokens)} but the '
+                f'tokenizer produces seq_len/sig_kernel = {self.seq_len}/'
+                f'{self.sig_kernel} = {self.physio_tokens}. Drop the override '
+                f'or fix the geometry.')
 
-        # ---- masking POLICY: fixed per-stream mask ratio, or AMMM ---------- #
-        # 'ratio' (default) = the historical path: ``mask_ratio_*`` are MASK
-        #   ratios, one constant per stream, ``make_masks`` is unchanged.
-        # 'ammm' = the Asymmetric Multi-Modal Masking engine
-        #   (``core/ammm_masking.py``): KEPT ratios are drawn per STEP from a
-        #   Dirichlet over the active streams, video kept-capped, 1-D uncapped,
-        #   optional ``kept_ratio_override`` pins. Design:
-        #   ``code/notes/design/Asymmetric_MultiModal_Masking.md`` §3; plan:
-        #   ``code/notes/plan/Asymmetric_MultiModal_Masking_plan.md`` Phase 1.
-        #   The policy module returns COUNTS only; the mask tensors stay here.
-        self.masking = str(masking or 'ratio').strip().lower()
-        if self.masking not in ('ratio', 'ammm'):
+        # 1-D placement: scattered tokens by default; 'span' keeps contiguous
+        # blocks (the ablation that removes the local-interpolation shortcut)
+        # and is a run setting RECORDED with the run.
+        self.physio_placement = str(physio_placement or placement.SCATTERED)
+        self.physio_placement = self.physio_placement.strip().lower()
+        if self.physio_placement not in placement.PLACEMENT_MODES:
             raise ValueError(
-                f"MultiModalMAE: masking must be 'ratio' or 'ammm'; got "
-                f'{masking!r}')
-        self.ammm_specs: List[ammm.StreamSpec] = []
-        self.ammm_caps: Dict[str, float] = {}
-        self.ammm_alpha: Dict[str, float] = {}
-        self.ammm_overrides: Dict[str, float] = {}
-        self.ammm_min_kept = int(min_kept or 0)
-        self.ammm_dropout = float(modality_dropout or 0.0)
-        self._last_mask_plan: Optional[ammm.MaskPlan] = None
-        if self.masking == 'ammm':
-            if self.physio_mask == 'span':
-                raise NotImplementedError(
-                    "MultiModalMAE: masking='ammm' with physio_mask='span' is "
-                    'not implemented; span placement inside AMMM is an '
-                    'optional ablation (plan Phase 1). Use physio_mask: random.')
-            if self.ammm_dropout > 0.0:
-                raise NotImplementedError(
-                    'MultiModalMAE: modality dropout is plan Phase 2; '
-                    'masking=\'ammm\' currently supports modality_dropout: 0.0')
-            self.configure_ammm(video_kept_cap=video_kept_cap,
-                                physio_kept_cap=physio_kept_cap,
-                                dirichlet_alpha=dirichlet_alpha,
-                                kept_ratio_override=kept_ratio_override,
-                                min_kept=min_kept)
+                f'MultiModalMAE: physio_placement must be one of '
+                f'{placement.PLACEMENT_MODES}; got {self.physio_placement!r}.')
+        self.physio_span_tokens = int(physio_span_tokens or 0)
+        if self.physio_placement == placement.SPAN and self.physio_span_tokens < 1:
+            raise ValueError(
+                "MultiModalMAE: physio_placement='span' needs "
+                'physio_span_tokens >= 1 (an explicit length, never a hidden '
+                'default); got '
+                f'{self.physio_span_tokens}.')
+
+        # one StreamSpec per declared stream: the engine sees only unit counts
+        # and how many tokens a unit carries, never a modality name.
+        self.specs: Tuple[StreamSpec, ...] = tuple(
+            StreamSpec(s, _VISUAL_KIND, self.spatial_patches,
+                       tokens_per_unit=self.grid_t)
+            if s in self.visual else
+            StreamSpec(s, _SIGNAL_KIND, self.physio_tokens, tokens_per_unit=1)
+            for s in self.streams)
+        self.apportioner = ConstantBudgetApportioner(
+            self.specs, n_budget=self.n_budget,
+            video_cap_ratio=self.video_cap_ratio,
+            physio_cap_ratio=self.physio_cap_ratio,
+            video_min_tubes=self.video_min_tubes,
+            p_virtual_sensing=self.p_virtual_sensing)
+        self._last_plan: Optional[BudgetPlan] = None
 
         # per-modality weights of the final weighted masked-MSE sum.
         # default policy: lambda = 1.0 for the visual streams (rgb/tir) and
@@ -464,16 +462,21 @@ class MultiModalMAE(nn.Module):
         """Verify that the video tubelets and the 1-D signal tokens agree.
 
         The shared encoder sees ONE concatenated token sequence, so a video
-        tubelet token and a physio token are only interchangeable if both
-        cover the same time span and there are equally many of them. Three
-        conditions are enforced (all hard errors -- a silent mismatch would
-        let the model "learn" a cross-modal relation that does not exist):
+        tubelet token and a physio token are only interchangeable if one signal
+        token is an integer fraction of the video token's span and the two
+        streams cover the same window. Conditions enforced (all hard errors --
+        a silent mismatch would let the model "learn" a cross-modal relation
+        that does not exist):
 
         1. the tubelet grid tiles the clip exactly (``tubelet_t | num_frames``);
         2. the signal grid tiles the window exactly (``sig_kernel | seq_len``);
-        3. one tubelet token and one signal token span the SAME number of
-           seconds (``tubelet_t*temporal_stride/fps == sig_kernel/fs``) and
-           there is the SAME number of them (``Gt == n_signal``).
+        3. one tubelet token and one signal token start from the same geometry:
+           the signal rate ``n_signal / Gt`` -- the number of signal tokens per
+           visual token -- must be an INTEGER ``R``, and
+           ``R * sig_kernel/fs == tubelet_t*temporal_stride/fps``. ``R = 1`` is
+           the special case where one token of each stream spans the same
+           window; ``R = 10`` (320 ms tubelet vs 32 ms signal token) is the
+           ADR-002 geometry.
         """
         t, _, _ = self.tubelet
         self.sec_per_visual_token = t * self.temporal_stride / self.fps
@@ -495,32 +498,36 @@ class MultiModalMAE(nn.Module):
                 f'grid. Use seq_len = {self.seq_len - rest} (or a divisor of '
                 f'the window).')
 
-        if not math.isclose(self.sec_per_visual_token,
-                            self.sec_per_signal_token,
-                            rel_tol=1e-6, abs_tol=1e-9):
+        ratio = self.n_signal / self.grid_t
+        if ratio < 1.0 or not math.isclose(ratio, round(ratio),
+                                           rel_tol=0.0, abs_tol=1e-9):
+            raise ValueError(
+                f'Space-time alignment: the signal grid has {self.n_signal} '
+                f'token(s) over the {self.grid_t} tubelet step(s) of the '
+                f'video, i.e. {ratio:g} signal token(s) per visual token -- '
+                f'not an integer. Set seq_len = R * '
+                f'{self.grid_t} * {self.sig_kernel} for an integer R (one '
+                f'signal token must tile a visual token evenly).')
+        #: signal tokens per visual token (the ADR's ``R``).
+        self.signal_tokens_per_visual = int(round(ratio))
+
+        if not math.isclose(
+                self.sec_per_signal_token * self.signal_tokens_per_visual,
+                self.sec_per_visual_token,
+                rel_tol=1e-6, abs_tol=1e-9):
             raise ValueError(
                 f'Space-time alignment: one video tubelet covers '
                 f'tubelet_t*temporal_stride/fps = '
                 f'{t}*{self.temporal_stride}/{self.fps} = '
-                f'{self.sec_per_visual_token * 1000:.2f} ms but one signal '
-                f'token covers sig_kernel/fs = {self.sig_kernel}/{self.fs} = '
-                f'{self.sec_per_signal_token * 1000:.2f} ms, so token i means '
-                f'a different instant in the two streams. Set '
-                f'sig_kernel = {int(round(self.sec_per_visual_token * self.fs))} '
+                f'{self.sec_per_visual_token * 1000:.2f} ms but '
+                f'{self.signal_tokens_per_visual} signal token(s) cover '
+                f'{self.signal_tokens_per_visual}*sig_kernel/fs = '
+                f'{self.signal_tokens_per_visual}*{self.sig_kernel}/'
+                f'{self.fs} = '
+                f'{self.signal_tokens_per_visual * self.sec_per_signal_token * 1000:.2f} '
+                f'ms, so the token grids drift. Set sig_kernel = '
+                f'{int(round(self.sec_per_visual_token * self.fs / self.signal_tokens_per_visual))} '
                 f'(recommended) or temporal_stride = 1 / tune fps-fs.')
-
-        if self.grid_t != self.n_signal:
-            raise ValueError(
-                f'Space-time alignment: the video covers '
-                f'{self.grid_t} tubelet steps '
-                f'({self.num_frames} frames / {t} = '
-                f'{self.grid_t * self.sec_per_visual_token:.3f} s) but the '
-                f'signal covers {self.n_signal} tokens '
-                f'({self.seq_len} samples / {self.sig_kernel} = '
-                f'{self.n_signal * self.sec_per_signal_token:.3f} s). Both '
-                f'streams must span the same window: set seq_len = '
-                f'{int(round(self.grid_t * self.sec_per_visual_token * self.fs))} '
-                f'(= num_frames * temporal_stride / fps * fs).')
 
     def _init_pos_embeds(self):
         """Deterministic space-time prior for the learned positional embeds.
@@ -581,287 +588,60 @@ class MultiModalMAE(nn.Module):
     # ------------------------------------------------------------------ #
     # masking (masks == 1 => masked / to reconstruct)
     # ------------------------------------------------------------------ #
-    def configure_ammm(self, video_kept_cap=0.25, physio_kept_cap=1.0,
-                       dirichlet_alpha=1.0, kept_ratio_override=None,
-                       min_kept=0, verbose: bool = True):
-        """Build the AMMM stream specs/caps and VALIDATE the declared set.
+    def plan_from_counts(self, kept_tokens: Dict[str, int]) -> BudgetPlan:
+        """Validate an EXPLICIT allocation (evaluation pins, reconstructions).
 
-        Called from ``__init__`` when ``masking='ammm'``, and callable later by
-        an evaluator that wants to pin a policy on a ``'ratio'`` checkpoint
-        (the specs are otherwise empty, so ``make_masks`` would have nothing to
-        plan over). Validation runs one ``plan_step`` so an invalid cap set or
-        override fails HERE rather than on the first forward (plan G12/G19).
+        The policy owns the training draws; this entry point lets a caller that
+        must reproduce ONE specific masking state the counts and have the same
+        invariants enforced (exact budget, caps, floors, whole tubes).
         """
-        self.ammm_specs = []
-        self.ammm_caps = {}
-        self.ammm_min_kept = int(min_kept or 0)
-        video_caps = parse_kept_cap(video_kept_cap)
-        physio_caps = parse_kept_cap(physio_kept_cap)
-        for s in self.streams:
-            kind = ammm.VISUAL if s in self.visual else ammm.SIGNAL
-            n_units = (self.grid_h * self.grid_w
-                       if kind == ammm.VISUAL else self.n_signal)
-            self.ammm_specs.append(ammm.StreamSpec(s, kind, n_units))
-            knob = video_caps if kind == ammm.VISUAL else physio_caps
-            default = 0.25 if kind == ammm.VISUAL else 1.0
-            self.ammm_caps[s] = float(knob.get(s, knob.get('*', default)))
-        alpha_spec = parse_kept_cap(dirichlet_alpha)
-        self.ammm_alpha = {s: float(alpha_spec.get(s, alpha_spec.get('*', 1.0)))
-                           for s in self.streams}
-        ov = parse_kept_cap(kept_ratio_override)
-        if '*' in ov:      # a wildcard pins every declared stream
-            self.ammm_overrides = {s: float(ov['*']) for s in self.streams}
-        else:
-            self.ammm_overrides = {k: float(v) for k, v in ov.items()}
-        # fail at CONSTRUCTION on an invalid declared set / cap / override,
-        # instead of on the first forward (plan Phase 1, gate G12/G19).
-        ammm.plan_step(self.ammm_specs, caps=self.ammm_caps,
-                       alpha=self.ammm_alpha,
-                       min_kept=self.ammm_min_kept,
-                       overrides=self.ammm_overrides,
-                       generator=torch.Generator().manual_seed(0))
-        limits = {
-            s.name: (s.n_units if s.kind == ammm.SIGNAL
-                     else min(s.n_units,
-                              int(math.floor(self.ammm_caps[s.name]
-                                             * s.n_units))))
-            for s in self.ammm_specs}
-        if verbose:
-            print(f'[mask] policy=ammm  caps={self.ammm_caps}  '
-                  f'kept limits={limits}  alpha={self.ammm_alpha}  '
-                  f'min_kept={self.ammm_min_kept}  '
-                  f'override={self.ammm_overrides or None}')
-        return limits
+        return self.apportioner.plan_from_counts(kept_tokens)
 
-    def configure_span_mask(self, mask_span_s=None, verbose: bool = True):
-        """(Re)derive the span geometry from the CURRENT ``mask_ratios``.
+    def make_masks(self, B: int, device,
+                   counts_generator: Optional[torch.Generator] = None,
+                   placement_generator: Optional[torch.Generator] = None,
+                   plan: Optional[BudgetPlan] = None):
+        """Per-stream 1=masked tensors and the step's plan.
 
-        Called once from ``__init__`` and again by an evaluator that pins a
-        different ratio (the span COUNT depends on it). Formulas, unchanged:
-        ``span_tokens = round(span_s * fs / sig_kernel)`` and
-        ``n_spans = round(ratio * n_signal / span_tokens)``, both clamped so at
-        least one token of the stream stays visible (a fully masked 1-D stream
-        has no path to the encoder at all otherwise).
+        One ``sample_step()`` fixes the counts of the whole batch (ADR-002
+        contract 6); the kept INDICES are drawn per sample, so two samples of a
+        step share the counts and differ in placement.
+
+        :param counts_generator: RNG of the policy draw. ``None`` uses the
+            global RNG (the training path uses a rank-independent generator, so
+            every rank derives the same plan -- see
+            ``core.mask_placement.counts_generator``).
+        :param placement_generator: RNG of the per-sample placement. ``None``
+            uses the global RNG.
+        :param plan: an explicit plan (evaluation pin); no count is drawn.
+        :return: ``(masks, plan, indices)`` — masks are ``{stream: [B, N]}``
+            with 1 = masked, ``indices`` are the kept encoder indices per
+            stream, ascending.
         """
-        spec = parse_mask_span(mask_span_s)
-        wildcard = spec.get('*')
-        for s in self.signal:
-            secs = spec.get(s, wildcard)
-            if secs is None:
-                secs = MASK_SPAN_DEFAULTS.get(s, self.seq_len / self.fs)
-            span = max(1, int(round(float(secs) * self.fs / self.sig_kernel)))
-            span = min(span, max(1, self.n_signal - 1))
-            n = max(1, int(round(self.mask_ratios[s] * self.n_signal / span)))
-            n = max(1, min(n, max(1, (self.n_signal - 1) // span)))
-            self.mask_span_s[s] = float(secs)
-            self.mask_span_tokens[s] = span
-            self.mask_n_spans[s] = n
-            eff = n * span / self.n_signal
-            note = ('' if abs(eff - self.mask_ratios[s]) < 0.02
-                    else f'  [NOTE: configured ratio '
-                         f'{self.mask_ratios[s]:.3f} -> effective '
-                         f'{eff:.3f}; adjust mask_span_s/mask_ratio_*]')
-            if verbose:
-                print(f'[mask] {s}: span {secs:g} s = {span} tokens '
-                      f'({span * self.sig_kernel / self.fs:.2f} s) x {n} '
-                      f'span(s) -> effective masked fraction {eff:.3f}'
-                      f'{note}')
-        return {s: (self.mask_span_tokens[s], self.mask_n_spans[s])
-                for s in self.signal}
-
-    def _tube_mask(self, B: int, device, mask_ratio: float, generator=None):
-        """Random subset of spatial patches, replicated across all frames.
-
-        ``generator=None`` draws from the global RNG, exactly as before; passing
-        a seeded generator pins the PLACEMENT for a validation pass (ADR-001
-        I6). ``torch.rand(..., generator=None)`` IS ``torch.rand(...)``.
-        """
-        n_spatial = self.grid_h * self.grid_w
-        k = max(1, min(n_spatial - 1, int(mask_ratio * n_spatial)))
-        perm = torch.rand(B, n_spatial, device=device,
-                          generator=generator).argsort(dim=1)
-        hidden = perm[:, :k]                                   # [B, k]
-        m = torch.zeros(B, n_spatial, device=device, dtype=torch.long)
-        m.scatter_(1, hidden, 1)                               # [B, n_spatial]
-        mask = m.unsqueeze(1).expand(B, self.grid_t, n_spatial)
-        return mask.reshape(B, self.n_visual)
-
-    def _random_mask(self, B: int, device, N: int, mask_ratio: float,
-                     generator=None):
-        k = max(1, min(N - 1, int(mask_ratio * N)))
-        perm = torch.rand(B, N, device=device, generator=generator).argsort(dim=1)
-        hidden = perm[:, :k]
-        m = torch.zeros(B, N, device=device, dtype=torch.long)
-        m.scatter_(1, hidden, 1)
-        return m
-
-    def _span_mask(self, B: int, device, N: int, n_spans: int, span: int,
-                   generator=None):
-        """Contiguous-block mask: ``n_spans`` spans of ``span`` tokens.
-
-        The masked COUNT is ``min(n_spans * span, N - 1)`` for every sample in
-        the batch (the ``N - 1`` clamp keeps >= 1 visible token, which is the
-        physio stream's only gradient path to the encoder); only the PLACEMENT
-        is random per sample. That uniformity is what makes the batch-max
-        visible gather in ``forward`` exact -- see
-        ``code/notes/design/SpanMask_PhysioSignals.md`` §4.3.
-        """
-        span = max(1, int(span))
-        n_spans = max(1, int(n_spans))
-        while n_spans > 1 and n_spans * span > N - 1:
-            n_spans -= 1
-        span = min(span, max(1, N - 1))
-        total = min(n_spans * span, N - 1)
-
-        # distribute the slack (positions the spans may start at) over the
-        # n_spans + 1 gaps, so the spans never overlap and never run past the end
-        slack = max(0, N - total)
-        cut = torch.rand(B, n_spans + 1, device=device, generator=generator)
-        cut = cut / cut.sum(dim=1, keepdim=True)
-        gap = (cut * slack).long()                        # [B, n_spans + 1]
-        offs = torch.cumsum(gap[:, :-1], dim=1)           # start offset of span j
-        starts = offs + torch.arange(n_spans, device=device) * span
-        idx = (starts.unsqueeze(-1)
-               + torch.arange(span, device=device))       # [B, n_spans, span]
-        m = torch.zeros(B, N, device=device, dtype=torch.long)
-        m.scatter_(1, idx.reshape(B, -1), 1)
-        return m
-
-    def make_masks(self, B: int, device, generator=None, kept_override=None):
-        """Per-stream 1=masked tensors for one step.
-
-        :param generator: optional seeded RNG for the mask PLACEMENT. ``None``
-            draws from the global RNG, which is the training path.
-        :param kept_override: optional ``{stream: kept_fraction in [0,1]}`` pin
-            (ADR-001 ``val_kept_<stream>``). For ``masking='ammm'`` it becomes
-            the planner's kept-ratio override; for the ratio policy it replaces
-            ``1 - mask_ratio``. A pinned stream with the SPAN placement is
-            refused: the span budget is a token count, not a fraction, so
-            "pin the fraction" would silently do nothing.
-        """
-        if kept_override:
-            unknown = sorted(set(kept_override) - set(self.streams))
-            if unknown:
-                raise ValueError(
-                    f'val_kept_<stream> names undeclared stream(s) {unknown}; '
-                    f'this model serves {list(self.streams)}.')
-            for name, value in kept_override.items():
-                if not 0.0 <= float(value) <= 1.0:
-                    raise ValueError(
-                        f'val_kept_{name} must be in [0, 1]; got {value!r}')
-                if self.physio_mask == 'span' and name in self.signal:
-                    raise ValueError(
-                        f'val_kept_{name}: stream {name!r} uses the SPAN mask, '
-                        f'whose budget is a token count, so a kept FRACTION '
-                        f'cannot pin it. Use physio_mask=random for a pinned '
-                        f'validation pass.')
-
-        if self.masking == 'ammm':
-            return self._make_masks_ammm(B, device, generator=generator,
-                                         kept_override=kept_override)
-        out = {}
-        for s in self.streams:
-            ratio = self.mask_ratios[s]
-            if kept_override and s in kept_override:
-                ratio = 1.0 - float(kept_override[s])
-            if s in self.visual:
-                out[s] = self._tube_mask(B, device, ratio, generator=generator)
-            elif self.physio_mask == 'span' and self.mask_span_tokens.get(s):
-                out[s] = self._span_mask(B, device, self.n_signal,
-                                         self.mask_n_spans[s],
-                                         self.mask_span_tokens[s],
-                                         generator=generator)
+        if plan is None:
+            plan = self.apportioner.sample_step(generator=counts_generator)
+        self._last_plan = plan
+        masks: Dict[str, Tensor] = {}
+        indices: Dict[str, Tensor] = {}
+        for spec in self.specs:
+            kept = int(plan.kept_tokens[spec.name])
+            if spec.kind == _VISUAL_KIND:
+                idx = placement.place_video(
+                    kept // int(spec.tokens_per_unit), spec.n_units,
+                    spec.tokens_per_unit, generator=placement_generator,
+                    batch_size=B, device=device)
             else:
-                out[s] = self._random_mask(B, device, self.n_signal, ratio,
-                                           generator=generator)
-        return out
-
-    # ------------------------------------------------------------------ #
-    # AMMM: counts -> masks (the sampler owns the POLICY, this owns PLACEMENT)
-    # ------------------------------------------------------------------ #
-    def _tube_keep_mask(self, B: int, device, n_spatial: int, kept: int,
-                        generator=None):
-        """Keep exactly ``kept`` spatial patches, replicated over all frames.
-
-        Count-based sibling of :meth:`_tube_mask` (which is parameterised by a
-        MASK ratio and rounds with ``int()``). ``kept == 0`` is legal and yields
-        an all-ones mask (100 % masked). Mask semantics stay ``1 = masked``.
-        """
-        n_spatial = int(n_spatial)
-        kept = max(0, min(int(kept), n_spatial))
-        perm = torch.rand(B, n_spatial, device=device,
-                          generator=generator).argsort(dim=1)
-        keep = torch.zeros(B, n_spatial, device=device, dtype=torch.long)
-        if kept > 0:
-            keep.scatter_(1, perm[:, :kept], 1)
-        mask = 1 - keep.unsqueeze(1).expand(B, self.grid_t, n_spatial)
-        return mask.reshape(B, self.grid_t * n_spatial)
-
-    def _random_keep_mask(self, B: int, device, N: int, kept: int,
-                          generator=None):
-        """Keep exactly ``kept`` tokens of a 1-D stream (scattered).
-
-        ``kept == 0`` is legal (100 % masked); ``kept == N`` means no masked
-        position, so this stream contributes an explicit 0 to the loss.
-        """
-        N = int(N)
-        kept = max(0, min(int(kept), N))
-        perm = torch.rand(B, N, device=device, generator=generator).argsort(dim=1)
-        keep = torch.zeros(B, N, device=device, dtype=torch.long)
-        if kept > 0:
-            keep.scatter_(1, perm[:, :kept], 1)
-        return 1 - keep
-
-    def _make_masks_ammm(self, B: int, device, generator=None,
-                         kept_override=None):
-        """One plan per STEP, then per-stream placement from its counts.
-
-        The plan's ``active`` set is the only source of truth for which streams
-        are present: an inactive stream and an ACTIVE 0-kept stream both get an
-        all-ones mask, so the mask tensor cannot tell them apart.
-        """
-        overrides = dict(self.ammm_overrides)
-        if kept_override:
-            overrides.update({str(k): float(v)
-                              for k, v in kept_override.items()})
-        plan = ammm.plan_step(self.ammm_specs, caps=self.ammm_caps,
-                              alpha=self.ammm_alpha,
-                              dropout_p=self.ammm_dropout,
-                              min_kept=self.ammm_min_kept,
-                              overrides=overrides,
-                              generator=generator)
-        self._last_mask_plan = plan
-        masks = {}
-        for spec in self.ammm_specs:
-            s = spec.name
-            if s in plan.active:
-                if spec.kind == ammm.VISUAL:
-                    masks[s] = self._tube_keep_mask(B, device, spec.n_units,
-                                                    plan.kept_units[s],
-                                                    generator=generator)
-                elif (self.physio_mask == 'span'
-                      and self.mask_span_tokens.get(s)):
-                    # Contiguous placement for a 1-D stream under AMMM: the
-                    # masked block cannot be interpolated from its own
-                    # neighbours, which is what makes a cross-modal comparison
-                    # meaningful (SpanMask design §4). The span geometry comes
-                    # from ``configure_span_mask`` -- the COUNT still comes from
-                    # the plan, so ``kept_units`` and the span budget must be
-                    # consistent (callers configure the span from the same
-                    # ratio; ``_span_mask`` clamps to n_units - 1 regardless).
-                    masks[s] = self._span_mask(B, device, spec.n_units,
-                                               self.mask_n_spans[s],
-                                               self.mask_span_tokens[s],
-                                               generator=generator)
-                else:
-                    masks[s] = self._random_keep_mask(B, device, spec.n_units,
-                                                      plan.kept_units[s],
-                                                      generator=generator)
-            else:      # placeholder only: `forward` skips inactive streams
-                n = (self.grid_t * spec.n_units if spec.kind == ammm.VISUAL
-                     else spec.n_units)
-                masks[s] = torch.ones(B, n, device=device, dtype=torch.long)
-        return masks
+                idx = placement.place_signal(
+                    kept, spec.n_units, generator=placement_generator,
+                    mode=self.physio_placement,
+                    span_tokens=self.physio_span_tokens or None,
+                    batch_size=B, device=device)
+            keep = torch.zeros(B, spec.n_tokens, device=device,
+                               dtype=torch.long)
+            keep.scatter_(1, idx, 1)
+            masks[spec.name] = 1 - keep
+            indices[spec.name] = idx
+        return masks, plan, indices
 
     # ------------------------------------------------------------------ #
     # reconstruction targets (normalized flat patches)
@@ -938,15 +718,17 @@ class MultiModalMAE(nn.Module):
             return x
         return x[:, :, :n]
 
-    def forward(self, x, mask_generator=None, kept_override=None):
+    def forward(self, x, counts_generator=None, placement_generator=None,
+                plan=None):
         """Masked multimodal forward.
 
-        :param mask_generator: optional seeded RNG for the mask PLACEMENT.
-            ``None`` (the training path) draws from the global RNG and is
-            bit-identical to the code before pinning existed.
-        :param kept_override: optional ``{stream: kept_fraction}`` pin, from the
-            ADR-001 ``val_kept_<stream>`` keys. Makes a validation pass a
-            deterministic function of the weights (I6, Criterion 2).
+        :param counts_generator: RNG of the step's PLAN (mode + counts). ``None``
+            draws from the global RNG; the runners pass a rank-independent
+            generator so every rank derives the same plan without a collective.
+        :param placement_generator: RNG of the per-sample placement. ``None``
+            draws from the global RNG; the runners pass a rank-distinct one.
+        :param plan: an explicit :class:`BudgetPlan` (evaluation pin). When
+            given, no count is drawn.
         """
         B = next(iter(x.values())).shape[0]
         device = next(iter(x.values())).device
@@ -969,18 +751,19 @@ class MultiModalMAE(nn.Module):
             if s in self.visual:
                 xin[s] = zscore_clip(xin[s])
 
-        # --- per-stream asymmetric masks ----------------------------------
+        # --- counts + placement (ADR-002) --------------------------------- #
         # Computed BEFORE tokenisation so a stream with no visible unit can skip
         # its adapter entirely: a fully masked video would otherwise pay a full
-        # Conv3d and receive a ZERO (not absent) gradient. Moving this call up
-        # is RNG-neutral: the adapters consume no randomness.
-        masks = self.make_masks(B, device, generator=mask_generator,
-                                kept_override=kept_override)
+        # Conv3d and receive a ZERO (not absent) gradient. The adapters consume
+        # no randomness, so the order does not change the RNG stream.
+        masks, plan, ids_keep = self.make_masks(
+            B, device, counts_generator=counts_generator,
+            placement_generator=placement_generator, plan=plan)
 
         # --- tokenize + add positional embedding -------------------------- #
         tokens = {}
         for s in self.streams:
-            if bool(masks[s].all()):     # 100 % masked -> nothing to encode
+            if int(plan.kept_tokens[s]) == 0:    # nothing to encode
                 tokens[s] = None
                 continue
             tok = self.adapters[s](xin[s])           # [B, N, D]
@@ -988,33 +771,26 @@ class MultiModalMAE(nn.Module):
             tokens[s] = tok
 
         # --- gather the VISIBLE tokens of every stream -------------------- #
+        # The plan's counts are identical for every sample of the step, so the
+        # gather is exact (no batch-max) and the concatenated length is the
+        # CONSTANT budget by construction.
         enc_parts = []
-        info = {}
         for s in self.streams:
-            mask_s = masks[s]                           # [B, N] 1 = masked
-            n = self.n_visual if s in self.visual else self.n_signal
             if tokens[s] is None:
-                # 100 % masked (legal for any modality, design §3.2.3): no
-                # visible token, and no gradient to this stream's adapter or
-                # to the encoder through it. Its loss is still computed below.
-                info[s] = (mask_s, None, 0, n)
-                enc_parts.append(torch.zeros(B, 0, self.embed_dim,
-                                             device=device))
+                # 0 kept: no visible token and therefore no gradient to this
+                # stream's adapter. Its loss is still computed (and reaches the
+                # encoder through the decoder conditioning below).
                 continue
-            ids_shuffle = torch.argsort(mask_s, dim=1, stable=True)
-            k = int((mask_s == 0).sum(dim=1).max())      # visible per sample
-            ids_keep = ids_shuffle[:, :k]
+            keep = ids_keep[s]
             tok = tokens[s]
             enc_parts.append(torch.gather(
-                tok, 1, ids_keep.unsqueeze(-1).expand(B, k, tok.shape[2])))
-            info[s] = (mask_s, ids_shuffle, k, n)
-        z = torch.cat(enc_parts, dim=1)                 # [B, sum_k, D]
-        # The global-visibility guard of the mask policy guarantees >= 1 kept
-        # unit; this is the second line of defence (AGENTS.md §6).
-        assert z.shape[1] >= 1, (
-            'MultiModalAE.forward: the concatenated visible-token sequence is '
-            'empty; every active stream was fully masked. See the '
-            'global-visibility guard in core/ammm_masking.plan_step.')
+                tok, 1, keep.unsqueeze(-1).expand(B, keep.shape[1],
+                                                  tok.shape[2])))
+        z = torch.cat(enc_parts, dim=1)                 # [B, n_budget, D]
+        assert tuple(z.shape) == (B, self.n_budget, self.embed_dim), (
+            f'MultiModalMAE.forward: the encoder input is {tuple(z.shape)} but '
+            f'the constant budget requires {(B, self.n_budget, self.embed_dim)} '
+            f'(plan {plan.kept_tokens}, mode {plan.mode}).')
 
         # --- shared encoder -------------------------------------------------
         for blk in self.enc_blocks:
@@ -1022,133 +798,75 @@ class MultiModalMAE(nn.Module):
         z = self.enc_norm(z)
 
         # --- per-stream decode + masked reconstruction loss -----------------
+        # DECODER CONDITIONING ON z (ADR-002 contract 7): every stream decodes
+        # from the encoder latents plus its own [MASK] tokens at the masked
+        # positions. Prefixing z is what gives a 0-kept stream a gradient path
+        # to the encoder -- without it Mode 1 would reconstruct the waveform
+        # with no visual evidence and contribute nothing to z.
         losses = {}          # per-modality weighted masked-MSE sum
         losses_mse = {}      # per-modality raw masked MSE (before weighting)
         preds = {}
-        start = 0
         for s in self.streams:
-            mask_s, ids_shuffle, k, n = info[s]
-            # --- self-attention decoder (shared path) --------------------- #
-            enc_s = z[:, start:start + k]
-            start += k
+            mask_s = masks[s]                            # [B, N] 1 = masked
+            n = self.n_visual if s in self.visual else self.n_signal
             embs = self.positions[s]
-            if ids_shuffle is None:
-                # no visible token: the decoder runs on mask tokens + positions
-                dec = embs.mask_token.expand(B, n, self.embed_dim)
-                dec = dec + embs.pos_embed
-            else:
-                ids_restore = torch.argsort(ids_shuffle, dim=1)  # [B, N]
-                dec = torch.cat([enc_s, embs.mask_token
-                                 .expand(B, n - k, self.embed_dim)], dim=1)
-                dec = torch.gather(
-                    dec, 1,
-                    ids_restore.unsqueeze(-1).expand(B, n, dec.shape[2]))
-                dec = dec + embs.pos_embed
+            n_masked = int(mask_s[0].sum())
+            if not bool((mask_s.sum(dim=1) == n_masked).all()):
+                raise RuntimeError(
+                    f'MultiModalMAE.forward: stream {s!r} has a per-sample '
+                    f'COUNT of masked tokens, but the policy guarantees one '
+                    f'count per step (ADR-002 contract 6). Only the PLACEMENT '
+                    f'may vary across samples.')
+            tgt = self._targets(xin[s], s, mask_s)           # [B, N, flat]
+
+            if n_masked == 0:
+                # fully visible stream (legal only with a cap of 1.0): its loss
+                # is an explicit zero, which keeps the loss-key set constant.
+                zero = torch.zeros((), device=device)
+                losses_mse[s] = zero
+                losses[s] = zero * self.loss_weights[s]
+                preds[s] = torch.zeros(B, n, self._flat[s], device=device)
+                continue
+
+            # masked positions are drawn per SAMPLE, so their indices differ
+            # across the batch even though their number does not.
+            ids_masked = torch.argsort(mask_s, dim=1, descending=True,
+                                       stable=True)[:, :n_masked]
+            dec = torch.cat([z, embs.mask_token.expand(B, n_masked,
+                                                       self.embed_dim)], dim=1)
+            mask_pos = embs.pos_embed.expand(B, n, self.embed_dim).gather(
+                1, ids_masked.unsqueeze(-1).expand(B, n_masked,
+                                                   self.embed_dim))
+            dec_pos = torch.cat(
+                [z.new_zeros(B, z.shape[1], self.embed_dim), mask_pos], dim=1)
+            dec = dec + dec_pos
             for blk in self.dec_blocks:
                 dec = blk(dec)
-            pred = self.heads[s](dec)                        # [B, N, flat]
-            loss_mask = mask_s
-            # masked cubes get the per-cube z-score, unmasked cubes keep the
-            # clip-normalised values; ``mask`` is ignored for 1-D streams.
-            tgt = self._targets(xin[s], s, loss_mask)        # [B, N, flat]
-            # masked MSE on this modality's reconstructed positions, then
-            # scaled by its per-modality weight
-            losses_mse[s] = self.loss_fn(pred, tgt, loss_mask)
+            pred_masked = self.heads[s](dec[:, z.shape[1]:])
+            pred = torch.zeros(B, n, self._flat[s], device=device)
+            pred.scatter_(1, ids_masked.unsqueeze(-1).expand(
+                B, n_masked, self._flat[s]), pred_masked)
+            losses_mse[s] = self.loss_fn(pred, tgt, mask_s)
             losses[s] = self.loss_weights[s] * losses_mse[s]
             preds[s] = pred
 
         total = torch.stack(list(losses.values())).sum()
-        out = {'loss': total, 'losses': losses, 'losses_mse': losses_mse,
-               'masks': masks, 'preds': preds}
-        if self.masking == 'ammm' and self._last_mask_plan is not None:
-            # Diagnostics of the STEP's plan (counts, so they are identical for
-            # every sample of the batch). Key set is a function of the CONFIG:
-            # every declared stream needs an entry, even when it is inactive or
-            # 0-kept (the metric logger synchronises one collective per key).
-            plan = self._last_mask_plan
-            out['active'] = plan.active
-            out['kept'] = {s: int(plan.kept_units.get(s, 0))
-                           for s in self.streams}
-            out['r'] = dict(plan.r)
-            out['n_batch'] = int(z.shape[1])
-        return out
+        return {'loss': total, 'losses': losses, 'losses_mse': losses_mse,
+                'masks': masks, 'preds': preds,
+                # STEP diagnostics (counts are batch-uniform, so they are a
+                # property of the draw, not of the sample). The key set is a
+                # function of the CONFIG: every declared stream has an entry on
+                # every step, whatever the mode.
+                'mode': int(plan.mode),
+                'kept': {s: int(plan.kept_tokens[s]) for s in self.streams},
+                'kept_units': {s: int(plan.kept_units[s])
+                               for s in self.streams},
+                'n_batch': int(z.shape[1])}
 
 
 # --------------------------------------------------------------------------- #
 # builder (mirrors run_pretrain argparse/YAML defaults)
 # --------------------------------------------------------------------------- #
-#: default span length (SECONDS) per 1-D stream, used when ``mask_span_s`` does
-#: not name the stream. Anchored on the target's own period/correlation time so
-#: that the gap is no longer fillable from its visible edges (see
-#: ``code/notes/design/SpanMask_PhysioSignals.md``): bp 1-2.5 Hz -> 1.0 s, resp 0.16-0.4 Hz
-#: -> 4.0 s.
-MASK_SPAN_DEFAULTS = {'bp': 1.0, 'resp': 4.0}
-
-
-def parse_mask_span(spec) -> Dict[str, float]:
-    """Normalise a ``mask_span_s`` argument to ``{stream: seconds}``.
-
-    Accepts every form a runner/config can produce:
-
-    * a number or numeric string (``4.0``, ``'4.0'``) -> keyed ``'*'``, i.e.
-      every physio stream;
-    * a mapping (YAML ``mask_span_s: {resp: 4.0, bp: 1.0}``);
-    * a comma list of ``stream=seconds`` (``'resp=4.0,bp=1.0'``, the CLI form).
-
-    ``None``/``''``/``0`` yield an empty mapping => per-stream defaults
-    (:data:`MASK_SPAN_DEFAULTS`).
-    """
-    if spec is None:
-        return {}
-    if isinstance(spec, dict):
-        return {str(k).strip(): float(v) for k, v in spec.items()}
-    if isinstance(spec, (int, float)):
-        return {'*': float(spec)}
-    text = str(spec).strip()
-    if not text:
-        return {}
-    if '=' in text:
-        out = {}
-        for part in text.split(','):
-            part = part.strip()
-            if not part:
-                continue
-            key, _, val = part.partition('=')
-            out[key.strip()] = float(val)
-        return out
-    return {'*': float(text)}
-
-
-def parse_kept_cap(spec) -> Dict[str, float]:
-    """Normalise a kept-cap / alpha / override argument to ``{stream: value}``.
-
-    Accepts a number (``0.25``), a numeric string (``'0.25'``), a
-    ``stream=value`` CSV (``'tir=0.25,resp=1.0'``, the CLI form) or a YAML
-    mapping. ``'*'`` means "every declared stream"; the caller resolves it.
-    Used by ``masking='ammm'`` for ``video_kept_cap`` / ``physio_kept_cap`` /
-    ``dirichlet_alpha`` / ``kept_ratio_override``.
-    """
-    if spec is None:
-        return {}
-    if isinstance(spec, dict):
-        return {str(k).strip(): float(v) for k, v in spec.items()}
-    if isinstance(spec, (int, float)):
-        return {'*': float(spec)}
-    text = str(spec).strip()
-    if not text:
-        return {}
-    if '=' in text:
-        out = {}
-        for part in text.split(','):
-            part = part.strip()
-            if not part:
-                continue
-            key, _, val = part.partition('=')
-            out[key.strip()] = float(val)
-        return out
-    return {'*': float(text)}
-
-
 def _parse_int_csv(v, dtype=int):
     return tuple(dtype(x) for x in str(v).split(','))
 
@@ -1195,12 +913,6 @@ def build_pretraining_model(args):
     seq_len = int(getattr(args, 'seq_len', 0) or 0) or max(
         1, int(round(kept_seconds * fs)))
 
-    ratios = {'rgb': float(getattr(args, 'mask_ratio_rgb', 0.75)),
-              'tir': float(getattr(args, 'mask_ratio_tir', 0.50)),
-              'rgb2d': float(getattr(args, 'mask_ratio_rgb2d', 0.50)),
-              'bp': float(getattr(args, 'mask_ratio_bp', 0.90)),
-              'resp': float(getattr(args, 'mask_ratio_resp', 0.90))}
-
     # per-modality masked-MSE weights. ``signal_weight`` gives every physio
     # (non-visual) stream the same lambda (visual streams stay 1.0); a
     # non-empty ``loss_weights`` comma string (ONE value per stream, in
@@ -1237,24 +949,34 @@ def build_pretraining_model(args):
         sig_kernel=int(getattr(args, 'sig_kernel', 8)),
         seq_len=seq_len,
         fps=fps, fs=fs, temporal_stride=temporal_stride,
-        mask_ratios=ratios,
+        # ADR-002 masking policy: the seven exposed parameters. The two unit
+        # counts are tokenizer-derived; passing them is allowed only when they
+        # agree (the model asserts the identity).
+        n_budget=int(getattr(args, 'n_budget', 350)),
+        video_cap_ratio=float(getattr(args, 'video_cap_ratio', 0.25)),
+        physio_cap_ratio=float(getattr(args, 'physio_cap_ratio', 0.50)),
+        video_min_tubes=int(getattr(args, 'video_min_tubes', 2)),
+        p_virtual_sensing=float(getattr(args, 'p_virtual_sensing', 0.50)),
+        spatial_patches=getattr(args, 'spatial_patches', None) or None,
+        physio_tokens=getattr(args, 'physio_tokens', None) or None,
         signal_weight=signal_weight,
         loss_weights=loss_weights,
         pos_init=str(getattr(args, 'pos_init', 'sincos3d')),
         target_norm=str(getattr(args, 'target_norm', 'token')),
-        physio_mask=str(getattr(args, 'physio_mask', 'random') or 'random'),
-        mask_span_s=getattr(args, 'mask_span_s', None),
-        # masking policy (plan Phase 1): 'ratio' = legacy, 'ammm' = the new
-        # engine. Values are per-experiment config; only 'ammm' reads them.
-        masking=str(getattr(args, 'masking', 'ratio') or 'ratio'),
-        dirichlet_alpha=getattr(args, 'dirichlet_alpha', 1.0),
-        video_kept_cap=getattr(args, 'video_kept_cap', 0.25),
-        physio_kept_cap=getattr(args, 'physio_kept_cap', 1.0),
-        modality_dropout=float(getattr(args, 'modality_dropout', 0.0) or 0.0),
-        min_kept=int(getattr(args, 'min_kept', 0) or 0),
-        kept_ratio_override=getattr(args, 'kept_ratio_override', ''))
+        physio_placement=str(getattr(args, 'physio_placement', 'scattered')
+                             or 'scattered'),
+        physio_span_tokens=int(getattr(args, 'physio_span_tokens', 0) or 0))
     print(f'[encoder] streams: {model.streams} (all fed to the shared '
           f'encoder); target streams: {model.signal}')
+    print(f'[mask] policy=constant-budget  n_budget={model.n_budget}  '
+          f'video_cap={model.video_cap_ratio:g} '
+          f'({model.apportioner.video_cap_units} tubes)  '
+          f'physio_cap={model.physio_cap_ratio:g} '
+          f'({model.apportioner.physio_cap_tokens} tokens)  '
+          f'video_min_tubes={model.video_min_tubes}  '
+          f'p_virtual_sensing={model.p_virtual_sensing:g}  '
+          f'units={[(s.name, s.n_units, s.tokens_per_unit) for s in model.specs]}'
+          f'  physio_placement={model.physio_placement}')
     return model
 
 
@@ -1547,48 +1269,39 @@ def project_multimae_huge(**kwargs):
 
 
 # --------------------------------------------------------------------------- #
-# masking self-test -- the span-mask invariants fail SILENTLY, so they are
+# masking self-test -- a masking policy fails SILENTLY, so its invariants are
 # checked by a runnable self-test rather than by reading the code
 # --------------------------------------------------------------------------- #
 def _tiny_model(**over):
-    """Smallest MultiModalMAE that satisfies the space-time alignment check.
+    """Smallest MultiModalMAE that satisfies ADR-002's feasibility conditions.
 
-    20 frames @25 fps = 0.8 s -> grid_t 10 (= 10 resp tokens of 8 samples at
-    100 Hz), 1 spatial patch at input_size 16, tubelet_t 2 -> 0.08 s per token.
+    40 frames @25 fps / tubelet_t 4 = 10 visual steps of 0.16 s; 160 signal
+    samples / sig_kernel 8 = 20 tokens of 0.08 s, i.e. R = 2 signal tokens per
+    visual token. ``input_size 32`` / patch 8 -> 4x4 = 16 spatial tubes, so the
+    25 % visual cap is 4 tubes and the 2-tube floor is satisfiable.
     """
-    kw = dict(streams=('tir', 'resp'), embed_dim=64, enc_depth=1,
+    kw = dict(streams=('tir', 'rgb2d', 'resp'), embed_dim=64, enc_depth=1,
               enc_num_heads=4, dec_depth=1, mlp_ratio=4.0,
-              num_frames=20, input_size=16, sig_kernel=8, seq_len=80,
-              fps=25.0, fs=100.0, temporal_stride=1,
-              mask_ratios={'tir': 0.5, 'resp': 0.5})
+              tubelet=(4, 8, 8), num_frames=40, input_size=32,
+              sig_kernel=8, seq_len=160, fps=25.0, fs=100.0,
+              temporal_stride=1, n_budget=80)
     kw.update(over)
     return MultiModalMAE(**kw)
 
 
-def _longest_run(row) -> int:
-    best = cur = 0
-    for v in row:
-        cur = cur + 1 if v else 0
-        best = max(best, cur)
-    return best
-
-
 def mask_self_test(verbose: bool = True) -> int:
-    """Verify the 1-D masking invariants. Returns the number of failures.
+    """Verify the constant-budget masking invariants. Returns #failures.
 
-    Covers (see ``code/notes/design/SpanMask_PhysioSignals.md`` §4.3-§4.5):
+    A runnable check of ADR-002 through the REAL model, because a masking
+    policy fails silently: a wrong count still produces a plausible loss.
 
-    * ``_span_mask`` produces exactly ``min(n_spans * span, N - 1)`` masked
-      tokens, **the same count for every sample of the batch** -- the batch-max
-      visible gather in :meth:`MultiModalMAE.forward` silently leaks masked
-      tokens into the encoder when counts differ;
-    * runs are contiguous, at least ``span`` long, and never cover the whole
-      stream (>= 1 visible token = the physio stream's only encoder path);
-    * the gathered visible set really contains no masked token;
-    * ``mask_span_s`` parses from a number, a ``stream=seconds`` CSV and a
-      mapping, defaults per stream, and clamps an impossible span;
-    * the default ``physio_mask='random'`` leaves the span tables empty (the
-      historical path is untouched).
+    * every step draws one count per stream and the counts sum to ``n_budget``;
+    * the encoder sees exactly ``n_budget`` tokens (Criterion 3);
+    * Mode 1 keeps no physiological token and still backpropagates into the
+      visual adapters and the encoder (contracts 4 and 7);
+    * a 0-kept stream's adapter receives no gradient, while its loss still
+      reaches ``z`` (the decoder conditioning of ADR-002 §6);
+    * placements differ across the samples of one step while counts agree.
     """
     fails = []
 
@@ -1599,61 +1312,66 @@ def mask_self_test(verbose: bool = True) -> int:
         if not cond:
             fails.append(name)
 
-    m = _tiny_model(physio_mask='span', mask_span_s={'resp': 0.32})
-    N = m.n_signal
-    if verbose:
-        print(f'mask_self_test: N={N} tokens, span={m.mask_span_tokens}, '
-              f'n_spans={m.mask_n_spans}')
-    check('0.32 s span -> 4 tokens at fs 100 / sig_kernel 8',
-          m.mask_span_tokens.get('resp') == 4, m.mask_span_tokens)
-
+    m = _tiny_model(p_virtual_sensing=0.5)
     dev = torch.device('cpu')
-    for n_spans, span in ((1, 4), (2, 2), (1, 1)):
-        B = 8
-        mask = m._span_mask(B, dev, N, n_spans, span)
-        exp = min(n_spans * span, N - 1)
-        counts = [int(c) for c in mask.sum(dim=1)]
-        check(f'span {n_spans}x{span}: count {exp} for all {B} samples',
-              all(c == exp for c in counts), counts)
-        check(f'span {n_spans}x{span}: runs >= span',
-              all(_longest_run(mask[b].tolist()) >= span or exp == 0
-                  for b in range(B)))
-        check(f'span {n_spans}x{span}: <= N-1 masked (>= 1 visible)',
-              all(c <= N - 1 for c in counts))
-        # the encoder gather must not pick up a masked token
-        ids = torch.argsort(mask, dim=1, stable=True)
-        k = int((mask == 0).sum(dim=1).max())
-        check(f'span {n_spans}x{span}: visible gather (k={k}) has no masked token',
-              int(torch.gather(mask, 1, ids[:, :k]).sum()) == 0)
+    B = 4
+    x = {
+        'tir': torch.randn(B, 3, m.num_frames, m.input_size, m.input_size),
+        'rgb2d': torch.randn(B, 3, m.num_frames, m.input_size, m.input_size),
+        'resp': torch.randn(B, 1, m.seq_len),
+    }
+    if verbose:
+        print(f'mask_self_test: n_budget={m.n_budget} '
+              f'units={[(s.name, s.n_units, s.tokens_per_unit) for s in m.specs]}')
 
-    check('scattered mask is NOT contiguous (contrast)',
-          _longest_run(m._random_mask(1, dev, N, 0.5)[0].tolist()) < N // 2)
+    modes = set()
+    for step in range(20):
+        cg = placement.counts_generator(7, 0, step)
+        pg = placement.placement_generator(7, 0, step, rank=0)
+        out = m(x, counts_generator=cg, placement_generator=pg)
+        modes.add(out['mode'])
+        check(f'step {step}: encoder length == n_budget',
+              out['n_batch'] == m.n_budget, out['n_batch'])
+        check(f'step {step}: kept counts sum to n_budget',
+              sum(out['kept'].values()) == m.n_budget, out['kept'])
+        if out['mode'] == 1:
+            check(f'step {step}: Mode 1 keeps no physiological token',
+                  all(out['kept'][s] == 0 for s in m.signal), out['kept'])
+    check('both modes occur at p=0.5 over 20 steps', modes == {1, 2}, modes)
 
-    # clamping + per-stream independence + spec forms
-    m_big = _tiny_model(physio_mask='span', mask_span_s={'resp': 99.0})
-    check('impossible span clamps to N-1', m_big.mask_span_tokens['resp'] == N - 1,
-          m_big.mask_span_tokens)
-    m_two = _tiny_model(streams=('tir', 'bp', 'resp'), physio_mask='span',
-                        mask_span_s={'bp': 0.16, 'resp': 0.32},
-                        mask_ratios={'tir': 0.5, 'bp': 0.5, 'resp': 0.5})
-    check('per-stream spans differ (bp 2 tokens, resp 4)',
-          m_two.mask_span_tokens == {'bp': 2, 'resp': 4}, m_two.mask_span_tokens)
-    for form, label in ((0.32, 'number'), ('0.32', 'numeric string'),
-                        ('resp=0.32', 'stream=seconds CSV'),
-                        ({'resp': 0.32}, 'mapping')):
-        mm = _tiny_model(physio_mask='span', mask_span_s=form)
-        check(f'mask_span_s as {label} -> 4 tokens',
-              mm.mask_span_tokens.get('resp') == 4)
-    check('MASK_SPAN_DEFAULTS covers bp/resp',
-          set(MASK_SPAN_DEFAULTS) == {'bp', 'resp'}, MASK_SPAN_DEFAULTS)
+    # --- Mode 1: 0-kept physiology still trains the encoder -------------- #
+    plan1 = m.plan_from_counts({'tir': 40, 'rgb2d': 40, 'resp': 0})
+    m.zero_grad(set_to_none=True)
+    captured = {}
 
-    # the historical path: no physio_mask -> scattered, no span state
-    m_rand = _tiny_model()
-    check("default physio_mask is 'random'", m_rand.physio_mask == 'random')
-    check('random mode keeps the span tables empty',
-          not m_rand.mask_span_tokens and not m_rand.mask_n_spans)
-    check('random mode still masks round(ratio*N) tokens',
-          int(m_rand.make_masks(4, dev)['resp'][0].sum()) == int(0.5 * N))
+    def _grab_z(_mod, _inp, out):
+        out.retain_grad()
+        captured['z'] = out
+
+    handle = m.enc_norm.register_forward_hook(_grab_z)
+    try:
+        out = m(x, plan=plan1)
+        out['losses']['resp'].backward()
+    finally:
+        handle.remove()
+    z = captured['z']
+    check('Mode 1: d(loss_resp)/d(z) is non-zero (contract 7)',
+          z.grad is not None and float(z.grad.abs().sum()) > 0, None)
+    check('Mode 1: visual adapter receives gradient',
+          m.adapters['tir'].patch_embed.weight.grad is not None
+          and float(m.adapters['tir'].patch_embed.weight.grad.abs().sum()) > 0)
+    check('Mode 1: physiological adapter receives NO gradient',
+          m.adapters['resp'].embed.weight.grad is None)
+
+    # --- placements vary across the batch, counts do not ----------------- #
+    masks, plan, idx = m.make_masks(
+        B, dev, counts_generator=placement.counts_generator(7, 0, 0),
+        placement_generator=placement.placement_generator(7, 0, 0, rank=0))
+    check('counts are batch-uniform',
+          all(int(masks[s][b].sum()) == int(masks[s][0].sum())
+              for s in masks for b in range(B)))
+    check('placements differ across the batch',
+          len({tuple(idx['tir'][b].tolist()) for b in range(B)}) > 1)
 
     if verbose:
         print('mask_self_test: ' + ('ALL PASS' if not fails

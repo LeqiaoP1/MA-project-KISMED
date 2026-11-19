@@ -3,25 +3,34 @@
 These cover the parts of ADR-001 that only exist once Stage 2 is wired up:
 I5 (the test role is never loaded), I6/Criterion 2 (a validation pass is a
 deterministic function of the weights) and I7's "only the val role selects".
+
+ADR-002 replaced the per-stream ``val_kept_<stream>`` pins with a FIXED-SEED mask
+draw sequence: the counts generator is seeded from ``(mask_base, epoch, step)``
+without the rank, so the validation pass replays the same modes and counts.
 """
 import argparse
 
 import pytest
 import torch
 
+from core.mask_placement import counts_generator, placement_generator
 from core.multimae import _tiny_model
 from data.datasets import build_pretraining_dataset
 from engines.pretrain import evaluate_pretrain
 from protocol import ProtocolError, build_plan
-from runners._common import resolve_val_kept
 
 CPU = torch.device('cpu')
 
 
 def _masks(model, seed=None, **kwargs):
-    generator = None if seed is None else torch.Generator().manual_seed(seed)
+    cg = pg = None
+    if seed is not None:
+        cg = counts_generator(seed, 0, 0)
+        pg = placement_generator(seed, 0, 0, rank=0)
     with torch.no_grad():
-        return model.make_masks(2, CPU, generator=generator, **kwargs)
+        masks, plan, _idx = model.make_masks(
+            2, CPU, counts_generator=cg, placement_generator=pg, **kwargs)
+    return masks
 
 
 def _plan(fold=0):
@@ -41,42 +50,42 @@ def test_mask_placement_is_reproducible_with_a_seeded_generator():
 
 
 def test_generator_none_is_the_global_rng():
-    """The training path must stay bit-identical to the pre-pinning code.
-
-    ``torch.rand(..., generator=None)`` IS ``torch.rand(...)``, so seeding the
-    global RNG and calling ``make_masks`` twice must reproduce the same masks.
-    """
+    """With no generator the draw uses the global RNG, so seeding it pins the
+    masks -- the property the training path relies on for replayability."""
     model = _tiny_model()
     torch.manual_seed(0)
-    first = model.make_masks(2, CPU)
+    first = model.make_masks(2, CPU)[0]
     torch.manual_seed(0)
-    second = model.make_masks(2, CPU)
+    second = model.make_masks(2, CPU)[0]
     for stream in first:
         assert torch.equal(first[stream], second[stream])
 
 
-def test_kept_override_pins_the_masked_fraction():
-    model = _tiny_model()                      # mask_ratio_resp = 0.50
-    masks = _masks(model, 1, kept_override={'resp': 0.50})
-    assert masks['resp'].float().mean().item() == pytest.approx(0.5)
-    # kept=0 is CLAMPED to N-1 masked tokens: the ratio policy always leaves one
-    # visible token, because that token is the 1-D stream's only gradient path
-    # into the encoder (`_random_mask`'s `min(N - 1, ...)`). AMMM can reach a
-    # genuine 0-kept stream; the ratio policy cannot, by design.
-    nothing_kept = _masks(model, 1, kept_override={'resp': 0.0})
-    assert nothing_kept['resp'].float().mean().item() == pytest.approx(0.9)
+def test_an_explicit_plan_pins_the_counts_exactly():
+    """An evaluation states the allocation; the masks must match it."""
+    model = _tiny_model()
+    plan = model.plan_from_counts({'tir': 40, 'rgb2d': 40, 'resp': 0})
+    masks, got, idx = model.make_masks(4, CPU, plan=plan,
+                                       placement_generator=torch.Generator(
+                                           ).manual_seed(1))
+    assert got is plan
+    assert int((masks['tir'] == 0).sum(dim=1).max()) == 40
+    assert int((masks['rgb2d'] == 0).sum(dim=1).max()) == 40
+    assert int((masks['resp'] == 0).sum()) == 0        # fully masked stream
+    assert idx['tir'].shape == (4, 40)
 
 
-def test_kept_override_rejects_an_undeclared_stream():
-    with pytest.raises(ValueError, match='undeclared'):
-        _masks(_tiny_model(), 1, kept_override={'bp': 0.5})
+def test_an_impossible_plan_is_refused():
+    model = _tiny_model()
+    with pytest.raises(ValueError, match='n_budget|visible tokens'):
+        model.plan_from_counts({'tir': 80, 'rgb2d': 80, 'resp': 0})
 
 
-def test_span_placement_cannot_be_pinned_by_a_fraction():
-    """A span budget is a token count, so a kept FRACTION must be refused."""
-    model = _tiny_model(physio_mask='span')
-    with pytest.raises(ValueError, match='SPAN'):
-        _masks(model, 1, kept_override={'resp': 0.5})
+def test_span_placement_keeps_the_exact_count():
+    model = _tiny_model(physio_placement='span', physio_span_tokens=3)
+    plan = model.plan_from_counts({'tir': 40, 'rgb2d': 40, 'resp': 0})
+    masks, _plan_out, _idx = model.make_masks(2, CPU, plan=plan)
+    assert int((masks['resp'] == 0).sum()) == 0
 
 
 # --------------------------------------------------------------------------- #
@@ -85,8 +94,9 @@ def test_span_placement_cannot_be_pinned_by_a_fraction():
 class _MaskSensitiveModel(torch.nn.Module):
     """Stub whose loss depends on the mask draw it is given."""
 
-    def forward(self, x, mask_generator=None, kept_override=None):
-        generator = mask_generator or torch.Generator().manual_seed(0)
+    def forward(self, x, counts_generator=None, placement_generator=None,
+                plan=None):
+        generator = counts_generator or torch.Generator().manual_seed(0)
         draw = torch.rand(4, generator=generator)
         return {'loss': draw.sum(),
                 'losses_mse': {'resp': draw.mean()},
@@ -109,10 +119,10 @@ def test_evaluate_pretrain_is_deterministic():
 
 def test_evaluate_pretrain_records_its_components():
     result = evaluate_pretrain(_MaskSensitiveModel(), _loader(1), CPU,
-                               mask_base=5, kept_override={'resp': 0.5})
+                               mask_base=5)
     assert set(result['components']) == {'mse_resp'}
     assert result['mask_base'] == 5
-    assert result['pinned'] == {'resp': 0.5}
+    assert result['pinned'] == {}      # ADR-002: no fraction is pinned
 
 
 def test_evaluate_pretrain_refuses_an_empty_loader():
@@ -136,17 +146,25 @@ def test_stage2_refuses_an_empty_role_after_subject_filtering():
 
 
 # --------------------------------------------------------------------------- #
-# D6 — an unpinned stochastic validation pass is refused
+# D6 replacement — validation replays a deterministic mask DRAW sequence
 # --------------------------------------------------------------------------- #
-def test_val_kept_is_required_when_evaluating():
-    args = argparse.Namespace(eval_freq=5, val_kept_tir=0.25,
-                              val_kept_resp=None)
-    with pytest.raises(SystemExit, match='not comparable'):
-        resolve_val_kept(args, ['tir', 'resp'])
-    assert resolve_val_kept(args, ['tir', 'resp'], eval_freq=0) == {'tir': 0.25}
+def test_validation_replays_the_same_plan_sequence():
+    """Two validation passes derive identical counts (no hand-pinned fractions).
 
-
-def test_val_kept_range_is_validated():
-    args = argparse.Namespace(eval_freq=5, val_kept_tir=1.5)
-    with pytest.raises(SystemExit, match=r'\[0, 1\]'):
-        resolve_val_kept(args, ['tir'])
+    ADR-002 §6: the counts generator is seeded from ``(mask_base, batch)`` and
+    the modes/counts therefore replay exactly, while the loss stays a function
+    of the weights only.
+    """
+    model = _tiny_model()
+    a = [model.make_masks(2, CPU,
+                          counts_generator=counts_generator(5, 0, i),
+                          placement_generator=placement_generator(5, 0, i,
+                                                                  rank=0))[1]
+         for i in range(3)]
+    b = [model.make_masks(2, CPU,
+                          counts_generator=counts_generator(5, 0, i),
+                          placement_generator=placement_generator(5, 0, i,
+                                                                  rank=0))[1]
+         for i in range(3)]
+    assert [p.kept_tokens for p in a] == [p.kept_tokens for p in b]
+    assert [p.mode for p in a] == [p.mode for p in b]

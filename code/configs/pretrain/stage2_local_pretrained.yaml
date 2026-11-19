@@ -25,7 +25,7 @@ pretrained_encoder: videomae:k400  # VideoMAE ViT-B corpus: k400 (Kinetics-400)
 # ---- streams & tokenizer geometry (small for a local GPU) ----
 # Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bp/resp).
 # All four = rgb,tir,bp,resp; ablate by trimming (e.g. rgb,bp).
-streams: rgb,bp,resp
+streams: rgb,tir,bp,resp          # EXACTLY two visual + one/two physiological
 #streams: tir, resp
 
 tir_channels: 3                    # thermal is a false-colour render, not gray
@@ -52,18 +52,20 @@ pos_init: sincos3d
 # 14x14 grid at input_size 224). Use 224 for the real run, or drop to 0.75 to
 # debug at 64 px.
 
-# ---- asymmetric masking (visual 0.90, waveform 0.50) ----
-mask_ratio_rgb: 0.90               # UNCHANGED (VideoMAE-style, aggressive)
-mask_ratio_tir: 0.90
-# 1-D waveform streams are masked at 0.50, NOT 0.90. A stream's decoder is fed
-# `cat([z[:, visible], mask_token...])`, so the VISIBLE physio token count is
-# the encoder's only gradient path for that stream: at 0.90 only ~5 of 50 were
-# visible (a very thin path -- and with 0 visible the path is exactly zero),
-# while 0.50 gives ~25. This is the lever for the measured failure that the
-# encoder's pooled rgb features varied only 0.4 % across clips (2.9 % at init)
-# and bp/resp reconstruction never beat a constant predictor.
-mask_ratio_bp: 0.50
-mask_ratio_resp: 0.50
+# ---- MASKING: ADR-002 constant-budget policy (the whole surface) -----------
+# Two visual streams are REQUIRED (contract 5). 4x4 grid / 100 frames /
+# tubelet_t 2 => T = 50 tokens per tube, M = 4 tubes, n_signal = 50 tokens.
+# physio_cap_ratio 1.0 is a GEOMETRY ARTEFACT: on this 100 Hz grid a 0.5 cap
+# equals half a tubelet, so Mode 2 could never allocate a physiological token.
+# The ADR arm (1000 Hz, R = 10) uses 0.5.
+n_budget: 350                      # 7 tubes; 2m=4 <= 7 <= 2M=8
+video_cap_ratio: 0.25
+physio_cap_ratio: 1.0              # see the note above
+video_min_tubes: 2
+p_virtual_sensing: 0.5
+spatial_patches: 16                # tokenizer-derived, asserted at build
+physio_tokens: 50                  # tokenizer-derived, asserted at build
+physio_placement: scattered
 
 # ---- loss: per-modality masked MSE (masked positions only), then a weighted
 # sum. lambda = 1.0 for rgb/tir; lambda = signal_weight for each physio stream

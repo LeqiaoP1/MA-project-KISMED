@@ -1,17 +1,27 @@
 # Span Masking for the 1-D Physiological Streams
 
+> **SUPERSEDED IN PART — 2026-11-19.** ADR-002 replaced the whole masking
+> policy. The *span placement* idea survives in `core/mask_placement.py`
+> (`place_signal(..., mode='span', span_tokens=...)`), now configured by
+> `--physio_placement span --physio_span_tokens N` and applied to the COUNTS the
+> constant-budget apportioner draws, so the span length is a token count and no
+> `mask_ratio` / `mask_span_s` key exists any more. The names `physio_mask`,
+> `mask_span_s`, `parse_mask_span`, `MASK_SPAN_DEFAULTS`, `_span_mask` and
+> `mask_n_spans` are GONE from the code; read every occurrence below as the
+> historical record of the measurements, not as a live interface.
+>
 > **SUPERSEDED IN PART — 2026-11-09.** The Stage-2 MR-STFT ("spectral") loss
 > discussed in §4.1 and §5-§7 was **removed from the code** (`core/multimae.py`,
 > `runners/run_pretrain.py`: no `spectral_weight` / `spectral_weights` /
-> `spectral_fft_sizes` / `parse_fft_sizes`). Span masking (`physio_mask`,
-> `mask_span_s`) is unaffected and still live. Every number below that involves
+> `spectral_fft_sizes` / `parse_fft_sizes`). Every number below that involves
 > `spec_*`, `spectral_weight` or `fft_sizes` was measured **with the retired
 > Stage-2 term** and is kept for provenance only; MR-STFT now exists only in
 > Stage-3 finetuning (`core/waveform_losses.WaveformJointLoss`, gamma).
 
 **Status: IMPLEMENTED 2026-09-26** (`core/multimae.py`: `_span_mask`,
 `physio_mask`, `mask_span_s`, `parse_mask_span`, `MASK_SPAN_DEFAULTS`,
-`mask_self_test`; `runners/run_pretrain.py`: `--physio_mask`, `--mask_span_s`).
+`mask_self_test`; `runners/run_pretrain.py`: `--physio_mask`, `--mask_span_s`) —
+**and re-expressed under ADR-002 on 2026-11-19** (see the banner above).
 The **default is unchanged** (`physio_mask: random` reproduces the historical
 scattered mask bit-for-bit — verified: the 2-epoch run matches the pre-change
 `mse_resp 1.0483` to 1e-6). The

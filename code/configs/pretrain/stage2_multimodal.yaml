@@ -8,8 +8,9 @@ pretrained_encoder: videomae:k400  # Stage-1 VideoMAE ViT-B corpus: k400
                                    # (Something-Something-v2).
 
 # ---- streams & tokenizer geometry ----
-# Stage-2 contract: >=1 video (rgb/tir) + >=1 1-D physio (bp/resp).
-streams: rgb,bp
+# ADR-002 contract 5: EXACTLY two visual streams (rgb/tir) + one/two 1-D
+# physiological streams (bp/resp).
+streams: rgb,tir,bp
 
 tir_channels: 3                    # thermal is a false-colour render, not gray
 tubelet: 2,16,16
@@ -30,11 +31,19 @@ input_size: 224                    # full-frame (no face ROI); 14x14 grid at pat
 # positions (pos_init: random disables the prior).
 pos_init: sincos3d
 
-# ---- asymmetric masking (visual 50-75%, signals 90%+) ----
-mask_ratio_rgb: 0.90
-mask_ratio_tir: 0.90
-mask_ratio_bp: 0.90
-mask_ratio_resp: 0.90
+# ---- MASKING: ADR-002 constant-budget policy (the whole surface) -----------
+# 14x14 = 196 patches, 100 frames / tubelet_t 2 => T = 50 tokens per tube and
+# M = 49 tubes. physio_cap_ratio 1.0 is a GEOMETRY ARTEFACT: on this 100 Hz
+# grid a 0.5 cap equals half a tubelet, so Mode 2 could never allocate a
+# physiological token. The ADR arm (1000 Hz, R = 10) uses 0.5.
+n_budget: 350                      # 7 tubes; 2m=4 <= 7 <= 2M=98
+video_cap_ratio: 0.25
+physio_cap_ratio: 1.0              # see the note above
+video_min_tubes: 2
+p_virtual_sensing: 0.5
+spatial_patches: 196               # tokenizer-derived, asserted at build
+physio_tokens: 50                  # tokenizer-derived, asserted at build
+physio_placement: scattered
 
 # ---- loss: weighted sum of per-modality masked MSE (see stage2_local_pretrained.yaml) ----
 signal_weight: 0.5

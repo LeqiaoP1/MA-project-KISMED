@@ -589,9 +589,12 @@ Step 1 — Visual input preprocessing + tokenise:
   for visual s: x[s] = zscore_clip(x[s])                   # per-ch z over (T,H,W), per sample
   tokens_s = adapters[s](x[s]) + positions[s].pos_embed   # [B, N_s, D]
 
-Step 2 — Asymmetric masking:
-  mask_s from MultiModalMaskingGenerator()                  # [N_s] in {0,1}
-  visible_s = tokens_s[:, mask_s==0, :]                    # [B, N_vis_s, D]
+Step 2 — Constant-budget masking (ADR-002, core/budget_masking.py):
+  plan = apportioner.sample_step(counts_generator)   # mode + per-stream counts
+  sum(plan.kept_tokens.values()) == n_budget          # 350, contract 1
+  ids_keep[s] = place_video/place_signal(plan.kept_tokens[s],
+                     placement_generator)           # [B, k_s], per-sample
+  mask_s = 1 - scatter(ids_keep[s])                   # [B, N_s], 1 = masked
 
 Step 3 — Concatenate visible encoder-stream tokens:
   z_vis = cat([visible_s for s in streams], dim=1) # [B, sum(N_vis_s), D]
@@ -1124,7 +1127,7 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `stage2_local_pretrained.yaml` | Local with VideoMAE init, 11 sessions, 32 clips |
 | `stage2_local_rgb_roi_bp.yaml` | RGB face-ROI + BP, raw tree |
 | `stage2_local_tir_roi_resp.yaml` | TIR-ROI + RESP, raw tree |
-| `stage2_hpc_tir_roi_resp_rgb2d.yaml` | TIR-ROI + `rgb2d` + RESP (`streams: tir,rgb2d,resp`) — the only visible+thermal fusion run, HPC |
+| `stage2_budget_tir_roi_resp_rgb2d.yaml` | TIR-ROI + `rgb2d` + RESP (`streams: tir,rgb2d,resp`) — the ADR-002 constant-budget arm, HPC |
 | `stage2_multimodal.yaml` | HPC full-data template, 800 epochs, input_size 224 |
 | `example.yaml` | Annotated reference template |
 
