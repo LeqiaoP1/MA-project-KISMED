@@ -145,6 +145,27 @@ carrying one fails to load (that is the migration alarm).
 | P8 | pilots: determinism (two val passes byte-identical) and cost (`eval_freq × cost ≤ 5%`, VRAM `< 5%`) | measured numbers recorded below |
 | P9 | Stage 2 ×5, Stage 3 ×5, test ×5, pool; then the Criterion 5 study | headline sweep unchanged by the study |
 
+### First end-to-end smoke (2026-11-19, fold 0, 1 epoch, 2 sessions, T4)
+
+`run_partition → run_pretrain → run_waveform → run_waveform --eval_role test →
+run_evaluate_kfold --allow_partial` completes, and the gate prints
+`protocol gate OK: 1 fold(s), universe ab2828422f51, rule=fixed_epoch [PARTIAL]`.
+It found four defects that no unit test could:
+
+1. **`build_pretraining_dataset` overwrote `args.subjects`** with the role's
+   list, so building `val` right after `train` intersected it against train and
+   the val role came out EMPTY. It now builds each role from a shallow copy.
+2. **`run_waveform` referenced `plan` before it was created** (the pairing guard
+   runs during checkpoint loading, the plan was built in the data section).
+   The plan is now created at the top of `main`.
+3. **`--raw_root` was read but never declared** by the Stage-3 parser.
+4. **`make_eval_record` crashed** on `spectral_metrics`' non-numeric fields
+   (`psd_band_bins=None`); the record now keeps only scalar numbers.
+
+The smoke also confirmed two refusals behave as designed: a second
+`--eval_role test` is rejected (sentinel), and `eval_freq: 1` in a config is
+rejected at tracker construction (Criterion 4).
+
 Criterion 5 study (licenses `best_val` only): two arms differing in one Stage-3
 knob (`huber_beta ∈ {0.5, 1.0}`), folds `{0, 1}`, Stage-2 encoder reused → four
 runs. The arm ranked higher by the final val criterion must also rank higher on
@@ -178,14 +199,67 @@ stays `fixed_epoch`.
 recorded selection rule, a `L_time` predating the Huber term, and a partition
 built from filtered subjects.
 
-**Expected per fold** (139-subject universe): test 28/28/28/28/27, val 14, train
-97/97/97/97/96. **Budget:** ≈3-3.5 h per Stage-3 fold plus minutes per test pass
+**Expected per fold** (139-subject universe, verified against `build_plan`):
+val 14 (8 F / 6 M), test 28/28/28/28/27, train 97/97/97/97/98 — realised shares
+0.698/0.101/0.201, all within Criterion 1's ±2 pp. **Budget:** ≈3-3.5 h per Stage-3 fold plus minutes per test pass
 ⇒ ≈18 h GPU for the five-fold Stage 3; Stage 2 comparable at its shipped epoch
 budget.
 
-**Pilot results:** determinism *not yet measured*; cost *not yet measured*
-(`eval_freq = 5` is D10's arithmetic, not a measurement).
+**Pilot results (measured 2026-11-19, Tesla T4, `scripts/local/pilot_protocol.py`):**
+both criteria pass at the default `eval_freq = 5`.
+
+| | determinism (Crit. 2) | val pass | train pass | wall clock (Crit. 4) | peak VRAM |
+|---|---|---|---|---|---|
+| Stage 2 | **bit-identical** | 0.037 s | 1.568 s | **0.47 %** | −2.25 % (no increase) |
+| Stage 3 | **bit-identical** | 0.073 s | 0.641 s | **2.29 %** | −0.15 % (no increase) |
+
+Two things the pilot changed:
+
+1. `evaluate_waveform_loss` computed `criterion(p, t)` **and** the three terms,
+   running the multi-resolution STFT twice per batch; it now sums the weighted
+   terms once. Without that, a val pass cost ~1.8× a training step.
+2. The first version of the pilot drew **new random batches per pass**, so it
+   compared different data and reported "not deterministic". A determinism check
+   must reuse one batch list — the engine was right, the harness was wrong.
+
+The absolute seconds are a T4 on a login node; only the RATIOS are the measured
+quantities, and they are what Criterion 4 constrains. Re-run this script on the
+cluster before quoting a per-fold wall-clock budget.
 
 **Done when** every fold artefact of both stages says `compliant: true`;
 `best.pth` exists iff `val_select=best_val`; the pooler cannot be fed a mixed or
 dev sweep; each ADR §3 criterion has a test or a recorded measurement.
+
+---
+
+## 6. Status — P0–P8 closed 2026-11-19
+
+The protocol is implemented and enforced **by construction**: roles are computed
+only in `code/protocol/`, datasets receive a `FoldPlan` + role, and every
+consumer refuses an off-protocol input. Verified state at closure:
+
+- `python -m pytest -q` → **657 passed** (~19 s, CPU).
+- **Criterion 1** — realised 97/14/28 per fold, shares 0.698/0.101/0.201, all
+  five folds, byte-identical under a different `PYTHONHASHSEED`.
+- **Criterion 2 / 4** — measured in the pilot below; bit-identical val passes,
+  no peak-VRAM increase.
+- **Criterion 3** — `LeakGuard` inside the training step, before `optimizer.step()`,
+  plus digest guards on resume and on Stage-2/Stage-3 pairing, with tests.
+- **P5 gate** — `code/configs` and `code/scripts` carry no fold-count or
+  split-policy key on the protocol path. The only remaining matches are the
+  `bp`/`au` carve-out of ADR §3 (`configs/finetune/{au_local,bp_rgb_roi_local}.yaml`,
+  which keep their ratio cuts and get no record) and the paired-lineage text
+  inside `scripts/project/write_specs.py`, which AGENTS.md forbids running.
+  `scripts/hpc/submit_sweep.sh/.sbatch` is the only Stage-2/Stage-3 path, and the
+  eleven pre-ADR launchers are deleted with their tests and doc references.
+
+### Open — execution, not implementation
+
+| Item | What it needs |
+|---|---|
+| **P9 real sweep** | five folds, ≈18-20 h GPU: `EXP_ROOT=… sbatch scripts/hpc/submit_sweep.sbatch`, then `run_evaluate_kfold.py --exp_root …`. Run one fold first and read its artefacts before the other four. |
+| **Criterion 5** | the two-arm study (folds {0, 1}, `huber_beta ∈ {0.5, 1.0}`, Stage-2 reused, paired bootstrap CI excluding zero). Until it passes, `val_select` stays `fixed_epoch` and the headline does not depend on it. |
+| **Pooler licence** | `gate_test_artefacts` enforces that the five folds agree on ONE selection rule, not that the rule is licensed. A veto would be *stricter than the ADR*, so it needs one sentence added to Criterion 5 first. |
+
+**No thesis number exists until P9 runs.** Closing this plan does not assert any
+result — it asserts that the pipeline can only produce a number one way.

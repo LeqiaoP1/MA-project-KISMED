@@ -46,15 +46,38 @@ The session name encodes subject (`'F001_T1'.rsplit('_', 1)[0]` -> `'F001'`), en
 
 **Session discovery** (`scan_sessions`): scans `data_path` for dirs containing `rgb/`, `tir.wmv`, `signals.csv`. Falls back to first `*.wmv`. Raises `FileNotFoundError` if no valid sessions found.
 
-**Split policy (Cross-Validation)** — implemented 2026-10-18:
-- `split_by='session'` (historical default): splits sorted session list at `train_ratio`. **Risk: subject leakage.**
-- `split_by='subject'`: groups by subject prefix; subject-disjoint. Legacy, used only when `n_folds <= 1`.
-- **GroupK-Fold Cyclic Rotation** (`utils/splits.py::get_stage_splits`, design `code/notes/design/ADR-001-subject-disjoint-split-and-selection.md`, rollout `code/notes/plan/ADR-001-subject-kfold-plan.md`): one `subject_folds` partition of sorted unique subject ids via `np.array_split`; fold `k` = test, all other folds = train, and Option B carves ~10% of the non-test pool as val with `np.random.default_rng(42 + fold)`. Entered through `--n_folds` / `--fold` / `--use_small_val`; `n_folds <= 1` reproduces the legacy ratio keys exactly.
-- **Partition rule** (`--split_seed` / `--split_stratify`, added 2026-11-01): `split_seed=None` + `split_stratify='none'` is the historical sorted-contiguous cut, which on BP4D+ makes fold == sex block (`F001..` sorts before `M001..`). A seed with `split_stratify='sex'` shuffles within each sex stratum and interleaves the strata proportionally, so every fold is a near-representative sample while the `array_split` fold SIZES are unchanged. Requires the seed; both stages of one sweep must use the same pair, and `fold_manifest.json` records it.
-- **Roles**: `build_dataset(..., split_role='train'|'val'|'test')`. Stage 3 Option A builds no val view — an EMPTY role is refused, because `discover_sessions(subjects=[])` means "every subject".
-- `split_by='session'` is rejected when `n_folds > 1` (one subject's sessions could span two roles).
-- Stage-2: `pretrain_split='all'` (default) or `'fold'`, which excludes that fold's test subjects from the pretrain corpus and writes `fold_manifest.json` into the run dir.
-- Stage-3: Option A (0% Val, fixed-epoch checkpointing, test fold scored at the end) or Option B (~10% Val subset).
+**Split policy (ADR-001, implemented 2026-11-19):**
+- **One implementation**: `code/protocol/` owns every role. `code/utils/splits.py`
+  and its `n_folds` / `use_small_val` / `split_role` / `train_ratio` /
+  `val_subject` / `split_by` arguments are **deleted**; a config that still
+  carries one fails to load (deliberate migration alarm).
+- **Universe** (`data/universe.py::corpus_subjects`): every subject that owns a
+  session with a video, `IRFeatures/<S>_<T>.txt` and
+  `Physiology/<S>/<T>/Resp_Volts.txt`. Independent of `--tasks`, `--subjects`,
+  caps and cleaning thresholds — those narrow the CLIPS a role reads (I2).
+- **Roles** (`protocol.build_plan`): sorted ids, optional seeded `sex`
+  within-stratum shuffle + interleave, `np.array_split` into `K = 5` blocks;
+  block `k` = `test`, ~10% of the universe drawn from the other blocks = `val`,
+  remainder = `train` (`val` is stratified too when `split_stratify='sex'`).
+- **Record**: `<exp_root>/fold<k>/partition.json`, write-once, carrying the three
+  role lists, realised counts, the universe digest and a partition digest.
+  Both stages read the same file; a differing digest is a hard error.
+- **Consumers**: `build_dataset(args, plan, role)` (Stage 3, all three roles) and
+  `build_pretraining_dataset(args, plan, role)` (Stage 2, `train`/`val` only —
+  the test role is never loaded).
+- **Empty roles**: a `val`/`test` role whose subject lost every clip to the
+  cleaning rules is a real EMPTY view with a recorded reason; `train` empty is
+  fatal. An empty role is never forwarded as `subjects=[]`, which every
+  discovery helper reads as "every subject".
+- **Selection**: `val_select=fixed_epoch` (default) or `best_val`, recorded in
+  `selection.json` with `eval_freq`, the selected epoch, the criterion and its
+  value; `best.pth` is written only under `best_val`.
+- **Test scoring**: a separate `--eval_role test` process, once per fold, under
+  `<exp_root>/fold<k>/stage3/test/`; the artefact itself refuses a second run.
+- **Off-protocol**: `bp`/`au` (the canonical `paired` layout) have no subject
+  enumerator, so `build_dataset` / `build_pretraining_dataset` refuse them and
+  `runners/run_finetune.py` stops with a reason. They cannot produce a thesis
+  number until a follow-up adds an enumerator.
 
 **Dev caps** (applied in order): `max_sessions` -> `max_clips` -> `max_entries`.
 

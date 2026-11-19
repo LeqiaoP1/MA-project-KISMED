@@ -1904,20 +1904,12 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
 
     Stage-3-specific differences, all deliberate:
 
-    * a **train/val split** (``is_train`` / ``train_ratio`` / ``split_by``),
-      SUBJECT-disjoint by default -- the same policy and the same arithmetic as
-      ``data.paired_dataset.PairedSessionDataset`` (``'subject'``: whole
-      subjects per side, so the evaluated subject is never trained on;
-      ``'session'``: whole sessions per side, no frame-level leakage);
-    * an explicit ``val_subject`` OVERRIDE for a leave-one-subject-out sweep
-      (train = every other subject, val = exactly that one); the 4-subject local
-      corpus needs it, because a fixed 0.8 ratio can only ever produce one fold;
-    * **k-fold cyclic rotation** (``n_folds`` > 1) via
-      :func:`utils.splits.resolve_split_keys`: ``split_role`` selects the
-      ``'train'`` / ``'val'`` / ``'test'`` subject set of fold ``fold`` and the
-      ratio knobs above are ignored. ``n_folds <= 1`` takes the legacy ratio
-      path unchanged. ``split_by='session'`` is rejected here, because one
-      subject's sessions could straddle two roles;
+    * the view is ONE ROLE of a :class:`protocol.FoldPlan` -- ``plan`` and
+      ``role`` are required arguments, exactly as for the Stage-2 view, so this
+      class never derives a boundary itself (ADR-001 D3/I2). Stage 2 and Stage 3
+      of a fold therefore read the SAME ``partition.json`` and the same
+      ``role`` names; a test subject is never trained on, and a val subject
+      never trains;
     * the item is ``(tir, waveform)`` -- the tensor contract
       ``runners/run_waveform.py`` and ``engines/waveform.py`` consume -- rather
       than the Stage-2 stream dict;
@@ -1928,16 +1920,8 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
 
     def __init__(self, raw_root: Optional[str] = None,
                  target: str = 'resp',
-                 is_train: bool = True,
-                 train_ratio: float = 0.8,
-                 split_by: str = 'subject',
-                 val_subject: Optional[str] = None,
-                 split_role: Optional[str] = None,
-                 n_folds: int = 0,
-                 fold: int = 0,
-                 use_small_val: bool = False,
-                 split_seed: Optional[int] = None,
-                 stratify: str = 'none',
+                 plan: 'FoldPlan' = None,
+                 role: str = 'train',
                  fs: float = 100.0,
                  clip_duration: float = 8.0,
                  clip_stride: Optional[float] = None,
@@ -1970,72 +1954,55 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
                 f'got target={target!r}.')
         physio_norm = check_physio_norm(physio_norm,
                                         'TirRoiRespFinetuneDataset')
-        if split_by not in ('session', 'subject'):
-            raise ValueError(
-                f"split_by must be 'session' or 'subject'; got {split_by!r}")
-        if not 0.0 < float(train_ratio) <= 1.0:
-            raise ValueError(
-                f'train_ratio must be in (0, 1]; got {train_ratio!r}')
+        from protocol import ProtocolError
 
+        if plan is None:
+            raise ProtocolError(
+                "TirRoiRespFinetuneDataset needs the fold's FoldPlan: the "
+                'train/val/test roles are never derived inside a dataset '
+                '(ADR-001 I2, D3). Build it via '
+                'data.datasets.build_dataset(args, plan, role).')
+        if role not in plan.roles:
+            raise ProtocolError(
+                f'unknown role {role!r}; the plan defines {tuple(plan.roles)}')
+
+        self.plan = plan
         self.target = target
         self.physio_norm = physio_norm
-        self.split_by = split_by
-        self.is_train = bool(is_train)
-        self.train_ratio = float(train_ratio)
-        self.val_subject = (str(val_subject).strip() or None
-                            if val_subject is not None else None)
-        self.split_role = split_role or ('train' if is_train else 'val')
+        self.split_by = 'subject'
+        self.split_role = role
+        self.is_train = role == 'train'
+        self.split_seed = plan.split_seed
+        self.split_stratify = plan.split_stratify
 
-        # resolve the group selection BEFORE the split, so the split and the
-        # data are computed on exactly the same task set (see data.task_groups)
+        # resolve the group selection BEFORE building the view, so the clips and
+        # the role filter are computed on exactly the same task set
         self.task_selection = tgrp.resolve_task_selection(
             tasks=tasks, task_set=task_set, task_groups=task_groups)
 
-        # ---- the split, computed on USABLE sessions, before any clip work ---
-        # "usable" = has BOTH the landmark file and the respiration file, so a
-        # subject whose sessions are all untracked cannot silently sit on one
-        # side of the split.
         root = raw_root or default_raw_root()
-        usable = [s for s in discover_sessions(root,
-                                              subjects=_as_list(subjects),
-                                              tasks=self.task_selection.tasks)
-                  if s['ir_file'] and s['resp_file']]
-        if not usable:
-            raise RuntimeError(
-                f'TirRoiRespFinetuneDataset: no session under {root} has both '
-                f'{IR_TREE} and {RESP_FILE}; nothing to split.')
-                
-        from utils.splits import (as_split_seed, as_split_strategy,
-                                  resolve_split_keys)
-        self.split_seed = as_split_seed(split_seed)
-        self.split_stratify = as_split_strategy(stratify)
-        self.split_keys, self.split_key_kind = resolve_split_keys(
-            usable, self.is_train, self.train_ratio, self.split_by,
-            self.val_subject, self.split_role, n_folds, fold, use_small_val,
-            'TirRoiRespFinetuneDataset',
-            split_seed=self.split_seed, stratify=self.split_stratify)
-
-        print(f'[data] tir_roi_resp split_by={self.split_key_kind}: '
-              f'{self.split_role} = {self.split_keys} '
-              f'({len(usable)} usable session(s), '
-              f'{len({s["subject"] for s in usable})} subject(s))')
-        print(f'[data] tir_roi_resp partition: stratify={self.split_stratify} '
-              f'split_seed={self.split_seed}'
-              + (' (legacy: sorted contiguous blocks)' if self.split_seed is None
-                 else ' (seeded draw -- Stage 2 must use the same pair)'))
+        # Role membership comes from the PLAN. `subjects` only narrows which of
+        # those subjects THIS view reads; it can never move a boundary (I2).
+        requested = set(_as_list(subjects) or [])
+        self.split_keys = [s for s in plan.roles[role]
+                           if not requested or s in requested]
+        self.split_key_kind = 'subject'
+        print(f'[data] tir_roi_resp role={self.split_role!r} '
+              f'fold={plan.fold}/{plan.n_folds} '
+              f'(digest {plan.digest[:12]}): {len(self.split_keys)} subject(s)')
         print(f'[data] tir_roi_resp {self.task_selection.describe()}')
 
-        # An empty role is a legitimate outcome (a held-out subject can lose
-        # every clip to the rail/sentinel rules; Option A has no val at all).
-        # Represent it as a REAL empty dataset -- and never hand `subjects=[]`
-        # to the base class, which reads a falsy filter as "every subject".
+        # An empty role is legitimate: a held-out subject can lose every clip
+        # to the rail/sentinel rules. It becomes a REAL empty dataset -- never
+        # `subjects=[]` for the base class, which reads that as "every subject".
         self._empty_view = False
         self._empty_reason = ''
         if not self.split_keys:
             self._empty_view = True
-            self._empty_reason = (f'no subject assigned to role '
-                                  f'{self.split_role!r} (n_folds={n_folds}, '
-                                  f'fold={fold})')
+            self._empty_reason = (
+                f'no subject of the {self.split_role!r} role of fold '
+                f'{plan.fold} is left'
+                + (f' after --subjects {sorted(requested)}' if requested else ''))
             self.entries = []
             self.split_sessions = []
             self.skipped = []
@@ -2047,10 +2014,6 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
                   f'{self._empty_reason}')
             return
 
-        keep_subjects = ([k.rsplit('_', 1)[0] for k in self.split_keys]
-                         if self.split_key_kind == 'session'
-                         else self.split_keys)
-
         super().__init__(
             raw_root=root, streams=('tir', 'resp'), fs=fs, fps=fps,
             clip_duration=clip_duration, clip_stride=clip_stride,
@@ -2060,7 +2023,7 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
             target_landmarks=target_landmarks, resp_fs=resp_fs,
             min_signal_spread=min_signal_spread,
             rail_touch_v=rail_touch_v,
-            subjects=_as_list(keep_subjects), tasks=self.task_selection.tasks,
+            subjects=list(self.split_keys), tasks=self.task_selection.tasks,
             task_groups=task_groups, task_set=task_set,
             max_clips_per_session=max_clips_per_session,
             max_entries=max_entries,
@@ -2085,18 +2048,6 @@ class TirRoiRespFinetuneDataset(TirRoiRespPretrainDataset):
             print(f'[data] tir_roi_resp {self.split_role} view is EMPTY: '
                   f'{self._empty_reason}')
 
-        # a SESSION-level split still needs the per-session filter: the subject
-        # filter above admits every session of the kept subjects
-        if self.split_key_kind == 'session':
-            n_before = len(self.entries)
-            keep_set = set(self.split_keys)
-            self.entries = [e for e in self.entries if e['session'] in keep_set]
-            if not self.entries:
-                raise RuntimeError(
-                    f'split_by=session: none of the {n_before} clip(s) of the '
-                    f'kept subjects belongs to the '
-                    f'{"train" if self.is_train else "val"} session list '
-                    f'{self.split_keys}.')
         self.split_sessions = sorted({e['session'] for e in self.entries})
 
     # ------------------------------------------------------------------ item
@@ -2164,8 +2115,8 @@ def _log_corpus_cleaning(stats: dict, stage: str) -> None:
           f'({rule}); min_signal_spread={spread:g} V')
 
 
-def build_tir_roi_finetune_dataset(is_train: bool, test_mode: bool,
-                                   args, split_role: Optional[str] = None) -> TirRoiRespFinetuneDataset:
+def build_tir_roi_finetune_dataset(args, plan, role: str = 'train'
+                                   ) -> TirRoiRespFinetuneDataset:
     """Build the Stage-3 TIR-ROI -> respiration dataset from runner ``args``.
 
     Selected by ``data_set: tir_roi`` / ``tir_roi_resp`` in a FINETUNE config
@@ -2175,11 +2126,7 @@ def build_tir_roi_finetune_dataset(is_train: bool, test_mode: bool,
     signature parity with the other Stage-3 builders and is unused (the val
     split is the evaluation set; there is no third split).
     """
-    from utils.splits import as_split_seed, as_split_strategy
     tubelet = str(getattr(args, 'tubelet', '2,16,16')).split(',')
-    val_subject = getattr(args, 'val_subject', None)
-    if isinstance(val_subject, (list, tuple)):
-        val_subject = val_subject[0] if val_subject else None
     resp_cache = (str(getattr(args, 'resp_cache', '') or '').strip() or None)
     # Design D7: with a cache, resp_fs IS the artefact's output rate and must
     # equal the model fs -- so derive it from --fs instead of the 1000 Hz raw
@@ -2190,16 +2137,8 @@ def build_tir_roi_finetune_dataset(is_train: bool, test_mode: bool,
         raw_root=(getattr(args, 'raw_root', None)
                   or getattr(args, 'data_path', None) or None),
         target=str(getattr(args, 'target', 'resp')),
-        is_train=is_train,
-        train_ratio=float(getattr(args, 'train_ratio', 0.8)),
-        split_by=str(getattr(args, 'split_by', 'subject')),
-        val_subject=val_subject,
-        split_role=split_role,
-        n_folds=int(getattr(args, 'n_folds', 0)),
-        fold=int(getattr(args, 'fold', 0)),
-        use_small_val=bool(getattr(args, 'use_small_val', False)),
-        split_seed=as_split_seed(getattr(args, 'split_seed', None)),
-        stratify=as_split_strategy(getattr(args, 'split_stratify', 'none')),
+        plan=plan,
+        role=role,
         fs=float(getattr(args, 'fs', 100.0)),
         clip_duration=float(getattr(args, 'clip_duration', 8.0)),
         clip_stride=getattr(args, 'clip_stride', None),
@@ -2449,14 +2388,14 @@ def check_view_parity(raw_root=None, subjects=None, tasks=None,
                       target_landmarks=TARGET_LANDMARKS,
                       min_signal_spread=0.0, rail_touch_v=0.0,
                       max_entries=None,
+                      plan=None, role='train',
                       n_check=3) -> List[str]:
     """Prove that the Stage-2 and Stage-3 views crop the ROI IDENTICALLY.
 
-    Builds BOTH views on the SAME clip grid -- the Stage-3 view with
-    ``split_by='session', train_ratio=1.0`` so it keeps every session, because
-    the split is the one Stage-3 difference that changes WHICH clips exist and
-    not what a clip looks like -- then compares, for the same
-    ``(session, frame_start)`` window:
+    Builds BOTH views on the SAME clip grid -- both restricted to
+    ``plan.roles[role]`` (widened by ``subjects`` if given), because a role is
+    the ONLY thing that decides which clips exist in either view (ADR-001 D3)
+    -- then compares, for the same ``(session, frame_start)`` window:
 
     * the ROI box -- must be equal (same landmark set and padding);
     * the ``[3, T, S, S]`` clip tensor -- must be BIT-identical: both views go
@@ -2468,7 +2407,18 @@ def check_view_parity(raw_root=None, subjects=None, tasks=None,
 
     Returns a list of failure strings (empty == PASS).
     """
-    common = dict(raw_root=raw_root, subjects=subjects, tasks=tasks,
+    if plan is None:
+        raise ValueError(
+            'check_view_parity needs the plan whose roles define both views; '
+            'pass plan=<protocol.FoldPlan> (ADR-001 D3).')
+    if role not in plan.roles:
+        raise ValueError(
+            f'unknown role {role!r}; the plan defines {tuple(plan.roles)}')
+    role_subjects = list(plan.roles[role])
+    if subjects:
+        keep = set(subjects)
+        role_subjects = [s for s in role_subjects if s in keep]
+    common = dict(raw_root=raw_root, subjects=role_subjects, tasks=tasks,
                   task_groups=task_groups, task_set=task_set,
                   fs=fs, fps=fps, resp_fs=resp_fs,
                   clip_duration=clip_seconds, clip_stride=clip_stride,
@@ -2479,8 +2429,7 @@ def check_view_parity(raw_root=None, subjects=None, tasks=None,
                   rail_touch_v=rail_touch_v,
                   max_entries=max_entries)
     s2 = TirRoiRespPretrainDataset(streams=('tir', 'resp'), **common)
-    s3 = TirRoiRespFinetuneDataset(target='resp', is_train=True,
-                                   split_by='session', train_ratio=1.0,
+    s3 = TirRoiRespFinetuneDataset(target='resp', plan=plan, role=role,
                                    **common)
     fails: List[str] = []
     idx3 = {(e['session'], e['frame_start']): i

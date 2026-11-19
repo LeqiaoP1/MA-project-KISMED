@@ -121,3 +121,80 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable,
     metric_logger.synchronize_between_processes()
     print('Averaged stats:', metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+
+
+@torch.inference_mode()
+def evaluate_pretrain(model: torch.nn.Module, data_loader: Iterable,
+                      device: torch.device, *, mask_base: int,
+                      kept_override=None) -> dict:
+    """One deterministic validation pass (ADR-001 I6, Criterion 2).
+
+    The recipe is fixed here rather than left to the caller, because a
+    validation curve is only comparable across epochs if every stochastic part
+    of the forward path is pinned:
+
+    * ``model.eval()`` and ``torch.inference_mode()`` -- no dropout, no graph;
+    * **no autocast**: the pass runs in FP32 so two evaluations of one
+      checkpoint compare equal bit-for-bit;
+    * the mask GENERATOR is re-created per batch as
+      ``protocol.val_mask_seed(mask_base, batch_idx)`` -- the same masks every
+      epoch, different masks across batches;
+    * ``kept_override`` (``val_kept_<stream>``) pins the masking FRACTION, so
+      the loss is not a draw from the AMMM distribution;
+    * the caller supplies an ORDERED, single-worker loader (``shuffle=False``,
+      ``drop_last=False``, ``num_workers=0``).
+
+    :returns: ``{'val_loss', 'components': {'mse_<stream>': …}, 'kept':
+        {'kept_<stream>': …}, 'n_samples', 'n_batches', 'mask_base',
+        'pinned'}`` -- the per-component record ADR-001 section 2.3 asks for.
+    """
+    from protocol import val_mask_seed
+
+    was_training = model.training
+    model.eval()
+    total_loss = 0.0
+    n_samples = 0
+    n_batches = 0
+    components: dict = {}
+    kept_totals: dict = {}
+
+    for batch_idx, batch in enumerate(data_loader):
+        generator = torch.Generator(device=device)
+        generator.manual_seed(int(val_mask_seed(mask_base, batch_idx)))
+        if isinstance(batch, dict):
+            x = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
+            out = model(x, mask_generator=generator,
+                        kept_override=kept_override)
+        else:
+            samples = batch[0].to(device, non_blocking=True)
+            out = model(samples)
+        if not isinstance(out, dict) or 'loss' not in out:
+            raise SystemExit(
+                '[val] the model returned no masked loss; evaluate_pretrain '
+                'needs the multimodal MAE forward, not a placeholder model.')
+        batch_n = int(next(iter(out['masks'].values())).shape[0])
+        total_loss += float(out['loss']) * batch_n
+        n_samples += batch_n
+        n_batches += 1
+        for name, value in (out.get('losses_mse') or {}).items():
+            components.setdefault(f'mse_{name}', 0.0)
+            components[f'mse_{name}'] += float(value) * batch_n
+        for name, value in (out.get('kept') or {}).items():
+            kept_totals.setdefault(f'kept_{name}', 0.0)
+            kept_totals[f'kept_{name}'] += float(value) * batch_n
+
+    model.train(was_training)
+    if n_samples == 0:
+        raise SystemExit(
+            '[val] the validation loader produced no sample; an empty '
+            'validation pass cannot produce a criterion value (I7).')
+
+    return {
+        'val_loss': total_loss / n_samples,
+        'components': {k: v / n_samples for k, v in components.items()},
+        'kept': {k: v / n_samples for k, v in kept_totals.items()},
+        'n_samples': n_samples,
+        'n_batches': n_batches,
+        'mask_base': int(mask_base),
+        'pinned': dict(kept_override or {}),
+    }

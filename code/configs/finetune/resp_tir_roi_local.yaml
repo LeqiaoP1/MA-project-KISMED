@@ -19,12 +19,10 @@
 # Run from code/:
 #   python -u runners/run_waveform.py -c configs/finetune/resp_tir_roi_local.yaml
 #
-# Leave-one-subject-out sweep (the honest protocol for 4 subjects -- a fixed
-# 0.8 ratio can only ever produce ONE fold, always F004):
-#   for S in F001 F002 F003 F004; do
-#     python -u runners/run_waveform.py -c configs/finetune/resp_tir_roi_local.yaml \
-#       --val_subject $S --output_dir ../output/finetune/resp_tir_roi_loso/$S
-#   done
+# LOCAL config = smoke only. The 4-subject local corpus cannot form K=5 folds
+# (protocol.build_plan requires |universe| >= 5), so a leave-one-subject-out loop
+# is not expressible here: run `--dev_smoke` locally to exercise the code path
+# and take the real 5-fold numbers from scripts/hpc/submit_sweep.sh.
 #
 # Sibling of configs/finetune/resp_local.yaml (RGB -> RESP): the SAME model,
 # loss weights (alpha/beta/gamma), optimizer and 64 px ROI crop size. NOTE
@@ -117,9 +115,9 @@ sig_kernel: 16                     # 16/100 == 2*2/25 s -> one signal token == o
 physio_norm: zscore                # per clip; mirrors the Stage-2 target_norm: clip
 
 # ---- data split (SUBJECT-disjoint; see the LOSO sweep above) ----
-train_ratio: 0.8                   # 4 subjects -> 3 train (F001-F003) / val = F004
-split_by: subject
-val_subject: ''                    # e.g. F001 = LOSO fold (overrides train_ratio/split_by)
+# ---- ADR-001 roles: TRAIN + VAL of <exp_root>/fold<k>/partition.json --------
+val_select: fixed_epoch            # never reads a metric until Criterion 5
+val_criterion: joint_loss
 clip_stride: 1.0                   # window hop in SECONDS (overlapping): 7/8 of
                                    #   consecutive windows overlap, so the
                                    #   TRANSIENT breathing dynamics are sampled
@@ -161,7 +159,10 @@ epochs: 40
 batch_size: 4
 update_freq: 1
 save_ckpt_freq: 10
-eval_freq: 1
+eval_freq: 5                       # epochs between val evaluations; the pilot
+                                   #   measured 2.3% of the run at 5 (Criterion 4
+                                   #   budget is 5%), so 1 is refused by the
+                                   #   SelectionTracker rather than overspending
 
 # ---- optimizer ----
 opt: adamw

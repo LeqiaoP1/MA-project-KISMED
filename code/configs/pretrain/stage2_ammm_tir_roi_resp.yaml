@@ -19,7 +19,12 @@
 data_set: tir_roi
 raw_root: ''                       # '' => $RAW_DATA_PATH, else <repo>/data/raw/BP4D
 subjects: ''
-pretrain_split: all
+# ---- ADR-001 roles: TRAIN + VAL from <exp_root>/fold<k>/partition.json ------
+eval_freq: 5
+val_select: fixed_epoch
+val_criterion: joint_loss
+val_kept_tir: 0.25                 # = video_kept_cap (pinned, I6)
+val_kept_resp: 0.50
 tasks: ''
 task_groups:
   low: [T2, T3, T5]

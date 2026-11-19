@@ -1,7 +1,7 @@
 # K-fold run checklist — pre-flight, launch, and verdict gates
 
-> **Status: runbook (2026-11-01).** Executable order of operations for a full
-> `Stage-2 -> Stage-3 -> eval -> pooled k-fold` run. It defines no intent.
+> **Status: runbook (2026-11-19).** Executable order of operations for a full
+> `Stage-2 -> Stage-3 -> test -> pooled k-fold` run. It defines no intent.
 > Authority: `code/notes/spec/` (what it must be) ->
 > `code/notes/design/ADR-001-subject-disjoint-split-and-selection.md` and
 > `code/notes/design/Evaluation_RespWaveform_protocol.md` (intent) ->
@@ -9,10 +9,11 @@
 > `code/notes/eval/tir_resp/resp_5fold_cv.md` (measured facts).
 > Where this file disagrees with any of them, they win.
 >
-> Baseline this was written against: `configs/pretrain/stage2_hpc_tir_roi_resp.yaml`
-> (96 px) + `configs/finetune/resp_tir_roi_hpc.yaml`, `n_folds 5`, Option A
-> (`use_small_val: false`). Copy-paste commands assume the working directory is
-> `code/` unless stated otherwise.
+> Baseline: `configs/pretrain/stage2_hpc_tir_roi_resp.yaml` (96 px) +
+> `configs/finetune/resp_tir_roi_hpc.yaml`, `K = 5`, roles 70/10/20 read from
+> `<exp_root>/fold<k>/partition.json`, `val_select = fixed_epoch`. There is no
+> Option A/B and no fold-count flag (ADR-001 D2/D5). Copy-paste commands assume
+> the working directory is `code/` unless stated otherwise.
 
 ---
 
@@ -24,14 +25,14 @@
       `amp_rel_err` / `mae_affine` are oracle-calibrated diagnostics, excluded
       from `overall` and from the console summary by
       `runners/run_evaluate_kfold.py`.
-- [ ] Record `git rev-parse HEAD`, the two config paths, `n_folds`, the seed, and
-      the fold -> subject map you EXPECT.
-- [ ] Pick Option A (fixed epochs, no val loader) or Option B (~10 % val,
-      `np.random.default_rng(42 + fold)`). Never mix across folds: Option A and B
-      have different train sets for the same fold.
-- [ ] Fix `n_folds` once. Folds come from
-      `utils/splits.py::subject_folds` over the unique usable subject ids, so a
-      subject gaining or losing clips cannot shift a boundary.
+- [ ] Record `git rev-parse HEAD`, the two config paths, `fold`, the partition
+      digest, and the fold -> subject map you EXPECT (read the record, never a
+      re-derivation).
+- [ ] There is **one** protocol (ADR-001): no Option A/B choice. `val_select`
+      defaults to `fixed_epoch`; `best_val` requires the Criterion-5 study.
+- [ ] `K = 5` is a module constant (`protocol/constants.py`), not a flag. Folds
+      come from `protocol/partition.py::split_universe` over the unique usable
+      subject ids, so a subject gaining or losing clips cannot shift a boundary.
       **Partition (who is held out)** is over the subjects that own at least one
       session with both IRFeatures and Resp_Volts: **139** on the current corpus
       (M049 has none), i.e. `139 = 5*27 + 4` -> **28/28/28/28/27**.
@@ -50,9 +51,11 @@
       experiment: never mix folds across the two rules, and state which one a
       number came from. Re-derive the universe for a changed corpus: adding one
       usable subject re-splits EVERY fold.
-- [ ] Pre-register the confound: folds are CONTIGUOUS slices of the sorted ids,
-      so fold tracks sex/cohort. A per-fold spread describes cohorts, not model
-      quality. Never claim "fold k's model is better".
+- [ ] Pre-register the confound: the partition is stratified (`sex`), so each
+      fold is a near-representative sample instead of a sex block — but 14 val
+      and ~28 test subjects per fold still leave a per-fold spread that
+      describes cohorts as much as model quality. Never claim "fold k's model is
+      better".
 - [ ] Decide new lineage vs re-run. A new lineage also needs the YAML, a
       `code/tests/` entry, and (only if the architecture changed)
       `python scripts/project/write_specs.py` — read its warning first, it
@@ -76,7 +79,7 @@
 ## 2. Code gate (~5 min, catches drift early)
 
 - [ ] `python -m compileall -q .`
-- [ ] `python -m pytest -q` -> baseline **497 passed**, ~14 s, CPU. Judge only
+- [ ] `python -m pytest -q` -> baseline **657 passed**, ~19 s, CPU. Judge only
       NEW failures.
 - [ ] `python -m core.waveform_model` (module form; running the file as a script
       dies on relative imports).
@@ -168,16 +171,17 @@ must agree on:
       encoder. A hardcoded whole-corpus checkpoint only WARNS in
       `check_stage2_fold_contract` — it yields a healthy-looking leaked CV
       number.
-- [ ] Stage 2: `submit_pretrain.sbatch` forces `--pretrain_split fold`. Confirm
-      in the log that the fold's test subjects are absent from the corpus.
+- [ ] Stage 2: confirm in `stage2/metrics.jsonl` that the val curve exists and
+      that the fold's TEST subjects are absent from the corpus (the role counts
+      in `partition.json` are the authority; the builders cannot widen them).
 - [ ] Keep `GPUS=4` (global batch 64). GPU count changes the global batch, hence
       the LR, and folds stop being comparable.
 - [ ] Leave `--max_sessions` / `--max_clips` / `--max_entries` unset for real
       runs. (The partition is computed over the FULL usable subject list, so caps
       never shift fold membership — they just make the number meaningless.)
-- [ ] AMP stays `none` unless measured: `AMP_DTYPE=fp16|bf16` first through
-      `scripts/hpc/smoke_pretrain.sbatch`; resuming with a different mode only
-      prints a warning.
+- [ ] AMP stays `none` unless measured: `AMP_DTYPE=fp16|bf16` first on ONE fold
+      (`FOLDS="0"` through `scripts/hpc/submit_sweep.sh`); resuming with a
+      different mode only prints a warning.
 
 ## 5. Cheap gates before spending GPU-days
 
@@ -195,79 +199,65 @@ must agree on:
 
       Exit 0 = the runner's own verdict. Exit 1 = at least one BLOCKER.
       `PYTHONPATH=.` is required (it imports `core.*`).
-- [ ] Stage-3 driver dry run: `bash scripts/hpc/submit_stage3_kfold.sh`. Every
-      fold must print `READY` (dir exists; newest ckpt is FINAL,
-      `epoch + 1 >= args.epochs`; the ckpt records the same `fold/n_folds`).
+- [ ] Partition dry run (CPU, seconds) — the record must be written and re-read
+      with the same digest:
+
+      python runners/run_partition.py --exp_root /tmp/proto_dry --fold 0 \
+          --data_set tir_roi --raw_root "$RAW_DATA_PATH" --dry_run
 
 ## 6. Launch order
 
-1. [ ] **Stage 2 sweep** — one job, folds sequential, each fold owns
-       `<RUN_NAME>_fold<k>`:
+The sweep runs all four steps of a fold — partition → Stage 2 → Stage 3 → test —
+inside ONE allocation, folds SEQUENTIALLY (`scripts/hpc/submit_sweep.sh`). There
+is deliberately no `--array`: parallel folds would share `MASTER_PORT` and a
+reader could pool a half-written sweep.
 
-       GPU_TYPE=rtx6000 GPUS=4 FOLDS="0 1 2 3 4" \
-           bash scripts/hpc/submit.sh scripts/hpc/submit_pretrain.sbatch
+1. [ ] **First fold only** (proves the whole chain before spending the rest):
 
-       Gate per fold: `checkpoint-0149.pth` exists, records `epoch=149`,
-       `fold=k`, `n_folds=5`. Read the `.out` tail, not `sacct` State — older
-       spooled copies report a cosmetic `FAILED 1:0` after a successful sweep.
+       EXP_ROOT=$WORK_SCRATCH/protocol_v1 FOLDS="0" \
+           bash scripts/hpc/submit_sweep.sh
 
-2. [ ] **Stage 3 sweep** — ONE JOB PER FOLD (a whole-sweep job needs
-       `acc_long`/5 days, which this cluster refuses):
+       Then gate on the four artefacts of fold 0 (§7) BEFORE submitting the
+       rest. `partition.json` is write-once: a resumed sweep reuses it when the
+       digest matches and aborts otherwise.
 
-       bash scripts/hpc/submit_stage3_kfold.sh                 # dry run
-       GPU_TYPE=rtx6000 GPUS=4 PARTITION=acc TIME=12:00:00 \
-           bash scripts/hpc/submit_stage3_kfold.sh --submit
+2. [ ] **Full sweep** (one allocation, ~18-20 h GPU):
 
-       Budget at 150 epochs: rtx6000 ~8 h 40, h100 ~9 h 30, a100 ~21 h (needs
-       `TIME=24:00:00`, the `acc` cap — an overrun is killed, not extended).
+       EXP_ROOT=$WORK_SCRATCH/protocol_v1 sbatch scripts/hpc/submit_sweep.sbatch
+       # resource override:
+       #   sbatch --partition=acc --time=24:00:00 scripts/hpc/submit_sweep.sbatch
 
-3. [ ] **Single-process eval dump per fold** — back up the five artefacts FIRST;
-       `--eval_only` rewrites `fold_manifest.json` with `roles.train = []`:
+       Env knobs: `FOLDS`, `CFG2`, `CFG3`, `RAW_ROOT`, `SPLIT_SEED`,
+       `SPLIT_STRATIFY`, `DATA_SET2`, `DATA_SET3`, `PY`.
 
-       k=<fold>
-       dir="$WORK_SCRATCH/finetune/resp_tir_roi_hpc_fold$k"
-       mkdir -p "$dir/shard_backup"
-       cp -a "$dir"/{preds.npy,targets.npy,entries.json,fold_manifest.json,metrics_final.json} "$dir/shard_backup/"
-       OUT_DIR="$dir" \
-       STAGE2_DIR="$WORK_SCRATCH/pretrain/stage2_hpc_tir_roi_resp_fold$k" \
-       GPU_TYPE=a100 GPUS=1 SBATCH_JOB_NAME="st3_eval_fold$k" \
-           bash scripts/hpc/submit.sh scripts/hpc/submit_waveform_eval.sbatch --fold "$k"
+3. [ ] **Pool** (refuses a dev-smoke record, a partial sweep, mixed seeds or
+       mixed partitions):
 
-       `--fold <k>` is MANDATORY: the config ships `fold: 0` and
-       `check_stage2_fold_contract` hard-exits on the mismatch before any dataset
-       is built.
+       python runners/run_evaluate_kfold.py --exp_root "$WORK_SCRATCH/protocol_v1"
 
-4. [ ] **Restore** the manifest after each re-eval:
-       `cp -a "$dir/shard_backup/fold_manifest.json" "$dir/"`.
-
-5. [ ] **Session assembly** (login node, CPU, ~1 min/fold):
-
-       python runners/run_evaluate_session.py \
-           --pred_dir "$WORK_SCRATCH/finetune/resp_tir_roi_hpc_fold$k" \
-           --waveform resp --fs 100
-
-6. [ ] **Pooled k-fold report** (refuses to finish if the folds overlap or
-       duplicate a subject):
-
-       python runners/run_evaluate_kfold.py --root ../output/finetune \
-           --run_prefix resp_tir_roi_hpc_fold --folds 0,1,2,3,4 \
-           --out ../output/eval/resp_kfold/kfold_resp_tir_roi_hpc.json
+       Writes `<EXP_ROOT>/report/kfold.json`. `--allow_partial` is for smokes
+       only — never for a number that reaches the thesis.
 
 ## 7. Verification gates (run before reading any number)
 
-- [ ] `len(entries.json) == preds.npy.shape[0]` per fold. If `preds` is a
-      quarter of `entries`, you are holding rank 0's DDP shard — repeat step 6.3.
-- [ ] `metrics_final.json`: `fold_contract.match == true`, with
-      `stage2_fold == stage3_fold == k`.
-- [ ] `metrics_final.finetune` points inside
-      `pretrain/stage2_hpc_tir_roi_resp_fold<k>/`.
-- [ ] `checkpoints/latest_checkpoint.txt` points inside the fold's own dir; no
-      `*fold*` symlink in `finetune/`; Stage-2 and Stage-3 `checkpoint-0149.pth`
-      have distinct inodes.
-- [ ] `fold_manifest.json`: `fold=k`, `n_folds=5`, `roles.test` is the expected
-      block, `train` ∩ `test` = ∅.
-- [ ] Partition audit: the union of the test roles is the whole usable corpus,
-      pairwise disjoint (`run_evaluate_kfold` asserts it).
+- [ ] `<EXP_ROOT>/fold<k>/partition.json` agrees across folds on `split_seed`
+      and `split_stratify`, while each fold's `digest` differs — five distinct
+      test blocks of ONE partition.
+- [ ] `<EXP_ROOT>/fold<k>/stage3/test/metrics.json`: `eval_role == 'test'`, not
+      `skipped`, `n_clips > 0`, and `partition_digest` equals the fold's record.
+      A `skipped` artefact means the fold has nothing to score and cannot enter
+      the pooled number.
+- [ ] `stage3/test/{preds,targets}.npy` and `entries.json` come from the SAME
+      process: `len(entries.json) == preds.shape[0]`. A shard-sized `preds`
+      means you are holding rank 0's DDP slice.
+- [ ] `stage3/selection.json` exists and every fold records the SAME `rule`
+      (the pooler refuses a mix). `fixed_epoch` is the only licensed value until
+      Criterion 5 exists.
+- [ ] `stage3/metrics.jsonl` shows the val curve at the expected cadence
+      (`eval_freq: 5`), and Stage 2 is not flat at the constant-predictor level
+      (`mse_resp` ~ the target variance ⇒ the head learned nothing).
+- [ ] Partition audit: the union of the five test roles is the whole usable
+      corpus and they are pairwise disjoint — the pooler asserts both.
 - [ ] Fold k's own `session_metrics.json` reproduces the pooled per-fold row
       (the two come from different scoring paths; a mismatch means one dump is
       stale).
@@ -281,8 +271,8 @@ must agree on:
 
 | Trap | Symptom | Guard |
 |---|---|---|
-| Whole-corpus Stage-2 encoder used | Plausible number, slightly better | `finetune: ''` + `fold_contract.match` |
-| Stage-3 on another fold's ckpt | Loads perfectly, wrong result | `check_stage2_fold_contract` + driver preflight |
+| Whole-corpus Stage-2 encoder used | Plausible number, slightly better | `finetune: ''` + the sweep's `partition_digest` pairing |
+| Stage-3 on another fold's ckpt | Loads perfectly, wrong result | `check_stage2_fold_contract` (digest) |
 | `--eval_only` clobbered the manifest | `roles.train = []` | backup + restore (step 6.3/6.4) |
 | Rank-0 shard scored as the dump | `preds` = `entries`/4 | row-count gate (step 7) |
 | Two folds sharing one `OUT_DIR` | Fold k resumes fold j | driver pins `OUT_DIR` per fold |

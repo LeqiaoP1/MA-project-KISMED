@@ -85,6 +85,18 @@ def _stub_video(monkeypatch):
     yield
 
 
+def _dev_plan():
+    """A dev-legal ADR-001 plan whose TRAIN role owns the synthetic session."""
+    from protocol import build_plan
+    universe = [f'S{n:03d}' for n in range(1, 7)]
+    for fold in range(5):
+        plan = build_plan(universe, fold, split_seed=42,
+                          split_stratify='none', dev_smoke=True)
+        if 'S001' in plan.roles['train']:
+            return plan
+    raise AssertionError('no fold keeps S001 in the train role')
+
+
 def _write_raw(root) -> str:
     """One session ``S001_T1``: drifting landmarks + a sloped respiration."""
     (root / 'Thermal' / 'S001').mkdir(parents=True)
@@ -124,8 +136,8 @@ def _finetune_ds(root, **kw):
     kw.setdefault('input_size', 64)
     kw.setdefault('roi_padding', 0.2)
     kw.setdefault('subjects', ['S001'])
-    kw.setdefault('is_train', True)
-    kw.setdefault('train_ratio', 1.0)     # single subject -> train side
+    kw.setdefault('plan', _dev_plan())
+    kw.setdefault('role', 'train')
     return trd.TirRoiRespFinetuneDataset(raw_root=root, **kw)
 
 
@@ -230,14 +242,15 @@ def test_pin_roi_target_norm_ignores_non_roi_paths():
 # --------------------------------------------------------------------------- #
 def test_builder_threads_the_z_score(tmp_path):
     root = _write_raw(tmp_path)
-    ds = build_pretraining_dataset(_args(root, physio_norm='zscore'))
+    ds = build_pretraining_dataset(_args(root, physio_norm='zscore'),
+                                   _dev_plan())
     assert ds.physio_norm == 'clip'
 
 
 def test_builder_refuses_a_retired_value(tmp_path):
     with pytest.raises(ValueError, match='physio_norm may only be'):
         build_pretraining_dataset(_args(_write_raw(tmp_path),
-                                        physio_norm='session'))
+                                        physio_norm='session'), _dev_plan())
 
 
 def test_rgb_roi_builder_threads_physio_norm():

@@ -35,10 +35,13 @@ per tested subject**, and aggregate across subjects.
   legal choice whenever `n_folds > 1` (a session split is rejected: two sessions
   of one subject must never straddle the boundary).
 - The partition is computed **once, over the full usable subject list**
-  (`utils/splits.py::subject_folds`: sorted ids + `np.array_split`, no RNG), so
+  (`protocol.FoldPlan` from `data.universe.corpus_subjects`: sorted ids +
+  `np.array_split`, seeded within-stratum shuffle when `sex` is the stratifier),
+  so
   fold membership cannot drift with `--subjects`, `--tasks`, `--max_sessions`
-  or the rail/spread filters. Each run writes `fold_manifest.json` (fold,
-  n_folds, stage, roles) so a Stage-2 vs Stage-3 mismatch is visible.
+  or the rail/spread filters. Each fold writes ONE `partition.json` (fold,
+  n_folds, seeds, roles, counts, universe + partition digests), which both stages
+  read and must agree on by digest.
 - **Model selection reads only the validation role** (`ADR-001`): every run has a
   val role, and `metrics_final.json` records the rule actually used —
   `selection: 'best_val' | 'fixed_epoch'` — with the selected epoch and criterion
@@ -55,7 +58,7 @@ per tested subject**, and aggregate across subjects.
 - Mechanism and rollout: `code/notes/plan/ADR-001-subject-kfold-plan.md` (the
   requirement lives in
   `code/notes/design/ADR-001-subject-disjoint-split-and-selection.md`). Roles per fold from
-  `utils/splits.py::get_stage_splits`:
+  `protocol.build_plan` (implemented in `code/protocol/`):
 
   | role | share | subjects |
   |---|---|---|
@@ -218,7 +221,8 @@ A reconstruction is only meaningful if it beats trivial competitors:
 
 ## 7. Reporting artifacts
 
-Per fold run: `fold_manifest.json` (the partition, §3.1), and per epoch the
+Per fold run: `partition.json` (the partition, §3.1), `selection.json`, and per
+epoch the
 `metrics.jsonl` / `metrics_final.json` carrying `selection` and `eval_role`.
 
 Per run (restricted to the test subjects):
@@ -240,7 +244,7 @@ For the pooled cross-validation (headline of a k-fold study):
 
 | Piece | Location |
 |---|---|
-| subject-fold partition, roles, manifest | `utils/splits.py` (`subject_folds`, `get_stage_splits`, `write_fold_manifest`) |
+| subject-fold partition, roles, record | `code/protocol/` (`build_plan`, `FoldPlan`, `save_plan`, `load_plan`) |
 | fold-aware datasets / Stage-2 corpus | `data/tir_resp_dataset.py`, `data/rgb_roi_dataset.py`, `data/datasets.py` |
 | fold CLI (`--n_folds` fixed at 5, `--fold`, `--split_role`) | `runners/_common.py::add_split_args` |
 | selection record (`best_val` or `fixed_epoch`) + test-role eval | `runners/run_waveform.py` |

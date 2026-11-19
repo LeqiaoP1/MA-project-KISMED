@@ -21,9 +21,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
 
 from engines import train_one_epoch_pretrain
-from runners._common import (add_common_args, add_split_args, check_loader_not_empty, env_or,
-                             init_env, make_data_loader,
-                             parse_args_with_config)
+from engines.pretrain import evaluate_pretrain
+from runners._common import (add_common_args, add_protocol_args,
+                             check_loader_not_empty, env_or, init_env,
+                             load_or_create_plan, make_data_loader,
+                             parse_args_with_config, resolve_val_kept)
 
 
 def str2bool(value) -> bool:
@@ -49,7 +51,7 @@ def str2bool(value) -> bool:
 def get_args():
     parser = argparse.ArgumentParser('Project MAE pre-training', add_help=True)
     add_common_args(parser)
-    add_split_args(parser)
+    add_protocol_args(parser)
 
     # model
     parser.add_argument('--model', default='project_multimae_base', type=str,
@@ -82,15 +84,8 @@ def get_args():
                              '<repo>/data/raw/BP4D')
     parser.add_argument('--subjects', default='', type=str,
                         help='tir_roi/rgb_roi only: comma list of subjects '
-                             '(empty=all)')
-    parser.add_argument('--pretrain_split', default='all', type=str,
-                        choices=['all', 'fold'],
-                        help='Stage-2 pre-training data scope. "all" (default) '
-                             '= every usable subject; "fold" = exclude the '
-                             'held-out TEST fold of this run (--n_folds/--fold) '
-                             'so the Stage-3 score is not contaminated by '
-                             'pretraining. There is still no Stage-2 val split: '
-                             'SSL has no label to early-stop on.')
+                             '(empty=all). NARROWS the sessions read inside a '
+                             'role; it never moves a subject between roles.')
     parser.add_argument('--tasks', default='', type=str,
                         help='tir_roi/rgb_roi only: comma list of tasks '
                              '(empty=all)')
@@ -542,10 +537,18 @@ def main(args):
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f'Model = {args.model}, params = {n_params:,}')
 
-    # ----- data ----------------------------------------------------------- #
-    # Implement code/data/datasets.py::build_pretraining_dataset first.
+    # ----- data: the ADR-001 roles of this fold --------------------------- #
     from data import build_pretraining_dataset
-    dataset_train = build_pretraining_dataset(args)
+    plan = load_or_create_plan(args, stage='stage2')
+    # Persisted into every checkpoint of this run: Stage 3 refuses a pair whose
+    # digests differ, because two partitions can share a fold index.
+    args.partition_digest = plan.digest
+    # Every stream that draws a mask must be pinned for the validation pass
+    # (I6); `resolve_val_kept` refuses an unpinned run instead of silently
+    # producing a curve that cannot be compared across epochs.
+    kept = resolve_val_kept(
+        args, str(getattr(args, 'streams', '') or '').split(','))
+    dataset_train = build_pretraining_dataset(args, plan, role='train')
     # Record the respiration cache IDENTITY (directory name, machine-
     # independent) on the args so the checkpoint carries it: it is a corpus-
     # level contract like clip_stride -- it changes the LABEL SPACE, never a
@@ -572,6 +575,16 @@ def main(args):
     # fail fast + name the cause instead of crashing later in the logger (the
     # LR schedule below clamps steps_per_epoch to >= 1, so it would not notice)
     check_loader_not_empty(data_loader_train, 'train', args)
+
+    # Validation role: the ONLY selection signal (I4/I7). Ordered, single-worker
+    # and unpadded, so the same checkpoint evaluates to the same number.
+    dataset_val = build_pretraining_dataset(args, plan, role='val')
+    data_loader_val = make_data_loader(args, dataset_val, shuffle=False,
+                                       drop_last=False, num_workers=0)
+    check_loader_not_empty(
+        data_loader_val, 'val', args,
+        extra='Stage 2 requires a validation role (ADR-001 I4); check the fold\'s '
+              'partition record and any --subjects filter.')
 
     # step-level warmup + cosine LR schedule (mirrors MultiMAE/VideoMAE)
     from utils import cosine_scheduler
@@ -629,12 +642,27 @@ def main(args):
         args, job_type='pretrain',
         tags=(str(getattr(args, 'data_set', '')),
               str(getattr(args, 'masking', 'ratio')),
-              f"n_folds{getattr(args, 'n_folds', '')} fold{getattr(args, 'fold', '')}"),
+              f'fold{plan.fold}', f'digest{plan.digest[:8]}'),
         extra={'data/steps_per_epoch': steps_per_epoch,
                'data/n_samples': len(dataset_train),
                'train/world_size': get_world_size()})
     print(f'Start training for {args.epochs} epochs '
           f'(resuming at epoch {start_epoch})')
+
+    # Selection is one object shared with Stage 3; it is also the only writer of
+    # best.pth, so a delivered checkpoint can only come from the val role (I7).
+    from protocol import (SelectionTracker, append_jsonl, make_eval_record,
+                          write_selection)
+    tracker = SelectionTracker(
+        epochs=args.epochs, rule=getattr(args, 'val_select', 'fixed_epoch'),
+        criterion=getattr(args, 'val_criterion', 'joint_loss'),
+        eval_freq=int(getattr(args, 'eval_freq', 0) or 0),
+        n_val_clips=len(dataset_val), n_train_clips=len(dataset_train),
+        dev_smoke=bool(getattr(args, 'dev_smoke', False)))
+    mask_base = int(getattr(args, 'val_seed', None)
+                    or getattr(args, 'split_seed', 42))
+    metrics_path = os.path.join(args.output_dir, 'metrics.jsonl')
+    selection_path = os.path.join(args.output_dir, 'selection.json')
     for epoch in range(start_epoch, args.epochs):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
@@ -653,10 +681,49 @@ def main(args):
                           'train/epoch_seconds': epoch_seconds,
                           'epoch': epoch}, step=epoch)
 
+        if tracker.should_eval(epoch):
+            _t_val = time.time()
+            val = evaluate_pretrain(model, data_loader_val, device,
+                                    mask_base=mask_base,
+                                    kept_override=kept or None)
+            improved = tracker.observe(epoch, val['val_loss'])
+            record = make_eval_record(
+                epoch=epoch, value_kind=tracker.criterion,
+                criterion_value=val['val_loss'],
+                counts={'clips': val['n_samples'],
+                        'subjects': len(plan.roles['val'])},
+                seed={'val_seed': plan.val_seed, 'mask_base': mask_base},
+                components=val['components'], pinned=val['pinned'],
+                role_digest=plan.digest)
+            print(f'[val] epoch {epoch}: loss {val["val_loss"]:.6f} '
+                  f'over {val["n_samples"]} sample(s) '
+                  f'({time.time() - _t_val:.1f}s)'
+                  + ('  <- best' if improved else ''))
+            if is_main_process():
+                append_jsonl(metrics_path, record)
+            wandb_logger.log({f'val/{k}': v
+                              for k, v in val['components'].items()},
+                             step=epoch)
+            wandb_logger.log({'val/loss': val['val_loss']}, step=epoch)
+            if improved and tracker.writes_best_checkpoint and is_main_process():
+                os.makedirs(args.output_dir, exist_ok=True)
+                torch.save({'model': model_without_ddp.state_dict(),
+                            'epoch': epoch,
+                            'partition_digest': plan.digest},
+                           os.path.join(args.output_dir, 'best.pth'))
+
         if is_main_process() and (epoch % args.save_ckpt_freq == 0
                                   or epoch + 1 == args.epochs):
             save_model(args, epoch, model, model_without_ddp, optimizer,
                        loss_scaler)
+    if is_main_process():
+        selection = tracker.record(pinned=kept or None)
+        selection['partition_digest'] = plan.digest
+        write_selection(selection_path, selection)
+        print(f'[selection] {selection["rule"]}: epoch '
+              f'{selection["selected_epoch"]}, '
+              f'{selection["criterion"]} '
+              f'{selection["criterion_value"]} -> {selection_path}')
     wandb_logger.finish()
 
 

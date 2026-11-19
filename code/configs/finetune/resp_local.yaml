@@ -41,8 +41,7 @@ physio_norm: zscore                # the raw RESP column is volts, not zero-mean
 # ---- data (canonical layout from data/prepare_bp4d.py) ----
 data_set: bp4d+
 data_path: ../data/processed/bp4d_canonical
-train_ratio: 0.8
-split_by: subject                  # SUBJECT-disjoint (same split as the BP branch)
+# ADR-001: roles come from the fold's partition.json; the ratio keys are gone.
 clip_stride: 1.0
 
 # ---- joint spatio-temporal-spectral loss ----

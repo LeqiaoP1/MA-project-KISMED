@@ -10,9 +10,9 @@
 #
 # Design:  code/notes/design/Asymmetric_MultiModal_Masking.md
 # Plan:    code/notes/plan/Asymmetric_MultiModal_Masking_plan.md (arm A)
-# Sweep:   bash scripts/hpc/submit_ammm_pretrain_kfold.sh            # dry run
-#          bash scripts/hpc/submit_ammm_pretrain_kfold.sh --submit   # queue 5 folds
-# Pilot:   bash scripts/hpc/submit_ammm_pretrain_kfold.sh --pilot 20 --submit
+# Sweep:   CFG2=configs/pretrain/stage2_ammm_hpc_tir_roi_resp.yaml \
+#              EXP_ROOT=$WORK_SCRATCH/protocol_v1 bash scripts/hpc/submit_sweep.sh
+# Pilot:   add FOLDS="0" and a cap (--max_entries) to the same command.
 # Report:  python notes/eval/tir_resp/ammm_pilot_report.py <run_dir_or_log...>
 #
 # !! input_size 96 + roi_padding 0.10 are chosen TOGETHER and are a FROZEN
@@ -26,15 +26,18 @@
 # ---------------------------------------------------------------- data source
 data_set: tir_roi                  # raw-tree thermal ROI + Resp_Volts.txt
 subjects: ''                       # '' = every discoverable subject
-pretrain_split: all                # the sbatch overrides this to `fold` per fold
-# ---- k-fold PARTITION (MUST mirror configs/finetune/resp_tir_roi_hpc.yaml) --
-# The sbatch passes --n_folds/--fold/--pretrain_split fold; these two knobs
-# decide HOW the subjects are GROUPED. Stage 3 must carry the SAME pair, else
-# fold k's encoder was pre-trained on fold k's test subjects.
-# split_seed null (or split_stratify: none) = the legacy contiguous blocks,
-# where fold == sex block. See code/notes/plan/ADR-001-subject-kfold-plan.md.
-split_seed: 42                     # seed of the draw; null = legacy blocks
+# ---- ADR-001 roles (train / val / test) -------------------------------------
+# Stage 2 builds TRAIN and VAL from <exp_root>/fold<k>/partition.json; the TEST
+# block is never loaded. No fold-count and no split-policy key by design.
+split_seed: 42                     # partition seed; identical in both stages
 split_stratify: sex                # shuffle within stratum, then interleave
+# Pinned validation masking (I6): AMMM draws its kept ratios per step, so the
+# validation pass pins them to the training caps instead of drawing.
+eval_freq: 5
+val_select: fixed_epoch
+val_criterion: joint_loss
+val_kept_tir: 0.25                 # = video_kept_cap
+val_kept_resp: 0.50                # mid-range physio kept fraction
 tasks: ''                          # '' = all tasks; UNIONED with task_set below
 # ---- task GROUPS ("distortion levels") ----------------------------------
 # Definitions live HERE, not in code; pinned by data/task_groups.py and
@@ -136,8 +139,9 @@ num_workers: 8                     # per rank (== cpus-per-task in the sbatch)
 # ---- logging ----
 output_dir: output/pretrain/stage2_ammm_hpc_tir_roi_resp   # the sbatch overrides
 # Rank-0 only, one W&B run per FOLD (the run name is the output-dir basename).
-# Compute nodes have NO outbound internet, so submit_pretrain.sbatch defaults
-# WANDB_MODE=offline: the run dir collects wandb/offline-run-* and you upload it
+# Compute nodes have NO outbound internet: export WANDB_MODE=offline in the
+# submitting shell (the sweep does not set it), so the run dir collects
+# wandb/offline-run-* and you upload it
 # from a LOGIN node with  wandb sync <run_dir>/wandb/offline-run-*
 # (or set WANDB_MODE=online in the submitting shell if egress exists).
 log_wandb: true

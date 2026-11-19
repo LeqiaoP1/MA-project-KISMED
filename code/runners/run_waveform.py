@@ -25,6 +25,7 @@ The ``bp4d+`` dataset (``data/paired_dataset.py``) yields ``(samples, [B, T])``
 with ``samples = [B, 3, T, H, W]`` (``use_tir`` off) or ``[B, 6, T, H, W]``.
 """
 import argparse
+import glob
 import os
 import sys
 from typing import Optional
@@ -35,11 +36,12 @@ import numpy as np
 import torch
 
 from core import WaveformJointLoss
-from engines import (evaluate_waveforms, predict_waveforms,
+from engines import (evaluate_waveform_loss, predict_waveforms,
                      train_one_epoch_waveform)
-from runners._common import (add_common_args, add_split_args,
+from runners._common import (add_common_args, add_protocol_args,
                              check_loader_not_empty, env_or, init_env,
-                             make_data_loader, parse_args_with_config)
+                             load_or_create_plan, make_data_loader,
+                             parse_args_with_config)
 
 
 def _parse_fft_sizes(s):
@@ -291,58 +293,104 @@ def resolve_resp_cache_key(args) -> Optional[str]:
     return respc.find_cache(root_in, want).name
 
 
-def check_stage2_fold_contract(args, stage2_args) -> dict:
-    """Verify the --finetune checkpoint belongs to THIS fold.
+def load_stage3_weights(model, output_dir: str, rule: str = 'fixed_epoch',
+                        digest: Optional[str] = None) -> str:
+    """Load the Stage-3 weights the SELECTION RULE delivered (I7).
 
-    The k-fold protocol only holds if fold k's Stage-3 run starts from a Stage-2
-    encoder that never saw fold k's test subjects. Nothing in the tensor shapes
-    can reveal a violation: the checkpoint loads cleanly either way, and the run
-    looks perfectly healthy while the headline number is inflated. So compare
-    the fold the checkpoint RECORDS against the fold this run is executing.
+    The report-time process is separate from the training process, so nothing
+    resumes the weights for it: without this it would score an untrained model
+    and report a number that looks plausible. ``fixed_epoch`` delivers the last
+    checkpoint; ``best_val`` delivers ``best.pth`` (and nothing else).
 
-    * both folds recorded and different -> hard ``SystemExit``.
-    * checkpoint records no fold (``n_folds == 0``, i.e. pretrained on the whole
-      corpus) -> loud warning; that is a deliberate choice for some baselines,
-      but it is leakage for a cross-validated number.
-    * this run is not a fold run -> nothing to check.
+    :returns: the path that was loaded.
     """
-    n_folds = int(getattr(args, 'n_folds', 0) or 0)
-    if n_folds <= 1:
-        return {}
-    fold = int(getattr(args, 'fold', 0) or 0)
-    s2_nf = int(getattr(stage2_args, 'n_folds', 0) or 0) if stage2_args else 0
-    s2_fold = getattr(stage2_args, 'fold', None) if stage2_args else None
+    if str(rule) == 'best_val':
+        path = os.path.join(output_dir, 'best.pth')
+        if not os.path.isfile(path):
+            raise SystemExit(
+                f'[stage3] val_select=best_val but no best.pth under '
+                f'{output_dir}; the training run did not select a checkpoint.')
+    else:
+        candidates = sorted(glob.glob(os.path.join(output_dir, 'checkpoints',
+                                                   'checkpoint-*.pth')))
+        if not candidates:
+            raise SystemExit(
+                f'[stage3] no Stage-3 checkpoint under {output_dir}/checkpoints'
+                f'; cannot score a run that never trained.')
+        path = candidates[-1]
 
-    if not stage2_args:
-        print('[stage3] fold contract: the checkpoint records no args -> cannot '
-              'verify which fold it was pre-trained on.')
-        return {}
-    if s2_nf <= 1 or s2_fold is None:
-        print(f'[stage3] WARNING: fold contract -- this run is fold {fold} of '
-              f'{n_folds}, but the Stage-2 checkpoint records NO fold '
-              f'(pretrain_split=all, i.e. it saw every subject). A '
-              f'cross-validated number from this pair is LEAKED; re-pretrain '
-              f'with --pretrain_split fold for a clean fold.')
-        return {'stage2_fold': None, 'stage3_fold': fold, 'match': False}
+    payload = torch.load(path, map_location='cpu', weights_only=False)
+    state = payload.get('model', payload) if isinstance(payload, dict) else payload
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    if missing or unexpected:
+        print(f'[stage3] WARNING: {len(missing)} missing / {len(unexpected)} '
+              f'unexpected tensor(s) loaded from {path}')
 
-    same = int(s2_fold) == fold and s2_nf == n_folds
-    if not same:
+    recorded = getattr(payload.get('args'), 'partition_digest', None) \
+        if isinstance(payload, dict) else None
+    if digest and recorded and str(recorded) != str(digest):
         raise SystemExit(
-            f'[stage3] fold contract VIOLATED: the --finetune checkpoint was '
-            f'pre-trained as fold {s2_fold} of {s2_nf}, but this run is fold '
-            f'{fold} of {n_folds}. Its test subjects were therefore seen during '
-            f'pre-training, which silently inflates every reported metric. '
-            f'Point --finetune (or STAGE2_DIR) at the fold-{fold} Stage-2 run.')
-    print(f'[stage3] fold contract OK: checkpoint and run are both fold '
-          f'{fold}/{n_folds}.')
-    return {'stage2_fold': int(s2_fold), 'stage3_fold': fold, 'match': True}
+            f'[stage3] partition contract VIOLATED: {path} was trained on '
+            f'partition {str(recorded)[:12]}, this run is {str(digest)[:12]}. '
+            f'Its test subjects are not the ones this run holds out.')
+    print(f'[stage3] loaded {path} (epoch {payload.get("epoch") if isinstance(payload, dict) else "?"}, '
+          f'digest {str(recorded)[:12] if recorded else "unrecorded"})')
+    return path
+
+
+def check_stage2_fold_contract(plan, stage2_args) -> dict:
+    """Verify the --finetune checkpoint belongs to THIS fold's partition.
+
+    The protocol only holds if fold k's Stage-3 run starts from a Stage-2
+    encoder that never saw fold k's test or validation subjects. Nothing in the
+    tensor shapes can reveal a violation: the checkpoint loads cleanly either
+    way, and the run looks healthy while the headline number is leaked. So
+    compare the PARTITION DIGEST the checkpoint records against this run's.
+
+    A digest is the only sound key: two runs can share ``fold == 2`` and still
+    hold out different subjects (a different seed or stratifier), which is
+    exactly the pair this guard exists to refuse.
+
+    * both records carry a digest and they differ -> hard ``SystemExit``;
+    * the checkpoint predates the protocol (no digest) -> loud warning, and the
+      verdict is recorded as unverified rather than "OK";
+    * this run has no plan -> nothing to compare, nothing claimed.
+    """
+    if stage2_args is None:
+        print('[stage3] partition contract: the checkpoint records no args -> '
+              'cannot verify which partition it was pre-trained on.')
+        return {'verified': False, 'match': None,
+                'reason': 'checkpoint records no args'}
+
+    stage3_digest = plan.digest
+    stage2_digest = getattr(stage2_args, 'partition_digest', None)
+    if not stage2_digest:
+        print(f'[stage3] WARNING: this run is partition {stage3_digest[:12]} '
+              f'(fold {plan.fold}/{plan.n_folds}), but the Stage-2 checkpoint '
+              f'records NO partition digest (it predates ADR-001). The pairing '
+              f'cannot be verified and a cross-validated number from it may be '
+              f'leaked; re-pretrain with runners/run_pretrain.py.')
+        return {'verified': False, 'match': False,
+                'stage3_digest': stage3_digest, 'stage2_digest': None}
+
+    if str(stage2_digest) != str(stage3_digest):
+        raise SystemExit(
+            f'[stage3] partition contract VIOLATED: the --finetune checkpoint '
+            f'was pre-trained on partition {stage2_digest[:12]}, but this run '
+            f'uses {stage3_digest[:12]} (fold {plan.fold}/{plan.n_folds}). '
+            f'Their held-out subjects differ, so the test role was seen during '
+            f'pre-training. Point --finetune at the Stage-2 run of THIS fold.')
+    print(f'[stage3] partition contract OK: checkpoint and run share digest '
+          f'{stage3_digest[:12]} (fold {plan.fold}/{plan.n_folds}).')
+    return {'verified': True, 'match': True, 'stage3_digest': stage3_digest,
+            'stage2_digest': str(stage2_digest)}
 
 
 
 def get_args():
     parser = argparse.ArgumentParser('Stage-3 waveform fine-tuning', add_help=True)
     add_common_args(parser)
-    add_split_args(parser)
+    add_protocol_args(parser)
 
     # model / task
     parser.add_argument('--model', default='project_multimae_base', type=str,
@@ -432,24 +480,12 @@ def get_args():
     # data (implement BP4D+ in code/data/datasets.py)
     parser.add_argument('--data_set', default=env_or('DATA_SET', 'bp4d+'), type=str)
     parser.add_argument('--data_path', default=env_or('DATA_PATH'), type=str)
-    parser.add_argument('--split_by', default='session', type=str,
-                        choices=['session', 'subject'],
-                        help="'subject' = SUBJECT-disjoint train/val, which the "
-                             "Stage-3 protocol requires (4 local subjects -> 3 "
-                             "train / F004 val). 'session' = the historical "
-                             'per-session split; use it for tiny smoke runs, '
-                             'where a subject-disjoint val split would be empty.')
-    parser.add_argument('--train_ratio', default=0.8, type=float,
-                        help='fraction of the SESSIONS (split_by=session) or '
-                             'SUBJECTS (split_by=subject) used for training; '
-                             'the rest is val.')
-    parser.add_argument('--val_subject', default='', type=str,
-                        help='LEAVE-ONE-SUBJECT-OUT fold selector for the '
-                             'thermal-ROI path (data_set: tir_roi*): val = '
-                             'exactly this subject, train = every other. '
-                             'Overrides --train_ratio/--split_by, and is the '
-                             'way to sweep all 4 local subjects instead of '
-                             'being stuck on one ratio-derived fold.')
+    parser.add_argument('--raw_root', default=env_or('RAW_DATA_PATH', ''),
+                        type=str,
+                        help='RAW BP4D+ tree for the ROI data sets (tir_roi* / '
+                             'rgb_roi*); default $RAW_DATA_PATH. The subject '
+                             'UNIVERSE is enumerated from this tree, so it must '
+                             'be the same one Stage 2 used.')
     parser.add_argument('--tasks', default='', type=str,
                         help='thermal-ROI path (data_set: tir_roi*): explicit '
                              'comma list of task labels, e.g. T1,T2 '
@@ -562,7 +598,9 @@ def get_args():
     parser.add_argument('--epochs', default=100, type=int)
     parser.add_argument('--update_freq', default=1, type=int)
     parser.add_argument('--save_ckpt_freq', default=10, type=int)
-    parser.add_argument('--eval_freq', default=1, type=int)
+    # NOTE: --eval_freq / --val_select / --val_criterion / --fold / seeds come
+    # from add_protocol_args (ADR-001 section 2.3). They are declared there and
+    # nowhere else, so a default can never disagree with the protocol.
 
     # optimizer
     parser.add_argument('--opt', default='adamw', type=str)
@@ -593,6 +631,16 @@ def get_args():
                              'entries.json into --output_dir; required by '
                              'runners/run_evaluate_session.py for the '
                              'session-level assembly metrics')
+    parser.add_argument('--eval_role', default='train', type=str,
+                        choices=['train', 'val', 'test'],
+                        help="which role this PROCESS builds. 'train' (default) "
+                             "trains on train and evaluates val; 'test' is the "
+                             "report-time process: it scores the fold's test "
+                             "role ONCE and never steps an optimizer (I5).")
+    parser.add_argument('--overwrite_test', action='store_true', default=False,
+                        help='re-score a test role that already has a '
+                             'test/metrics.json; the override is recorded in '
+                             'the new artefact')
     parser.add_argument('--eval_only', action='store_true', default=False,
                         help='load the checkpoint in --output_dir/checkpoints '
                              'and run ONLY the final validation pass + the '
@@ -604,27 +652,17 @@ def get_args():
     return parse_args_with_config(parser)
 
 
-def _recorded_best_pearson(args):
-    """Best val pearson already on disk, or -inf when there is none yet.
-
-    ``--eval_only`` re-runs the final validation pass on a COMPLETED run, so
-    there is no training loop to produce ``best_pearson``. Re-reading the
-    value keeps ``metrics_final.json`` truthful instead of resetting it to
-    ``-inf``.
-    """
-    import json
-    path = os.path.join(args.output_dir, 'metrics_final.json')
-    try:
-        with open(path) as fh:
-            return float(json.load(fh).get('best_pearson', -float('inf')))
-    except Exception:
-        return -float('inf')
-
-
 def main(args):
     from utils import is_main_process, resolve_amp
 
     device = init_env(args)
+    # The fold plan is needed BEFORE any checkpoint is inspected: the Stage-2
+    # pairing guard compares partition digests, so a checkpoint from another
+    # partition must be refused before a single weight is loaded.
+    plan = load_or_create_plan(args, stage='stage3')
+    # Persisted into every checkpoint: the report-time process and any resume
+    # compare it, so a run can never continue or score another partition.
+    args.partition_digest = plan.digest
     amp_config = resolve_amp(getattr(args, 'amp_dtype', 'none'), device)
     print(f'[amp] {amp_config.describe()}')
     args.fft_sizes = _parse_fft_sizes(args.fft_sizes)
@@ -697,10 +735,9 @@ def main(args):
             # tensor shape either way, different pixels.
             check_stage2_roi_contract(args, _stage2.get('stage2_args'),
                                       allow_mismatch=args.allow_roi_mismatch)
-            # k-fold: a fold-k run must start from a fold-k Stage-2 encoder.
             # Same hazard class as the ROI check -- nothing in the tensor shapes
             # reveals it, and the run looks healthy while the number is leaked.
-            _fold_check = check_stage2_fold_contract(args,
+            _fold_check = check_stage2_fold_contract(plan,
                                                      _stage2.get('stage2_args'))
         else:
             print('[stage3] WARNING: no --finetune checkpoint -> the encoder '
@@ -748,32 +785,120 @@ def main(args):
     if _fft_advice:
         print(f'[stft] NOTE: {_fft_advice}')
 
-    # ----- data (implement bp4d+ first) ----------------------------------- #
+    # ----- data: the ADR-001 roles of this fold --------------------------- #
     from data import build_dataset
-    
-    n_folds = int(getattr(args, 'n_folds', 0))
-    use_small_val = bool(getattr(args, 'use_small_val', False))
-    has_val = (n_folds <= 1) or use_small_val
-    
-    if has_val:
-        dataset_val = build_dataset(is_train=False, test_mode=False, args=args, split_role='val')
-        if len(dataset_val) == 0:
-            # A val subject can lose every clip to the rail/sentinel rules.
-            # Degrade to Option A loudly instead of crashing a fold sweep.
-            print('[stage3] WARNING: the requested val split is EMPTY -- '
-                  'falling back to no-val (fixed-epoch checkpointing, test '
-                  'fold scored at the end). Reason: '
-                  f'{getattr(dataset_val, "empty_reason", "unknown")}')
-            dataset_val, data_loader_val, has_val = None, None, False
+
+    eval_role = str(getattr(args, 'eval_role', 'train') or 'train').lower()
+    if eval_role not in ('train', 'val', 'test'):
+        raise SystemExit(
+            f'--eval_role must be train, val or test; got {eval_role!r}')
+
+    if eval_role == 'test':
+        # REPORT TIME — a separate process from training. It builds ONLY the
+        # test role and never steps an optimizer (I5), and it scores once: the
+        # artefact it writes is the sentinel that refuses a second run.
+        import json as _json
+
+        from engines.waveform import predict_waveforms as _predict
+        from evaluation import metrics as _metrics_test
+        from evaluation.report import save_json as _save_json_test
+
+        test_dir = os.path.join(args.output_dir, 'test')
+        sentinel = os.path.join(test_dir, 'metrics.json')
+        if os.path.exists(sentinel) and not getattr(args, 'overwrite_test', False):
+            raise SystemExit(
+                f'[stage3] fold {plan.fold}: the test role has already been '
+                f'scored ({sentinel}). ADR-001 evaluates it ONCE; pass '
+                f'--overwrite_test to supersede (the override is recorded).')
+
+        dataset_test = build_dataset(args, plan, 'test')
+        if len(dataset_test) == 0:
+            _reason = getattr(dataset_test, 'empty_reason', 'unknown')
+            print(f'[stage3] FOLD NOT SCORABLE: the test role of fold '
+                  f'{plan.fold} has no usable clip. Reason: {_reason}')
+            _save_json_test(sentinel, {
+                'eval_role': 'test', 'skipped': True, 'skip_reason': _reason,
+                'n_clips': 0, 'fold': plan.fold, 'n_folds': plan.n_folds,
+                'partition_digest': plan.digest,
+                'test_subjects': list(plan.roles['test'])})
+            return
+        # Load the weights the TRAINING process delivered. The rule comes from
+        # its selection record, not from this command line: the report process
+        # must score what was actually produced (I7).
+        from protocol import ProtocolError, read_selection
+
+        _rule = 'fixed_epoch'
+        _selection_path = os.path.join(args.output_dir, 'selection.json')
+        if os.path.isfile(_selection_path):
+            try:
+                _rule = str(read_selection(_selection_path).get('rule',
+                                                                'fixed_epoch'))
+            except ProtocolError as exc:
+                raise SystemExit(f'[stage3] {exc}') from None
         else:
-            data_loader_val = make_data_loader(args, dataset_val,
-                                               shuffle=False, drop_last=False)
-            check_loader_not_empty(
-                data_loader_val, 'val', args,
-                extra='an empty val split means the run has nothing to score '
-                      '(see the split keys printed above)')
-    else:
-        dataset_val, data_loader_val = None, None
+            print(f'[stage3] WARNING: no selection record at {_selection_path}; '
+                  f'assuming fixed_epoch (the last checkpoint).')
+        load_stage3_weights(model, args.output_dir, rule=_rule,
+                            digest=plan.digest)
+
+        data_loader_test = make_data_loader(args, dataset_test, shuffle=False,
+                                           drop_last=False, num_workers=0)
+        check_loader_not_empty(data_loader_test, 'test', args)
+        pred, target = _predict(data_loader_test, model, device)
+        final = dict(_metrics_test.time_domain_metrics(pred, target))
+        try:
+            final.update(_metrics_test.spectral_metrics(
+                pred, target, fs=args.fs, band=args.eval_band))
+        except ImportError:
+            final.update({'psd_mae': float('nan'),
+                          'hf_power_rel': float('nan')})
+        os.makedirs(test_dir, exist_ok=True)
+        np.save(os.path.join(test_dir, 'preds.npy'), pred)
+        np.save(os.path.join(test_dir, 'targets.npy'), target)
+        # The dump must carry the SAME entry schema a training run writes, or
+        # the pooler cannot assemble sessions (`t_start`) or re-label tasks.
+        entries = []
+        for entry in getattr(dataset_test, 'entries', []):
+            if isinstance(entry, dict):                 # ROI path: the clip dict
+                meta, t_start = entry, entry.get('t_start', 0.0)
+                source = 'raw_resp_volts'
+                signals_file = meta.get('resp_file') or meta.get('signals_file') or ''
+            else:                                       # paired path: (meta, t0)
+                meta, t_start = entry[0], entry[1]
+                source = 'canonical_signals_csv'
+                signals_file = meta.get('signals_file', '')
+            entries.append({'session': meta['session'],
+                            't_start': float(t_start),
+                            'signals_file': signals_file or '',
+                            'reference_source': source,
+                            'task': meta.get('task'),
+                            'task_level': list(meta.get('task_level') or ())})
+        with open(os.path.join(test_dir, 'entries.json'), 'w') as handle:
+            _json.dump(entries, handle)
+        _save_json_test(sentinel, {
+            'eval_role': 'test', 'n_clips': int(pred.shape[0]),
+            'fold': plan.fold, 'n_folds': plan.n_folds,
+            'partition_digest': plan.digest,
+            'test_subjects': list(plan.roles['test']),
+            'overwritten': bool(getattr(args, 'overwrite_test', False)),
+            'per_clip_metrics': final})
+        print(f'[stage3] scored the test role of fold {plan.fold}: '
+              f'{int(pred.shape[0])} clip(s) -> {sentinel}')
+        return
+
+    # Validation is mandatory in every stage (I4) and is the ONLY selection
+    # signal (I7). Ordered, single-worker, unpadded: a val pass must be a
+    # deterministic function of the weights.
+    dataset_val = build_dataset(args, plan, 'val')
+    if len(dataset_val) == 0:
+        raise SystemExit(
+            f'[stage3] the VAL role of fold {plan.fold} is EMPTY. ADR-001 '
+            f'requires a validation role in every stage; check the partition '
+            f'record and any --subjects filter '
+            f'({getattr(dataset_val, "empty_reason", "unknown")}).')
+    data_loader_val = make_data_loader(args, dataset_val, shuffle=False,
+                                       drop_last=False, num_workers=0)
+    check_loader_not_empty(data_loader_val, 'val', args)
 
     if args.eval_only:
         # No training split: --eval_only never steps an optimiser, and walking
@@ -781,10 +906,10 @@ def main(args):
         # to fail.
         dataset_train, data_loader_train = None, None
     else:
-        dataset_train = build_dataset(is_train=True, test_mode=False, args=args, split_role='train')
+        dataset_train = build_dataset(args, plan, 'train')
         if len(dataset_train) == 0:
             raise SystemExit(
-                '[stage3] the TRAIN split is EMPTY -- nothing to train on. '
+                '[stage3] the TRAIN role is EMPTY -- nothing to train on. '
                 f'Reason: {getattr(dataset_train, "empty_reason", "unknown")}. '
                 'Relax the corpus cleaning (rail_touch_v / min_signal_spread) '
                 'or choose another fold.')
@@ -891,8 +1016,17 @@ def main(args):
     # training_curves.png), so import them before it starts
     from evaluation.report import (append_jsonl, plot_training_curves,
                                    plot_waveform_panel, save_json)
-    best_pearson = (_recorded_best_pearson(args) if args.eval_only
-                    else -float('inf'))
+    from protocol import SelectionTracker, make_eval_record, write_selection
+
+    # Selection is one object shared with Stage 2 and the ONLY writer of
+    # best.pth, so a delivered checkpoint can only come from the VAL role (I7).
+    tracker = SelectionTracker(
+        epochs=args.epochs, rule=getattr(args, 'val_select', 'fixed_epoch'),
+        criterion=getattr(args, 'val_criterion', 'joint_loss'),
+        eval_freq=int(getattr(args, 'eval_freq', 0) or 0),
+        n_val_clips=len(dataset_val),
+        n_train_clips=len(dataset_train) if dataset_train is not None else 0,
+        dev_smoke=bool(getattr(args, 'dev_smoke', False)))
     history = []                    # one dict per evaluated epoch (see below)
     for epoch in range(start_epoch, args.epochs):
         if args.distributed:
@@ -907,100 +1041,62 @@ def main(args):
             start_steps=epoch * steps_per_epoch,
             amp_config=amp_config, loss_in_fp32=True)
 
-        if has_val and (epoch % args.eval_freq == 0 or epoch + 1 == args.epochs):
-            stats = evaluate_waveforms(data_loader_val, model, device,
-                                       fs=args.fs, band=args.eval_band)
-            print(f'[epoch {epoch}] {args.target}: {stats}')
+        if tracker.should_eval(epoch):
+            val = evaluate_waveform_loss(data_loader_val, model, criterion,
+                                         device)
+            value = (val['val_loss'] if tracker.criterion == 'joint_loss'
+                     else val['components'].get('pearson', float('nan')))
+            improved = tracker.observe(epoch, value)
+            print(f'[epoch {epoch}] {args.target}: val_loss '
+                  f'{val["val_loss"]:.4f} ('
+                  + ', '.join(f'{k}={v:.4f}' for k, v in
+                              val['components'].items()
+                              if k in ('time', 'pearson', 'stft'))
+                  + f') over {val["n_clips"]} clip(s)'
+                  + ('  <- best' if improved else ''))
             record = {'epoch': epoch, 'target': args.target,
                       'train_loss': (train_stats or {}).get('loss'),
-                      'lr': (train_stats or {}).get('lr'), **stats}
+                      'lr': (train_stats or {}).get('lr'),
+                      **val['components']}
             history.append(record)
             if is_main_process():
-                # one JSONL line per epoch + a refreshed figure: an interrupted
-                # run still leaves a readable evaluation record on disk
+                # the ADR section 2.3 evaluation record, then the plotting line
                 append_jsonl(os.path.join(args.output_dir, 'metrics.jsonl'),
-                             record)
+                             make_eval_record(
+                                 epoch=epoch, value_kind=tracker.criterion,
+                                 criterion_value=value,
+                                 counts={'clips': val['n_clips'],
+                                         'subjects': len(plan.roles['val'])},
+                                 seed={'val_seed': plan.val_seed},
+                                 components=val['components'],
+                                 pinned={}, role_digest=plan.digest))
                 plot_training_curves(
                     history,
                     os.path.join(args.output_dir, 'training_curves.png'),
                     title=f'{args.target} | {args.model} | input {args.input_size} '
-                          f'| {args.epochs} epochs | {args.split_by}-disjoint split')
-            pearson = stats.get('pearson', -1.0)
-            if is_main_process() and pearson > best_pearson:
-                best_pearson = pearson
+                          f'| {args.epochs} epochs | fold {plan.fold} '
+                          f'({tracker.rule})')
+            if improved and tracker.writes_best_checkpoint and is_main_process():
                 os.makedirs(args.output_dir, exist_ok=True)
                 torch.save({'model': model_without_ddp.state_dict(),
-                            'epoch': epoch}, os.path.join(args.output_dir, 'best.pth'))
-        elif not has_val:
-            # Record train loss only
-            record = {'epoch': epoch, 'target': args.target,
-                      'train_loss': (train_stats or {}).get('loss'),
-                      'lr': (train_stats or {}).get('lr')}
-            history.append(record)
-            if is_main_process():
-                append_jsonl(os.path.join(args.output_dir, 'metrics.jsonl'), record)
+                            'epoch': epoch,
+                            'partition_digest': plan.digest},
+                           os.path.join(args.output_dir, 'best.pth'))
 
         if is_main_process() and (epoch % args.save_ckpt_freq == 0
                                   or epoch + 1 == args.epochs):
             save_model(args, epoch, model, model_without_ddp, optimizer,
                        loss_scaler)
 
-    if has_val:
-        print(f'Best Pearson ({args.target}): {best_pearson:.4f}')
-
     # ----- final evaluation artefacts: figures + JSON (not just stdout) ----- #
     if is_main_process():
         from evaluation import metrics as _metrics
         
-        if n_folds > 1:
-            # Evaluate on the test fold
-            dataset_test = build_dataset(is_train=False, test_mode=False, args=args, split_role='test')
-            # Audit artefact: exactly which subjects each role saw in THIS run.
-            # A Stage-2 / Stage-3 pair is only valid if the two manifests agree.
-            from utils.splits import (as_split_seed, as_split_strategy,
-                                      write_fold_manifest)
-            write_fold_manifest(
-                os.path.join(args.output_dir, 'fold_manifest.json'),
-                fold=int(getattr(args, 'fold', 0) or 0), n_folds=n_folds,
-                stage=3,
-                roles={'train': list(getattr(dataset_train, 'split_keys', ())
-                                     or ()),
-                       'val': list(getattr(dataset_val, 'split_keys', ())
-                                   or ()),
-                       'test': list(dataset_test.split_keys)},
-                split_seed=as_split_seed(getattr(args, 'split_seed', None)),
-                stratify=as_split_strategy(
-                    getattr(args, 'split_stratify', 'none')))
-            if len(dataset_test) == 0:
-                # A held-out subject can have NO usable clip (locally F004 is
-                # rail-saturated). The fold is still a valid fold: record that
-                # it could not be scored and finish WITHOUT a fabricated number
-                # so a sweep continues to the next fold.
-                _reason = getattr(dataset_test, 'empty_reason', 'unknown')
-                print('[stage3] FOLD NOT SCORABLE: the test split of fold '
-                      f'{getattr(args, "fold", 0)} has no usable clip. '
-                      f'Reason: {_reason}')
-                save_json(os.path.join(args.output_dir, 'metrics_final.json'), {
-                    'target': args.target, 'model': args.model,
-                    'split_by': args.split_by, 'n_clips': 0,
-                    'skipped': True, 'skip_reason': _reason,
-                    'fold': int(getattr(args, 'fold', 0) or 0),
-                    'n_folds': n_folds,
-                    'selection': 'best_pearson' if has_val else 'fixed_epoch',
-                    'eval_role': 'test',
-                    'test_subjects': list(dataset_test.split_keys)})
-                print(f'[stage3] wrote metrics_final.json (skipped=true) to '
-                      f'{args.output_dir}')
-                return
-            data_loader_test = make_data_loader(args, dataset_test, shuffle=False, drop_last=False)
-            check_loader_not_empty(data_loader_test, 'test', args)
-            pred, target = predict_waveforms(data_loader_test, model, device)
-            eval_role = 'test'
-        else:
-            # Legacy: evaluate on val
-            pred, target = predict_waveforms(data_loader_val, model, device)
-            eval_role = 'val'
-            
+        # A TRAINING run reports its VAL role; the test role is scored by its
+        # own process (--eval_role test), so it is never built here (I5).
+        pred, target = predict_waveforms(data_loader_val, model, device)
+        eval_role = 'val'
+
         if pred.size:
             final = dict(_metrics.time_domain_metrics(pred, target))
             try:
@@ -1010,25 +1106,31 @@ def main(args):
                 final.update({'psd_mae': float('nan'),
                               'hf_power_rel': float('nan')})
             n_pred = int(pred.shape[0])
-            _ds_eval = dataset_test if n_folds > 1 else dataset_val
+            _ds_eval = dataset_val
             _tsel = getattr(_ds_eval, 'task_selection', None)
+            selection = tracker.record()
+            selection['partition_digest'] = plan.digest
+            write_selection(os.path.join(args.output_dir, 'selection.json'),
+                            selection)
             save_json(os.path.join(args.output_dir, 'metrics_final.json'), {
                 'target': args.target, 'model': args.model,
                 'task_set': list(getattr(_tsel, 'requested', ()) or ()),
                 'task_groups': {k: list(v) for k, v in
                                 getattr(_tsel, 'levels', {}).items()},
-                'split_by': args.split_by, 'n_clips': n_pred,
+                'split_stratify': plan.split_stratify, 'n_clips': n_pred,
                 'fs': args.fs, 'clip_duration': args.clip_duration,
                 'input_size': args.input_size, 'sig_kernel': args.sig_kernel,
                 'physio_norm': args.physio_norm, 'finetune': args.finetune,
                 'epochs': args.epochs,
-                'selection': 'best_pearson' if has_val else 'fixed_epoch',
+                'selection': selection['rule'],
+                'selection_record': selection,
                 'eval_role': eval_role,
-                # k-fold provenance: the fold this run executed AND the fold the
-                # Stage-2 checkpoint recorded ('match' is False when the
-                # checkpoint records no fold at all).
-                'fold': int(getattr(args, 'fold', 0) or 0),
-                'n_folds': n_folds,
+                # fold provenance: the fold this run executed, the partition it
+                # used, and whether the Stage-2 encoder came from that same
+                # partition (a mismatch is a hard error, not a warning).
+                'fold': plan.fold, 'n_folds': plan.n_folds,
+                'partition_digest': plan.digest,
+                'val_subjects': list(plan.roles['val']),
                 'fold_contract': _fold_check,
                 # loss provenance: the L_time shape must be readable off the
                 # artefact, not only off the job log.
@@ -1037,12 +1139,6 @@ def main(args):
                          'alpha': args.alpha, 'beta': args.beta,
                          'gamma': args.gamma,
                          'fft_sizes': list(args.fft_sizes)},
-                # --eval_only has no training run to take a best from, so it
-                # falls back to the pearson just measured rather than ever
-                # writing -inf/NaN into this field.
-                'best_pearson': (best_pearson if np.isfinite(best_pearson)
-                                 else float(final.get('pearson',
-                                                      float('nan')))),
                 'per_clip_metrics': final})
             # Session labels let the panel SPREAD its clips over different
             # sessions. Without them it plotted rows 0..max_clips-1, i.e. always

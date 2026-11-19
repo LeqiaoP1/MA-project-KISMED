@@ -1,5 +1,11 @@
 # Respiration Stage-3: pooled 5-fold CV, `96respgrid` lineage
 
+> **OFF-PROTOCOL FOR ADR-001 (2026-11-18).** Measured with `use_small_val:
+> false`, i.e. an 80/0/20 allocation and no validation role: the retired
+> Option-A variant. Keep this page as a historical record; it must not be pooled
+> with, compared against, or quoted as an ADR-001 result
+> (`code/notes/plan/ADR-001-subject-kfold-plan.md`).
+>
 > Measured 2026-11-01 → 2026-11-06 · protocol
 > `code/notes/design/Evaluation_RespWaveform_protocol.md` §3.2 ·
 > partition design `code/notes/design/ADR-001-subject-disjoint-split-and-selection.md`

@@ -33,7 +33,7 @@ not as usable FP16/BF16 AMP.
 | [`engines/au_probe.py`](../engines/au_probe.py) | Same optional scaler interface. |
 | [`runners/run_pretrain.py`](../runners/run_pretrain.py), [`runners/run_finetune.py`](../runners/run_finetune.py), [`runners/run_waveform.py`](../runners/run_waveform.py), [`runners/run_au_probe.py`](../runners/run_au_probe.py) | Instantiate `NativeScalerWithGradNormCount` unconditionally; there is no `--enable_amp`, `--amp_dtype`, or equivalent switch. |
 | [`utils/checkpoint.py`](../utils/checkpoint.py) | Saves and restores scaler state under the `scaler` checkpoint key, so the current loss-scaling state is resumable. |
-| [`scripts/hpc/smoke_pretrain.sbatch`](../scripts/hpc/smoke_pretrain.sbatch) | The smoke-test comment calls out the scaler path, but this validates loss scaling and checkpointing, not autocast-based mixed precision. |
+| [`scripts/hpc/submit_sweep.sh`](../scripts/hpc/submit_sweep.sh) | A one-fold sweep (`FOLDS="0"`) is the smoke path now; it exercises the scaler and checkpointing, but validates loss scaling and resumption, not autocast-based mixed precision. |
 
 There are no `torch.autocast`, `torch.cuda.amp.autocast`, or
 `torch.amp.autocast` calls in `code/`. The only AMP-related implementation is
@@ -202,9 +202,9 @@ as “AMP runs” (they were FP32 with a now-bypassed loss scaler).
 To adopt AMP for thesis results, run the one-GPU comparison described above:
 
 ```bash
-AMP_DTYPE=none sbatch scripts/hpc/smoke_pretrain.sbatch
-AMP_DTYPE=bf16 sbatch scripts/hpc/smoke_pretrain.sbatch
-AMP_DTYPE=fp16 sbatch scripts/hpc/smoke_pretrain.sbatch
+AMP_DTYPE=none EXP_ROOT=/tmp/proto_amp FOLDS="0" sbatch scripts/hpc/submit_sweep.sbatch
+AMP_DTYPE=bf16 EXP_ROOT=/tmp/proto_amp FOLDS="0" sbatch scripts/hpc/submit_sweep.sbatch
+AMP_DTYPE=fp16 EXP_ROOT=/tmp/proto_amp FOLDS="0" sbatch scripts/hpc/submit_sweep.sbatch
 ```
 
 and record the peak-memory / throughput / metric deltas against the FP32

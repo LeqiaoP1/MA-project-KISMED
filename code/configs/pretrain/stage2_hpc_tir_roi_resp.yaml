@@ -15,17 +15,17 @@
 #    This is still a SEPARATE lineage from the local 64 px configs: the shipped
 #    configs/finetune/resp_tir_roi_local.yaml (input_size 64) will ABORT against
 #    a checkpoint from this run. Fine-tune it with the matching twin
-#    configs/finetune/resp_tir_roi_hpc.yaml (job: submit_waveform_tir_roi.sbatch).
+#    configs/finetune/resp_tir_roi_hpc.yaml (paired by the sweep's digest check).
 #
 # Procedure of record: code/notes/plan/TirROI_Resp_plan.md
 # Data source: the RAW tree (Thermal/, IRFeatures/, Physiology/Resp_Volts.txt),
 #   i.e. $RAW_DATA_PATH. On Lichtenberg that is $WORK_PROJ/test
 #   (/work/projects/l0003511/test). NOT data/processed/bp4d_canonical.
 #
-# Run from code/ via the HPC wrapper:
-#   sbatch scripts/hpc/submit_pretrain.sbatch
-#   CONFIG=configs/pretrain/stage2_hpc_tir_roi_resp.yaml \
-#       sbatch scripts/hpc/submit_pretrain.sbatch
+# Run from code/ through the ADR-001 sweep (it supplies --exp_root/--fold):
+#   EXP_ROOT=$WORK_SCRATCH/protocol_v1 sbatch scripts/hpc/submit_sweep.sbatch
+#   EXP_ROOT=... FOLDS="0" CFG2=configs/pretrain/stage2_hpc_tir_roi_resp.yaml \
+#       bash scripts/hpc/submit_sweep.sh
 #
 # GEOMETRY IS A CONTRACT. input_size / clip_duration / temporal_stride /
 # sig_kernel / tubelet / roi_* decide WHICH pixels and WHICH seconds reach the
@@ -36,18 +36,22 @@
 
 # ---------------------------------------------------------------- data source
 data_set: tir_roi                  # raw-tree thermal ROI + Resp_Volts.txt
-subjects: ''                       # '' = every discoverable subject
-pretrain_split: all                # Stage 2 never splits (self-supervised)
-# ---- k-fold PARTITION (MUST mirror configs/finetune/resp_tir_roi_hpc.yaml) --
-# The sbatch passes --n_folds/--fold/--pretrain_split fold; these two knobs
-# decide HOW the subjects are GROUPED, and the Stage-3 config must carry the
-# SAME pair -- otherwise fold k's encoder was pre-trained on fold k's test
-# subjects (the runner's guard compares fold/n_folds only, not the role lists).
-# split_seed null (or split_stratify: none) = the legacy rule, where sorted ids
-# are cut into contiguous blocks and therefore fold == sex block (F001.. sorts
-# before M001..). See code/notes/plan/ADR-001-subject-kfold-plan.md.
-split_seed: 42                     # seed of the draw; null = legacy blocks
+subjects: ''                       # '' = every discoverable subject. NARROWS the
+                                   #   sessions read inside a role; it never
+                                   #   moves a subject between roles (I2).
+# ---- ADR-001 roles (train / val / test) -------------------------------------
+# Stage 2 builds the TRAIN and VAL roles of <exp_root>/fold<k>/partition.json;
+# the TEST block is never loaded here (I5). There is deliberately no fold-count
+# and no split-policy key: K and 70/10/20 are protocol constants.
+split_seed: 42                     # partition seed (I2); equal in both stages
 split_stratify: sex                # shuffle within stratum, then interleave
+# Validation is mandatory and its masking is PINNED (I6): the kept fraction of
+# every masked stream is fixed, so two evaluations of one checkpoint agree.
+eval_freq: 5                       # epochs between val evaluations (0 = off)
+val_select: fixed_epoch            # never reads a metric; needs Criterion 5
+val_criterion: joint_loss          # the value best_val would minimise
+val_kept_tir: 0.10                 # = 1 - mask_ratio_tir
+val_kept_resp: 0.50                # = 1 - mask_ratio_resp
 tasks: ''                          # '' = all tasks; UNIONED with task_set below
 # ---- task GROUPS ("distortion levels") ---------------------------------
 # Named subsets of the BP4D+ task labels (T1..T10); the DEFINITIONS live here,
@@ -165,10 +169,10 @@ sig_kernel: 16                     # 16/100 == 2*2/25 s -> one signal token ==
 pos_init: sincos3d
 
 # ---- training (full corpus: derive the LR from blr, do NOT set an absolute lr) ----
-# FIRST-RUN BUDGET: 150 epochs, not 800. Stage 2 has NO validation split
-# (`pretrain_split: all` is enforced by the dataset builder) and
-# run_pretrain.py has no eval loop, so 800 was a blind commitment with nothing
-# to early-stop on -- and the Stage-2 loss is a MONITOR, not a metric (mse_resp
+# FIRST-RUN BUDGET: 150 epochs, not 800. Stage 2 now evaluates the VAL role at
+# `eval_freq` and records the curve, but selection is `fixed_epoch`: there is no
+# early stopping, so 150 is a budget decision, not a patience setting. The
+# Stage-2 loss is a MONITOR, not a metric (mse_resp
 # plateaus at ~1.0, the documented constant-predictor collapse, so a patience
 # rule would fire immediately and for the wrong reason). Judge this run by the
 # Stage-3 fine-tune, then raise this number if the fine-tune keeps improving.

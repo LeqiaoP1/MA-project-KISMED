@@ -123,13 +123,31 @@ def _args(root: str, **over) -> argparse.Namespace:
     return argparse.Namespace(**kw)
 
 
+def _dev_plan():
+    """A dev-legal ADR-001 plan whose TRAIN role owns the synthetic session.
+
+    The protocol needs K=5 non-empty roles, so the universe is padded with five
+    fictitious ids; only S001 exists in the synthetic raw tree, so the dataset
+    simply finds nothing for the others. ``dev_smoke`` lifts the 70/10/20 share
+    check, which a one-session corpus cannot satisfy.
+    """
+    from protocol import build_plan
+    universe = [f'S{n:03d}' for n in range(1, 7)]
+    for fold in range(5):
+        plan = build_plan(universe, fold, split_seed=42,
+                          split_stratify='none', dev_smoke=True)
+        if 'S001' in plan.roles['train']:
+            return plan
+    raise AssertionError('no fold keeps S001 in the train role')
+
+
 # --------------------------------------------------------------------------- #
 # Stage 2
 # --------------------------------------------------------------------------- #
 def test_stage2_dispatch_threads_the_rail_rule(tmp_path, capsys):
     """``build_pretraining_dataset`` (run_pretrain.py) applies the rule."""
     root = _write_raw(tmp_path, _resp_with_rail_in_the_first_second())
-    ds = build_pretraining_dataset(_args(root, pretrain_split='all'))
+    ds = build_pretraining_dataset(_args(root), _dev_plan())
     assert ds.stats['rail_touch_v'] == pytest.approx(9.90)
     assert len(ds) == 8                       # 9 windows, the railed one dropped
     assert ds.stats['clips_dropped_rail'] == 1
@@ -140,7 +158,7 @@ def test_stage2_dispatch_threads_the_rail_rule(tmp_path, capsys):
 
 def test_stage2_dispatch_leaves_the_corpus_alone_when_off(tmp_path):
     root = _write_raw(tmp_path, _resp_with_rail_in_the_first_second())
-    ds = build_pretraining_dataset(_args(root, rail_touch_v=0.0))
+    ds = build_pretraining_dataset(_args(root, rail_touch_v=0.0), _dev_plan())
     assert len(ds) == 9
     assert ds.stats['clips_dropped_rail'] == 0
 
@@ -152,7 +170,7 @@ def test_stage3_dispatch_threads_the_rail_rule(tmp_path, capsys):
     """``build_dataset`` (run_waveform.py / run_finetune.py) applies the rule."""
     root = _write_raw(tmp_path, _resp_with_rail_in_the_first_second())
     args = _args(root, data_set='tir_roi_resp', is_train=True, test_mode=False)
-    ds = build_dataset(is_train=True, test_mode=False, args=args)
+    ds = build_dataset(args, _dev_plan(), 'train')
     assert ds.stats['rail_touch_v'] == pytest.approx(9.90)
     assert len(ds) == 8
     assert ds.stats['clips_dropped_rail'] == 1
@@ -166,7 +184,7 @@ def test_an_absent_key_is_off_AND_said_out_loud(tmp_path, capsys):
     root = _write_raw(tmp_path, _resp_with_rail_in_the_first_second())
     args = _args(root)
     del args.rail_touch_v                       # the silent-off failure mode
-    ds = build_pretraining_dataset(args)
+    ds = build_pretraining_dataset(args, _dev_plan())
     assert len(ds) == 9                         # unfiltered, as documented
     out = capsys.readouterr().out
     assert 'rail_touch_v=0 V (OFF' in out
@@ -206,7 +224,7 @@ def test_stage2_dispatch_threads_the_resp_cache(tmp_path):
                     '--raw_root', root]) == 0
     ds = build_pretraining_dataset(
         _args(root, resp_cache=str(out), rail_touch_v=0.0,
-              min_signal_spread=0.0, pretrain_split='all'))
+              min_signal_spread=0.0), _dev_plan())
     assert ds.stats['resp_cache'] is not None
     assert ds.stats['resp_cache_key']
     # D7: with a cache resp_fs IS the model fs, not the 1000 Hz raw nominal

@@ -192,10 +192,13 @@ $$L_\text{joint} = \alpha L_\text{time} + \beta L_\text{Pearson} + \gamma L_\tex
 - Dataset classes: `PairedPretrainDataset`, `PairedSessionDataset`,
   `RGBRoiPretrainDataset`, `RGBRoiFinetuneDataset`, `TirRoiRespPretrainDataset`,
   `TirRoiRespFinetuneDataset`, `TirRoiResp2DPretrainDataset`.
-- Splits: `split_by` (`session` / `subject`), `train_ratio`, `n_folds` / `fold`
-  (subject GroupK-Fold Cyclic Rotation), `split_seed`, `split_stratify`
-  (`none` / `sex`), `use_small_val`, `pretrain_split` (`all` / `fold`),
-  `fold_manifest.json`.
+- Splits: `FoldPlan` (immutable role assignment), `partition.json`
+  (`<exp_root>/fold<k>/`, write-once), `partition digest` (sha256 over the roles
+  and their seeds), `split_seed` / `split_stratify` (`none` / `sex`),
+  `val_select` (`fixed_epoch` / `best_val`), `val_criterion`, `val_kept_<stream>`,
+  `eval_freq`, `dev_smoke`, `selection.json`, `--eval_role test`.
+  Retired: `n_folds`, `use_small_val`, `split_role`, `train_ratio`,
+  `val_subject`, `split_by`, `pretrain_split`, `fold_manifest.json`.
 - Task labels: `T1`-`T10`; task groups (`SHIPPED_TASK_GROUPS`, v2):
   `low=[T2,T3,T5]`, `moderate=[T1,T4]`, `high=[T6,T7,T8,T9,T10]`;
   `task_set`, `task_level`.
