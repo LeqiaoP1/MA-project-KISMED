@@ -43,7 +43,7 @@ au_list: 6, 7, 10, 12, 14
 
 # input modality (RGB only for probe)
 streams: rgb
-train_ratio: 0.9
+# ADR-001: roles come from the fold's partition.json; the ratio keys are gone.
 
 # ---- probe geometry (ViT-Base stage-2_local_pretrained) ----
 tubelet: 2,16,16

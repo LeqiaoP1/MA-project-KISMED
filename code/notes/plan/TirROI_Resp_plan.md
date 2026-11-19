@@ -41,7 +41,7 @@ by whether they move that number.
 | visual mask | tube `0.90` | `design/SolutionC_EarlyTokenMixing_stage2.md` |
 | 1-D mask | `0.50` **scattered** in every shipped config; `physio_mask: span` + `mask_span_s {resp: 4.0}` is the designed alternative (W1) | `design/SpanMask_PhysioSignals.md` §4 |
 | Stage-2 loss | per-stream masked MSE, `λ_tir 1.0`, `λ_resp = signal_weight 0.5`; **MR-STFT 0.0** (it belongs to Stage 3) | `design/SpanMask_PhysioSignals.md` §5, §7 |
-| Stage-3 | `streams: tir`, `head_hidden 0`, `alpha/beta/gamma = 1.0`, `fft_sizes 128,256,512`, `eval_band 0.1–0.6`, fixed-epoch (Option A), `clip_stride 2.0` | `design/Evaluation_RespWaveform_protocol.md` §3, `design/ADR-001-subject-disjoint-split-and-selection.md` |
+| Stage-3 | `streams: tir`, `head_hidden 0`, `alpha/beta/gamma = 1.0`, `fft_sizes 128,256,512`, `eval_band 0.1–0.6`, the recorded `val_select` rule (`fixed_epoch` default), `clip_stride 2.0` | `design/Evaluation_RespWaveform_protocol.md` §3, `design/ADR-001-subject-disjoint-split-and-selection.md` |
 | split | subject-disjoint, `n_folds 5`, `split_role train/val/test`; Stage 2 uses `pretrain_split: fold` so the test fold is excluded | `design/ADR-001-subject-disjoint-split-and-selection.md` §2 |
 | evaluation | Hann overlap-add assembly → per-subject median → median + bootstrap 95 % CI over subjects | `design/Evaluation_RespWaveform_protocol.md` §4–§6 |
 
@@ -91,7 +91,7 @@ with a new run prefix.
 | cache (pixels) | `data/roi_cache.py` (`hull_box`, `cache_key`, `find_cache`) |
 | cache (label) | `data/resp_preprocess.py` (validity mask, per-run DC, resample), `data/resp_cache.py` (`cache_key`, `find_cache`) — see `plan/RESP_session_preprocess_implementation_plan.md` |
 | task rotation | `data/task_groups.py` (`SHIPPED_TASK_GROUPS`, `resolve_task_selection`) |
-| folds | `utils/splits.py::subject_folds` |
+| folds | `protocol/partition.py::split_universe` |
 | visual input contract | `core/input_adapters.py::zscore_clip` — the model z-scores each clip per channel before patching; the datasets keep `[0, 1]` (`design/Video_input_Preprocessing.md`, landed per `plan/video_input_preprocessing_implementation_plan.md`) |
 | masking | `core/multimae.py::_tube_mask`, `_span_mask`, `make_masks` |
 | losses | `core/criterion.py::MaskedMSELoss`, `core/waveform_losses.py::WaveformJointLoss`, `MultiResolutionSTFTLoss` |
@@ -162,7 +162,7 @@ Ordered by expected information per unit compute.
 | **W1** | **Span-mask ladder E1–E3** on the shipped geometry (`physio_mask: span`, 1.5 / 2 / 4 s). Scattered masking on a ~30–60× oversampled band-limited signal is locally solvable, which is why the 1-D stream currently contributes no encoder signal after the ramp. | `core/multimae.py::_span_mask`; configs | A1 moves; report the span geometry printed at build |
 | **W2** | **Amplitude.** The output is ~3× under-scaled. An earlier A/B between an amplitude-only `L_time` and the point-wise term moved band-Pearson only marginally and did not close the scale gap, so the remaining choice is a scale-aware loss term versus a deployable per-session calibration. **Decided 2026-11-01:** `L_time` is the point-wise Huber (no selector). That settles which `L_time` ships, NOT this item — the amplitude gap is still open. | `core/waveform_losses.py`, `utils/optim_factory.py` | A3 met with a non-oracle calibration |
 | **W3** | **Rate.** The rate claim needs a stable spectral peak, not just phase locking: harmonic tracking over overlapping 30 s windows, reported as BPM. | `evaluation/metrics.py` (`estimate_rate_bpm`, `rate_metrics`) | A2 met |
-| **W4** | **Fold cohort confound.** `subject_folds` splits sorted ids into contiguous blocks, so fold membership is confounded with sex/recording cohort (`eval/tir_resp/resp_t3_spread_sources.md` §2). Pooled numbers are unaffected; per-fold spreads are not a variance estimate. | `utils/splits.py`, `design/ADR-001-subject-disjoint-split-and-selection.md` §2.2 | fold assignment is stratified/interleaved, and the pooled number is unchanged |
+| **W4** | **Fold cohort confound.** `split_universe` can cut sorted ids into contiguous blocks, so fold membership is confounded with sex/recording cohort (`eval/tir_resp/resp_t3_spread_sources.md` §2). Pooled numbers are unaffected; per-fold spreads are not a variance estimate. | `protocol/partition.py`, `design/ADR-001-subject-disjoint-split-and-selection.md` §2.2 | fold assignment is stratified/interleaved (`split_stratify: sex`), and the pooled number is unchanged |
 | **W5** | **Optional bounded retry** on an on-face nostril/lip tile, cleared by all three of: rank/Spearman gate, local-motion partialling, gradient/sign-flip test. | `code/notes/eval/tir_resp/` tools | a gate pass, or it is not pursued |
 | **W6** | **Doc/spec sync** after any geometry change: `roi_geometry_ledger.py` must still exit 0, and the change must be hand-applied to `code/notes/spec/` (`scripts/project/write_specs.py` still contains stale text and overwrites hand edits — read its warning before running it). | `code/notes/spec/`, `scripts/project/write_specs.py` | ledger PASS + spec diff reviewed |
 
@@ -202,11 +202,11 @@ python notes/eval/tir_resp/roi_geometry_ledger.py --raw_root "$RAW_DATA_PATH"
 python -m evaluation.metrics          # metric self-test
 ```
 
-Queue through `scripts/hpc/submit_stage3_kfold.sh` (per-fold driver) or
-`submit_waveform_tir_roi.sbatch` (sequential). Smoke runs need
-`--warmup_epochs 0` when `--epochs 1`, and always `-u` / `PYTHONUNBUFFERED=1`
-(piped stdout is block-buffered; an interrupted run otherwise leaves no epoch
-lines).
+Queue through `scripts/hpc/submit_sweep.sh` (the ADR-001 wrapper: partition →
+Stage 2 → Stage 3 → test, per fold, sequential; `FOLDS="0"` for one fold).
+Smoke runs need `--warmup_epochs 0` when `--epochs 1`, and always `-u` /
+`PYTHONUNBUFFERED=1` (piped stdout is block-buffered; an interrupted run
+otherwise leaves no epoch lines).
 
 ---
 
@@ -220,7 +220,7 @@ lines).
 | respiration label build order | `code/notes/plan/RESP_session_preprocess_implementation_plan.md` |
 | respiration label artefact — measured impact + accounting delta | `eval/tir_resp/resp_preprocess_impact.md` |
 | task-tier regrouping | `code/notes/plan/task_tiers_regroup_plan.md` |
-| k-fold rollout | `code/notes/plan/subject_kfold_plan.md` |
+| k-fold rollout | `code/notes/plan/ADR-001-subject-kfold-plan.md` |
 | AMP rollout | `code/notes/plan/hpc_AMP_implementation.md` |
 | ROI + rescale contract | `design/ROI_crop_and_rescaling.md` |
 | span masking design + experiment ladder | `design/SpanMask_PhysioSignals.md` |

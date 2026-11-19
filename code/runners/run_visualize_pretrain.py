@@ -89,9 +89,10 @@ def get_args(argv=None):
                         'subject+task under a different masking; overrides '
                         '--samples. The tag must exist in the chosen split (so '
                         '--split test still enforces held-out subjects).')
-    p.add_argument('--fold_manifest', default='',
-                   help='fold_manifest.json of the training run (default: '
-                        '<run_dir>/fold_manifest.json beside the checkpoint)')
+    p.add_argument('--partition', default='',
+                   help='the fold partition record (<exp_root>/fold<k>/'
+                        'partition.json); default: discovered above the '
+                        'checkpoint run dir')
     p.add_argument('--max_sessions', default=0, type=int,
                    help='cap discovery (0 = no cap). A small cap speeds the build '
                         'up but can EXCLUDE the fold test subjects, so --split test '
@@ -310,50 +311,31 @@ def _pin_session_indices(pool, sessions, want, seed, starts=None):
     return picks
 
 
-def _held_out_subjects(cargs, manifest_path=None):
+def _held_out_subjects(cargs, partition_path=None):
     """``(test, train, source)`` subject sets of the checkpoint's fold.
 
-    AUTHORITATIVE SOURCE = the run's own ``fold_manifest.json`` (written next to
-    the checkpoints by ``data/datasets.py``). Re-deriving the partition here is
-    the fallback ONLY: the trainer partitions the *discovered usable* subject
-    universe (139 on BP4D+), while the dataset entries hold the
-    *clip-surviving* subjects (133). A different universe re-splits EVERY fold,
-    so partitioning ``ds.entries`` gives the wrong held-out block -- measured:
-    15 of 27 "unseen" subjects were in the checkpoint's train list.
+    AUTHORITATIVE SOURCE = the fold's write-once ``partition.json``, read with
+    :func:`protocol.load_plan`. Re-deriving the partition here is NOT a
+    fallback: the trainer partitions the *discovered usable* subject universe
+    (139 on BP4D+), while the dataset entries hold the *clip-surviving*
+    subjects (133). A different universe re-splits EVERY fold, so partitioning
+    ``ds.entries`` gives the wrong held-out block -- measured: 15 of 27 "unseen"
+    subjects were in the checkpoint's train list (ADR-001 I2).
     """
-    import json
-    man = None
-    if manifest_path:
-        try:
-            with open(manifest_path) as fh:
-                man = json.load(fh)
-        except (OSError, ValueError):
-            man = None
-    if man and (man.get('roles') or {}).get('test'):
-        roles = man['roles']
-        return set(roles['test']), set(roles.get('train') or []), \
-            os.path.basename(str(manifest_path))
-
-    from utils.splits import (as_split_seed, as_split_strategy,
-                              get_stage_splits)
-    from data import task_groups as tgrp
-    from data.tir_resp_dataset import default_raw_root, discover_sessions
-    root = (getattr(cargs, 'raw_root', None) or getattr(cargs, 'data_path', None)
-            or default_raw_root())
-    sel = tgrp.resolve_task_selection(
-        tasks=getattr(cargs, 'tasks', None),
-        task_set=getattr(cargs, 'task_set', None),
-        task_groups=getattr(cargs, 'task_groups', None))
-    usable = [s for s in discover_sessions(root, tasks=sel.tasks)
-              if s['ir_file'] and s['resp_file']]
-    subs = sorted({s['subject'] for s in usable})
-    splits = get_stage_splits(
-        subs, fold=int(getattr(cargs, 'fold', 0) or 0),
-        n_folds=int(getattr(cargs, 'n_folds', 1) or 1), stage=2,
-        use_small_val=False,
-        split_seed=as_split_seed(getattr(cargs, 'split_seed', None)),
-        stratify=as_split_strategy(getattr(cargs, 'split_stratify', 'none')))
-    return set(splits['test']), set(splits['train']), 're-derived partition'
+    from protocol import ProtocolError, load_plan
+    if not partition_path or not os.path.isfile(str(partition_path)):
+        raise SystemExit(
+            '[viz] no partition record for this checkpoint. Pass '
+            '--partition <exp_root>/fold<k>/partition.json. The old '
+            're-derive-from-entries fallback was removed: it partitions a '
+            'different subject universe and therefore re-splits every fold '
+            '(ADR-001 I2).')
+    try:
+        plan = load_plan(str(partition_path))
+    except ProtocolError as exc:
+        raise SystemExit(f'[viz] {exc}') from None
+    return (set(plan.roles['test']), set(plan.roles['train']),
+            os.path.basename(str(partition_path)))
 
 
 # --------------------------------------------------------------------------- #
@@ -372,10 +354,13 @@ def main(argv=None):
 
     dev = torch.device(args.device if (args.device != 'cuda'
                                        or torch.cuda.is_available()) else 'cpu')
-    if not args.fold_manifest:
+    if not args.partition:
         run_dir = os.path.dirname(os.path.dirname(os.path.abspath(args.checkpoint)))
-        cand = os.path.join(run_dir, 'fold_manifest.json')
-        args.fold_manifest = cand if os.path.isfile(cand) else ''
+        for cand in (os.path.join(os.path.dirname(run_dir), 'partition.json'),
+                     os.path.join(run_dir, 'partition.json')):
+            if os.path.isfile(cand):
+                args.partition = cand
+                break
     ckpt = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
     cargs = ckpt['args']
     print(f'[viz] checkpoint {args.checkpoint} (epoch {ckpt.get("epoch")})')
@@ -406,25 +391,23 @@ def main(argv=None):
                  'resp': torch.randn(B, 1, model.n_signal * model.sig_kernel)}
         tags = ['noise {}'.format(i) for i in range(B)]
     else:
-        from data import build_pretraining_dataset
+        from data import build_pretraining_corpus_dataset
         if args.sessions and args.split == 'corpus':
             print('[viz] NOTE: --split corpus with --sessions draws the clip from '
                   'ANY subject, including the checkpoint TRAIN subjects')
-        # The checkpoint carries the RESOLVED run arguments: run_pretrain writes
-        # the fold's train-subject list back into ``args.subjects``, and the
-        # builder expects a CSV string. Draw from the whole corpus and select the
-        # fold's TEST subjects afterwards (see _held_out_subjects).
-        cargs.pretrain_split = 'all'
-        cargs.subjects = ''
+        # The checkpoint carries the RESOLVED run arguments. This is the
+        # corpus-wide DIAGNOSTIC view (it can see the test block), so no figure
+        # produced here is a protocol result; the held-out set is selected
+        # afterwards from the run's partition.json (see _held_out_subjects).
         cargs.max_sessions = int(args.max_sessions) or None
-        ds = build_pretraining_dataset(cargs)
+        ds = build_pretraining_corpus_dataset(cargs)
         n = len(ds)
         if n == 0:
             raise SystemExit('[viz] the dataset is empty -- check the caches/raw_root')
 
         pool = list(range(n))
         if args.split == 'test':
-            held, train, src = _held_out_subjects(cargs, args.fold_manifest)
+            held, train, src = _held_out_subjects(cargs, args.partition)
             pool = [i for i in pool
                     if str(ds.entries[i].get('subject', '')) in held]
             print('[viz] --split test: fold {}/{} holds out {} subject(s) '

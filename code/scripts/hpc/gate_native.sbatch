@@ -57,7 +57,7 @@ cd "$CODE_DIR"
 
 # The analyser defaults to '../data/raw/BP4D', which is the LOCAL layout -- the
 # HPC corpus lives on /work/projects. RAW_DATA_PATH is the same value
-# submit_pretrain.sbatch passes as --raw_root.
+# scripts/hpc/submit_sweep.sh passes as --raw_root.
 RAW_ROOT="${RAW_ROOT:-${RAW_DATA_PATH:-/work/projects/l0003511/test}}"
 if [ ! -d "$RAW_ROOT" ]; then
     echo "ERROR: raw root is not a directory: $RAW_ROOT" >&2

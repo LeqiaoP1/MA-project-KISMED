@@ -32,16 +32,17 @@
 # input (simulated total contact-sensor failure); the whole respiration window is
 # regressed at once. NO masking anywhere in this stage.
 #
-# Run from code/ via the HPC wrapper:
-#   sbatch scripts/hpc/submit_waveform_tir_roi.sbatch
-#   FINETUNE=/path/to/checkpoint-0799.pth sbatch scripts/hpc/submit_waveform_tir_roi.sbatch
+# Run from code/ through the ADR-001 sweep, which passes the RAW tree and the
+# PER-FOLD Stage-2 encoder:
+#   EXP_ROOT=$WORK_SCRATCH/protocol_v1 sbatch scripts/hpc/submit_sweep.sbatch
 #
 # !! data_path is deliberately NOT set here. The tir_roi path needs the RAW tree
 #    ($RAW_DATA_PATH), NOT data/processed/bp4d_canonical, and YAML cannot expand
-#    environment variables. submit_waveform_tir_roi.sbatch always passes
-#    --data_path "$RAW_DATA_PATH". (This is why the canonical Stage-3 job
-#    scripts/hpc/submit_waveform.sbatch cannot run this config: it hardcodes
-#    $DATA_PATH = the canonical tree.)
+#    environment variables. submit_sweep.sh passes --raw_root "$RAW_ROOT".
+#
+# !! finetune stays '' here as well: the sweep passes --finetune <the Stage-2
+#    checkpoint of THIS fold>, and run_waveform.py refuses a checkpoint whose
+#    partition_digest differs (ADR-001 D4).
 #
 # ROI CONTRACT (checked hard by runners/run_waveform.py against the --finetune
 # checkpoint's stored args; run_waveform.py ABORTS on a mismatch):
@@ -52,8 +53,8 @@ target: resp
 
 # ---- data: RAW-tree thermal ROI (the Stage-2 input modality) ----
 data_set: tir_roi_resp             # -> build_tir_roi_finetune_dataset (Stage-3 view)
-# data_path: NOT SET HERE -- submit_waveform_tir_roi.sbatch passes
-#            --data_path "$RAW_DATA_PATH" (the RAW tree). See the header note.
+# data_path: NOT SET HERE -- submit_sweep.sh passes
+#            --raw_root "$RAW_ROOT" (the RAW tree). See the header note.
 roi_padding: 0.10                  # MUST equal the Stage-2 run
 crop_rule: square                  # MUST equal the Stage-2 run: the padded box
                                    #   is squared BEFORE the rescale, so ONE
@@ -90,15 +91,14 @@ finetune: ''                       # DELIBERATELY EMPTY for the k-fold sweep: th
                                    #   WITHOUT this fold's test subjects, i.e.
                                    #   pretrain/stage2_hpc_tir_roi_resp_fold<k>/
                                    #   checkpoints/checkpoint-0149.pth.
-                                   #   submit_waveform_tir_roi.sbatch resolves it
-                                   #   PER FOLD (STAGE2_DIR defaults to the fold's
-                                   #   own dir) and aborts when it cannot, and
+                                   #   submit_sweep.sh resolves it
+                                   #   PER FOLD from the fold's own stage2 dir and
+                                   #   aborts when it cannot, and
                                    #   run_waveform.py's fold contract refuses a
-                                   #   checkpoint whose recorded fold differs.
-                                   #   The hardcoded whole-corpus path that used
-                                   #   to sit here (n_folds=0) only WARNED in the
-                                   #   contract check -- i.e. it could report a
-                                   #   leaked CV number that looks healthy.
+                                   #   checkpoint whose partition_digest differs.
+                                   #   A whole-corpus pretrain path would bypass
+                                   #   both, so it is not expressible: there is
+                                   #   no flag that turns the fold check off.
 head_hidden: 0                     # 0 = single Linear -> the Stage-2 heads.resp
                                    #   transfers VERBATIM
 
@@ -122,20 +122,20 @@ physio_norm: zscore                # per-clip z-score, applied by the DATASET
                                    #   clip has zero mean and unit std.
 
 # ---- data split (SUBJECT-disjoint) ----
-n_folds: 5                         # 5-fold cyclic rotation (28 test for folds
-                                   #   0-3, 27 for fold 4 -- the usable corpus
-                                   #   has 139 subjects: 139 = 5*27 + 4)
-fold: 0                            # overridden by the sbatch array
-use_small_val: false               # Option A: 0% val, fixed-epoch checkpointing
+# ---- ADR-001 roles (train / val / test) ------------------------------------
+# Roles come from <exp_root>/fold<k>/partition.json (written once by Stage 2 or
+# by runners/run_partition.py); there is deliberately no fold-count and no
+# split-policy key: K and 70/10/20 are protocol constants.
+# The TEST role is scored by `--eval_role test`, never by the training process.
+eval_freq: 5                       # epochs between val evaluations (0 = off)
+val_select: fixed_epoch            # the only selection rule until Criterion 5
+val_criterion: joint_loss          # the value best_val would minimise
 # PARTITION RULE -- MUST equal configs/pretrain/stage2_hpc_tir_roi_resp.yaml.
 # seed 42 + 'sex' = shuffle within each sex stratum, then interleave, so a fold
 # is a near-representative sample instead of a contiguous block of sorted ids
 # (which made fold == sex block: F001..F082, then M001..M058).
 split_seed: 42
 split_stratify: sex
-train_ratio: 0.8                   # legacy fallback
-split_by: subject
-val_subject: ''                    # legacy fallback
 clip_stride: 2.0                   # window hop in SECONDS. MUST equal the Stage-2
                                    #   value (stage2_hpc_tir_roi_resp.yaml): the
                                    #   windows then ARE the pre-training corpus,
@@ -190,9 +190,7 @@ epochs: 150                        # FIXED-EPOCH budget for the k-fold sweep.
 batch_size: 16
 update_freq: 1
 save_ckpt_freq: 10
-eval_freq: 1                       # INERT under Option A: with no val split the
-                                   #   per-epoch evaluation branch never runs (it
-                                   #   is only read on the legacy n_folds=0 path).
+# (eval_freq is declared once, above, by the ADR-001 block.)
 
 # ---- optimizer (NOTE: run_waveform.py takes an ABSOLUTE lr -- there is no blr) ----
 opt: adamw

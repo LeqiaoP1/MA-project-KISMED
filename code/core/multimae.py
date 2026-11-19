@@ -669,26 +669,34 @@ class MultiModalMAE(nn.Module):
         return {s: (self.mask_span_tokens[s], self.mask_n_spans[s])
                 for s in self.signal}
 
-    def _tube_mask(self, B: int, device, mask_ratio: float):
-        """Random subset of spatial patches, replicated across all frames."""
+    def _tube_mask(self, B: int, device, mask_ratio: float, generator=None):
+        """Random subset of spatial patches, replicated across all frames.
+
+        ``generator=None`` draws from the global RNG, exactly as before; passing
+        a seeded generator pins the PLACEMENT for a validation pass (ADR-001
+        I6). ``torch.rand(..., generator=None)`` IS ``torch.rand(...)``.
+        """
         n_spatial = self.grid_h * self.grid_w
         k = max(1, min(n_spatial - 1, int(mask_ratio * n_spatial)))
-        perm = torch.rand(B, n_spatial, device=device).argsort(dim=1)
+        perm = torch.rand(B, n_spatial, device=device,
+                          generator=generator).argsort(dim=1)
         hidden = perm[:, :k]                                   # [B, k]
         m = torch.zeros(B, n_spatial, device=device, dtype=torch.long)
         m.scatter_(1, hidden, 1)                               # [B, n_spatial]
         mask = m.unsqueeze(1).expand(B, self.grid_t, n_spatial)
         return mask.reshape(B, self.n_visual)
 
-    def _random_mask(self, B: int, device, N: int, mask_ratio: float):
+    def _random_mask(self, B: int, device, N: int, mask_ratio: float,
+                     generator=None):
         k = max(1, min(N - 1, int(mask_ratio * N)))
-        perm = torch.rand(B, N, device=device).argsort(dim=1)
+        perm = torch.rand(B, N, device=device, generator=generator).argsort(dim=1)
         hidden = perm[:, :k]
         m = torch.zeros(B, N, device=device, dtype=torch.long)
         m.scatter_(1, hidden, 1)
         return m
 
-    def _span_mask(self, B: int, device, N: int, n_spans: int, span: int):
+    def _span_mask(self, B: int, device, N: int, n_spans: int, span: int,
+                   generator=None):
         """Contiguous-block mask: ``n_spans`` spans of ``span`` tokens.
 
         The masked COUNT is ``min(n_spans * span, N - 1)`` for every sample in
@@ -708,7 +716,7 @@ class MultiModalMAE(nn.Module):
         # distribute the slack (positions the spans may start at) over the
         # n_spans + 1 gaps, so the spans never overlap and never run past the end
         slack = max(0, N - total)
-        cut = torch.rand(B, n_spans + 1, device=device)
+        cut = torch.rand(B, n_spans + 1, device=device, generator=generator)
         cut = cut / cut.sum(dim=1, keepdim=True)
         gap = (cut * slack).long()                        # [B, n_spans + 1]
         offs = torch.cumsum(gap[:, :-1], dim=1)           # start offset of span j
@@ -719,26 +727,60 @@ class MultiModalMAE(nn.Module):
         m.scatter_(1, idx.reshape(B, -1), 1)
         return m
 
-    def make_masks(self, B: int, device):
+    def make_masks(self, B: int, device, generator=None, kept_override=None):
+        """Per-stream 1=masked tensors for one step.
+
+        :param generator: optional seeded RNG for the mask PLACEMENT. ``None``
+            draws from the global RNG, which is the training path.
+        :param kept_override: optional ``{stream: kept_fraction in [0,1]}`` pin
+            (ADR-001 ``val_kept_<stream>``). For ``masking='ammm'`` it becomes
+            the planner's kept-ratio override; for the ratio policy it replaces
+            ``1 - mask_ratio``. A pinned stream with the SPAN placement is
+            refused: the span budget is a token count, not a fraction, so
+            "pin the fraction" would silently do nothing.
+        """
+        if kept_override:
+            unknown = sorted(set(kept_override) - set(self.streams))
+            if unknown:
+                raise ValueError(
+                    f'val_kept_<stream> names undeclared stream(s) {unknown}; '
+                    f'this model serves {list(self.streams)}.')
+            for name, value in kept_override.items():
+                if not 0.0 <= float(value) <= 1.0:
+                    raise ValueError(
+                        f'val_kept_{name} must be in [0, 1]; got {value!r}')
+                if self.physio_mask == 'span' and name in self.signal:
+                    raise ValueError(
+                        f'val_kept_{name}: stream {name!r} uses the SPAN mask, '
+                        f'whose budget is a token count, so a kept FRACTION '
+                        f'cannot pin it. Use physio_mask=random for a pinned '
+                        f'validation pass.')
+
         if self.masking == 'ammm':
-            return self._make_masks_ammm(B, device)
+            return self._make_masks_ammm(B, device, generator=generator,
+                                         kept_override=kept_override)
         out = {}
         for s in self.streams:
+            ratio = self.mask_ratios[s]
+            if kept_override and s in kept_override:
+                ratio = 1.0 - float(kept_override[s])
             if s in self.visual:
-                out[s] = self._tube_mask(B, device, self.mask_ratios[s])
+                out[s] = self._tube_mask(B, device, ratio, generator=generator)
             elif self.physio_mask == 'span' and self.mask_span_tokens.get(s):
                 out[s] = self._span_mask(B, device, self.n_signal,
                                          self.mask_n_spans[s],
-                                         self.mask_span_tokens[s])
+                                         self.mask_span_tokens[s],
+                                         generator=generator)
             else:
-                out[s] = self._random_mask(B, device, self.n_signal,
-                                           self.mask_ratios[s])
+                out[s] = self._random_mask(B, device, self.n_signal, ratio,
+                                           generator=generator)
         return out
 
     # ------------------------------------------------------------------ #
     # AMMM: counts -> masks (the sampler owns the POLICY, this owns PLACEMENT)
     # ------------------------------------------------------------------ #
-    def _tube_keep_mask(self, B: int, device, n_spatial: int, kept: int):
+    def _tube_keep_mask(self, B: int, device, n_spatial: int, kept: int,
+                        generator=None):
         """Keep exactly ``kept`` spatial patches, replicated over all frames.
 
         Count-based sibling of :meth:`_tube_mask` (which is parameterised by a
@@ -747,14 +789,16 @@ class MultiModalMAE(nn.Module):
         """
         n_spatial = int(n_spatial)
         kept = max(0, min(int(kept), n_spatial))
-        perm = torch.rand(B, n_spatial, device=device).argsort(dim=1)
+        perm = torch.rand(B, n_spatial, device=device,
+                          generator=generator).argsort(dim=1)
         keep = torch.zeros(B, n_spatial, device=device, dtype=torch.long)
         if kept > 0:
             keep.scatter_(1, perm[:, :kept], 1)
         mask = 1 - keep.unsqueeze(1).expand(B, self.grid_t, n_spatial)
         return mask.reshape(B, self.grid_t * n_spatial)
 
-    def _random_keep_mask(self, B: int, device, N: int, kept: int):
+    def _random_keep_mask(self, B: int, device, N: int, kept: int,
+                          generator=None):
         """Keep exactly ``kept`` tokens of a 1-D stream (scattered).
 
         ``kept == 0`` is legal (100 % masked); ``kept == N`` means no masked
@@ -762,24 +806,30 @@ class MultiModalMAE(nn.Module):
         """
         N = int(N)
         kept = max(0, min(int(kept), N))
-        perm = torch.rand(B, N, device=device).argsort(dim=1)
+        perm = torch.rand(B, N, device=device, generator=generator).argsort(dim=1)
         keep = torch.zeros(B, N, device=device, dtype=torch.long)
         if kept > 0:
             keep.scatter_(1, perm[:, :kept], 1)
         return 1 - keep
 
-    def _make_masks_ammm(self, B: int, device):
+    def _make_masks_ammm(self, B: int, device, generator=None,
+                         kept_override=None):
         """One plan per STEP, then per-stream placement from its counts.
 
         The plan's ``active`` set is the only source of truth for which streams
         are present: an inactive stream and an ACTIVE 0-kept stream both get an
         all-ones mask, so the mask tensor cannot tell them apart.
         """
+        overrides = dict(self.ammm_overrides)
+        if kept_override:
+            overrides.update({str(k): float(v)
+                              for k, v in kept_override.items()})
         plan = ammm.plan_step(self.ammm_specs, caps=self.ammm_caps,
                               alpha=self.ammm_alpha,
                               dropout_p=self.ammm_dropout,
                               min_kept=self.ammm_min_kept,
-                              overrides=self.ammm_overrides)
+                              overrides=overrides,
+                              generator=generator)
         self._last_mask_plan = plan
         masks = {}
         for spec in self.ammm_specs:
@@ -787,7 +837,8 @@ class MultiModalMAE(nn.Module):
             if s in plan.active:
                 if spec.kind == ammm.VISUAL:
                     masks[s] = self._tube_keep_mask(B, device, spec.n_units,
-                                                    plan.kept_units[s])
+                                                    plan.kept_units[s],
+                                                    generator=generator)
                 elif (self.physio_mask == 'span'
                       and self.mask_span_tokens.get(s)):
                     # Contiguous placement for a 1-D stream under AMMM: the
@@ -800,10 +851,12 @@ class MultiModalMAE(nn.Module):
                     # ratio; ``_span_mask`` clamps to n_units - 1 regardless).
                     masks[s] = self._span_mask(B, device, spec.n_units,
                                                self.mask_n_spans[s],
-                                               self.mask_span_tokens[s])
+                                               self.mask_span_tokens[s],
+                                               generator=generator)
                 else:
                     masks[s] = self._random_keep_mask(B, device, spec.n_units,
-                                                      plan.kept_units[s])
+                                                      plan.kept_units[s],
+                                                      generator=generator)
             else:      # placeholder only: `forward` skips inactive streams
                 n = (self.grid_t * spec.n_units if spec.kind == ammm.VISUAL
                      else spec.n_units)
@@ -885,7 +938,16 @@ class MultiModalMAE(nn.Module):
             return x
         return x[:, :, :n]
 
-    def forward(self, x):
+    def forward(self, x, mask_generator=None, kept_override=None):
+        """Masked multimodal forward.
+
+        :param mask_generator: optional seeded RNG for the mask PLACEMENT.
+            ``None`` (the training path) draws from the global RNG and is
+            bit-identical to the code before pinning existed.
+        :param kept_override: optional ``{stream: kept_fraction}`` pin, from the
+            ADR-001 ``val_kept_<stream>`` keys. Makes a validation pass a
+            deterministic function of the weights (I6, Criterion 2).
+        """
         B = next(iter(x.values())).shape[0]
         device = next(iter(x.values())).device
 
@@ -912,7 +974,8 @@ class MultiModalMAE(nn.Module):
         # its adapter entirely: a fully masked video would otherwise pay a full
         # Conv3d and receive a ZERO (not absent) gradient. Moving this call up
         # is RNG-neutral: the adapters consume no randomness.
-        masks = self.make_masks(B, device)
+        masks = self.make_masks(B, device, generator=mask_generator,
+                                kept_override=kept_override)
 
         # --- tokenize + add positional embedding -------------------------- #
         tokens = {}

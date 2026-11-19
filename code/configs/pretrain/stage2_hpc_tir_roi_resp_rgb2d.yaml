@@ -26,10 +26,17 @@
 # ---------------------------------------------------------------- data source
 data_set: tir_roi_resp_rgb2d       # TIR-ROI + 2D-texture ROI + Resp_Volts.txt
 subjects: ''                       # '' = every discoverable subject
-pretrain_split: all                # Stage 2 never splits (self-supervised)
-# ---- k-fold PARTITION (MUST mirror the Stage-3 sibling) ---------------------
-split_seed: 42                     # seed of the draw; null = legacy blocks
+# ---- ADR-001 roles (train / val / test) -- MUST mirror the Stage-3 sibling ---
+# TRAIN + VAL come from <exp_root>/fold<k>/partition.json; TEST is never loaded.
+split_seed: 42                     # partition seed; identical in both stages
 split_stratify: sex                # shuffle within stratum, then interleave
+# Pinned validation masking (I6) = 1 - mask_ratio_<stream> of this config.
+eval_freq: 5
+val_select: fixed_epoch
+val_criterion: joint_loss
+val_kept_tir: 0.10
+val_kept_rgb2d: 0.50
+val_kept_resp: 0.50
 tasks: ''                          # '' = all tasks; UNIONED with task_set below
 # ---- task GROUPS ("distortion levels") -- IDENTICAL to the TIR twin ---------
 task_groups:

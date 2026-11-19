@@ -94,7 +94,7 @@ def _unmasked_tiny(monkeypatch, **over):
     # Asymmetric_MultiModal_Masking §3.2.3: the adapter is skipped), so the
     # adapter probe below needs at least one VISIBLE token in `tir`.
     masks['tir'][:, 0] = 0
-    monkeypatch.setattr(m, 'make_masks', lambda B, device: masks)
+    monkeypatch.setattr(m, 'make_masks', lambda B, device, **kwargs: masks)
     return m
 
 

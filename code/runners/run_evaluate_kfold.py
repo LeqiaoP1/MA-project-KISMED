@@ -1,10 +1,13 @@
 """Pooled k-fold (subject-disjoint) evaluation over ALL BP4D+ subjects.
 
 The Stage-3 pipeline is run once per fold, each fold holding out a different
-subject block (``utils/splits.py::subject_folds``, ``n_folds`` = 5). Every fold
-therefore predicts EVERY subject exactly once -- namely the subjects it never
-trained on -- so pooling the folds gives a cross-validated number for the whole
-corpus, not just for one test block.
+subject block (``protocol.FoldPlan``, K = 5). Every fold therefore predicts
+EVERY subject exactly once -- namely the subjects it never trained on -- so
+pooling the folds gives a cross-validated number for the whole corpus.
+
+With ``--exp_root`` the ADR-001 gate runs first: five compliant folds of ONE
+partition, all scored once, under one selection rule. ``--root/--run_prefix``
+is the legacy mode that cannot check any of that.
 
 This runner consumes the per-fold dumps (``preds.npy`` + ``entries.json``) and,
 per session:
@@ -301,10 +304,130 @@ def _check_partition(fold_summaries):
     return len(seen)
 
 
+def gate_protocol_partitions(exp_root, folds, allow_partial=False):
+    """ADR-001 gate: only compliant folds of ONE partition may be pooled.
+
+    Five independently-correct folds can still be summed into a meaningless
+    number if they were built on different partitions, if one of them is a dev
+    plan, or if two folds hold out the same subject. Every one of those is a
+    silent error at aggregation time, so they are refused here rather than
+    noticed later in the table.
+
+    :returns: ``{fold: FoldPlan}``.
+    """
+    from protocol import K, ProtocolError, load_plan
+
+    plans, missing = {}, []
+    for k in folds:
+        path = os.path.join(exp_root, f'fold{k}', 'partition.json')
+        if not os.path.isfile(path):
+            missing.append(path)
+            continue
+        try:
+            plans[k] = load_plan(path)
+        except ProtocolError as exc:
+            raise SystemExit(f'[kfold] fold {k}: {exc}') from None
+    if missing:
+        raise SystemExit(
+            '[kfold] missing partition record(s): ' + ', '.join(missing)
+            + '. Create them with runners/run_partition.py.')
+
+    dev = sorted(k for k, plan in plans.items() if plan.dev_smoke)
+    if dev:
+        raise SystemExit(
+            f'[kfold] fold(s) {dev} used a --dev_smoke plan; those exist for '
+            f'plumbing tests only and can never be pooled.')
+    if len(folds) != K and not allow_partial:
+        raise SystemExit(
+            f'[kfold] ADR-001 pools exactly K={K} folds; got {len(folds)} '
+            f'({sorted(folds)}). Finish the sweep, or pass --allow_partial for '
+            f'a smoke pool (the artefact is then marked partial).')
+
+    first = plans[folds[0]]
+    for k, plan in sorted(plans.items()):
+        if (plan.split_seed, plan.split_stratify, plan.n_folds) != \
+                (first.split_seed, first.split_stratify, first.n_folds):
+            raise SystemExit(
+                f'[kfold] fold {k} used partition (seed='
+                f'{plan.split_seed}, stratify={plan.split_stratify!r}, K='
+                f'{plan.n_folds}) but fold {folds[0]} used (seed='
+                f'{first.split_seed}, stratify={first.split_stratify!r}, K='
+                f'{first.n_folds}). Folds of one report must come from ONE '
+                f'partition rule.')
+        if plan.universe_digest != first.universe_digest:
+            raise SystemExit(
+                f'[kfold] fold {k} partitions a different subject universe '
+                f'({plan.universe_digest[:12]}) than fold {folds[0]} '
+                f'({first.universe_digest[:12]}); the corpus changed between '
+                f'runs, so the folds are not comparable.')
+
+    seen = {}
+    for k, plan in sorted(plans.items()):
+        for subject in plan.roles['test']:
+            if subject in seen:
+                raise SystemExit(
+                    f'[kfold] {subject} is the test subject of folds '
+                    f'{seen[subject]} and {k}; the folds are not disjoint.')
+            seen[subject] = k
+    if not allow_partial and set(seen) != set(first.universe):
+        uncovered = sorted(set(first.universe) - set(seen))
+        raise SystemExit(
+            f'[kfold] the pooled folds cover {len(seen)} of '
+            f'{len(first.universe)} subject(s); {len(uncovered)} never appear '
+            f'as a test subject (e.g. {uncovered[:5]}). That is not a '
+            f'cross-validation of the corpus.')
+    return plans
+
+
+def gate_test_artefacts(exp_root, folds):
+    """Every fold must have been scored once, under one selection rule."""
+    from protocol import ProtocolError, read_json, read_selection
+
+    rules = {}
+    for k in folds:
+        metrics_path = os.path.join(exp_root, f'fold{k}', 'stage3', 'test',
+                                    'metrics.json')
+        if not os.path.isfile(metrics_path):
+            raise SystemExit(
+                f'[kfold] fold {k} has no test artefact ({metrics_path}); run '
+                f'`runners/run_waveform.py --eval_role test` for that fold.')
+        try:
+            doc = read_json(metrics_path)
+        except ProtocolError as exc:
+            raise SystemExit(f'[kfold] fold {k}: {exc}') from None
+        if doc.get('skipped'):
+            raise SystemExit(
+                f'[kfold] fold {k}: the test role was not scorable '
+                f'({doc.get("skip_reason", "unknown")}). A fold with nothing to '
+                f'score cannot be part of a pooled number.')
+        selection_path = os.path.join(exp_root, f'fold{k}', 'stage3',
+                                      'selection.json')
+        if os.path.isfile(selection_path):
+            rules[k] = str(read_selection(selection_path).get('rule',
+                                                             'unrecorded'))
+        else:
+            rules[k] = 'unrecorded'
+    if len(set(rules.values())) > 1:
+        raise SystemExit(
+            f'[kfold] the folds used different selection rules {rules}; the '
+            f'delivered checkpoint of each fold means something else, so their '
+            f'scores are not comparable.')
+    return rules
+
+
 def get_args():
     p = argparse.ArgumentParser(
         'Pooled k-fold (subject-disjoint) evaluation over all subjects',
         add_help=True)
+    p.add_argument('--exp_root', default='', type=str,
+                   help='ADR-001 experiment root: reads '
+                        '<exp_root>/fold<k>/{partition.json,stage3/test/} and '
+                        'ENFORCES the protocol gate (five compliant folds of one '
+                        'partition, one selection rule). Preferred over '
+                        '--root/--run_prefix, which cannot check any of that.')
+    p.add_argument('--allow_partial', action='store_true', default=False,
+                   help='SMOKE ONLY: pool fewer than K folds; the artefact is '
+                        'marked partial and must not be quoted as a result')
     p.add_argument('--root', default='../output/finetune', type=str,
                    help='parent dir holding the per-fold run dirs')
     p.add_argument('--run_prefix', default='resp_tir_roi_hpc_fold', type=str,
@@ -347,8 +470,42 @@ def main(args):
     band = (tuple(float(x) for x in args.band.split(',')) if args.band
             else ((1.0, 2.5) if args.waveform == 'bp' else (0.1, 0.6)))
     folds = [int(k) for k in str(args.folds).split(',') if k.strip()]
-    out_path = args.out or os.path.join(
-        args.root, f'kfold_{args.run_prefix.rstrip("_")}.json')
+
+    # ADR-001 mode: the evidence lives under <exp_root>/fold<k>. Everything the
+    # gate checks (one partition, one selection rule, all folds scored) is
+    # invisible to --root/--run_prefix, which is why that mode is legacy.
+    protocol_block = {}
+    fold_dirs = {}
+    if getattr(args, 'exp_root', ''):
+        plans = gate_protocol_partitions(args.exp_root, folds,
+                                        allow_partial=args.allow_partial)
+        rules = gate_test_artefacts(args.exp_root, folds)
+        for k in folds:
+            fold_dirs[k] = os.path.join(args.exp_root, f'fold{k}', 'stage3',
+                                        'test')
+        protocol_block = {
+            'adr': 'ADR-001',
+            'compliant': not args.allow_partial,
+            'partial': bool(args.allow_partial),
+            'exp_root': os.path.abspath(args.exp_root),
+            'n_folds': len(folds),
+            'universe_digest': plans[folds[0]].universe_digest,
+            'split_seed': plans[folds[0]].split_seed,
+            'split_stratify': plans[folds[0]].split_stratify,
+            'partition_digests': {k: plans[k].digest for k in folds},
+            'counts': {k: plans[k].counts for k in folds},
+            'selection_rule': rules[folds[0]],
+            'selection_rules': rules,
+        }
+        print(f'[kfold] protocol gate OK: {len(folds)} fold(s), universe '
+              f'{plans[folds[0]].universe_digest[:12]}, '
+              f'rule={rules[folds[0]]}'
+              + ('  [PARTIAL: smoke only]' if args.allow_partial else ''))
+
+    out_path = args.out or (
+        os.path.join(args.exp_root, 'report', 'kfold.json')
+        if getattr(args, 'exp_root', '') else
+        os.path.join(args.root, f'kfold_{args.run_prefix.rstrip("_")}.json'))
     wkey = f'within_{int(round(args.rate_tol * 100))}pct'
 
     records, summaries, pw_all, tw_all = [], [], [], []
@@ -357,7 +514,8 @@ def main(args):
     group_override = (_tgrp.levels_by_task(group_levels) if group_levels
                       else None)
     for k in folds:
-        d = _fold_dir(args.root, args.run_prefix, k)
+        d = (fold_dirs[k] if fold_dirs
+             else _fold_dir(args.root, args.run_prefix, k))
         with open(os.path.join(d, 'entries.json')) as f:
             n_entries = len(json.load(f))
         recs, (pw, tw) = score_fold(
@@ -393,8 +551,6 @@ def main(args):
         'protocol': {
             'kind': 'pooled subject-disjoint k-fold cross-validation',
             'folds': folds,
-            'root': os.path.abspath(args.root),
-            'run_prefix': args.run_prefix,
             'waveform': args.waveform,
             'fs': args.fs,
             'raw_fs': args.raw_fs,
@@ -410,6 +566,8 @@ def main(args):
                                   else 'entries'),
             'task_groups': {k: list(v) for k, v in group_levels.items()},
             'n_subjects': n_subjects,
+            **(protocol_block or {'root': os.path.abspath(args.root),
+                                  'run_prefix': args.run_prefix}),
         },
         'task_levels': {t: list(v) for t, v in (group_override or {}).items()},
         'overall': agg['overall'],

@@ -47,8 +47,7 @@ physio_norm: zscore
 # ---- data (canonical layout from data/prepare_bp4d.py) ----
 data_set: bp4d+
 data_path: ../data/processed/bp4d_canonical
-train_ratio: 0.8
-split_by: subject                  # SUBJECT-disjoint: 4 local subjects -> 3 train / 1 val (F004)
+# ADR-001: roles come from the fold's partition.json; the ratio keys are gone.
 clip_stride: 1.0                   # overlapping windows -> ~4x more clips on this small corpus
 
 # ---- joint spatio-temporal-spectral loss ----

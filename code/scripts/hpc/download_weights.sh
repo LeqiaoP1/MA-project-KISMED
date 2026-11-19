@@ -16,7 +16,7 @@
 # Cache location: $WEIGHTS_DIR, else $PROJ_DIR/models/initial (in-repo, matches
 # scripts/env_local.sh). NOTE env_hpc.sh itself resolves INITIAL_MODELS_DIR to
 # "$(dirname "$PROJ_DIR")/models/initial" == $HOME/models/initial, i.e. OUTSIDE
-# the repo; this script and submit_pretrain.sbatch deliberately override that so
+# the repo; this script and the sweep deliberately override that so
 # the two never disagree. Export WEIGHTS_DIR to relocate both at once.
 
 set -euo pipefail
@@ -48,5 +48,5 @@ fi
 echo
 echo "[download_weights] cached under $INITIAL_MODELS_DIR:"
 ls -lh "$INITIAL_MODELS_DIR" 2>/dev/null || true
-echo "[download_weights] done -- submit_pretrain.sbatch / smoke_pretrain.sbatch"
+echo "[download_weights] done -- scripts/hpc/submit_sweep.sh"
 echo "                   will now reuse this cache."

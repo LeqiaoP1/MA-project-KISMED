@@ -8,6 +8,7 @@ import argparse
 import difflib
 import os
 import random
+import sys
 
 import numpy as np
 import torch
@@ -70,42 +71,138 @@ def add_common_args(parser: argparse.ArgumentParser):
     add_amp_args(parser)
 
 
-def add_split_args(parser: argparse.ArgumentParser):
-    """Flags for k-fold cyclic rotation splits.
+#: Stream names a ``val_kept_<stream>`` flag can pin (ADR-001 section 2.3).
+#: Declared once so every runner's parser exposes the same keys and a YAML uses
+#: exactly the names the ADR lists.
+PROTOCOL_STREAMS = ('rgb', 'tir', 'rgb2d', 'bp', 'resp')
 
-    ``n_folds <= 1`` keeps the legacy ratio split (``train_ratio`` /
-    ``split_by`` / ``val_subject``), so every existing config is unaffected.
+
+def partition_path(exp_root: str, fold: int, dev_smoke: bool = False) -> str:
+    """``<exp_root>/fold<k>/partition.json`` (``.dev.json`` for a dev run)."""
+    name = 'partition.dev.json' if dev_smoke else 'partition.json'
+    return os.path.join(exp_root, f'fold{int(fold)}', name)
+
+
+def add_protocol_args(parser: argparse.ArgumentParser):
+    """Flags of ADR-001 section 2.3 — exactly those, and no fold-count knob.
+
+    ``K`` is a module constant (``protocol.constants.K``); the absence of a
+    ``--n_folds`` flag is deliberate, because a value that must never change
+    should not be expressible.
     """
-    parser.add_argument('--n_folds', default=0, type=int,
-                        help='number of subject folds for the cyclic rotation '
-                             '(0 or 1 = off, legacy ratio split)')
-    parser.add_argument('--fold', default=0, type=int,
-                        help='fold index of THIS run (0 to n_folds - 1); its '
-                             'subjects are the held-out test fold')
-    parser.add_argument('--use_small_val', action='store_true', default=False,
-                        help='Stage 3 Option B: carve ~10 percent of the '
-                             'non-test pool as a subject-disjoint validation '
-                             'set. Off = Option A (no val, fixed-epoch '
-                             'checkpointing, test fold scored at the end).')
-    parser.add_argument('--split_seed', default=None, type=int,
-                        help='seed of the fold PARTITION (utils/splits.py). '
-                             'None = legacy rule (sorted ids cut into '
-                             'contiguous blocks). Any int = a reproducible '
-                             'random draw; REQUIRED when --split_stratify is '
-                             'not "none". Stage 2 and Stage 3 of one sweep '
-                             'must use the same value.')
-    parser.add_argument('--split_stratify', default='none', type=str,
-                        choices=['none', 'sex'],
-                        help="partition strategy: 'none' = sorted contiguous "
-                             "blocks (fold == sex block on BP4D+, because "
-                             "F001.. sorts before M001..); 'sex' = shuffle "
-                             'within each sex stratum, then interleave so every '
-                             'fold is a near-representative sample. Requires '
-                             '--split_seed.')
-    parser.add_argument('--split_role', default='', type=str,
-                        choices=['', 'train', 'val', 'test'],
-                        help='single-view override: build THIS role only. '
-                             'Empty = the runner chooses (train + val + test)')
+    from protocol import CRITERIA, K, SELECTION_RULES, SPLIT_STRATEGIES
+
+    parser.add_argument('--exp_root', default='', type=str,
+                        help='experiment root; the partition record lives at '
+                             '<exp_root>/fold<k>/partition.json and every run '
+                             'of that fold shares it. Required.')
+    parser.add_argument('--fold', default=None, type=int,
+                        help=f'fold index in [0, {K}); block k is the test '
+                             f'role of fold k')
+    parser.add_argument('--split_seed', default=42, type=int,
+                        help='partition seed (ADR-001 I2)')
+    parser.add_argument('--split_stratify', default='sex', type=str,
+                        choices=list(SPLIT_STRATEGIES),
+                        help="partition strategy: 'sex' shuffles within each "
+                             'stratum then interleaves proportionally')
+    parser.add_argument('--val_seed', default=None, type=int,
+                        help='seed of the validation draw (default: split_seed)')
+    parser.add_argument('--eval_freq', default=5, type=int,
+                        help='epochs between validation evaluations; 0 = off '
+                             '(legal only with --val_select fixed_epoch)')
+    parser.add_argument('--val_select', default='fixed_epoch', type=str,
+                        choices=list(SELECTION_RULES),
+                        help='selection rule; fixed_epoch never reads a metric')
+    parser.add_argument('--val_criterion', default='joint_loss', type=str,
+                        choices=list(CRITERIA),
+                        help='what best_val minimises/maximises')
+    for stream in PROTOCOL_STREAMS:
+        parser.add_argument(f'--val_kept_{stream}', default=None, type=float,
+                            help=f'pinned kept fraction of stream {stream!r} '
+                                 f'for the validation pass (I6). Required '
+                                 f'when that stream is masked and '
+                                 f'--eval_freq > 0; range [0, 1].')
+    parser.add_argument('--dev_smoke', action='store_true', default=False,
+                        help='plumbing runs only: tolerates a corpus that '
+                             'cannot hold 70/10/20 and writes '
+                             'partition.dev.json, which can never be pooled')
+
+
+def resolve_val_kept(args, streams, eval_freq=None):
+    """``{stream: kept}`` pins for the validation pass, with the D6 refusal.
+
+    A validation evaluation of a stochastic forward path is only comparable
+    across epochs when every masked stream is pinned (I6), so a missing
+    ``val_kept_<stream>`` is an error rather than a silent default — but only
+    when an evaluation will actually run.
+    """
+    if eval_freq is None:
+        eval_freq = int(getattr(args, 'eval_freq', 0) or 0)
+    streams = [str(s).strip() for s in streams if str(s).strip()]
+    kept = {}
+    for stream in streams:
+        value = getattr(args, f'val_kept_{stream}', None)
+        if value is not None:
+            if not 0.0 <= float(value) <= 1.0:
+                raise SystemExit(
+                    f'--val_kept_{stream} must be in [0, 1]; got {value!r}')
+            kept[stream] = float(value)
+    missing = sorted(set(streams) - set(kept))
+    if missing and eval_freq > 0:
+        raise SystemExit(
+            f'--eval_freq {eval_freq} > 0 but no pinned kept fraction for '
+            f'{missing}: a validation pass under a stochastic forward path is '
+            f'not comparable across epochs (ADR-001 I6). Pass '
+            + ' '.join(f'--val_kept_{s} <kept>' for s in missing)
+            + ', or set --eval_freq 0 with --val_select fixed_epoch.')
+    return kept
+
+
+def load_or_create_plan(args, *, stage: str = ''):
+    """Read ``<exp_root>/fold<k>/partition.json``, creating it on first use (D4).
+
+    Both stages and the standalone utility converge on ONE file, so a Stage-3
+    run can never be paired with a Stage-2 encoder from a different partition:
+    a differing digest is a hard error inside ``protocol.save_plan``.
+    """
+    from data.universe import corpus_subjects
+    from protocol import build_plan, load_plan, save_plan
+
+    exp_root = str(getattr(args, 'exp_root', '') or '').strip()
+    if not exp_root:
+        raise SystemExit(
+            '--exp_root is required: ADR-001 keeps the partition record at '
+            '<exp_root>/fold<k>/partition.json and every run of that fold '
+            'shares it.')
+    fold = getattr(args, 'fold', None)
+    if fold is None:
+        raise SystemExit('--fold is required (0 .. K-1).')
+    dev_smoke = bool(getattr(args, 'dev_smoke', False))
+    path = partition_path(exp_root, fold, dev_smoke)
+
+    def _describe(plan) -> str:
+        return (f'fold {plan.fold}/{plan.n_folds}: '
+                + ', '.join(f'{role}={plan.counts[role]}'
+                            for role in ('train', 'val', 'test'))
+                + f'  digest {plan.digest[:12]}')
+
+    if os.path.exists(path):
+        plan = load_plan(path)
+        print(f'[protocol] partition {path} -> {_describe(plan)}')
+        return plan
+
+    universe = corpus_subjects(args)
+    plan = build_plan(universe, int(fold),
+                      split_seed=int(getattr(args, 'split_seed', 42)),
+                      split_stratify=str(getattr(args, 'split_stratify', 'sex')),
+                      val_seed=getattr(args, 'val_seed', None),
+                      dev_smoke=dev_smoke)
+    written = save_plan(path, plan,
+                        writer={'stage': stage or 'unknown',
+                                'argv': sys.argv[1:]})
+    print(f'[protocol] wrote {path} -> {_describe(written)}')
+    return written
+
 
 
 def _check_config_keys(parser: argparse.ArgumentParser, cfg: dict, path: str):
@@ -183,8 +280,13 @@ def init_env(args):
 
 
 def make_data_loader(args, dataset, shuffle=True, drop_last=True,
-                     batch_size=None):
-    """Distributed-aware DataLoader."""
+                     batch_size=None, num_workers=None):
+    """Distributed-aware DataLoader.
+
+    ``num_workers=0`` is passed explicitly by the validation loaders: an
+    ordered, single-process pass is what makes two evaluations of one
+    checkpoint comparable bit-for-bit (ADR-001 I6).
+    """
     batch_size = batch_size or args.batch_size
     if args.distributed:
         sampler = torch.utils.data.distributed.DistributedSampler(

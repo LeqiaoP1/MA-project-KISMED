@@ -259,15 +259,16 @@ resource specification. Then submit the relevant Slurm job from `code/`:
 cd code
 source scripts/env_hpc.sh
 bash scripts/hpc/download_weights.sh   # once, on a login node
-sbatch scripts/hpc/submit_pretrain.sbatch
-sbatch scripts/hpc/submit_waveform.sbatch
+EXP_ROOT=$WORK_SCRATCH/protocol_v1 sbatch scripts/hpc/submit_sweep.sbatch
 ```
 
-The `submit_*.sbatch` wrappers expose overrides such as `CONFIG`, `RUN_NAME`,
-`OUT_ROOT`, `WEIGHTS_DIR`, and corpus filters; read the header of the job you
-intend to run. The HPC profile is a template and contains site-specific values
-that must be reviewed before submission. Local scripts under
-`code/scripts/local/` are single-process smoke wrappers; they do not require a
+The sweep is the only Stage-2/Stage-3 path: per fold it runs partition →
+Stage 2 → Stage 3 → test scoring, sequentially, in one allocation. Its inputs
+are env vars (`EXP_ROOT` required; also `FOLDS`, `CFG2`, `CFG3`, `RAW_ROOT`,
+`SPLIT_SEED`, `SPLIT_STRATIFY`) — read `scripts/hpc/submit_sweep.sh`. The HPC
+profile is a template and contains site-specific values that must be reviewed
+before submission. Local scripts under `code/scripts/local/` are single-process
+smoke wrappers; they do not require a
 DDP launcher.
 
 ## Testing

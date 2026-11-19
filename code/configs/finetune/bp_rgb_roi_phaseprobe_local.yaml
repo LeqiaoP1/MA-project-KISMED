@@ -145,9 +145,7 @@ physio_norm: zscore                # per clip; mirrors the Stage-2 target_norm: 
                                    #   with the 0 Hz bin.
 
 # ---- data split (SUBJECT-disjoint; see the LOSO sweep above) ----
-train_ratio: 0.8                   # 4 subjects -> 3 train (F001-F003) / val = F004
-split_by: subject
-val_subject: ''                    # e.g. F001 = LOSO fold (overrides train_ratio/split_by)
+# ADR-001: roles come from the fold's partition.json; the ratio keys are gone.
 clip_stride: 4.0                   # window hop in SECONDS matching Stage 2
 max_clips: 0                       # 0 = no per-session cap (dev knob)
 

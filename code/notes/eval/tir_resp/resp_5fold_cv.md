@@ -1,5 +1,11 @@
 # Respiration Stage-3: pooled 5-fold CV evaluation (all BP4D+ subjects)
 
+> **OFF-PROTOCOL FOR ADR-001 (2026-11-18).** Measured on an 80/0/20 allocation
+> with no validation role, so neither ADR-001's role ratio nor its selection
+> record exists here. Keep this page as a historical record; it must not be
+> pooled with, compared against, or quoted as an ADR-001 result
+> (`code/notes/plan/ADR-001-subject-kfold-plan.md`).
+>
 > Measured 2026-10-23 · protocol `code/notes/design/Evaluation_RespWaveform_protocol.md` §3.2
 > Run dirs `output/finetune/resp_tir_roi_hpc_fold{0..4}` · artifact
 > `output/eval/resp_kfold/kfold_resp_tir_roi_hpc.json`

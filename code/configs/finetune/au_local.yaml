@@ -31,7 +31,7 @@ au_list: 1,2,4,6,7,10,12,14,15,17,23,24
 streams: rgb
 
 # subject-disjoint split (only F001..F004 media locally -> 3 train / 1 val)
-train_ratio: 0.75
+# ADR-001: roles come from the fold's partition.json; the ratio keys are gone.
 # or explicit: train_subjects: F001,F002,F003   val_subjects: F004
 
 # ---- probe geometry (must equal the Stage-2 checkpoint) ----

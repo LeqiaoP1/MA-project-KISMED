@@ -305,15 +305,28 @@ def test_stage2_data_path_shapes(tmp_path):
     assert ds.base.stats['resp_cache_key'] == _key_root(raw, cache).name
 
 
+def _dev_plan():
+    """A dev-legal ADR-001 plan whose TRAIN role owns the synthetic session."""
+    from protocol import build_plan
+    universe = [f'S{n:03d}' for n in range(1, 7)]
+    for fold in range(5):
+        plan = build_plan(universe, fold, split_seed=42,
+                          split_stratify='none', dev_smoke=True)
+        if 'S001' in plan.roles['train']:
+            return plan
+    raise AssertionError('no fold keeps S001 in the train role')
+
+
 def test_stage3_data_path_shapes(tmp_path):
     raw, out = tmp_path / 'raw', tmp_path / 'out'
     cache = _make_resp_cache(raw, out, {
         'S001_T1': _breathing(), 'S002_T1': _breathing()})
     ds = trd.TirRoiRespFinetuneDataset(
-        raw_root=str(raw), is_train=True, train_ratio=1.0, split_by='subject',
-        fs=100.0, clip_duration=CLIP_S, temporal_stride=2, tubelet_t=2,
+        raw_root=str(raw), fs=100.0, clip_duration=CLIP_S,
+        temporal_stride=2, tubelet_t=2,
         input_size=112, roi_padding=0.2, crop_rule='square', resp_fs=100.0,
-        resp_cache=str(cache), physio_norm='zscore')
+        resp_cache=str(cache), physio_norm='zscore',
+        plan=_dev_plan(), role='train')
     tir, wav = ds[0]
     assert tuple(tir.shape) == (3, 100, 112, 112)
     assert tuple(wav.shape) == (800,)

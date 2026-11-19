@@ -19,10 +19,11 @@
 # Usable types here: a100 (sm_80), h100 (sm_90), rtx6000.
 #
 # Usage (from code/):
-#   bash scripts/hpc/submit.sh scripts/hpc/submit_pretrain.sbatch
-#   GPU_TYPE=rtx6000 bash scripts/hpc/submit.sh scripts/hpc/submit_pretrain.sbatch
-#   GPU_TYPE=rtx6000 GPUS=8 bash scripts/hpc/submit.sh scripts/hpc/submit_pretrain.sbatch
-#   GPUS=1 bash scripts/hpc/submit.sh scripts/hpc/smoke_pretrain.sbatch
+#   bash scripts/hpc/submit.sh scripts/hpc/submit_sweep.sbatch
+#   GPU_TYPE=rtx6000 bash scripts/hpc/submit.sh scripts/hpc/submit_sweep.sbatch
+#   GPU_TYPE=rtx6000 EXP_ROOT=/work/projects/l0003511/scratch/protocol_v1 \
+#       bash scripts/hpc/submit.sh scripts/hpc/submit_sweep.sbatch
+#   FOLDS="0" EXP_ROOT=/tmp/proto_dry bash scripts/hpc/submit.sh scripts/hpc/submit_sweep.sbatch
 #
 # GPUS IS THE DDP WORLD SIZE, not just a gres count. utils/dist.py derives
 # world_size from SLURM_NTASKS, so this wrapper sets --gres, --ntasks and
@@ -39,12 +40,13 @@
 # arguments to the JOB SCRIPT, not as options to itself -- so args you pass after
 # the .sbatch path here reach the python runner, exactly as they would with a
 # plain `sbatch`:
-#   bash scripts/hpc/submit.sh scripts/hpc/smoke_pretrain.sbatch --epochs 1 --max_entries 4
+#   EXP_ROOT=/tmp/proto_dry FOLDS="0" \
+#       bash scripts/hpc/submit.sh scripts/hpc/submit_sweep.sbatch
 # Any other SCHEDULING knob (partition, time, dependency, ...) goes through the
 # native SBATCH_* environment variables, which is also how they can override the
 # #SBATCH directives inside the job scripts:
 #   SBATCH_TIMELIMIT=06:00:00 SBATCH_PARTITION=acc \
-#       bash scripts/hpc/submit.sh scripts/hpc/submit_pretrain.sbatch
+#       bash scripts/hpc/submit.sh scripts/hpc/submit_sweep.sbatch
 set -euo pipefail
 
 if [ "$#" -lt 1 ]; then

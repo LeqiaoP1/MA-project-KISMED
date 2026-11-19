@@ -81,8 +81,10 @@ def get_args(argv=None):
     p.add_argument('--split', default='test', choices=('test', 'corpus'),
                    help="'test' (default) = the weight checkpoint's held-out "
                         'fold subjects')
-    p.add_argument('--fold_manifest', default='',
-                   help='default: <run_dir>/fold_manifest.json of --checkpoint')
+    p.add_argument('--partition', default='',
+                   help='the fold partition record (<exp_root>/fold<k>/'
+                        'partition.json); default: discovered above the '
+                        'checkpoint run dir')
     p.add_argument('--label', default='', help='name used in the report')
     p.add_argument('--out', default='', help='JSON report path (default: none)')
     # ---- masking of the evaluation clips (pinned, NOT the training policy) --
@@ -211,15 +213,18 @@ def pin_masking(model, a, cargs) -> str:
 
 
 def build_eval_dataset(data_cargs, a, held: Optional[set]):
-    """The held-out clip pool, built from ``data_cargs`` (never mutated)."""
+    """The held-out clip pool, built from ``data_cargs`` (never mutated).
+
+    Uses the corpus-wide DIAGNOSTIC view: this probe selects clips by subject
+    afterwards and produces no pooled number (see
+    ``data.datasets.build_pretraining_corpus_dataset``).
+    """
     import copy
 
-    from data import build_pretraining_dataset
+    from data import build_pretraining_corpus_dataset
 
     cargs = copy.copy(data_cargs)
-    cargs.pretrain_split = 'all'
-    cargs.subjects = ''
-    ds = build_pretraining_dataset(cargs)
+    ds = build_pretraining_corpus_dataset(cargs)
     idx = list(range(len(ds)))
     if held is not None:
         idx = [i for i in idx
@@ -296,10 +301,15 @@ def main(argv=None):
     label = a.label or os.path.basename(os.path.dirname(
         os.path.dirname(os.path.abspath(a.checkpoint))))
 
-    if not a.fold_manifest:
+    if not a.partition:
+        # Stages write <exp_root>/fold<k>/partition.json and the run dirs under
+        # it, so the record sits one level above <run_dir>.
         run_dir = os.path.dirname(os.path.dirname(os.path.abspath(a.checkpoint)))
-        cand = os.path.join(run_dir, 'fold_manifest.json')
-        a.fold_manifest = cand if os.path.isfile(cand) else ''
+        for cand in (os.path.join(os.path.dirname(run_dir), 'partition.json'),
+                     os.path.join(run_dir, 'partition.json')):
+            if os.path.isfile(cand):
+                a.partition = cand
+                break
 
     model = build_model(ckpt, dev)
     caption = pin_masking(model, a, cargs)
@@ -320,7 +330,7 @@ def main(argv=None):
               f'(data_set={getattr(data_cargs, "data_set", "?")})')
     held = None
     if a.split == 'test':
-        held, train, src = _held_out_subjects(cargs, a.fold_manifest)
+        held, train, src = _held_out_subjects(cargs, a.partition)
         print(f'[eval] split     : test -> fold {getattr(cargs, "fold", 0)}/'
               f'{getattr(cargs, "n_folds", 1)}, {len(held)} held-out subject(s) '
               f'({src}), {len(train)} train')

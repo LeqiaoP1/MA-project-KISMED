@@ -49,27 +49,46 @@ def test_blank_masked_patches_blanks_exactly_the_masked_cells():
 # --------------------------------------------------------------------------- #
 # held-out subject selection (the "--split test" path)
 # --------------------------------------------------------------------------- #
-def test_held_out_subjects_reads_the_run_manifest(tmp_path):
-    """The run's own fold_manifest.json is the authority (NOT a re-derivation).
+def test_held_out_subjects_reads_the_partition_record(tmp_path):
+    """The fold's write-once ``partition.json`` is the authority (ADR-001 I2).
 
     Re-deriving from the dataset entries partitions the CLIP-SURVIVING subjects
     (133) instead of the discovered usable universe (139), which re-splits every
     fold -- measured once as 15 of 27 "unseen" subjects sitting in the
-    checkpoint's train list.
+    checkpoint's train list. A legacy ``fold_manifest.json`` carries no digest,
+    so it cannot be verified and is refused rather than trusted.
     """
     import json
 
+    import pytest
+
+    from protocol import build_plan, save_plan
     from runners.run_visualize_pretrain import _held_out_subjects
 
-    man = tmp_path / 'fold_manifest.json'
-    man.write_text(json.dumps({'fold': 0, 'n_folds': 5, 'stage': 2,
-                               'roles': {'train': ['F002', 'M001'],
-                                         'val': [],
-                                         'test': ['F001', 'M003']}}))
-    test, train, src = _held_out_subjects(SimpleNamespace(), str(man))
-    assert test == {'F001', 'M003'}
-    assert train == {'F002', 'M001'}
-    assert src == 'fold_manifest.json'
+    universe = [f'F{i:03d}' for i in range(1, 7)] + [f'M{i:03d}' for i in range(1, 5)]
+    plan = build_plan(universe, fold=0, split_seed=42, split_stratify='none')
+    path = tmp_path / 'partition.json'
+    save_plan(str(path), plan, writer={'stage': 'test'})
+
+    test, train, src = _held_out_subjects(SimpleNamespace(), str(path))
+    assert test == set(plan.roles['test'])
+    assert train == set(plan.roles['train'])
+    assert src == 'partition.json'
+
+    legacy = tmp_path / 'fold_manifest.json'
+    legacy.write_text(json.dumps({'fold': 0, 'n_folds': 5, 'stage': 2,
+                                  'roles': {'train': ['F002', 'M001'],
+                                            'val': [],
+                                            'test': ['F001', 'M003']}}))
+    with pytest.raises(SystemExit) as exc:
+        _held_out_subjects(SimpleNamespace(), str(legacy))
+    # refused at schema validation: the legacy record carries no schema tag,
+    # so it cannot be verified and is never trusted
+    assert 'partition schema' in str(exc.value)
+
+    with pytest.raises(SystemExit) as exc:
+        _held_out_subjects(SimpleNamespace(), '')
+    assert '--partition' in str(exc.value)
 
 
 def test_recorded_subjects_parses_every_saved_form():

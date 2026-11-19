@@ -1230,7 +1230,7 @@ bash scripts/local/pretrain_rgb_roi_bp.sh
 
 Must edit: `VENV`, `RAW_DATA_PATH`, `DATA_PATH`, `PROJ_DIR`, `OUTPUT_DIR`, `PARTITION`, `GPU_TYPE`, `GPUS_PER_NODE`.
 
-Available Slurm batch files (`code/scripts/hpc/`): `submit_inspect.sbatch`, `submit_inspect_physio.sbatch`, `submit_prepare.sbatch`, `submit_waveform.sbatch`.
+Available Slurm batch files (`code/scripts/hpc/`): `submit_sweep.sbatch` (the ADR-001 five-fold sweep and the only Stage-2/Stage-3 path), plus the platform jobs `submit_prepare.sbatch`, `submit_inspect.sbatch`, `submit_inspect_physio.sbatch`.
 
 **Launch method**: SLURM `srun` (not torchrun). `init_distributed_mode` auto-detects `SLURM_PROCID` and derives `MASTER_ADDR` from `SLURM_NODELIST`.
 

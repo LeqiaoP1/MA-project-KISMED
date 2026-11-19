@@ -20,9 +20,11 @@ YAML config via ``data_set``.
 """
 from typing import Callable, Dict, Optional
 
+import copy
 import os
 
-__all__ = ['build_dataset', 'build_pretraining_dataset', 'register_dataset',
+__all__ = ['build_dataset', 'build_pretraining_dataset',
+           'build_pretraining_corpus_dataset', 'register_dataset',
            'list_datasets', 'TIR_ROI_DATA_SETS', 'RGB_ROI_DATA_SETS',
            'TIR_ROI_RGB2D_DATA_SETS']
 
@@ -45,6 +47,15 @@ RGB_ROI_DATA_SETS = ('rgb_roi', 'rgb_roi_resp', 'rgb-roi')
 _DATASET_BUILDERS: Dict[str, Callable] = {}
 
 
+def _as_subject_list(value) -> list:
+    """Normalise ``--subjects``: a comma string, a list/tuple, or empty."""
+    if not value:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(v).strip() for v in value if str(v).strip()]
+    return [s.strip() for s in str(value).split(',') if s.strip()]
+
+
 def register_dataset(name: str):
     """Decorator registering a dataset builder under ``name``."""
 
@@ -61,184 +72,121 @@ def list_datasets() -> list:
     return sorted(_DATASET_BUILDERS)
 
 
-def build_dataset(is_train: bool, test_mode: bool, args, split_role: Optional[str] = None):
-    """Build a supervised (fine-tuning / eval) dataset from ``args.data_set``.
+def build_dataset(args, plan, role: str = 'train'):
+    """Build a supervised (fine-tuning / evaluation) dataset for ONE role.
 
-    ``data_set in ('bp4d+', 'paired')`` uses the recorded RGB(jpg-seq)+TIR(wmv)
-    layout via :func:`paired_dataset.build_paired_dataset`;
-    ``data_set in TIR_ROI_DATA_SETS`` (``tir_roi`` / ``tir_roi_resp``) uses the
-    ADD-ON RAW-tree thermal-ROI + respiration path via
-    :func:`tir_resp_dataset.build_tir_roi_finetune_dataset` -- the Stage-3
-    counterpart of the Stage-2 pretraining view, so a TIR-ROI checkpoint gets
-    the SAME ROI crop it was pre-trained on (train/val split by subject);
-    any other value must be registered with ``@register_dataset``.
+    The role comes from the fold's `protocol.FoldPlan`; nothing here derives a
+    split (ADR-001 I2, D3). Three roles exist and all are legal: ``train``,
+    ``val`` and ``test`` — Stage 3 never builds ``test`` while training, but the
+    dedicated scoring process does (I5).
+
+    ``data_set in TIR_ROI_DATA_SETS`` / ``RGB_ROI_DATA_SETS`` use the ADD-ON
+    ROI paths, whose universes `data.universe` can enumerate. The canonical
+    ``paired`` layout has no subject enumerator, so it is refused: those
+    lineages are off-protocol and must not produce a thesis number.
     """
-    from .paired_dataset import PAIRED_DATA_SETS, build_paired_dataset
+    from protocol import ProtocolError
 
-    # An explicit --split_role overrides the role the runner asked for. That is
-    # the single-view use case (e.g. `--split_role test` to score a fold), and
-    # it is the ONLY meaning of the flag: one process cannot be three roles at
-    # once, so the runner still builds its train/val/test views itself.
-    explicit_role = str(getattr(args, 'split_role', '') or '').strip().lower()
-    if explicit_role:
-        split_role = explicit_role
+    if role not in ('train', 'val', 'test'):
+        raise ProtocolError(f'unknown role {role!r}; expected train/val/test.')
 
-    name = getattr(args, 'data_set', None)
+    from .paired_dataset import PAIRED_DATA_SETS
+
+    name = str(getattr(args, 'data_set', '') or '').strip().lower()
     if name in PAIRED_DATA_SETS:
-        if split_role and str(split_role) != ('train' if is_train else 'val'):
-            raise NotImplementedError(
-                f'data_set={name!r} cannot honour split_role={split_role!r}: '
-                f'the canonical paired layout has no subject-discovery hook for '
-                f'the k-fold rotation. Use a ROI data_set, or drop --split_role.')
-        return build_paired_dataset(is_train, test_mode, args)
-    if str(name or '').strip().lower() in TIR_ROI_DATA_SETS:
-        from .tir_resp_dataset import build_tir_roi_finetune_dataset
-        return build_tir_roi_finetune_dataset(is_train, test_mode, args, split_role=split_role)
-    if str(name or '').strip().lower() in RGB_ROI_DATA_SETS:
-        from .rgb_roi_dataset import build_rgb_roi_finetune_dataset
-        return build_rgb_roi_finetune_dataset(is_train, test_mode, args, split_role=split_role)
-    if name not in _DATASET_BUILDERS:
         raise NotImplementedError(
-            f'Unknown data_set "{name}". Registered datasets: {list_datasets()}. '
-            f'Implement and @register_dataset your dataset builder in '
-            f'code/data/datasets.py (see tmp/videomae/datasets.py).')
-    return _DATASET_BUILDERS[name](is_train, test_mode, args)
+            f'data_set={name!r} has no ADR-001 universe (no subject-discovery '
+            f'hook), so it cannot provide a role. The canonical paired / bp / '
+            f'au lineages are off-protocol until a follow-up adds an '
+            f'enumerator; they must not produce a thesis number.')
+    if name in TIR_ROI_DATA_SETS:
+        from .tir_resp_dataset import build_tir_roi_finetune_dataset
+        return build_tir_roi_finetune_dataset(args, plan=plan, role=role)
+    if name in RGB_ROI_DATA_SETS:
+        from .rgb_roi_dataset import build_rgb_roi_finetune_dataset
+        return build_rgb_roi_finetune_dataset(args, plan=plan, role=role)
+    raise NotImplementedError(
+        f'Unknown data_set "{name}". Registered datasets: {list_datasets()}. '
+        f'Each registered builder must accept (args, plan, role) to take part '
+        f'in the protocol.')
 
 
-def build_pretraining_dataset(args):
-    """Build the masked pre-training dataset (Stage 2, multimodal MAE).
+def build_pretraining_dataset(args, plan, role: str = 'train'):
+    """Build the masked pre-training dataset for ONE role of an ADR-001 fold.
 
-    Two sources, selected by ``args.data_set``:
+    Stage 2 builds ``train`` and ``val`` only. The test block is not "scored
+    later" — it is never loaded (I5). Role membership comes from the fold's
+    `protocol.FoldPlan`; ``--tasks`` and ``--subjects`` narrow which SESSIONS of
+    that role are read and can never move a subject between roles (I2).
+
+    Sources, selected by ``args.data_set``:
 
     * ``tir_roi`` / ``tir_roi_resp`` -> :class:`TirRoiRespPretrainDataset`, the
       ADD-ON thermal-ROI + respiration path over the RAW BP4D tree (the ROI
       crop needs native-resolution frames and the ``IRFeatures`` landmark
       track, neither of which exists in the canonical session layout).
-    * anything else (default) -> :class:`PairedPretrainDataset` over the
-      canonical ``<data_path>/<session>/`` layout, exactly as before.
+    * ``tir_roi_resp_rgb2d`` / ``trimodal`` -> the three-stream Stage-2 path.
+    * ``rgb_roi`` -> :class:`RGBRoiPretrainDataset`.
 
-    For the paired path: the dataset serves exactly the modalities listed in
-    ``args.streams``. Stage-2 CONTRACT: at least TWO modalities -- >=1 video
-    (``rgb``/``tir``) AND >=1 physiological 1-D signal (``bp``/``resp``,
-    the Stage-3 reconstruction target). PRETRAIN-ON-ALL: no split, every session
-    is used. Per-stream masks are produced inside the multimodal MAE forward
-    pass.
+    Stage 2 CONTRACT: at least TWO modalities — >=1 video (``rgb``/``tir``) and
+    >=1 physiological 1-D signal (``bp``/``resp``, the Stage-3 target).
+    Per-stream masks are produced inside the multimodal MAE forward pass.
     """
-    split = str(getattr(args, 'pretrain_split', 'all') or '').strip().lower()
-    if split not in ('all', 'fold'):
-        raise ValueError(
-            f'Stage-2 pre-training requires pretrain_split="all" or "fold"; '
-            f'got {split!r}.')
+    from protocol import ProtocolError
+
+    if role not in ('train', 'val'):
+        raise ProtocolError(
+            f'Stage 2 may only build the train/val roles; got {role!r}. The '
+            f'test role is never loaded during training (ADR-001 I5).')
+
+    subjects = list(plan.roles[role])
+    requested = _as_subject_list(getattr(args, 'subjects', ''))
+    if requested:
+        subjects = [s for s in subjects if s in set(requested)]
+    if not subjects:
+        raise RuntimeError(
+            f'Stage 2: the {role!r} role of fold {plan.fold} is empty'
+            + (f' after --subjects {sorted(requested)}' if requested else '')
+            + ' (partition: '
+            + ', '.join(f'{name}={plan.counts[name]}'
+                        for name in ('train', 'val', 'test')) + ').')
+    print(f'[data] Stage 2 role={role}: {len(subjects)} subject(s) '
+          f'(fold {plan.fold}/{plan.n_folds}, digest {plan.digest[:12]})')
 
     name = str(getattr(args, 'data_set', '') or '').strip().lower()
+    if role == 'val' and name not in (TIR_ROI_DATA_SETS + TIR_ROI_RGB2D_DATA_SETS
+                                      + RGB_ROI_DATA_SETS):
+        raise ProtocolError(
+            f'data_set={name!r} has no ADR-001 universe, so it cannot provide '
+            f'a validation role. Off-protocol lineages (paired / bp / au) must '
+            f'not produce a thesis number until they are migrated.')
 
-    if split == 'fold':
-        # Stage 2 must NOT see the test fold of the fold it is paired with, or
-        # the Stage-3 number is contaminated by pretraining. The partition is
-        # computed over the FULL usable subject list (never the capped/filtered
-        # one): --max_sessions / --max_clips would otherwise shift the folds
-        # between the Stage-2 and Stage-3 runs of the same fold.
-        from utils.splits import (as_split_seed, as_split_strategy,
-                                  get_stage_splits)
-        from . import task_groups as tgrp
+    # A SHALLOW COPY, not `args.subjects = ...`: one process builds several
+    # roles, and mutating the shared namespace made the second build intersect
+    # its role against the first role's subject list (measured: the val role
+    # came out empty right after a populated train role).
+    view_args = copy.copy(args)
+    view_args.subjects = subjects
+    return _build_pretrain_source(view_args)
 
-        n_folds = int(getattr(args, 'n_folds', 0) or 0)
-        fold = int(getattr(args, 'fold', 0) or 0)
 
-        if n_folds <= 1:
-            print('[data] pretrain_split=fold but n_folds <= 1: the whole '
-                  'corpus is used (no fold to exclude).')
-        elif name in TIR_ROI_DATA_SETS:
-            from .tir_resp_dataset import default_raw_root, discover_sessions
-            root = (getattr(args, 'raw_root', None)
-                    or getattr(args, 'data_path', None) or default_raw_root())
-            sel = tgrp.resolve_task_selection(
-                tasks=getattr(args, 'tasks', None),
-                task_set=getattr(args, 'task_set', None),
-                task_groups=getattr(args, 'task_groups', None))
-            usable = [s for s in discover_sessions(root, tasks=sel.tasks)
-                      if s['ir_file'] and s['resp_file']]
-            subs = sorted({s['subject'] for s in usable})
-        elif name in TIR_ROI_RGB2D_DATA_SETS:
-            from .tir_resp_dataset import default_raw_root, discover_sessions
-            root = (getattr(args, 'raw_root', None)
-                    or getattr(args, 'data_path', None) or default_raw_root())
-            sel = tgrp.resolve_task_selection(
-                tasks=getattr(args, 'tasks', None),
-                task_set=getattr(args, 'task_set', None),
-                task_groups=getattr(args, 'task_groups', None))
-            usable = [s for s in discover_sessions(root, tasks=sel.tasks)
-                      if s['ir_file'] and s['resp_file']]
-            subs = sorted({s['subject'] for s in usable})
-        elif name in RGB_ROI_DATA_SETS:
-            from .rgb_roi_dataset import default_raw_root, discover_rgb_sessions
-            root = (getattr(args, 'raw_root', None)
-                    or getattr(args, 'data_path', None) or default_raw_root())
-            usable = [s for s in discover_rgb_sessions(root, tasks=None,
-                                                       attach_landmarks=False)
-                      if s['status'] == 'usable']
-            subs = sorted({s['subject'] for s in usable})
-        else:
-            raise NotImplementedError(
-                "pretrain_split='fold' is implemented for the ROI paths "
-                '(tir_roi / rgb_roi) only; the canonical paired layout has no '
-                'subject discovery hook yet.')
+def build_pretraining_corpus_dataset(args):
+    """WHOLE Stage-2 corpus, no role — DIAGNOSTICS ONLY.
 
-        if n_folds > 1:
-            if not subs:
-                raise RuntimeError(
-                    f"pretrain_split='fold': no usable subject under {root}; "
-                    f'nothing to partition.')
-            splits = get_stage_splits(subs, fold=fold, n_folds=n_folds,
-                                      stage=2,
-                                      split_seed=as_split_seed(
-                                          getattr(args, 'split_seed', None)),
-                                      stratify=as_split_strategy(
-                                          getattr(args, 'split_stratify',
-                                                  'none')))
-            train_subjects = splits['train']
-            # honour an explicit --subjects filter, but never silently widen
-            requested = [s.strip() for s in
-                         str(getattr(args, 'subjects', '') or '').split(',')
-                         if s.strip()]
-            if requested:
-                train_subjects = [s for s in train_subjects
-                                  if s in set(requested)]
-                if not train_subjects:
-                    raise RuntimeError(
-                        f"pretrain_split='fold': --subjects "
-                        f'{sorted(requested)} is disjoint from the fold '
-                        f'{fold} train pool.')
-            args.subjects = train_subjects
-            print(f'[data] Stage 2 pretrain_split=fold: fold {fold}/{n_folds} '
-                  f'-> {len(train_subjects)} train subject(s), '
-                  f'{len(splits["test"])} held out '
-                  f'(test fold): {splits["test"]}')
-            # Audit artefact (trap: the partition can drift between the Stage-2
-            # and Stage-3 runs of the same fold, e.g. when --tasks or
-            # --max_sessions change the subject universe). Written next to the
-            # checkpoint so a mismatched pair is visible after the fact.
-            out_dir = str(getattr(args, 'output_dir', '') or '').strip()
-            if out_dir:
-                from utils.dist import is_main_process
-                from utils.splits import write_fold_manifest
-                # RANK-0 ONLY: every rank builds this dataset, but the manifest
-                # is an audit artefact of the RUN, not per-rank state. Four
-                # ranks truncating+writing one path could interleave into a
-                # corrupt JSON -- and it is the only record of the partition
-                # (write_fold_manifest itself is atomic, so a reader never sees
-                # a half-written file either way).
-                if is_main_process():
-                    write_fold_manifest(
-                        os.path.join(out_dir, 'fold_manifest.json'),
-                        fold=fold, n_folds=n_folds, stage=2, roles=splits,
-                        split_seed=as_split_seed(
-                            getattr(args, 'split_seed', None)),
-                        stratify=as_split_strategy(
-                            getattr(args, 'split_stratify', 'none')))
-                    print(f'[data] wrote '
-                          f'{os.path.join(out_dir, "fold_manifest.json")}')
+    Two inspection tools (a reconstruction figure and a zero-shot probe) need
+    every clip, including the held-out subjects they then select by name. That
+    is not a protocol path: a number or figure produced from this dataset may
+    never be pooled or reported, because it can see the test block. Training
+    and evaluation go through :func:`build_pretraining_dataset` with a role.
+    """
+    view_args = copy.copy(args)          # never mutate the shared namespace
+    view_args.subjects = ''              # every discoverable subject
+    return _build_pretrain_source(view_args)
 
+
+def _build_pretrain_source(args):
+    """Dispatch to the Stage-2 dataset family selected by ``args.data_set``."""
+    name = str(getattr(args, 'data_set', '') or '').strip().lower()
     if name in TIR_ROI_DATA_SETS:
         from .tir_resp_dataset import build_tir_roi_pretrain_dataset
         return build_tir_roi_pretrain_dataset(args)

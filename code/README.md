@@ -1228,7 +1228,9 @@ mkdir -p logs
 sbatch scripts/hpc/submit_prepare.sbatch    # convert raw BP4D once (CPU)
 sbatch scripts/hpc/submit_inspect.sbatch    # data smoke on 1 GPU
 sbatch scripts/hpc/submit_inspect_physio.sbatch   # raw 1-D physiology (CPU, no GPU)
-TARGET=bp sbatch scripts/hpc/submit_waveform.sbatch   # (later) multi-GPU Stage-3
+TARGET=bp sbatch scripts/hpc/submit_inspect.sbatch  # data smoke on one GPU
+# Stage-2/Stage-3 sweeps run through the ADR-001 wrapper instead:
+#   EXP_ROOT=$WORK_SCRATCH/protocol_v1 sbatch scripts/hpc/submit_sweep.sbatch
 ```
 
 Three cluster rules the `submit_*.sbatch` files already encode (verified with

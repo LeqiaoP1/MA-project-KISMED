@@ -52,7 +52,7 @@ data_set: bp4d+
 data_path: ../data/processed/bp4d_canonical
 # Subject-disjoint splits are MANDATORY for the Stage-3 result (BP4D "F00X/Tn");
 # PairedSessionDataset currently splits by SESSION -- see ImplementationPlan §4.
-train_ratio: 0.8
+# ADR-001: roles come from the fold's partition.json; the ratio keys are gone.
 
 # ---- joint spatio-temporal-spectral loss (plan Stage 3) ----
 alpha: 1.0               # L_time   (point-wise SmoothL1 / Huber)

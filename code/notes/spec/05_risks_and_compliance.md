@@ -156,7 +156,7 @@ Deprecated in PyTorch >= 2.0. **Risk: Low now; Medium in future PyTorch versions
 
 ### 4.6 `data/paired_dataset.py` — `split_by='session'` default allows subject leakage
 
-Alphabetical session split at `train_ratio` may put `F001_T1` in train and `F001_T2` in val. Always use the **GroupK-Fold Cyclic Rotation** (`n_folds`, `fold`, implemented in `utils/splits.py`) for evaluation configs as mandated by `ADR-001-subject-disjoint-split-and-selection.md`. **Risk: Medium (evaluation validity).** Note the rotation is opt-in: `n_folds=0` (the default) still takes the leaking ratio path.
+Alphabetical session split at `train_ratio` may put `F001_T1` in train and `F001_T2` in val. **Resolved for the ROI lineages (2026-11-19):** the split arguments are deleted and every role comes from `protocol.FoldPlan` (ADR-001). The canonical `paired` / bp / au path still holds the old ratio cut but has no subject enumerator, so `build_dataset` / `build_pretraining_dataset` **refuse** it and `runners/run_finetune.py` stops with a reason — it cannot produce a thesis number. **Risk (those lineages): High until migrated; ROI lineages: closed.**
 
 ### 4.7 `core/waveform_losses.py::MultiResolutionSTFTLoss` — `_warned_degenerate` fires once per instance
 

@@ -19,14 +19,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
 
 from engines import evaluate, train_one_epoch
-from runners._common import (add_common_args, add_split_args, env_or, init_env,
+from runners._common import (add_common_args, env_or, init_env,
                              make_data_loader, parse_args_with_config)
 
 
 def get_args():
     parser = argparse.ArgumentParser('Project fine-tuning', add_help=True)
     add_common_args(parser)
-    add_split_args(parser)
 
     # model
     parser.add_argument('--model', default='project_vit_base_patch16_224',
@@ -115,35 +114,18 @@ def main(args):
         print(f'Loaded fine-tune checkpoint {args.finetune}')
 
     # ----- data ----------------------------------------------------------- #
-    from data import build_dataset
-    # k-fold (n_folds > 1): Option A has no val split by design, and an empty
-    # val view must NOT be built -- `subjects=[]` means "every subject" in
-    # discover_sessions, so it would silently turn the val set into the whole
-    # corpus. Skip it and let the loop run eval-free.
-    n_folds = int(getattr(args, 'n_folds', 0) or 0)
-    has_val = n_folds <= 1 or bool(getattr(args, 'use_small_val', False))
-    dataset_train = build_dataset(is_train=True, test_mode=False, args=args,
-                                  split_role='train')
-    if len(dataset_train) == 0:
-        raise SystemExit(
-            '[finetune] the TRAIN split is EMPTY -- nothing to train on. '
-            f'Reason: {getattr(dataset_train, "empty_reason", "unknown")}.')
-    data_loader_train = make_data_loader(args, dataset_train, shuffle=True)
-    if has_val:
-        dataset_val = build_dataset(is_train=False, test_mode=False, args=args,
-                                    split_role='val')
-        if len(dataset_val) == 0:
-            print('[finetune] WARNING: the requested val split is EMPTY -- '
-                  'running eval-free. Reason: '
-                  f'{getattr(dataset_val, "empty_reason", "unknown")}')
-            dataset_val, data_loader_val, has_val = None, None, False
-        else:
-            data_loader_val = make_data_loader(args, dataset_val,
-                                               shuffle=False, drop_last=False)
-    else:
-        dataset_val, data_loader_val = None, None
-        print('[finetune] n_folds > 1 without use_small_val: no val split, '
-              'checkpointing on a fixed epoch schedule.')
+    # ADR-001 replaced the ratio split with plan-derived roles. This runner's
+    # dataset family (the canonical `paired` layout, bp/au lineages) has no
+    # subject enumerator, so it cannot take part in the protocol yet — see
+    # code/notes/plan/ADR-001-subject-kfold-plan.md. Refusing here is deliberate:
+    # the alternative is a run that looks healthy and reports a leaked number.
+    raise SystemExit(
+        '[finetune] OFF-PROTOCOL: data_set='
+        f'{getattr(args, "data_set", "?")!r} has no ADR-001 subject universe, '
+        'so this lineage cannot produce a thesis number. The waveform path is '
+        'runners/run_waveform.py (tir_roi / rgb_roi); the AU probe is '
+        'runners/run_au_probe.py. Migrate this builder to (args, plan, role) '
+        'in data/datasets.py before using it for reported results.')
 
     model_without_ddp = model
     if args.distributed:

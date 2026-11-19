@@ -37,8 +37,15 @@ data_set: tir_roi
 # --raw_root defaults to $RAW_DATA_PATH (scripts/env_local.sh), else
 # <repo>/data/raw/BP4D. The local corpus is 40 thermal sessions (4 subjects x
 # T1..T10, 45 858 frames = 30.6 min); at 8 s / 4 s hop that is 388 clips.
-subjects: ''                       # '' = all; 'F001' to pin one subject
-pretrain_split: all                # Stage 2 always uses every selected subject/session
+subjects: ''                       # '' = all; 'F001' to pin one subject. This
+                                   #   narrows the sessions of a ROLE, never the
+                                   #   role itself.
+# ---- ADR-001 roles: TRAIN + VAL of <exp_root>/fold<k>/partition.json ---------
+eval_freq: 5                       # epochs between val evaluations (0 = off)
+val_select: fixed_epoch            # never reads a metric
+val_criterion: joint_loss
+val_kept_tir: 0.10                 # = 1 - mask_ratio_tir (pinned, I6)
+val_kept_resp: 0.50                # = 1 - mask_ratio_resp
 tasks: ''                          # explicit task labels, '' = all;
                                    #   UNIONED with task_set below
 # ---- task GROUPS ("distortion levels") ---------------------------------
