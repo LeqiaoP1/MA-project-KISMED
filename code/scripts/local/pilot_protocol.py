@@ -49,12 +49,14 @@ def _reset_peak(device) -> None:
 def stage2_batches(device, batch_size, n_batches):
     out = []
     for _ in range(n_batches):
-        out.append({'tir': torch.rand(batch_size, 3, 20, 16, 16, device=device),
-                    'resp': torch.randn(batch_size, 1, 80, device=device)})
+        video = (3, 40, 32, 32)
+        out.append({'tir': torch.rand(batch_size, *video, device=device),
+                    'rgb2d': torch.rand(batch_size, *video, device=device),
+                    'resp': torch.randn(batch_size, 1, 160, device=device)})
     return out
 
 
-def pilot_stage2(device, batch_size, n_batches, eval_freq, keep):
+def pilot_stage2(device, batch_size, n_batches, eval_freq):
     model = _tiny_model().to(device)
     # ONE batch list, reused by both passes: a determinism check that draws new
     # random tensors per pass compares different data and always "fails".
@@ -62,8 +64,9 @@ def pilot_stage2(device, batch_size, n_batches, eval_freq, keep):
     val_batches = batches[:max(1, round(n_batches * 0.10 / 0.70))]
 
     def val_pass():
-        return evaluate_pretrain(model, val_batches, device,
-                                 mask_base=1234, kept_override=keep)
+        # ADR-002 §6: validation replays a fixed-seed mode/count sequence, so
+        # no per-stream fraction is pinned here.
+        return evaluate_pretrain(model, val_batches, device, mask_base=1234)
 
     def train_pass():
         """One train epoch worth of steps: forward + backward + step."""
@@ -200,8 +203,6 @@ def main(argv=None) -> int:
     parser.add_argument('--batch_size', default=4, type=int)
     parser.add_argument('--n_batches', default=8, type=int)
     parser.add_argument('--eval_freq', default=5, type=int)
-    parser.add_argument('--val_kept_tir', default=0.25, type=float)
-    parser.add_argument('--val_kept_resp', default=0.50, type=float)
     parser.add_argument('--out', default='', type=str)
     args = parser.parse_args(argv)
 
@@ -210,14 +211,13 @@ def main(argv=None) -> int:
     if args.device == 'cuda' and device.type != 'cuda':
         print('[pilot] WARNING: --device cuda requested but CUDA is unavailable; '
               'running on CPU (VRAM columns are then meaningless).')
-    keep = {'tir': args.val_kept_tir, 'resp': args.val_kept_resp}
 
     results = {'device': str(device),
                'torch': torch.__version__,
                'batch_size': args.batch_size,
                'n_batches': args.n_batches,
                'stage2': pilot_stage2(device, args.batch_size, args.n_batches,
-                                      args.eval_freq, keep),
+                                      args.eval_freq),
                'stage3': pilot_stage3(device, args.batch_size, args.n_batches,
                                       args.eval_freq),
                'criteria': {'determinism': 'bit-identical val records',

@@ -4,7 +4,7 @@ Loads a trained Stage-2 checkpoint, draws the model's OWN masking plan for a
 handful of samples, and renders one figure with, per modality, the classic
 three panels:
 
-    masked input | AMMM prediction | target
+    masked input | prediction | target
 
 Rows are the modalities of this study -- ``TIR-ROI`` (video, shown as one frame
 with the masked patches blacked out) and ``RESP`` (1-D waveform, masked samples
@@ -13,27 +13,23 @@ MultiMAE paper. As there, the prediction panel overlays the input on the
 positions that were NOT masked (``mask == 0``), because the loss only scores the
 masked ones.
 
-The masking is NOT re-rolled by hand: ``MultiModalMAE.forward`` calls the run's
-own policy (``masking: ammm`` or ``ratio``), so the figure shows what training
-actually did, including a 100 %-masked stream when the Dirichlet draw gives one.
+The masking is NOT re-rolled by hand: ``MultiModalMAE.forward`` runs the run's
+own constant-budget policy (ADR-002), so the figure shows what training actually
+did, including a fully masked physiological stream on a Mode-1 step.
 
 Usage (from ``code/``)::
 
     # real clips, random indices, CPU (login node has no GPU)
     python runners/run_visualize_pretrain.py \
-        --checkpoint $WORK_SCRATCH/pretrain/stage2_ammm_hpc_tir_roi_resp_fold0/checkpoints/checkpoint-0299.pth \
-        --samples 3 --out $WORK_SCRATCH/pretrain/stage2_ammm_hpc_tir_roi_resp_fold0/ammm_recon_figure.png
+        --checkpoint $WORK_SCRATCH/pretrain/stage2_budget_fold0/checkpoints/checkpoint-0149.pth \
+        --samples 3 --out $WORK_SCRATCH/pretrain/stage2_budget_fold0/budget_recon_figure.png
 
     # pure-noise sanity check of the architecture (no dataset touched)
     python runners/run_visualize_pretrain.py --checkpoint <ckpt> --source random
 
-    # PARAMETERISE the masking of the test clips (instead of the trained draw):
-    #   kept  : AMMM semantics -- fraction of units to KEEP (cap is raised if needed)
-    #   ratio : legacy semantics -- fraction of units to MASK (no cap)
+    # PARAMETERISE the masking of the test clips (instead of the trained draw)
     python runners/run_visualize_pretrain.py --checkpoint <ckpt> \
         --mask_mode kept  --kept_tir 0.25 --kept_resp 0.50
-    python runners/run_visualize_pretrain.py --checkpoint <ckpt> \
-        --mask_mode ratio --mask_ratio_tir 0.90 --mask_ratio_resp 0.50
 
     # SAME subject+task as an earlier figure, different masking: pin the sessions
     # (one clip each, order kept; `--samples` is then ignored)
@@ -100,60 +96,70 @@ def get_args(argv=None):
     p.add_argument('--device', default='cpu', type=str)
     p.add_argument('--title', default='', type=str)
     # ---- masking of the TEST clips (not the training policy) -------------- #
-    # 'plan'  = whatever the checkpoint trained with (Dirichlet draw per step)
-    # 'kept'  = AMMM semantics, PINNED per stream: kept_ratio_override
-    # 'ratio' = legacy semantics, PINNED per stream: mask_ratio_<stream>
-    p.add_argument('--mask_mode', default='plan', choices=('plan', 'kept', 'ratio'),
-                   help="'plan' = the checkpoint's own draw (default); 'kept' = pin "
-                        'the AMMM KEPT ratio per stream; \'ratio\' = pin the legacy '
-                        'MASK ratio per stream')
+    # 'plan' = the checkpoint's own draw (the constant-budget policy)
+    # 'kept' = an EXPLICIT allocation of the constant budget, stated in tokens
+    p.add_argument('--mask_mode', default='plan', choices=('plan', 'kept'),
+                   help="'plan' = the checkpoint's own policy draw (default); "
+                        "'kept' = state the kept-token counts yourself (they "
+                        'must still sum to the checkpoint\'s n_budget)')
     p.add_argument('--kept_tir', default=0.25, type=float,
                    help='--mask_mode kept: fraction of the 36 TIR patches to KEEP')
     p.add_argument('--kept_resp', default=0.5, type=float,
                    help='--mask_mode kept: fraction of the 50 RESP tokens to KEEP')
-    p.add_argument('--mask_ratio_tir', default=0.9, type=float,
-                   help='--mask_mode ratio: fraction of the 36 TIR patches to MASK')
-    p.add_argument('--mask_ratio_resp', default=0.5, type=float,
-                   help='--mask_mode ratio: fraction of the 50 RESP tokens to MASK')
     return p.parse_args(argv)
 
 
-def apply_mask_mode(model, a) -> str:
-    """Override the model's masking policy for the test clips. Returns a caption.
+def apply_mask_mode(model, a):
+    """Decide how the test clips are masked. Returns ``(plan, caption)``.
 
-    ``kept`` uses the AMMM override path (``kept_ratio_override``), which is used
-    VERBATIM and is exempt from ``min_kept``; a pin above the run's kept cap also
-    raises that cap, otherwise ``plan_step`` refuses it (``0 <= r <= cap``).
-    ``ratio`` switches to the legacy per-stream ``mask_ratio_<s>`` engine, which
-    has no cap, so it is the most direct way to ask for e.g. 90 % / 50 % masked.
+    ``plan`` (default) lets the checkpoint's own constant-budget policy draw the
+    step, exactly as in training. ``kept`` states an EXPLICIT allocation: the
+    requested fractions are converted to whole counts (visual streams to whole
+    tubes, clamped into the policy floor and cap), the physiological stream to
+    its rounded token count, and the visual streams absorb whatever the constant
+    budget still needs -- in declared order, inside the caps. The realised
+    counts are reported, never the requested fractions.
     """
     if a.mask_mode == 'plan':
-        return 'checkpoint policy ({})'.format(getattr(model, 'masking', '?'))
+        return None, 'checkpoint policy (constant budget {})'.format(
+            model.n_budget)
 
-    if a.mask_mode == 'kept':
-        model.masking = 'ammm'
-        pins = {'tir': float(a.kept_tir), 'resp': float(a.kept_resp)}
-        caps = dict(getattr(model, 'ammm_caps', {}) or {})
-        for s, v in pins.items():
-            if not 0.0 <= v <= 1.0:
-                raise SystemExit(f'--kept_{s} must be in [0, 1]; got {v}')
-            if v > caps.get(s, 1.0):
-                print('[viz] raising {} KEPT cap {:.2f} -> {:.2f} to allow the pin'
-                      .format(s, caps.get(s, 1.0), v))
-                caps[s] = v
-        model.ammm_caps = caps
-        model.ammm_overrides = pins
-        model.ammm_min_kept = 0
-        return 'pinned KEPT tir={:.2f} resp={:.2f}'.format(pins['tir'], pins['resp'])
+    if a.kept_tir < 0 or a.kept_tir > 1:
+        raise SystemExit(f'--kept_tir must be in [0, 1]; got {a.kept_tir}')
+    if a.kept_resp < 0 or a.kept_resp > 1:
+        raise SystemExit(f'--kept_resp must be in [0, 1]; got {a.kept_resp}')
 
-    model.masking = 'ratio'
-    ratios = {'tir': float(a.mask_ratio_tir), 'resp': float(a.mask_ratio_resp)}
-    for s, v in ratios.items():
-        if not 0.0 <= v <= 1.0:
-            raise SystemExit(f'--mask_ratio_{s} must be in [0, 1]; got {v}')
-    model.mask_ratios = ratios
-    return 'pinned MASK tir={:.2f} resp={:.2f}'.format(ratios['tir'],
-                                                      ratios['resp'])
+    app = model.apportioner
+    counts = {}
+    for spec in model.specs:
+        frac = float(a.kept_tir) if spec.kind == 'visual' else \
+            float(a.kept_resp)
+        k = int(round(frac * spec.n_units))
+        if spec.kind == 'visual':
+            k = max(model.video_min_tubes,
+                    min(k, app.video_cap_units[spec.name]))
+            counts[spec.name] = k * int(spec.tokens_per_unit)
+        else:
+            counts[spec.name] = max(0, min(k, app.physio_cap_tokens[spec.name]))
+    residual = int(model.n_budget) - sum(counts.values())
+    for spec in model.specs:
+        if residual == 0 or spec.kind != 'visual':
+            continue
+        lo = model.video_min_tubes * int(spec.tokens_per_unit)
+        hi = app.video_cap_units[spec.name] * int(spec.tokens_per_unit)
+        room = (hi - counts[spec.name]) if residual > 0 else \
+            (counts[spec.name] - lo)
+        take = min(room, abs(residual))
+        counts[spec.name] += take if residual > 0 else -take
+        residual += -take if residual > 0 else take
+    if residual:
+        raise SystemExit(
+            f'[viz] the requested masking cannot reach the constant budget '
+            f'{model.n_budget} ({residual:+d} token(s) left); adjust '
+            f'--kept_tir / --kept_resp.')
+    plan = model.plan_from_counts(counts)
+    caption = 'pinned KEPT ' + ' '.join(f'{s}={v}' for s, v in counts.items())
+    return plan, caption
 
 
 # --------------------------------------------------------------------------- #
@@ -364,7 +370,7 @@ def main(argv=None):
     ckpt = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
     cargs = ckpt['args']
     print(f'[viz] checkpoint {args.checkpoint} (epoch {ckpt.get("epoch")})')
-    print(f'[viz] masking={getattr(cargs, "masking", "ratio")} '
+    print(f'[viz] policy=constant-budget n_budget={getattr(cargs, "n_budget", "?")} '
           f'target_norm={getattr(cargs, "target_norm", "?")} '
           f'streams={getattr(cargs, "streams", "?")} '
           f'input_size={getattr(cargs, "input_size", "?")}')
@@ -375,7 +381,7 @@ def main(argv=None):
         print(f'[viz] state_dict: {len(missing)} missing / '
               f'{len(unexpected)} unexpected')
     model.to(dev).eval()
-    mask_caption = apply_mask_mode(model, args)
+    plan, mask_caption = apply_mask_mode(model, args)
     print('[viz] masking for the test clips: ' + mask_caption)
 
     # ------------------------------------------------------------------ #
@@ -458,11 +464,12 @@ def main(argv=None):
     print('[viz] batch ' + ', '.join(f'{s} {tuple(v.shape)}' for s, v in batch.items()))
 
     with torch.no_grad():
-        out = model(batch)
-    plan = getattr(model, '_last_mask_plan', None)
-    kept = out.get('kept', {})
-    print('[viz] plan: ' + (', '.join(f'kept_{s}={k}' for s, k in kept.items())
-                            or 'ratio masking (no plan)'))
+        placement = torch.Generator().manual_seed(int(args.seed))
+        counts = torch.Generator().manual_seed(int(args.seed))
+        out = model(batch, plan=plan, counts_generator=counts,
+                    placement_generator=placement)
+    print('[viz] plan: mode={} '.format(out.get('mode'))
+          + ', '.join(f'kept_{s}={k}' for s, k in out.get('kept', {}).items()))
 
     masks, preds = out['masks'], out['preds']
 

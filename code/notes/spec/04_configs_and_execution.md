@@ -89,7 +89,12 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `temporal_stride` | int | Frame decimation inside window (1 = every frame) |
 | `seq_len` | int | Signal samples; 0 = `clip_duration * fs` |
 | `pos_init` | str | `sincos3d` or `random` |
-| `mask_ratio_{rgb\|tir\|bp\|resp}` | float | Per-stream masking ratio |
+| `n_budget` | int | Constant visible encoder tokens per step (default 350) |
+| `video_cap_ratio` / `physio_cap_ratio` | float | Kept-ratio ceiling per visual (0.25) / physiological (0.50) stream |
+| `video_min_tubes` | int | Kept-tube floor per visual stream (default 2) |
+| `p_virtual_sensing` | float | Probability of Mode 1 (no physiological token encoded; default 0.50) |
+| `spatial_patches` / `physio_tokens` | int | Tokenizer-derived unit counts (36 / 250 at the ADR geometry); pass them only to ASSERT the identity |
+| `physio_placement` / `physio_span_tokens` | str / int | `scattered` (default) or `span` placement of the kept 1-D tokens, and the span length in tokens |
 | `signal_weight` | float | Loss weight for physio streams (default 0.5) |
 | `target_norm` | str | `token` (per-token z-score), `clip` (per-clip z-score) or `none` (IDENTITY). **NON-ROI paths only** (e.g. `bp4d+`): for the RAW-tree ROI lineages (`tir_roi` = TIR-ROI+RESP, `rgb_roi` = RGB+BP) the DATASET owns the normalisation and `run_pretrain.py` pins this to `none` |
 | `physio_norm` (Stage 2) | str | The 1-D target normalisation for `tir_roi` / `rgb_roi`: `clip` (= `zscore`) per-clip z-score. That is the ONLY value — `none` / `ac` / `session` were removed and are REFUSED (`data.tir_resp_dataset.check_physio_norm`). Applied by the dataset; the model never re-normalises |

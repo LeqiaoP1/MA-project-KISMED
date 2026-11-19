@@ -25,7 +25,6 @@ from runners import run_inspect_physio
 def test_stream_registries_have_no_eda():
     assert mm._SIGNAL_STREAMS == ('bp', 'resp')
     assert 'eda' not in mm.STREAM_CHANNELS
-    assert set(mm.MASK_SPAN_DEFAULTS) == {'bp', 'resp'}
 
 
 def test_multimodal_mae_rejects_eda_stream():

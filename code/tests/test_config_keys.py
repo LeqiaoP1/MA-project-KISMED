@@ -10,8 +10,8 @@ keeps the value hardcoded in the runner's ``get_args()``. Because
 ``parser.set_defaults(**cfg)`` accepts arbitrary keywords, a typo
 (``roi_paddingg``) or a stale key used to be a silent no-op: the run proceeded
 with the default and looked perfectly healthy. The worst case is a key that
-misspells into a *different valid default* -- losing ``mask_ratio_resp: 0.50``
-reverts to 0.90, and losing ``videomae_dataset: ssv2`` silently reverts to the
+misspells into a *different valid default* -- losing ``physio_cap_ratio: 0.25``
+reverts to 0.50, and losing ``videomae_dataset: ssv2`` silently reverts to the
 K400 corpus. These tests pin the guard that turns that into a hard error.
 
 The tests use a SYNTHETIC parser (no torch, no dataset) so they stay fast and
@@ -33,13 +33,13 @@ def make_parser() -> argparse.ArgumentParser:
 
     Deliberately includes the three cases that make the guard non-trivial:
     a geometry key, a key whose default differs from the shipped configs
-    (``mask_ratio_resp`` 0.90 vs 0.50), and an option that has an ALIAS so the
+    (``physio_cap_ratio`` 0.50 vs 0.25), and an option that has an ALIAS so the
     dest and the flag name disagree.
     """
     p = argparse.ArgumentParser('Test Runner')
     p.add_argument('--input_size', default=64, type=int)
     p.add_argument('--roi_padding', default=0.2, type=float)
-    p.add_argument('--mask_ratio_resp', default=0.90, type=float)
+    p.add_argument('--physio_cap_ratio', default=0.50, type=float)
     p.add_argument('--streams', default='rgb,tir,bp', type=str)
     p.add_argument('--task_groups', default='', type=str)
     p.add_argument('--lr', default=1e-4, type=float)
@@ -71,7 +71,7 @@ def reject_message(cfg: str) -> str:
 def test_no_config_keeps_hardcoded_defaults():
     args = parse([])
     assert (args.input_size, args.roi_padding) == (64, 0.2)
-    assert args.mask_ratio_resp == pytest.approx(0.90)
+    assert args.physio_cap_ratio == pytest.approx(0.50)
 
 
 def test_yaml_overrides_hardcoded_default(write_yaml):
@@ -88,7 +88,7 @@ def test_yaml_sets_only_the_keys_it_contains(write_yaml):
     args = parse(['-c', write_yaml('input_size: 96\n')])
     assert args.input_size == 96                 # from the YAML
     assert args.roi_padding == 0.2               # not in the YAML -> default
-    assert args.mask_ratio_resp == pytest.approx(0.90)
+    assert args.physio_cap_ratio == pytest.approx(0.50)
 
 
 def test_cli_flag_overrides_yaml(write_yaml):
@@ -205,9 +205,9 @@ def test_yaml_key_must_be_the_dest_not_an_alias(write_yaml):
 def test_yaml_mapping_flows_into_a_str_arg_unconverted(write_yaml):
     """``set_defaults`` bypasses argparse's ``type=`` conversion by design.
 
-    ``task_groups`` / ``mask_span_s`` are declared ``type=str`` yet the shipped
-    configs use YAML MAPPINGS; the readers accept either form, so the guard must
-    accept a dict value for a str-typed option.
+    ``task_groups`` is declared ``type=str`` yet the shipped configs use a YAML
+    MAPPING; the reader accepts either form, so the guard must accept a dict
+    value for a str-typed option.
     """
     args = parse(['-c', write_yaml('task_groups:\n  low: [T2, T3]\n')])
     assert args.task_groups == {'low': ['T2', 'T3']}

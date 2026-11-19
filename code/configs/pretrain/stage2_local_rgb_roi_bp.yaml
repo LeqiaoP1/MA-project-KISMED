@@ -129,57 +129,14 @@ sig_kernel: 16
 pos_init: sincos3d                 # 3-D (t,h,w) sincos for the video positions
                                    # + the same 1-D temporal sincos for physio
 
-# ------------------------------------------------------------------ masking
-# 0.90 tube on the video: one random spatial subset per clip, replicated over
-# all 31 time steps, so a masked patch is unseen at EVERY step and the "copy
-# from the neighbouring frame" shortcut is impossible (VideoMAE's ablation).
-mask_ratio_rgb: 0.90               # the RGB ROI is the primary visual stream.
-                                   # WARNING at input_size 64 the grid is only
-                                   # 4x4, so 0.90 leaves just 2 VISIBLE patches
-                                   # per frame (62 encoder tokens across the 31
-                                   # steps). This is proven trainable locally
-                                   # (the tir_roi local run used 0.90), but if
-                                   # the video stream looks starved drop to 0.75
-                                   # (4 visible) -- the plan's 0.90 assumes the
-                                   # 224 px grid, where it means 20 patches.
-mask_ratio_bp: 0.70                # a physio stream reaches the encoder ONLY
-                                   # through its VISIBLE tokens. 0.70 of 31 bp
-                                   # tokens -> 22 masked / 9 visible (see the
-                                   # span derivation below). Lowered from 0.90,
-                                   # which left only 3 visible, so the encoder
-                                   # now sees more of the 1-D stream -- the
-                                   # trade-off is a slightly easier cross-modal
-                                   # task (less pressure to learn BP from video).
-                                   # 1.0 is NEVER valid: the model's clamp
-                                   # forbids a fully masked stream (k=0 removes
-                                   # that stream's encoder gradient entirely).
-# mask_ratio_tir / mask_ratio_resp are UNUSED while
-# streams: rgb,bp -- leave them at their defaults.
-# ---- 1-D masking PATTERN (see code/notes/design/SpanMask_PhysioSignals.md) ----
-# ACTIVE: contiguous spans are the measured fix for the"interpolate the gap from
-# the visible neighbours" shortcut, which a scattered mask cannot prevent in a
-# 30-60x oversampled band-limited signal. Revert to the shipped scattered
-# baseline with `--physio_mask random`.
-physio_mask: span
-# SPAN RE-DERIVED FOR ratio 0.70 on the 5 s / 31-token stream (not scaled).
-# The span LENGTH is set by the TARGET's correlation time, not by the clip or
-# the ratio: one BP span must cover >= 1 cardiac cycle or the interpolator can
-# bridge it. At 1.75 s that is ~1.8-2.8 cycles over 60-95 bpm.
-# The span COUNT is DERIVED (n_spans = clamp(round(ratio*N/span_tokens), 1,
-# (N-1)//span_tokens)) and the knobs are over-determined, so span_s is chosen so
-# the derived count lands inside the model's OWN tolerance (it prints a [NOTE]
-# whenever |eff - ratio| >= 0.02):
-#   span 1.75 s -> round(1.75*100/16) = 11 tokens (1.76 s)  [1.68-1.84 s -> 11]
-#   n_spans = clamp(round(0.70*31/11), 1, 30//11) = clamp(2, 1, 2) = 2
-#   masked = 2*11 = 22 of 31 = 0.710   (|0.710 - 0.70| = 0.010 < 0.02 -> no NOTE)
-#   -> 9 visible bp tokens, in 2 contiguous 1.76 s gaps.
-# MEASURED at ratio 0.70 (full sweep of the real build): the value is NOT stable
-# -- span 1.1 s -> 3 spans = 21/31 = 0.677 (drift 0.023, NOTE); 1.60 s -> 20/31 =
-# 0.645 (0.055); 1.28/1.92 s -> 24/31 = 0.774 (0.074). 1.75 s is the only clean
-# landing, so RE-DERIVE it if the ratio or the clip length changes again.
-# Build-time line to confirm:
-#   [mask] bp: span 1.75 s = 11 tokens (1.76 s) x 2 span(s) -> masked 0.710
-mask_span_s: {bp: 1.75}            # ignored while physio_mask: random
+# ---- masking: NONE DECLARED (arm RETIRED under ADR-002) --------------------
+# This arm declares ONE visual stream (streams: rgb,bp) because the rgb_roi
+# data_set serves only the RGB camera. The constant-budget policy requires
+# exactly two visual streams (ADR-002 contract 5: a single visual stream caps at
+# 225 tokens and cannot supply the 350-token Mode-1 budget), so
+# build_pretraining_model refuses it. Kept as the record of the runs this file
+# produced; the live arm is
+# configs/pretrain/stage2_budget_tir_roi_resp_rgb2d.yaml.
 
 # ---------------------------------------------------------------------- loss
 signal_weight: 0.5                 # lambda for every physio stream (visual 1.0)

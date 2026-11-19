@@ -42,12 +42,18 @@ AFFINE_ATOL = 1e-4
 # helpers
 # --------------------------------------------------------------------------- #
 def _fixed_masks(model, B=2, seed=1234):
-    """One deterministic mask set, so a forward pass carries no RNG."""
-    state = torch.random.get_rng_state()
-    torch.manual_seed(seed)
-    masks = model.make_masks(B, torch.device('cpu'))
-    torch.random.set_rng_state(state)
-    return masks
+    """One deterministic mask set, so a forward pass carries no RNG.
+
+    ADR-002 gives the batch ONE count per stream, so the plan is stated
+    explicitly (half the constant budget per visual stream, no physiological
+    token) and only the PLACEMENT is drawn from a seeded generator.
+    """
+    per_visual = model.n_budget // len(model.visual)
+    plan = model.plan_from_counts(
+        {s: (per_visual if s in model.visual else 0) for s in model.streams})
+    generator = torch.Generator().manual_seed(seed)
+    return model.make_masks(B, torch.device('cpu'), plan=plan,
+                            placement_generator=generator)
 
 
 def _clip_cubes(x, tubelet):
@@ -89,13 +95,19 @@ def _unmasked_tiny(monkeypatch, **over):
     m.eval()
     for p in m.parameters():
         p.requires_grad_(False)
-    masks = {k: v.clone() for k, v in _fixed_masks(m).items()}
-    # A 100 %-masked stream is not tokenised at all (design
-    # Asymmetric_MultiModal_Masking §3.2.3: the adapter is skipped), so the
-    # adapter probe below needs at least one VISIBLE token in `tir`.
-    masks['tir'][:, 0] = 0
-    monkeypatch.setattr(m, 'make_masks', lambda B, device, **kwargs: masks)
+    masks, plan, idx = _fixed_masks(m)
+    monkeypatch.setattr(m, 'make_masks',
+                        lambda B, device, **kwargs: (masks, plan, idx))
     return m
+
+
+def _batch(m, tir=None, B=2):
+    """A three-stream batch at the tiny model's geometry (both visual streams
+    share one grid, which is what the model's alignment check enforces)."""
+    v = (B, 3, m.num_frames, m.input_size, m.input_size)
+    return {'tir': torch.rand(*v) if tir is None else tir,
+            'rgb2d': torch.rand(*v),
+            'resp': torch.randn(B, 1, m.seq_len)}
 
 
 def _stage3_model(**over):
@@ -169,9 +181,8 @@ def test_encoder_input_is_affine_invariant(monkeypatch):
     """tokens(2x + 5) == tokens(x), and the tokens are NOT the pre-change ones."""
     m = _unmasked_tiny(monkeypatch)
     B = 2
-    x = {'tir': torch.rand(B, 3, m.num_frames, m.input_size, m.input_size) * 0.7
-                + 0.2,
-         'resp': torch.randn(B, 1, m.seq_len)}
+    x = _batch(m, tir=torch.rand(B, 3, m.num_frames, m.input_size,
+                                 m.input_size) * 0.7 + 0.2)
 
     z_plain = _adapter_tokens(m, x)
     z_affine = _adapter_tokens(m, dict(x, tir=2.0 * x['tir'] + 5.0))
@@ -199,7 +210,10 @@ def test_masked_mse_is_unchanged_by_input_normalisation(monkeypatch):
     m = _unmasked_tiny(monkeypatch)
     B = 2
     x_raw = torch.randn(B, 3, m.num_frames, m.input_size, m.input_size)
-    x = {'tir': zscore_clip(x_raw), 'resp': torch.randn(B, 1, m.seq_len)}
+    x = _batch(m, tir=zscore_clip(x_raw))
+    # BOTH visual streams must already be in the input space, else patching
+    # ``zscore_clip`` away would also strip the rgb2d normalisation.
+    x['rgb2d'] = zscore_clip(x['rgb2d'])
 
     # the clip really is in the input space (otherwise the comparison is vacuous)
     assert torch.allclose(zscore_clip(x['tir']), x['tir'], atol=1e-5)
@@ -233,7 +247,7 @@ def test_unmasked_cube_target_is_clip_space():
         torch.rand(B, 3, m.num_frames, m.input_size, m.input_size) * 0.6 + 0.3)
 
     mask = torch.zeros(B, m.n_visual, dtype=torch.long)
-    mask[0, :3] = 1                                     # 3 masked, 7 unmasked
+    mask[0, :3] = 1                                     # 3 masked, rest unmasked
     tgt = m._targets(x_clip, 'tir', mask)
     assert tuple(tgt.shape) == (B, m.n_visual, m._flat['tir'])
 

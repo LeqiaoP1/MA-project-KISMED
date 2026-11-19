@@ -182,15 +182,38 @@ def test_stage2_hpc_resolves_the_intended_values(monkeypatch):
     assert a.blr == pytest.approx(1.5e-4)
 
 
-def test_mask_ratios_differ_between_visual_and_physio(monkeypatch):
-    """The shipped pair relies on asymmetric masking (visual 0.90 / resp 0.50).
+def test_stage2_exposes_the_adr002_policy_surface(monkeypatch):
+    """The seven ADR-002 keys are the whole masking surface.
 
-    Dropping ``mask_ratio_resp: 0.50`` from the YAML would silently fall back to
-    the argparse default of 0.90 -- the documented resp-collapse mode.
+    The superseded per-stream ratios / Dirichlet knobs must be GONE: a stale
+    YAML key is a hard error, and a stale flag would be a silent no-op.
     """
     a = _stage2(monkeypatch)
-    assert a.mask_ratio_tir == pytest.approx(0.90)
-    assert a.mask_ratio_resp == pytest.approx(0.50)
+    for key in ('n_budget', 'video_cap_ratio', 'physio_cap_ratio',
+                'video_min_tubes', 'p_virtual_sensing', 'spatial_patches',
+                'physio_tokens'):
+        assert hasattr(a, key), f'run_pretrain does not define --{key}'
+    for gone in ('masking', 'mask_ratio_tir', 'mask_ratio_resp',
+                 'dirichlet_alpha', 'video_kept_cap', 'physio_kept_cap',
+                 'modality_dropout', 'min_kept', 'kept_ratio_override',
+                 'physio_mask', 'mask_span_s'):
+        assert not hasattr(a, gone), f'run_pretrain still defines --{gone}'
+
+
+def test_the_budget_arm_carries_the_adr_geometry(monkeypatch):
+    """The arm config declares the ADR-002 §5 units explicitly."""
+    a = _args_for(os.path.join(
+        CODE_DIR, 'configs/pretrain/stage2_budget_tir_roi_resp_rgb2d.yaml'),
+        monkeypatch)
+    assert a.streams == 'tir,rgb2d,resp'
+    assert a.tubelet == '4,16,16' and a.input_size == 96
+    assert a.sig_kernel == 32 and a.fs == pytest.approx(1000.0)
+    assert a.n_budget == 350
+    assert a.video_cap_ratio == pytest.approx(0.25)
+    assert a.physio_cap_ratio == pytest.approx(0.50)
+    assert a.video_min_tubes == 2
+    assert a.p_virtual_sensing == pytest.approx(0.50)
+    assert a.spatial_patches == 36 and a.physio_tokens == 250
 
 
 def test_stage2_and_stage3_agree_on_the_roi_contract(monkeypatch):

@@ -43,10 +43,8 @@ EXPECTED_TIERS = {
 #: every config that ships a ``task_groups:`` block.
 TIR_ROI_CONFIGS = [
     'configs/pretrain/stage2_local_tir_roi_resp.yaml',
-    'configs/pretrain/stage2_ammm_tir_roi_resp.yaml',
     'configs/pretrain/stage2_hpc_tir_roi_resp.yaml',
-    'configs/pretrain/stage2_ammm_hpc_tir_roi_resp.yaml',
-    'configs/pretrain/stage2_hpc_tir_roi_resp_rgb2d.yaml',
+    'configs/pretrain/stage2_budget_tir_roi_resp_rgb2d.yaml',
     'configs/finetune/resp_tir_roi_local.yaml',
     'configs/finetune/resp_tir_roi_local_matched.yaml',
     'configs/finetune/resp_tir_roi_hpc.yaml',

@@ -176,11 +176,14 @@ unknown lists are rejected consistently in `MultiModalMAE.__init__`,
 `PairedPretrainDataset`/`build_pretraining_dataset` (`data/`).
 
 `PairedPretrainDataset` serves **exactly** the requested streams: e.g.
-`streams: rgb,bp` returns only `{'rgb','bp'}`, while the default four-stream
-configs return all of `{'rgb','tir','bp','resp'}`. So trimming/ablating
-modalities (while keeping the ≥1 video + ≥1 physio rule) is a YAML-only
-change. Per-stream mask ratios: visual `mask_ratio_rgb/tir` 50–75 %, signals
-`mask_ratio_bp/resp` 90 %+.
+`streams: rgb,tir,bp` returns only `{'rgb','tir','bp'}`, while the default
+four-stream configs return all of `{'rgb','tir','bp','resp'}`. So trimming/ablating
+modalities (while keeping the ADR-002 declared set: exactly two visual streams +
+one/two physiological ones) is a YAML-only change. **Masking** is the
+constant-budget policy (`core/budget_masking.py`): every step samples a mode and
+one kept-token count per stream so the encoder input is always `n_budget` (350)
+tokens long — see `notes/spec/02_model_architecture.md` §7.5 and
+`notes/design/ADR-002-asymmetric-multimodal-masking.md`.
 
 **Choosing the visible stream (`rgb` vs `rgb2d`).** `rgb` is **not deprecated**
 — it is the only visible stream served by `PairedSessionDataset` (`data_set:
@@ -192,7 +195,7 @@ rejects a second visual stream on another patch grid, so the 224 px canonical
 **`rgb2d`** whenever `tir` is in the same run: it lives on the TIR grid by
 construction (same `input_size` / `tubelet` / `num_frames`) and is cropped from
 the **same frames** as the TIR ROI, which makes `streams: tir,rgb2d,resp`
-(`configs/pretrain/stage2_hpc_tir_roi_resp_rgb2d.yaml`) the only visible+thermal
+(`configs/pretrain/stage2_budget_tir_roi_resp_rgb2d.yaml`) the only visible+thermal
 fusion configuration. Cost: `rgb2d` needs the offline cache
 (`runners/run_build_2d_roi_cache.py`), and the native store is I/O heavy
 (~316 MB per 8-s clip) — use a `px112` store for throughput.
@@ -468,20 +471,15 @@ prints a warning rather than dividing by zero if it is ever handed an empty
 iterable. No behaviour change on a healthy split (the pretrain smoke's epoch
 stats are bit-identical).
 
-**1-D masking pattern (`--physio_mask`).** The 1-D streams are masked either
-scattered (`random`, the default, unchanged) or as contiguous blocks (`span`,
-length per stream via `--mask_span_s`, count derived from the ratio). Span
-masking removes the "interpolate the gap from its visible neighbours" shortcut
-that makes a scattered mask on an oversampled band-limited stream solvable with
-zero video information (`code/notes/design/SpanMask_PhysioSignals.md` §1-§2). The resolved
-geometry is printed at model build, and `python -m core.multimae` self-tests the
-invariants (uniform masked count across the batch -- a batch-max gather would
-otherwise leak masked tokens into the encoder). It needs no model
-change, and with `streams: tir,...` the Stage-1 loader now routes the
-checkpoint's tubelet into `adapters.tir` instead of leaving it random
-(`load_pretrained_encoder` resolves the destination visual adapter; an
-`rgb,...` run is unaffected). The canonical `rgb,bp*` configs and
-`PairedPretrainDataset` are untouched.
+**1-D placement (`--physio_placement`).** The kept 1-D tokens are either
+scattered (`scattered`, the default) or contiguous blocks (`span`, length via
+`--physio_span_tokens`, exact count preserved). Span placement removes the
+"interpolate the gap from its visible neighbours" shortcut that makes a
+scattered mask on an oversampled band-limited stream solvable with zero video
+information (`code/notes/design/SpanMask_PhysioSignals.md` §1-§2). The resolved
+decision is printed at model build together with the policy parameters, and
+`python -m core.multimae` self-tests the invariants (constant encoder length,
+batch-uniform counts, and the Mode-1 gradient path to the encoder).
 
 Not yet implemented: a finer Stage-3 temporal decoder, and **model-side sliding
 inference** over an arbitrary recording (one command that runs the net window by

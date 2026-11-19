@@ -222,31 +222,35 @@ Step 1 — Visual input preprocessing + tokenise (all streams):
   for visual s: x[s] = zscore_clip(x[s])                 # per-channel z over (T,H,W), per sample
   tokens_s = adapters[s](x[s]) + positions[s].pos_embed   # [B, N_s, D]
 
-Step 2 — Per-stream asymmetric masking:
-  mask_s = masking_generator[s]()               # [N_s] in {0,1}
-  visible_s = tokens_s[:, mask_s==0, :]         # [B, N_vis_s, D]
+Step 2 — Constant-budget masking (ADR-002):
+  plan = ConstantBudgetApportioner.sample_step(counts_generator)  # mode + counts
+  for s: ids_keep[s] = place_video/place_signal(plan.kept_tokens[s],
+                            placement_generator)                   # [B, k_s]
+  mask_s = 1 - scatter(ids_keep[s])                                 # [B, N_s], 1 = masked
 
 Step 3 — Concatenate visible tokens (ALL streams in encoder):
-  z_vis = cat([visible_s for s in streams], dim=1)      # [B, sum(N_vis_s), D]
+  z_vis = cat([tokens_s[:, ids_keep[s], :] for s in streams], dim=1)
+  assert z_vis.shape == [B, n_budget, D]              # contract 1
 
 Step 4 — Shared ViT encoder:
   for blk in enc_blocks: z_vis = blk(z_vis)
-  z_vis = enc_norm(z_vis)                       # [B, sum(N_vis_s), D]
+  z_vis = enc_norm(z_vis)                       # [B, n_budget, D]
 
-Step 5 — Re-insert mask tokens:
-  full_s[:, mask_s==0] = z_vis[slice_s]
-  full_s[:, mask_s==1] = positions[s].mask_token
+Step 5 — Per-stream decoder input: encoder latents + this stream's mask tokens:
+  dec_s = cat([z_vis, mask_token x n_masked_s], dim=1)
+  dec_s[z_vis part]  += 0                        # z already carries positions
+  dec_s[mask part]   += positions[s].pos_embed[ids_masked_s]
 
-Step 6 — Shared lightweight self-attention decoder (dec_depth=2):
-  z_dec = cat([full_s for s in streams], dim=1)
-  for blk in dec_blocks: z_dec = blk(z_dec)
-  z_dec = dec_norm(z_dec)                       # [B, sum(N_s), D]
+Step 6 — Shared lightweight self-attention decoder (dec_depth=2), ONE stream at a
+          time; the z PREFIX is what gives a 0-kept stream a gradient path to the
+          encoder (contract 7):
+  for blk in dec_blocks: dec_s = blk(dec_s)
+  pred_masked_s = heads[s](dec_s[:, n_budget:])
+  pred_s = scatter(pred_masked_s)                # [B, N_s, patch_dim_s]
 
-Step 7 — Per-stream linear heads:
-  pred_s = heads[s](z_dec[slice_s])             # [B, N_s, patch_dim_s]
-
-Step 8 — Norm-pix targets + weighted masked MSE loss
-Returns: {'loss': scalar, 'losses_mse': {...}}
+Step 7 — Norm-pix targets + weighted masked MSE loss
+Returns: {'loss', 'losses', 'losses_mse', 'masks', 'preds', 'mode', 'kept',
+          'kept_units', 'n_batch'}
 ```
 
 `zscore_clip` (`core/input_adapters.py`) runs AFTER `_fit_time` and BEFORE patch
@@ -261,58 +265,64 @@ clip-normalised values (no local map), and `MaskedMSELoss` keeps only
 streams ignore the mask — their label space is the dataset's per-clip z-score
 decided by `target_norm`.
 
-### 7.5 Masking strategies — `_random_mask` vs `_span_mask`
+### 7.5 Masking — the ADR-002 constant-budget policy
 
-**[design]** — `SpanMask_PhysioSignals.md` (implemented 2026-09-26)
+**[design]** — `design/ADR-002-asymmetric-multimodal-masking.md`, implemented in
+`core/budget_masking.py` (policy: counts only) + `core/mask_placement.py`
+(placement: indices only). There is **one** masking policy; `mask_ratio_*`, the
+Dirichlet sampler and the `masking:` selector were removed with it.
 
-Two strategies for 1-D physiological stream masking, selected by `physio_mask`:
+**Masking units.** A visual unit is one spatial tube (one patch + all of its
+temporal positions), so a visual count is always a multiple of
+`tokens_per_unit = Gt`. A physiological unit is one temporal token:
 
-| `physio_mask` | Default | Behaviour |
-|--------------|---------|----------|
-| `'random'` | **Yes** | Picks `k` tokens independently at uniform random. Historical behaviour reproduced bit-for-bit. |
-| `'span'` | No | Masks `n_spans` contiguous blocks of `span` tokens with random starts, shared count across batch. |
+| stream kind | unit | units per stream | tokens per unit | tokens |
+| :--- | :--- | ---: | ---: | ---: |
+| visual (`tir`, `rgb2d`, `rgb`) | spatial tube | `Gh*Gw` = 36 | `Gt` = 25 | 900 |
+| physiological (`bp`, `resp`) | temporal token | `seq_len//sig_kernel` = 250 | 1 | 250 |
 
-**The interpolation shortcut problem** (`SpanMask_PhysioSignals.md §1–§2`): under `'random'` masking at ratio 0.5 the resp stream (period 2.5–6.25 s, token grid 160 ms) is oversampled 16–39×. A linear interpolator using **zero video** achieves `mse_resp 0.129` vs the trained model's `1.052` — the encoder has no incentive to learn cross-modal features.
+**Two modes, one constant budget.** Every step the apportioner draws a mode and
+one kept-token count per stream such that
+`sum(kept_tokens) == n_budget` (default 350):
 
-**Measured difficulty by mask pattern** (`SpanMask_PhysioSignals.md §4.2`, 24 clips x 30 realisations, 25/50 tokens masked):
+| Mode | draw |
+| :--- | :--- |
+| 1 — pure virtual sensing (p = `p_virtual_sensing`) | `K_p = 0` for every physiological stream; the two visual streams split `n_budget/T` tubes inside `[video_min_tubes, M]` |
+| 2 — waveform inpainting | each physiological stream draws `K_p` uniform on `[0, C_p]`; the modulo remainder is charged to the FIRST declared physiological stream (a deliberate asymmetry); the visual residual is split the same clamped way |
 
-| Mask pattern | `mse_interp` | vs `mse_const (~1.0)` | Solvable without video? |
-|-------------|-------------|----------------------|------------------------|
-| Scattered (shipped) | 0.129 | 8x better | **Yes** |
-| 4 spans (~1 s each) | 0.841 | still better | Yes |
-| 2 spans (~2 s each) | 1.370 | worse | **No** |
-| **1 span (4 s)** | **1.459** | **1.5x worse** | **No** |
+Caps and floors are derived from the run's parameters (`M =
+floor(video_cap_ratio * units)`, `C_p = floor(physio_cap_ratio * unit count)`),
+and three feasibility conditions are validated at CONSTRUCTION (budget a multiple
+of `T`; `2m <= n_budget/T <= 2M`; `n_budget - P*C_p >= 2mT`). An infeasible tuple
+raises `ValueError` naming the condition and the numbers.
 
-**`_span_mask` contract** (`SpanMask_PhysioSignals.md §4.3–§4.4`):
+**Placement** (`core/mask_placement.py`) is drawn per SAMPLE: `place_video`
+keeps the full temporal column of `k` spatial tubes; `place_signal` keeps `k`
+tokens either scattered (uniform without replacement, default) or as contiguous
+spans of `physio_span_tokens`. Counts are batch-uniform, placements are not.
 
-```python
-def _span_mask(self, B, device, N, mask_ratio, span, n_spans=1):
-    k = max(1, min(N - 1, span * n_spans))          # keep >= 1 visible
-    start = torch.randint(0, N - k + 1, (B, 1), device=device)
-    idx = (start + torch.arange(k, device=device)).clamp(max=N - 1)
-    m = torch.zeros(B, N, device=device, dtype=torch.long)
-    m.scatter_(1, idx, 1)
-    return m
-```
+| knob | default | meaning |
+| :--- | ---: | :--- |
+| `n_budget` | 350 | visible encoder tokens on EVERY step |
+| `video_cap_ratio` | 0.25 | kept-ratio ceiling per visual stream |
+| `physio_cap_ratio` | 0.50 | kept-ratio ceiling per physiological stream |
+| `video_min_tubes` | 2 | kept-tube floor per visual stream |
+| `p_virtual_sensing` | 0.50 | probability of Mode 1 |
+| `spatial_patches` | 36 | tokenizer-derived unit count per visual stream |
+| `physio_tokens` | 250 | tokenizer-derived unit count per physiological stream |
 
-Critical invariant: `span` and `n_spans` are drawn **once per step** and shared across the batch. If visible counts differ between samples, the batch-max gather in `forward` will silently leak masked tokens into the encoder, producing better loss with no real gradient signal.
+`spatial_patches` / `physio_tokens` are derived from the tokenizer; passing them
+explicitly is allowed only when it agrees, and the model refuses otherwise.
 
-**Per-modality span defaults** (`SpanMask_PhysioSignals.md §4.1`):
+**RNG contract.** Counts come from a generator seeded by `(base_seed, epoch,
+step)` WITHOUT the rank, so every DDP rank derives the same plan without a
+collective. Placements add the rank, so samples differ across ranks. Validation
+replays a fixed-seed sequence instead of pinning per-stream fractions.
 
-| Stream | Band | `mask_span_s` | Tokens @160 ms |
-|--------|------|--------------|---------------|
-| `bp` | 1–2.5 Hz | 1.0 s | 6 |
-| `resp` | 0.16–0.4 Hz | 4.0 s | 25 |
-
-Parameterisation (scheme A — recommended): `mask_ratio` and `mask_span_s` are the primaries; `n_spans = round(mask_ratio * clip_seconds / mask_span_s)` is derived and logged.
-
-**YAML knobs** (additive; `'random'` is the unchanged default):
-
-```yaml
-physio_mask: span                    # 'random' (default) or 'span'
-mask_span_s: 4.0                     # global scalar, or {resp: 4.0, bp: 1.0}
-mask_n_spans: 0                      # 0 = derive from mask_ratio and mask_span_s
-```
+**Loss-key stability.** Every declared stream emits its `losses_mse` entry on
+every step and every rank (an explicit zero when it has no masked position). A
+0-kept stream's adapter receives no gradient — the adapter is skipped — while
+its loss still reaches the encoder through the decoder's `z` prefix.
 
 ### 7.6 Geometry variants
 
@@ -508,14 +518,21 @@ Stage-1 VideoMAE -> Stage-2: `canonicalise_vit_state_dict` handles the official 
 
 | Config file | Purpose |
 |------------|---------|
-| `configs/pretrain/stage2_local_tir_roi_resp.yaml` | Stage 2, shared-encoder MAE |
+| `configs/pretrain/stage2_budget_tir_roi_resp_rgb2d.yaml` | Stage 2, shared-encoder MAE at the ADR-002 geometry (the live arm) |
+| `configs/pretrain/stage2_hpc_tir_roi_resp.yaml` | Stage-2 record (single visual stream: refused under contract 5) |
 | `configs/finetune/resp_tir_roi_local.yaml` | Historical Stage-3 |
 | `configs/finetune/resp_tir_roi_local_matched.yaml` | Stage 3, `head_style: transposed_conv`, `head_init: none`, `layer_decay: 0.75` |
 
-### Span masking YAML knobs (additive; `'random'` is the unchanged default)
+### Masking YAML keys (ADR-002 — the whole surface)
 
 ```yaml
-physio_mask: span          # 'random' (default) or 'span'
-mask_span_s: 4.0           # global scalar or {resp: 4.0, bp: 1.0}
-mask_n_spans: 0            # 0 = derive from mask_ratio and mask_span_s
+n_budget: 350              # constant visible encoder tokens per step
+video_cap_ratio: 0.25      # kept-ratio ceiling per visual stream
+physio_cap_ratio: 0.50     # kept-ratio ceiling per physiological stream
+video_min_tubes: 2         # kept-tube floor per visual stream
+p_virtual_sensing: 0.50    # probability of Mode 1
+spatial_patches: 36        # tokenizer-derived, asserted at build
+physio_tokens: 250         # tokenizer-derived, asserted at build
+physio_placement: scattered  # 'scattered' | 'span' (placement, not policy)
+physio_span_tokens: 0      # required only when physio_placement: span
 ```

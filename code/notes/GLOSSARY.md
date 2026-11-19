@@ -16,7 +16,7 @@ the code disagree, the code wins and this file is the bug.
 | **bpm** | Breaths per minute — the derived respiration-rate readout (`rate_metrics['mae_bpm']`) | blood pressure |
 | **TIR** | Thermal-infrared video stream (false-colour, 3-channel) | `Thermal/` (raw on-disk directory literal) |
 | **RESP** | Respiration waveform modality / Stage-3 target | — |
-| **AMMM** | Asymmetric Multi-Modal Masking (`core/ammm_masking.py`, `masking: ammm`) | the legacy `masking: ratio` path |
+| **AMMM** | Asymmetric Multi-Modal Masking — the REMOVED per-step Dirichlet policy (ADR-002 superseded it) | the live **constant-budget** policy (`core/budget_masking.py`) |
 
 ---
 
@@ -83,20 +83,32 @@ Closed stream set: visual `('rgb', 'tir', 'rgb2d')`, physiological
 
 **Hard space-time invariant** (`MultiModalMAE._check_space_time_alignment`,
 construction-time):
-`sig_kernel/fs == tubelet_t * temporal_stride / fps` **and** `n_signal == Gt`.
+`R = n_signal / Gt` must be an INTEGER and `R * sig_kernel/fs ==
+tubelet_t * temporal_stride / fps` (one signal token tiles a visual token
+an integer number of times; `R = 1` is the classic aligned grid, `R = 10` is
+the ADR-002 arm).
 
 **Masking terms**
-- **Asymmetric masking**: one ratio per stream, applied independently.
-- **Shipped ratios** (configs are authoritative): visual `0.90`; `resp`
-  `0.50`; `bp` `0.50` (TIR arm) or `0.70` (`stage2_local_rgb_roi_bp.yaml`). A
-  physio ratio near 1.0 is forbidden in practice — a 1-D stream's only gradient
-  path to the encoder is its VISIBLE tokens.
-- **AMMM** (Asymmetric Multi-Modal Masking): `masking: ammm` draws per-step
-  kept-unit counts via a Dirichlet over the drawn streams. Knobs:
-  `dirichlet_alpha` (1.0), `video_kept_cap` (0.25), `physio_kept_cap` (1.0),
-  `min_kept` (0), `modality_dropout` (0.0), `kept_ratio_override` (`{}`).
-- **`physio_mask`**: `random` (scattered dropout, historical default) or `span`
-  (contiguous blocks of `mask_span_s` seconds). `n_spans` is DERIVED, not a key.
+- **Constant-budget masking** (ADR-002, `core/budget_masking.py`): the ONE
+  masking policy. Every step samples a MODE and one kept-TOKEN count per stream
+  such that all counts sum to `n_budget` (default 350), so the encoder input has
+  a constant length. **Mode 1** (pure virtual sensing, `p_virtual_sensing`) keeps
+  no physiological token; **Mode 2** (waveform inpainting) keeps a drawn
+  allocation per physiological stream and gives the visual streams the residual
+  in whole tubes.
+- **Masking unit**: a visual unit is one **spatial tube** (one patch + all of
+  its temporal positions, so a visual count is a multiple of `Gt`); a
+  physiological unit is one **temporal token**.
+- **Caps / floors** (`video_cap_ratio` 0.25, `physio_cap_ratio` 0.50,
+  `video_min_tubes` 2): every visual stream keeps 2..9 tubes (50..225 tokens),
+  every physiological stream at most 125 of 250 tokens.
+- **Placement** (`core/mask_placement.py`): which units survive, drawn per
+  SAMPLE — `scattered` (uniform without replacement, default) or `span`
+  (contiguous blocks of `physio_span_tokens`). Counts are batch-uniform,
+  placements are not.
+- **`n_budget` / `spatial_patches` / `physio_tokens`**: the constant visible
+  budget and the two tokenizer-derived unit counts (the latter two are asserted
+  against the tokenizer at build, never tuned).
 - **MultiMAE**: multi-modal masked autoencoder — visible tokens of **all**
   streams are concatenated into one shared ViT encoder; per-stream linear heads
   reconstruct masked tubelets/windows; masked MSE is computed per modality on

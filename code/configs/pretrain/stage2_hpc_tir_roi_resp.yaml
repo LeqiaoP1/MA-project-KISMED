@@ -45,13 +45,11 @@ subjects: ''                       # '' = every discoverable subject. NARROWS th
 # and no split-policy key: K and 70/10/20 are protocol constants.
 split_seed: 42                     # partition seed (I2); equal in both stages
 split_stratify: sex                # shuffle within stratum, then interleave
-# Validation is mandatory and its masking is PINNED (I6): the kept fraction of
-# every masked stream is fixed, so two evaluations of one checkpoint agree.
+# Validation replays a FIXED-SEED mask sequence (ADR-002 §6): no per-stream
+# fraction is pinned, so the curve stays comparable across epochs.
 eval_freq: 5                       # epochs between val evaluations (0 = off)
 val_select: fixed_epoch            # never reads a metric; needs Criterion 5
 val_criterion: joint_loss          # the value best_val would minimise
-val_kept_tir: 0.10                 # = 1 - mask_ratio_tir
-val_kept_resp: 0.50                # = 1 - mask_ratio_resp
 tasks: ''                          # '' = all tasks; UNIONED with task_set below
 # ---- task GROUPS ("distortion levels") ---------------------------------
 # Named subsets of the BP4D+ task labels (T1..T10); the DEFINITIONS live here,
@@ -142,15 +140,12 @@ rail_touch_v: 9.900                # VOLTS (magnitude): cleaning knob -- drop a
                                    #   label survives. Keep IDENTICAL in Stage 2
                                    #   and Stage 3.
 
-# ---- asymmetric masking ----
-mask_ratio_tir: 0.90               # the ROI is the PRIMARY visual stream
-mask_ratio_resp: 0.50              # a physio stream's only gradient path is its
-                                   #   VISIBLE tokens -> 0.90 would starve it
-mask_ratio_rgb: 0.90               # unused while streams=tir,resp
-mask_ratio_bp: 0.50                # unused
-# ---- 1-D masking PATTERN (see code/notes/design/SpanMask_PhysioSignals.md) ----
-physio_mask: random                # 'span' = contiguous blocks (E1-E3 ablation)
-mask_span_s: {resp: 4.0}           # ignored while physio_mask: random
+# ---- masking: NONE DECLARED (arm RETIRED under ADR-002) --------------------
+# This arm declares ONE visual stream (streams: tir,resp). The constant-budget
+# policy requires exactly two (ADR-002 contract 5: a single visual stream caps
+# at 225 tokens and cannot supply the 350-token Mode-1 budget), so
+# build_pretraining_model refuses it. Kept as the record of the runs this file
+# produced; the live arm is configs/pretrain/stage2_budget_tir_roi_resp_rgb2d.yaml.
 
 # ---- loss: per-modality masked MSE (masked positions only) ----
 signal_weight: 0.5
