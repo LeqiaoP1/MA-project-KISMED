@@ -227,6 +227,18 @@ $$L_\text{joint} = \alpha L_\text{time} + \beta L_\text{Pearson} + \gamma L_\tex
   `preprocess_session`), `resp_cache` (identity + shard IO + `find_cache`),
   `resp_window` (the ONLY window rule: `window_indices`, `usable`,
   `read_window`, `window_cause`, `assert_clip_fits`, `verify_identity`).
+- Blood-pressure artefact (`bp_artefact`): the FROZEN identity fields
+  `format_version`, `corpus`, `fs_in`, `fs_out`, `gate1_min_mmhg`,
+  `gate1_max_mmhg`, `flatline_max_ms`, `rail_dwell_min_ms`, `min_segment_s`,
+  `store`; the shard members `signal` (NaN where invalid), `mask` (the SOLE
+  validity statement), `cause` (`0` valid / `1` non-finite / `2` range /
+  `3` flatline / `4` rail / `5` short segment), `seg_start`, `seg_stop`,
+  `seg_mean_mmhg`, `seg_seconds`. **`segment`** here means a maximal run of
+  admitted samples on the 1000 Hz grid (>= `min_segment_s`), never a clip.
+  `bp_preprocess` (decision: `gate1_range`, `gate2_flatline`, `gate3_rail`,
+  `admitted_mask`, `preprocess_session`), `bp_artefact` (identity + shard IO +
+  `find_cache` + `discover_sessions`), `bp_windows` (the ONLY window rule:
+  `window_indices`, `usable`, `read_window`, `segment_of`, `verify_identity`).
 - `rgb2d_cache` (`STORE_RESOLUTION='native'`).
 - Legacy raw-path gates (refused when the artefact is attached): `rail_touch_v`,
   `min_signal_spread`.
