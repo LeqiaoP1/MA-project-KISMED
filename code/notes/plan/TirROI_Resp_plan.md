@@ -89,7 +89,7 @@ with a new run prefix.
 |---|---|
 | dataset, ROI algebra, clip validity | `data/tir_resp_dataset.py` (`roi_box_from_landmarks`, `missing_frame_mask`, `BP4DPlusTIRRespDataset`, `TirRoiResp{Pretrain,Finetune}Dataset`) |
 | cache (pixels) | `data/roi_cache.py` (`hull_box`, `cache_key`, `find_cache`) |
-| cache (label) | `data/resp_preprocess.py` (validity mask, per-run DC, resample), `data/resp_cache.py` (`cache_key`, `find_cache`) — see `plan/RESP_session_preprocess_implementation_plan.md` |
+| cache (label) | `data/resp_preprocess.py` (validity mask, per-run DC, resample), `data/resp_cache.py` (`cache_key`, `find_cache`), `data/resp_window.py` (the window rule) — see `plan/ADR-003-resp-session-cache-plan.md` |
 | task rotation | `data/task_groups.py` (`SHIPPED_TASK_GROUPS`, `resolve_task_selection`) |
 | folds | `protocol/partition.py::split_universe` |
 | visual input contract | `core/input_adapters.py::zscore_clip` — the model z-scores each clip per channel before patching; the datasets keep `[0, 1]` (`design/Video_input_Preprocessing.md`, landed per `plan/video_input_preprocessing_implementation_plan.md`) |
@@ -217,8 +217,9 @@ otherwise leaves no epoch lines).
 | this plan | `code/notes/plan/TirROI_Resp_plan.md` |
 | ROI square box / rescale / motion gate — build order | `code/notes/plan/ROI_crop_implementation_plan.md` |
 | respiration label contract (validity mask, per-run DC, grid) | `design/ADR-003-resp-session-cache-artefact.md` |
-| respiration label build order | `code/notes/plan/RESP_session_preprocess_implementation_plan.md` |
-| respiration label artefact — measured impact + accounting delta | `eval/tir_resp/resp_preprocess_impact.md` |
+| respiration label build order | `code/notes/plan/ADR-003-resp-session-cache-plan.md` |
+| respiration label artefact — build accounting + source-rate evidence | `eval/resp/resp_artefact_build.md` |
+| respiration label artefact — TIR clip accounting + accounting delta (earlier lineage) | `eval/tir_resp/resp_preprocess_impact.md` |
 | task-tier regrouping | `code/notes/plan/task_tiers_regroup_plan.md` |
 | k-fold rollout | `code/notes/plan/ADR-001-subject-kfold-plan.md` |
 | AMP rollout | `code/notes/plan/hpc_AMP_implementation.md` |
