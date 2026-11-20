@@ -17,6 +17,7 @@ if CODE_DIR not in sys.path:
     sys.path.insert(0, CODE_DIR)
 
 from data import resp_cache as respc
+from data import resp_preprocess as rpp
 from data import tir_resp_dataset as trd
 from runners import run_build_resp_cache as rb
 from runners import run_evaluate_kfold as rk
@@ -135,9 +136,14 @@ def test_score_fold_uses_the_cache_and_its_mask(tmp_path):
     # punch a hole into the artefact so the mask restriction is observable
     sig = np.array(sh['signal'], copy=True)
     mask = np.array(sh['mask'], copy=True)
+    cause = np.array(sh['cause'], copy=True)
     sig[1000:1100] = np.nan
     mask[1000:1100] = False
+    # the shard contract is `mask <=> cause == 0`, so a punched hole needs a
+    # cause code; `read_shard` REFUSES an inconsistent shard by design (G1b).
+    cause[1000:1100] = rpp.CAUSE_FLAT
     respc.write_shard(root, 'S001_T1', dict(sh, signal=sig, mask=mask,
+                                            cause=cause,
                                             valid_frac=float(mask.mean())))
 
     dump = _dump(tmp_path / 'fold0', 'S001_T1', sh, gain=1.0)

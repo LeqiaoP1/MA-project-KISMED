@@ -177,3 +177,12 @@ the shipped Stage-3 geometry: 8 s / 2 s hop / `input_size 96` / `roi_padding
   whether the remaining signal is respiration.
 * The 191 all-invalid sessions are still shards. Downstream they produce no
   clips, which is why they land in `all_clips_dropped`, not in the skip list.
+* The 191 all-invalid sessions are still shards. Downstream they produce no
+  clips, which is why they land in `all_clips_dropped`, not in the skip list.
+
+> **Scope note (2026-11-20).** Everything in this file is about the **TIR
+> dataset's** clip accounting. The respiration session artefact itself is
+> modality-independent, so its build accounting and the source-rate investigation
+> live in `eval/resp/resp_artefact_build.md` — read that one for "what is in a
+> shard" / "how much of the corpus is usable"; read this one for "how many TIR
+> clips survive a hop".

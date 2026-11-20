@@ -1,278 +1,348 @@
-"""Unit tests for ``data/resp_cache.py`` + ``runners/run_build_resp_cache.py``.
+"""Phase 3 gates — artefact identity, shard IO and the builder's contract.
 
-The cache holds one whole-session signal grid plus a validity mask per
-subject-task. These tests pin the key contract (what changes the stored bytes
-and what must NOT), the fail-loudly lookup, the atomic shard IO and the
-``--check`` parity gate. No video is ever decoded: the builder only reads
-``Resp_Volts.txt``.
+Gate map: G0 (automated schema), G5 (no consumer choice in the artefact),
+G6 (nominal source rate only), G7 (nothing ruled unusable), G10 (loud mismatch).
 """
+import json
 import os
-import sys
 
 import numpy as np
 import pytest
 
-CODE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if CODE_DIR not in sys.path:
-    sys.path.insert(0, CODE_DIR)
-
 from data import resp_cache as respc
 from data import resp_preprocess as rpp
-from runners import run_build_resp_cache as rb
 
-FS = 1000.0
-OUT = 100.0
+#: The canonical identity of ADR §4.1 — frozen here ON PURPOSE (plan G0). Adding,
+#: renaming or removing a key field must fail this test until §4.1 is updated too.
+CANONICAL_KEYS = {
+    'format_version', 'corpus', 'fs_in', 'fs_out', 'sat_v', 'sat_min_s',
+    'flat_window_s', 'flat_ptp_v', 'min_run_s', 'resample', 'store',
+}
 
-
-def _sine(seconds: float, f: float, amp: float = 1.0, dc: float = 0.0) -> np.ndarray:
-    t = np.arange(int(round(seconds * FS))) / FS
-    return dc + amp * np.sin(2 * np.pi * f * t)
-
-
-def _write_raw(root, sessions: dict) -> str:
-    """Minimal raw tree. Values are 1-D respiration traces."""
-    for name, x in sessions.items():
-        subj, task = name.split('_')
-        (root / 'Thermal' / subj).mkdir(parents=True, exist_ok=True)
-        (root / 'Thermal' / subj / f'{task}.wmv').write_bytes(b'\x00')
-        phys = root / 'Physiology' / subj / task
-        phys.mkdir(parents=True, exist_ok=True)
-        if x is None:
-            (phys / 'Resp_Volts.txt').write_text('')
-        else:
-            (phys / 'Resp_Volts.txt').write_text(
-                '\n'.join(f'{v:.5f}' for v in x) + '\n')
-    return str(root)
+#: Fields that select or rescale a window. They may NEVER appear in the identity
+#: (ADR §4.2) — that absence is what lets one artefact serve every hop.
+CONSUMER_FIELDS = {
+    'clip_seconds', 'clip_stride', 'stride', 'clip_frames', 'task_set', 'tasks',
+    'task_groups', 'split', 'fold', 'n_folds', 'physio_norm', 'target_norm',
+    'input_size', 'max_entries', 'temporal_stride', 'roi_padding', 'crop_rule',
+}
 
 
-@pytest.fixture
-def corpus(tmp_path):
-    raw = tmp_path / 'raw'
-    _write_raw(raw, {
-        'S001_T1': _sine(20.0, 0.3, amp=2.0, dc=3.0),
-        'S001_T2': _sine(20.0, 0.4, amp=1.0, dc=-2.0),
-        'S002_T1': np.full(20000, 5.0),          # all-invalid (flatline)
-    })
-    return raw
+def corpus(n: int = 3):
+    return [{'session': f'F{i:03d}_T1', 'subject': f'F{i:03d}', 'task': 'T1'}
+            for i in range(1, n + 1)]
 
 
-def _params(raw, **kw):
-    sessions = rb.trd.discover_sessions(str(raw))
-    return respc.build_params(str(raw), sessions, **kw)
+def make_params(**kw):
+    return respc.build_params('raw', corpus(), **kw)
+
+
+def write_resp_file(path, values):
+    with open(path, 'w') as fh:
+        for v in values:
+            fh.write(f'{v}\n')
 
 
 # --------------------------------------------------------------------------- #
-# key contract
+# G0 — the identity is the ADR's field set, no more and no less
 # --------------------------------------------------------------------------- #
-def test_key_is_stable_and_changes_with_every_frozen_field(corpus):
-    base = _params(corpus)
-    assert respc.cache_key(_params(corpus)) == respc.cache_key(base)
-    changes = {
-        'fs_out': 50.0,
-        'fs_in': 500.0,
-        'sat_v': 9.5,
-        'sat_min_s': 3.0,
-        'flat_window_s': 4.0,
-        'flat_ptp_v': 0.06,
-        'min_run_s': 6.0,
-        'half_taps': 10,
+def test_identity_schema_is_exact():
+    params = make_params()
+    assert set(params) == CANONICAL_KEYS, (
+        'build_params() must return exactly the ADR §4.1 identity; '
+        f'unexpected {sorted(set(params) - CANONICAL_KEYS)}, '
+        f'missing {sorted(CANONICAL_KEYS - set(params))}')
+    assert set(params['resample']) == {'kind', 'taps_per_phase', 'up', 'down',
+                                       'kernel_radius_src'}
+    assert set(params['store']) == {'kind', 'dtype'}
+
+
+def test_no_consumer_field_enters_the_identity():
+    params = make_params()
+    flat = set(params) | set(params['resample']) | set(params['store'])
+    assert not (flat & CONSUMER_FIELDS), (
+        f'{sorted(flat & CONSUMER_FIELDS)} must never enter the artefact '
+        '(ADR §4.2 / Criterion 5)')
+    body = json.dumps(params)
+    for field in CONSUMER_FIELDS:
+        assert field not in body, f'{field} leaked into params.json'
+
+
+def test_the_key_changes_iff_a_key_field_changes():
+    base = make_params()
+    base_key = respc.cache_key(base)
+    assert respc.cache_key(make_params()) == base_key, 'the key must be stable'
+
+    mutations = {
+        'fs_out': dict(fs_out=50),
+        'sat_v': dict(sat_v=9.0),
+        'sat_min_s': dict(sat_min_s=2.0),
+        'flat_window_s': dict(flat_window_s=4.0),
+        'flat_ptp_v': dict(flat_ptp_v=0.4),
+        'min_run_s': dict(min_run_s=9.0),
+        'taps_per_phase': dict(taps_per_phase=12),
     }
-    for field, value in changes.items():
-        assert respc.cache_key(_params(corpus, **{field: value})) != \
-            respc.cache_key(base), f'{field} did not change the key'
+    for name, kw in mutations.items():
+        assert respc.cache_key(make_params(**kw)) != base_key, (
+            f'{name} changes stored bytes, so it must change the key (ADR I9)')
+
+    assert respc.cache_key(
+        respc.build_params('raw', corpus(4))) != base_key, \
+        'the corpus digest is part of the identity'
 
 
-def test_key_does_not_depend_on_downstream_knobs(corpus):
-    """``clip_seconds`` / ``clip_stride`` / ``physio_norm`` are NOT parameters.
+def test_fs_in_is_nominal_and_no_measured_rate_is_recorded():
+    params = make_params()
+    assert params['fs_in'] == 1000
+    assert 'measured' not in json.dumps(params).lower(), (
+        'the measured source rate must not be recorded in the artefact '
+        '(ADR §2.3); it belongs in the evidence note only')
 
-    That is the property that lets ONE artefact serve Stage 2 and Stage 3.
+
+def test_geometry_refusals_reach_the_builder():
+    with pytest.raises(ValueError, match='must divide'):
+        make_params(fs_out=128)
+    with pytest.raises(ValueError, match='taps_per_phase'):
+        make_params(taps_per_phase=4)
+    with pytest.raises(ValueError, match='store dtype'):
+        make_params(dtype='float64')
+
+
+# --------------------------------------------------------------------------- #
+# lookup — fail loudly, never adapt
+# --------------------------------------------------------------------------- #
+def test_find_cache_reports_a_field_by_field_diff(tmp_path):
+    """A mismatched artefact is REFUSED with the differing field named.
+
+    A present-but-wrong artefact is a ``ValueError`` (mismatch); a missing one is
+    a ``FileNotFoundError`` (absence). The two must not be confused, because only
+    the first one means "you asked for a different grid".
     """
-    p = _params(corpus)
-    for forbidden in ('clip_seconds', 'clip_stride', 'physio_norm',
-                      'input_size', 'task_set', 'tasks', 'max_entries'):
-        assert forbidden not in p
-    # and the loader half is a strict subset of the writer half
-    sessions = rb.trd.discover_sessions(str(corpus))
-    loader = respc.loader_params(str(corpus), sessions)
-    assert set(loader) == set(respc.COMPARE_KEYS)
-    assert all(p[k] == v for k, v in loader.items())
-
-
-def test_key_slug_is_readable(corpus):
-    p = _params(corpus)
-    key = respc.cache_key(p)
-    assert key.startswith('respgrid_src1000_fs100_')
-    ver = respc.RESP_CACHE_FORMAT_VERSION
-    assert f'_v{ver}_' in key
-    assert key.endswith(f'_v{ver}_' + key.rsplit('_', 1)[1])
-    assert f"sat{p['sat_v']:g}-{p['sat_min_s']:g}s" in key
-    assert f"flat{p['flat_ptp_v']:g}-{p['flat_window_s']:g}s" in key
-    assert 'run8s' in key
-
-
-# --------------------------------------------------------------------------- #
-# lookup gate
-# --------------------------------------------------------------------------- #
-def test_find_cache_matches_and_diffs_loudly(corpus, tmp_path):
-    out = tmp_path / 'out'
-    params = _params(corpus)
-    root = respc.cache_root(out, respc.cache_key(params))
-    respc.write_params(root, params)
-
-    sessions = rb.trd.discover_sessions(str(corpus))
-    want = respc.loader_params(str(corpus), sessions)
-    assert respc.find_cache(out, want) == root
-
-    wrong = respc.loader_params(str(corpus), sessions, fs_out=50.0)
+    want = make_params()
+    other = make_params(fs_out=50)
+    root = respc.cache_root(tmp_path, respc.cache_key(other))
+    respc.write_params(root, other)
     with pytest.raises(ValueError) as exc:
-        respc.find_cache(out, wrong)
+        respc.find_cache(tmp_path, want)
     msg = str(exc.value)
-    assert 'fs_out' in msg and 'cache=100' in msg and 'run=50' in msg
-
-    with pytest.raises(FileNotFoundError):
-        respc.find_cache(tmp_path / 'nope', want)
+    assert 'fs_out' in msg and 'Nearest' in msg, msg
 
 
-def test_find_cache_refuses_an_ambiguous_match(corpus, tmp_path):
-    out = tmp_path / 'out'
-    params = _params(corpus)
+def test_find_cache_refuses_an_ambiguous_match(tmp_path):
+    want = make_params()
     for name in ('a', 'b'):
-        respc.write_params(out / name, params)
-    sessions = rb.trd.discover_sessions(str(corpus))
-    want = respc.loader_params(str(corpus), sessions)
-    with pytest.raises(ValueError) as exc:
-        respc.find_cache(out, want)
-    assert 'refusing to guess' in str(exc.value)
+        d = tmp_path / name
+        d.mkdir()
+        respc.write_params(d, want)
+    with pytest.raises(ValueError, match='ambiguous'):
+        respc.find_cache(tmp_path, want)
 
 
-def test_check_params_compatible_raises_on_drift(corpus, tmp_path):
-    root = tmp_path / 'c'
-    params = _params(corpus)
-    respc.write_params(root, params)
-    respc.check_params_compatible(root, params)        # no raise
-    with pytest.raises(ValueError):
-        respc.check_params_compatible(
-            root, _params(corpus, sat_min_s=3.0))
+def test_find_cache_returns_the_single_match(tmp_path):
+    want = make_params()
+    root = respc.cache_root(tmp_path, respc.cache_key(want))
+    respc.write_params(root, want)
+    assert respc.find_cache(tmp_path, want) == root
+
+
+def test_check_params_compatible_names_the_difference(tmp_path):
+    root = respc.cache_root(tmp_path, 'x')
+    respc.write_params(root, make_params())
+    respc.check_params_compatible(root, make_params())          # no raise
+    with pytest.raises(ValueError, match='min_run_s'):
+        respc.check_params_compatible(root, make_params(min_run_s=12.0))
 
 
 # --------------------------------------------------------------------------- #
 # shard IO
 # --------------------------------------------------------------------------- #
-def test_shard_round_trip_including_cause(corpus, tmp_path):
-    params = _params(corpus)
-    spec = [s for s in rb.trd.discover_sessions(str(corpus))
-            if s['session'] == 'S001_T1'][0]
-    payload, reason = respc.build_task(spec, params)
-    assert reason is None
-    root = tmp_path / 'cache'
-    path = respc.write_shard(root, 'S001_T1', payload)
+def _payload(session='F001_T1', invalid=False):
+    x = np.sin(2 * np.pi * 0.3 * np.arange(20000) / 1000.0) + 4.5
+    x[5000:6500] = -10.0
+    if invalid:
+        x = np.full(20000, -10.0)
+    out = rpp.preprocess_session(x, fs_in=1000.0, fs_out=100.0)
+    return {
+        'signal': out['signal'], 'mask': out['mask'], 'cause': out['cause'],
+        'n_src': np.int64(out['n_src']), 'fs_in': np.int64(out['fs_in']),
+        'fs_out': np.int64(out['fs_out']), 'n_runs': np.int64(out['n_runs']),
+        'valid_frac': np.float64(out['valid_frac']),
+        'n_nonfinite': np.int64(out['n_nonfinite']),
+        'session': session, 'resp_file': '/raw/Physiology/F001/T1/Resp_Volts.txt',
+    }
+
+
+def test_shard_round_trip_is_lossless_and_leaves_no_temp(tmp_path):
+    payload = _payload()
+    path = respc.write_shard(tmp_path, 'F001_T1', payload)
     assert path.is_file()
-    sh = respc.read_shard(path)
-    assert np.array_equal(sh['signal'], payload['signal'], equal_nan=True)
-    assert np.array_equal(sh['mask'], payload['mask'])
-    assert np.array_equal(sh['cause'], payload['cause'])
-    assert sh['session'] == 'S001_T1'
-    assert sh['fs_in'] == 1000 and sh['fs_out'] == 100
-    assert sh['n_runs'] == 1
-    assert np.array_equal(np.isnan(sh['signal']), ~sh['mask'])
+    assert list((tmp_path / respc.SUBDIR_TMP).iterdir()) == [], \
+        'the staging file must be replaced, never left behind'
+    shard = respc.read_shard(path)
+    np.testing.assert_array_equal(shard['signal'], payload['signal'])
+    np.testing.assert_array_equal(shard['mask'], payload['mask'])
+    np.testing.assert_array_equal(shard['cause'], payload['cause'])
+    assert shard['n_src'] == 20000 and shard['fs_out'] == 100
+    assert shard['session'] == 'F001_T1'
 
 
-def test_write_shard_leaves_no_staging_file(tmp_path):
-    payload = {
-        'signal': np.array([1.0, np.nan], np.float32),
-        'mask': np.array([True, False]),
-        'cause': np.array([0, 2], np.uint8),
-        'n_src': 2, 'fs_in': 1000, 'fs_out': 100, 'n_runs': 1,
-        'valid_frac': 0.5, 'n_nonfinite': 0,
-        'session': 'S001_T1', 'resp_file': '/x/Resp_Volts.txt',
-    }
-    root = tmp_path / 'cache'
-    respc.write_shard(root, 'S001_T1', payload)
-    assert list((root / respc.SUBDIR_TMP).glob('*')) == []
+def test_read_shard_refuses_a_zero_filled_hole(tmp_path):
+    """A corrupted shard must fail loudly, not become a training target."""
+    payload = _payload()
+    bad = dict(payload)
+    bad['signal'] = np.nan_to_num(payload['signal'], nan=0.0)
+    path = tmp_path / 'bad.npz'
+    with open(path, 'wb') as fh:
+        np.savez(fh, **bad)
+    with pytest.raises(ValueError, match='isnan'):
+        respc.read_shard(path)
 
 
-def test_write_shard_refuses_zero_filled_invalid_samples(tmp_path):
-    bad = {
-        'signal': np.array([1.0, 0.0], np.float32),   # should be NaN
-        'mask': np.array([True, False]),
-        'cause': np.array([0, 2], np.uint8),
-        'n_src': 2, 'fs_in': 1000, 'fs_out': 100, 'n_runs': 1,
-        'valid_frac': 0.5, 'n_nonfinite': 0,
-        'session': 'S001_T1', 'resp_file': '/x/Resp_Volts.txt',
-    }
-    with pytest.raises(ValueError):
-        respc.write_shard(tmp_path / 'cache', 'S001_T1', bad)
+def test_read_shard_refuses_mask_cause_disagreement(tmp_path):
+    payload = _payload()
+    bad = dict(payload)
+    bad['cause'] = np.zeros_like(payload['cause'])
+    path = tmp_path / 'bad.npz'
+    with open(path, 'wb') as fh:
+        np.savez(fh, **bad)
+    with pytest.raises(ValueError, match='mask'):
+        respc.read_shard(path)
 
 
-def test_write_skip_creates_the_staging_dir(tmp_path):
-    root = tmp_path / 'fresh'
-    respc.write_skip(root, 'F082_T1', 'missing_resp_volts')
-    assert (root / respc.SUBDIR_SKIPPED / 'F082_T1.json').is_file()
-    assert list((root / respc.SUBDIR_TMP).glob('*')) == []
+def test_write_skip_records_the_reason(tmp_path):
+    path = respc.write_skip(tmp_path, 'F001_T1', 'missing_resp_volts')
+    with open(path) as fh:
+        assert json.load(fh) == {'session': 'F001_T1',
+                                'reason': 'missing_resp_volts'}
 
 
 # --------------------------------------------------------------------------- #
-# build_task reasons + the "never skip on label content" rule
+# G7 — the build never rules a session unusable
 # --------------------------------------------------------------------------- #
-def test_build_task_reasons(corpus, tmp_path):
-    params = _params(corpus)
-    # a spec without a resp file is a data skip, not a programming error
-    assert respc.build_task({'session': 'X_T1', 'resp_file': None},
-                            params) == (None, 'missing_resp_volts')
-    missing = str(tmp_path / 'nope.txt')
-    assert respc.build_task({'session': 'X_T1', 'resp_file': missing},
-                            params) == (None, 'missing_resp_volts')
-
+def test_build_task_reports_the_three_narrow_reasons(tmp_path):
+    params = make_params()
+    assert respc.build_task({'session': 'X', 'resp_file': None}, params) == \
+        (None, 'missing_resp_volts')
+    missing = tmp_path / 'nope.txt'
+    assert respc.build_task({'session': 'X', 'resp_file': str(missing)}, params) \
+        == (None, 'missing_resp_volts')
     empty = tmp_path / 'empty.txt'
     empty.write_text('')
-    assert respc.build_task({'session': 'X_T1', 'resp_file': str(empty)},
-                            params) == (None, 'empty_resp_volts')
+    assert respc.build_task({'session': 'X', 'resp_file': str(empty)}, params) == \
+        (None, 'empty_resp_volts')
+    assert set(respc.SKIP_REASONS) == {'missing_resp_volts',
+                                       'unreadable_resp_volts',
+                                       'empty_resp_volts'}
 
 
-def test_all_invalid_session_still_gets_a_shard(corpus, tmp_path):
-    """Design §3 / plan C7: the build never rules a session unusable."""
-    out = tmp_path / 'out'
-    assert rb.main(['--init', '--build', '--out_root', str(out),
-                    '--raw_root', str(corpus)]) == 0
-    params = _params(corpus)
-    root = respc.cache_root(out, respc.cache_key(params))
-    shard = respc.shard_path(root, 'S002_T1')
-    assert shard.is_file()
-    sh = respc.read_shard(shard)
-    assert sh['valid_frac'] == 0.0
-    assert not sh['mask'].any()
-    assert np.isnan(sh['signal']).all()
-    # ... and only the truly unreadable are recorded as skips
-    assert list((root / respc.SUBDIR_SKIPPED).glob('*.json')) == []
+def test_an_all_invalid_session_still_produces_a_shard(tmp_path):
+    """ADR Criterion 7: only a CONSUMER may call a session unusable."""
+    params = make_params()
+    path = tmp_path / 'Resp_Volts.txt'
+    write_resp_file(path, [-10.0] * 20000)
+    payload, reason = respc.build_task(
+        {'session': 'F001_T1', 'resp_file': str(path)}, params)
+    assert reason is None and payload is not None
+    assert float(payload['valid_frac']) == 0.0
+    assert np.isnan(payload['signal']).all()
+    respc.write_shard(tmp_path / 'cache', 'F001_T1', payload)
+    shard = respc.read_shard(
+        respc.shard_path(tmp_path / 'cache', 'F001_T1'))
+    assert shard['valid_frac'] == 0.0
 
 
-def test_build_status_index_and_check_parity(corpus, tmp_path):
-    out = tmp_path / 'out'
-    common = ['--out_root', str(out), '--raw_root', str(corpus)]
-    assert rb.main(['--init'] + common) == 0
-    assert rb.main(['--build'] + common) == 0
-    assert rb.main(['--status'] + common) == 0
-    assert rb.main(['--index'] + common) == 0
-    params = _params(corpus)
-    root = respc.cache_root(out, respc.cache_key(params))
-    import json
-    with open(root / respc.MANIFEST_NAME) as fh:
-        m = json.load(fh)
-    assert m['n_ok'] == 3 and m['n_missing'] == 0
-    assert 0.0 <= m['valid_frac']['mean'] <= 1.0
-    assert rb.main(['--check', '3'] + common) == 0
+def test_build_task_writes_float32_signal_and_uint8_cause(tmp_path):
+    params = make_params()
+    path = tmp_path / 'Resp_Volts.txt'
+    values = list(np.sin(2 * np.pi * 0.3 * np.arange(20000) / 1000.0) + 4.5)
+    values[5000:6500] = [-10.0] * 1500
+    write_resp_file(path, values)
+    payload, reason = respc.build_task(
+        {'session': 'F002_T1', 'resp_file': str(path)}, params)
+    assert reason is None
+    assert payload['signal'].dtype == np.float32
+    assert payload['cause'].dtype == np.uint8
+    assert payload['mask'].dtype == np.bool_
+    assert payload['fs_in'] == 1000 and payload['fs_out'] == 100
+    assert payload['n_runs'] >= 1
 
 
-def test_scan_and_manifest_accounting(corpus, tmp_path):
-    out = tmp_path / 'out'
-    common = ['--out_root', str(out), '--raw_root', str(corpus)]
-    assert rb.main(['--init', '--build'] + common) == 0
-    params = _params(corpus)
-    root = respc.cache_root(out, respc.cache_key(params))
-    sessions = rb.trd.discover_sessions(str(corpus))
+# --------------------------------------------------------------------------- #
+# filesystem truth
+# --------------------------------------------------------------------------- #
+def test_scan_and_manifest_split_cached_skipped_missing(tmp_path):
+    sessions = corpus(3)
+    params = respc.build_params('raw', sessions)
+    root = respc.cache_root(tmp_path, respc.cache_key(params))
+    respc.write_params(root, params)
+    respc.write_shard(root, 'F001_T1', _payload('F001_T1'))
+    respc.write_skip(root, 'F002_T1', 'missing_resp_volts')
+
     info = respc.scan(root, sessions)
-    assert info['cached'] == 3 and info['missing'] == 0
-    m = respc.build_manifest(root, sessions, params)
-    assert m['n_ok'] == 3
-    # the all-invalid session contributes its flatline samples to the histogram
-    assert m['cause_totals']['flatline'] > 0
+    assert (info['cached'], info['skipped'], info['missing']) == (1, 1, 1)
+
+    manifest = respc.build_manifest(root, sessions, params)
+    assert manifest['n_ok'] == 1 and manifest['n_skipped'] == 1
+    assert manifest['n_missing'] == 1
+    assert manifest['n_zero_valid'] == 0
+    assert manifest['entries'][0]['status'] == 'ok'
+    assert (root / respc.MANIFEST_NAME).is_file()
+
+
+def test_manifest_counts_wholly_invalid_sessions(tmp_path):
+    sessions = corpus(2)
+    params = respc.build_params('raw', sessions)
+    root = respc.cache_root(tmp_path, respc.cache_key(params))
+    respc.write_params(root, params)
+    respc.write_shard(root, 'F001_T1', _payload('F001_T1', invalid=True))
+    manifest = respc.build_manifest(root, sessions, params)
+    assert manifest['n_zero_valid'] == 1
+    assert manifest['valid_frac']['min'] == 0.0
+
+
+# --------------------------------------------------------------------------- #
+# CLI composition — the documented recipe is `--status --index`
+# --------------------------------------------------------------------------- #
+def _tiny_corpus(tmp_path):
+    raw = tmp_path / 'raw'
+    (raw / 'Thermal' / 'S001').mkdir(parents=True)
+    (raw / 'Thermal' / 'S001' / 'S001_T1.wmv').write_bytes(b'\x00')
+    ph = raw / 'Physiology' / 'S001' / 'T1'
+    ph.mkdir(parents=True)
+    vals = np.sin(2 * np.pi * 0.3 * np.arange(12000) / 1000.0) + 4.5
+    (ph / 'Resp_Volts.txt').write_text(
+        '\n'.join(f'{v:.5f}' for v in vals) + '\n')
+    return raw
+
+
+def test_status_and_index_both_run_from_one_invocation(tmp_path):
+    """`--status --index` must do BOTH reports, not just the first."""
+    from data import tir_resp_dataset as trd
+    from runners import run_build_resp_cache as rb
+
+    raw = _tiny_corpus(tmp_path)
+    out = tmp_path / 'cache'
+    assert rb.main(['--init', '--build', '--out_root', str(out),
+                    '--raw_root', str(raw)]) == 0
+    root = respc.cache_root(
+        out, respc.cache_key(respc.build_params(
+            str(raw), trd.discover_sessions(str(raw)))))
+    assert not (root / respc.MANIFEST_NAME).is_file()
+    assert rb.main(['--status', '--index', '--out_root', str(out),
+                    '--raw_root', str(raw)]) == 0
+    assert (root / respc.MANIFEST_NAME).is_file(), \
+        '--index was skipped because --status returned first'
+
+
+def test_init_alone_writes_params_and_no_shard(tmp_path):
+    from data import tir_resp_dataset as trd
+    from runners import run_build_resp_cache as rb
+
+    raw = _tiny_corpus(tmp_path)
+    out = tmp_path / 'cache'
+    assert rb.main(['--init', '--out_root', str(out), '--raw_root', str(raw)]) == 0
+    root = respc.cache_root(
+        out, respc.cache_key(respc.build_params(
+            str(raw), trd.discover_sessions(str(raw)))))
+    assert (root / respc.PARAMS_NAME).is_file()
+    assert not (root / respc.SUBDIR_TASKS).exists(), '--init must not build'

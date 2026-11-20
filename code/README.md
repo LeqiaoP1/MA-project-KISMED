@@ -248,14 +248,17 @@ prediction dumps can be re-grouped offline with the eval runners'
 `--task_groups 'low=T2|T3|T5;moderate=T1|T4;high=T6|T7|T8|T9|T10'` flag (no
 re-training; the JSON records `task_group_source` / `task_levels`).
 
-**Respiration label cache (`--resp_cache`, 2026-10-31).** The TIR-ROI lineage
+**Respiration label artefact (`--resp_cache`, ADR-003).** The TIR-ROI lineage
 can read its label from an offline artefact instead of re-reading
-`Resp_Volts.txt` every epoch: `data/resp_preprocess.py` decides validity ONCE on
-the raw signal (a saturation EVENT at `|V| > 9.95` lasting `>= 1 s`, a flatline
-window of `5 s` with `ptp < 0.3 V`, a valid run shorter than `8 s`), removes the
-DC offset PER RUN and anti-alias resamples onto one fixed output grid;
+`Resp_Volts.txt` every epoch. Three modules and one rule each:
+`data/resp_preprocess.py` decides validity ONCE on the raw signal (a saturation
+EVENT at `|V| > 9.95` lasting `>= 1 s`, a flatline window of `5 s` with
+`ptp < 0.3 V`, a valid run shorter than `8 s`), removes the DC offset PER RUN and
+anti-alias resamples onto one fixed output grid at each run's ABSOLUTE position;
 `data/resp_cache.py` stores the result as `signal` (NaN where invalid) + `mask` +
-`cause` per session. Build it once (whole corpus ≈ 0.4 min, 42 MB):
+`cause` per session and owns the identity; `data/resp_window.py` is the ONLY
+place the window rule is written, so the dataset and the evaluator cannot drift
+apart. Build it once (whole corpus is minutes of CPU, no GPU):
 
 ```
 python runners/run_build_resp_cache.py --init --build \
@@ -287,9 +290,16 @@ drivers do it for you). Semantics that matter:
   `--t_start`/`--frame_start` on a dropped window reports which gate (mask cause,
   motion, sentinel) removed it.
 
-Contract: `notes/design/ADR-003-resp-session-cache-artefact.md`; build order:
-`notes/plan/RESP_session_preprocess_implementation_plan.md`; measured impact:
-`notes/eval/tir_resp/resp_preprocess_impact.md`.
+Contract: `notes/design/ADR-003-resp-session-cache-artefact.md`; build order of
+record: `notes/plan/ADR-003-resp-session-cache-plan.md`; the artefact's own build
+accounting: `notes/eval/resp/resp_artefact_build.md` (the artefact is
+modality-independent, so its evidence is not filed under a visual lineage; the TIR
+dataset's clip accounting stays in `notes/eval/tir_resp/resp_preprocess_impact.md`).
+Two build-time constraints the artefact adds, both refused loudly at `--init`:
+`fs_out` must DIVIDE `fs_in` (an integral decimation factor is what lands each run
+on exact grid instants), and `--resample_taps_per_phase` must be `>= 10` (the pad
+is derived from the filter's real support, 100 source samples at 1000 -> 100 Hz,
+not a guessed 20).
 
 **TIR-ROI corpus hygiene + ROI knobs (2026-10-01).** Three additions to the
 thermal-ROI path, all also exposed on `run_inspect_tir_resp.py`. The two

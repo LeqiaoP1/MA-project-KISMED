@@ -1,126 +1,106 @@
-"""Respiration session preprocessing: validity mask, per-run DC removal, resample.
+"""Respiration session preprocessing — the whole-session grid artefact (ADR-003).
 
-Contract of record: ``code/notes/design/ADR-003-resp-session-cache-artefact.md``.
-Build order of record: ``code/notes/plan/RESP_session_preprocess_implementation_plan.md``.
+One pure function turns one raw trace into one artefact payload. It decides
+*which volts are trustworthy at which instant* and nothing else:
 
-This module is **pure** numpy/scipy: it does no IO and knows no paths. The writer
-that turns its output into a shard lives in :mod:`data.resp_cache`.
+* validity is decided ONCE, on raw volts, before any offset removal (ADR §2.2
+  step 1), and the emitted mask is the only statement of validity;
+* the offset of each contiguous valid run is removed separately, so no estimate
+  is ever taken across a break (ADR §2.2 step 2, invariant I2);
+* each run is anti-alias resampled onto the output grid **at its absolute
+  session position**, with the run's own edge values replicated over the
+  filter's full support — no high-pass filter, no detrend, no edge guard
+  (ADR Criterion 4);
+* the emitted mask is the validity verdict **sampled** at the grid instants, and
+  an invalid sample is ``NaN``, never ``0`` (ADR §2.1).
 
-WHAT THIS STAGE DECIDES
------------------------
-Given one continuous ``Resp_Volts.txt`` session at ``fs_in`` it answers exactly
-one question -- *which volts are trustworthy at which instant* -- and emits the
-DC-removed, anti-alias-resampled signal on a fixed output grid plus a per-sample
-validity mask. It chooses **no** clip: window length, hop, split, task set and
-normalisation stay downstream (D2). That is what lets ONE artefact serve Stage 2
-(a 2.0 s hop) and Stage 3 (a 1.0 s hop).
+No clip length, hop, stride, split, task subset or normalisation may enter this
+module (ADR Criterion 5). If a function here takes one of those, it is a bug.
 
-FROZEN ARTEFACT CONTRACT (a copy of design §3; the design stays the authority)
------------------------------------------------------------------------------
-``params.json`` fields hashed into the cache directory name:
+Build order of record: ``code/notes/plan/ADR-003-resp-session-cache-plan.md``.
 
-==========================  =======  ==========================================
-field                       default  why it changes the stored bytes
-==========================  =======  ==========================================
-``format_version``          ``1``    shard schema
-``corpus``                  digest   session identity set
-``fs_in``                   ``1000``  source grid (nominal)
-``fs_out``                  ``100``   output grid -- must equal the run's ``--fs``
-``sat_v``                   ``9.95``  rail threshold (volts, magnitude)
-``sat_min_s``               ``1.0``   a saturation event shorter than this is KEPT
-``flat_window_s``           ``5.0``   flatline probe length
-``flat_ptp_v``              ``0.3``   flatline peak-to-peak threshold
-``min_run_s``               ``8.0``   valid runs shorter than this are holes
-``resample``                ``poly``  filter shape -> the stored values
-``mask_rule``               §3.4      conservative-support
-``dtype`` / ``store``       ``f4``    representation
-==========================  =======  ==========================================
+--------------------------------------------------------------------------------
+FROZEN CONTRACT (code-side copy of ADR §4; the ADR is the authority)
+--------------------------------------------------------------------------------
+Identity fields (hashing these into the cache key is what makes a stale
+artefact impossible to reuse silently, invariant I9)::
 
-Deliberately NOT in the key (they select or rescale, never change a stored
-sample): ``clip_seconds``, ``clip_stride``, ``task_set``/``tasks``, the subject
-split, ``physio_norm``, ``input_size``, ``max_entries`` and every ROI-side knob.
+    format_version  corpus  fs_in  fs_out  sat_v  sat_min_s
+    flat_window_s   flat_ptp_v  min_run_s  resample{k, taps_per_phase, up↓,
+    kernel_radius_src}  store
 
-``min_run_s`` IS in the key, so the design's "any clip length" holds for
-``clip_seconds <= min_run_s``; a consumer with a longer clip must rebuild.
+Never in the identity, never in a shard (§4.2): ``clip_seconds``,
+``clip_stride``, ``task_set`` / ``tasks`` / ``task_groups``, the subject split
+or fold, ``physio_norm`` and every normalisation statistic, ``input_size``,
+``max_entries`` and every raster-side knob.
 
-GRID MAPPING (the consumer's contract)
---------------------------------------
-::
+Shard members (§4.3)::
 
-    N_out = floor((N_src - 1) * fs_out / fs_in) + 1   # never reads past the file
-    s     = round(t_start * fs_out) , n = round(clip_seconds * fs_out)
-    usable(t_start) <=> mask[s : s + n].all()
-    thermal frame f -> respiration sample round((f / fps) * fs_out)
+    signal  float32 [N_out]   run-mean-removed volts; NaN exactly where mask is False
+    mask    bool    [N_out]   True = usable; the sole authority
+    cause   uint8   [N_out]   0 valid, 1 rail, 2 flatline, 3 short run, 4 non-finite
+    n_src, fs_in, fs_out      grid identity, self-verifying without the raw file
+    n_runs, valid_frac, n_nonfinite, session, resp_file   statistics/provenance
 
-MASK DERIVATION (all on the RAW grid; design §3.4)
---------------------------------------------------
-1. ``nonfinite = ~isfinite(x)`` -> cause ``4``.
-2. **Saturation is EVENT-based**: ``|x| > sat_v`` grouped into maximal
-   contiguous runs; a run lasting ``>= sat_min_s`` invalidates ALL its samples
-   (cause ``1``). A shorter contact is KEPT -- the behaviour change of design
-   C1 (the shipped whole-window ``rail_touch_v`` test is retired on this path).
-   A 1 s *total* rail fraction spread over many short grazes is NOT an event.
-3. **Flatline**: a sample is invalid iff it lies in ANY ``flat_window_s`` window
-   whose peak-to-peak spread is ``< flat_ptp_v`` (cause ``2``). Implemented as
-   ``bad_start`` over every window start, dilated by the window length -- which
-   is exactly "any window containing the sample".
-4. **Runs**: maximal ``True`` stretches of the result; a run shorter than
-   ``min_run_s`` becomes a hole (cause ``3``). Runs are an internal device, they
-   are never stored.
-5. **Per run**: ``y = x[run] - mean(x[run])`` (float64), then
-   ``resample_poly`` onto the output grid after replicating the run's own edge
-   values by ``RESAMPLE_HALF_TAPS`` -- a constant subtraction introduces no
-   transient, so there is no edge guard and amplitude/shape survive.
-6. **Conservative grid mask**: a grid sample is valid only if every source
-   sample in its resampling support is valid AND in the same run, implemented as
-   ``valid[k] = ~dilate(invalid)[round(k * fs_in / fs_out)]`` with the dilation
-   radius ``fs_in / (2 * fs_out) + RESAMPLE_HALF_TAPS``. Without it a break
-   shorter than one output period would vanish and a window could straddle it.
-7. Invalid samples are ``NaN`` in the signal, never ``0``, so an unmasked read
-   fails loudly. ``np.isnan(signal) == ~mask`` is asserted on the way out.
+Grid arithmetic (§4.4)::
 
-No high-pass filter, no detrend, no scaling: amplitude is preserved.
+    N_out = floor((N_src - 1) * fs_out / fs_in) + 1
+    s     = round(t_start * fs_out)      n = round(clip_seconds * fs_out)
+    usable(t_start)  <=>  mask[s : s + n].all()
+    thermal frame f  ->  grid sample round((f / fps) * fs_out)
 """
-from __future__ import annotations
-
-import math
-from typing import Dict, List, Optional, Sequence, Tuple
-
 import numpy as np
 from scipy.ndimage import maximum_filter1d, minimum_filter1d
 from scipy.signal import resample_poly
 
-#: Nominal source rate of ``Resp_Volts.txt`` (the corpus reads ~1001.8 Hz on
-#: F001_T1; the frame<->sample mapping is a corpus-wide convention).
+__all__ = [
+    'FS_IN', 'FS_OUT_DEFAULT', 'SAT_V', 'SAT_MIN_S', 'FLAT_WINDOW_S',
+    'FLAT_PTP_V', 'MIN_RUN_S', 'RESAMPLE_TAPS_PER_PHASE', 'MIN_TAPS_PER_PHASE',
+    'RESAMPLE_KIND', 'STORE_DTYPE', 'STORE_KIND',
+    'CAUSE_VALID', 'CAUSE_SAT', 'CAUSE_FLAT', 'CAUSE_SHORT', 'CAUSE_NONFINITE',
+    'CAUSE_NAMES', 'CAUSE_RANK', 'PRECEDENCE_ORDER',
+    'resolve_geometry', 'contiguous_runs', 'flatline_window_samples',
+    'validity_mask', 'preprocess_session',
+]
+
+# --------------------------------------------------------------------------- #
+# frozen quantities (one constant per identity field, so the key cannot drift)
+# --------------------------------------------------------------------------- #
+#: Nominal source rate of ``Resp_Volts.txt``. DELIBERATELY a corpus constant and
+#: never a measured value (ADR §2.3): the frame-to-sample mapping between
+#: respiration and thermal time is a corpus-wide convention defined against it.
 FS_IN = 1000.0
-#: Output grid. Must equal the consuming run's ``--fs``.
-FS_OUT = 100.0
 
-#: A sample is invalid when it sits in a saturation EVENT at ``|V| > SAT_V``
-#: lasting at least ``SAT_MIN_S`` seconds. Shorter contacts stay valid.
-#: Design §2 (updated 2026-10-31): the alarm window is **1 s**.
-SAT_V = 9.95
-SAT_MIN_S = 1.0
+#: Default output grid rate. Not an ADR quantity — it is fixed at build time and
+#: recorded in every shard, and it must divide ``FS_IN`` (see
+#: :func:`resolve_geometry`).
+FS_OUT_DEFAULT = 100.0
 
-#: A sample is invalid when ANY ``FLAT_WINDOW_S`` window containing it has a
-#: peak-to-peak spread below ``FLAT_PTP_V``. Design §2 (updated 2026-10-31):
-#: the threshold is **0.3 V** -- 6x the original 0.05 V, so a frozen channel AND
-#: a channel that only rings a little are rejected, while real shallow breathing
-#: (M058's reference std is ~0.12 V, i.e. ~0.3-0.5 V p-p) survives the probe.
-#: A p-p probe cannot separate the two by construction; 0.3 V is the calibrated
-#: compromise, not a decision the data supports on its own.
-FLAT_WINDOW_S = 5.0
-FLAT_PTP_V = 0.3
+SAT_V = 9.95          #: rail threshold, magnitude in volts
+SAT_MIN_S = 1.0       #: a rail contact SHORTER than this is KEPT (event-based)
+FLAT_WINDOW_S = 5.0   #: flatline probe length — long enough that 0.05 Hz survives
+#: NOTE the exact boundary the 5 s probe implies: at the extremum of a sine of
+#: frequency f and amplitude A, the peak-to-peak spread over a window w is
+#: A * (1 - cos(pi * f * w)). For f = 0.05 Hz and w = 5 s that is 0.293 * A, so a
+#: 0.05 Hz breath is spared exactly when A > 0.3 / 0.293 = 1.02 V. Real belts
+#: swing several volts (the rail is at 10 V), so this is not a practical limit —
+#: but it IS the boundary, and it is recorded rather than assumed away.
+FLAT_PTP_V = 0.3      #: flatline peak-to-peak threshold, volts
+MIN_RUN_S = 8.0       #: valid runs shorter than this become holes
 
-#: Valid runs shorter than this become holes (the design's clip length).
-MIN_RUN_S = 8.0
+#: Taps per polyphase phase. ``scipy.signal.resample_poly`` designs
+#: ``half_len = 10 * max(up, down)`` taps, i.e. this many taps per phase, so a
+#: smaller value would silently under-pad the filter. Refused below 10.
+RESAMPLE_TAPS_PER_PHASE = 10
+MIN_TAPS_PER_PHASE = 10
+RESAMPLE_KIND = 'polyphase-kaiser'
 
-#: Source samples replicated on each run edge before ``resample_poly``. The
-#: default scipy filter has a ~10-input-sample radius at a 10x decimation, so 20
-#: clears the transient without touching the run's interior.
-RESAMPLE_HALF_TAPS = 20
+STORE_DTYPE = 'float32'
+STORE_KIND = 'signal+mask+cause'
 
-#: Per-sample cause codes (stored in the shard's ``cause`` member).
+# --------------------------------------------------------------------------- #
+# cause codes (precedence: non-finite > rail > flatline > short run)
+# --------------------------------------------------------------------------- #
 CAUSE_VALID = 0
 CAUSE_SAT = 1
 CAUSE_FLAT = 2
@@ -135,321 +115,377 @@ CAUSE_NAMES = {
     CAUSE_NONFINITE: 'nonfinite',
 }
 
-#: The resampler / mask rule names, part of the frozen parameter set.
-RESAMPLE_RULE = 'poly'
-MASK_RULE = 'conservative-support'
+#: Cause codes from highest to lowest precedence. A sample inside two rules
+#: carries exactly one code: the first match in this order (ADR §2.1 lists the
+#: rules without an order; this module fixes one and the tests pin it).
+PRECEDENCE_ORDER = (CAUSE_NONFINITE, CAUSE_SAT, CAUSE_FLAT, CAUSE_SHORT,
+                    CAUSE_VALID)
+
+#: ``CAUSE_RANK[code]`` = position in :data:`PRECEDENCE_ORDER` (0 = strongest).
+#: Used as ``minimum_filter1d`` input wherever a reduction has to keep the most
+#: severe code, and inverted with :data:`PRECEDENCE_ORDER`.
+CAUSE_RANK = np.zeros(5, dtype=np.int8)
+for _rank, _code in enumerate(PRECEDENCE_ORDER):
+    CAUSE_RANK[_code] = _rank
 
 
 # --------------------------------------------------------------------------- #
-# small helpers
+# geometry
 # --------------------------------------------------------------------------- #
-def grid_length(n_src: int, fs_in: float = FS_IN,
-                fs_out: float = FS_OUT) -> int:
-    """Number of output samples that never read past the source file.
+def resolve_geometry(fs_in=FS_IN, fs_out=FS_OUT_DEFAULT,
+                     taps_per_phase=RESAMPLE_TAPS_PER_PHASE):
+    """Validate the rate pair and return ``(up, down, kernel_radius_src)``.
 
-    ``N_out = floor((N_src - 1) * fs_out / fs_in) + 1`` (design §3.3).
+    ``fs_out`` must **divide** ``fs_in``. That is a build constraint this
+    implementation adds (plan A8), not an ADR quantity: with an integral
+    decimation factor ``down`` the master grid index ``k`` sits at source index
+    ``k * down`` exactly, so a run can be placed on the grid without a
+    sub-sample phase error. A non-divisor rate is refused rather than silently
+    shifted.
+
+    ``kernel_radius_src`` is the polyphase filter's support in SOURCE samples,
+    derived from the filter actually used rather than guessed::
+
+        half_len_taps = taps_per_phase * max(up, down)      # at the upsampled rate
+        radius_src    = half_len_taps / up = taps_per_phase * max(1, down/up)
+
+    For 1000 Hz -> 100 Hz that is 100 source samples, not 20: replicating fewer
+    would hand ``resample_poly`` its own zero padding and reintroduce exactly the
+    run-edge transient ADR Criterion 4 forbids.
     """
-    n_src = int(n_src)
-    if n_src <= 0:
-        return 0
-    return int(math.floor((n_src - 1) * float(fs_out) / float(fs_in))) + 1
+    fs_in = float(fs_in)
+    fs_out = float(fs_out)
+    if not np.isfinite(fs_in) or fs_in <= 0:
+        raise ValueError(f'resp_preprocess: fs_in must be > 0, got {fs_in!r}')
+    if not np.isfinite(fs_out) or fs_out <= 0:
+        raise ValueError(f'resp_preprocess: fs_out must be > 0, got {fs_out!r}')
+    if fs_out > fs_in:
+        raise ValueError(
+            f'resp_preprocess: fs_out={fs_out:g} Hz is above fs_in={fs_in:g} Hz; '
+            f'the artefact is a decimation of the source grid.')
+    ratio = fs_in / fs_out
+    down = int(round(ratio))
+    if abs(ratio - down) > 1e-9 or down < 1:
+        raise ValueError(
+            f'resp_preprocess: fs_out={fs_out:g} Hz must divide fs_in={fs_in:g} '
+            f'Hz (got ratio {ratio!r}). Pick a divisor of {fs_in:g} '
+            f'(e.g. 100, 125, 200, 250, 500) — an integral decimation factor is '
+            f'what lets each run land on exact master-grid instants.')
+    taps = int(taps_per_phase)
+    if taps < MIN_TAPS_PER_PHASE:
+        raise ValueError(
+            f'resp_preprocess: taps_per_phase={taps} < {MIN_TAPS_PER_PHASE}; '
+            f'resample_poly designs 10 taps per phase and a shorter filter is '
+            f'not the filter being padded for.')
+    up = 1
+    radius = taps * max(1, down // up)
+    return up, down, int(radius)
 
 
-def contiguous_runs(mask: Sequence[bool]) -> List[Tuple[int, int]]:
-    """Maximal ``True`` stretches of ``mask`` as half-open ``(start, end)``.
-
-    Runs are an internal device of the design: they are never stored, only used
-    to remove DC per run and to keep a window from straddling a break.
-    """
-    m = np.asarray(mask, dtype=bool).ravel()
-    if m.size == 0:
+# --------------------------------------------------------------------------- #
+# run bookkeeping
+# --------------------------------------------------------------------------- #
+def contiguous_runs(mask) -> list:
+    """Maximal ``True`` stretches as ``[(start, stop_exclusive), ...]``."""
+    m = np.asarray(mask, dtype=bool)
+    if m.ndim != 1:
+        raise ValueError(f'contiguous_runs: expected 1-D, got shape {m.shape}')
+    if m.size == 0 or not m.any():
         return []
-    padded = np.concatenate(([False], m, [False]))
-    d = np.diff(padded.astype(np.int8))
-    starts = np.flatnonzero(d == 1)
-    ends = np.flatnonzero(d == -1)
-    return [(int(s), int(e)) for s, e in zip(starts, ends)]
+    edges = np.diff(np.concatenate(([0], m.astype(np.int8), [0])))
+    starts = np.flatnonzero(edges == 1)
+    stops = np.flatnonzero(edges == -1)
+    return [(int(a), int(b)) for a, b in zip(starts, stops)]
 
 
-def _window_ptp(x: np.ndarray, n: int) -> np.ndarray:
-    """Peak-to-peak of the CONTIGUOUS window ``x[j : j + n]`` for every start.
+def flatline_window_samples(fs_in: float, flat_window_s: float) -> int:
+    """Effective flatline probe length in SOURCE samples (always odd).
 
-    ``minimum_filter1d``/``maximum_filter1d`` with ``size=n`` centre the window
-    at ``j + n // 2`` (verified against a brute-force ``np.ptp`` loop in
-    ``tests/test_resp_preprocess.py``), so the per-start statistics are the
-    central ``len(x) - n + 1`` entries. That is the one place an off-by-one
-    would silently change the mask, hence the explicit pin.
+    ``round(flat_window_s * fs_in)`` rounded UP to the next odd number, so the
+    rolling min/max filter can be aligned to the window START exactly
+    (``origin = size // 2``; SciPy rejects a larger origin for even sizes). At
+    1000 Hz and 5 s this is 5001 samples instead of 5000 — 0.02 % of a probe that
+    the ADR itself calls an operating point, and far from the 10 s period of a
+    0.05 Hz breath the probe exists to spare.
     """
-    n = int(n)
-    if n <= 1 or x.size < n:
-        return np.zeros(0, dtype=np.float64)
-    off = n // 2
-    lo = minimum_filter1d(x, size=n, mode='nearest')
-    hi = maximum_filter1d(x, size=n, mode='nearest')
-    return (hi - lo)[off: off + (x.size - n + 1)]
-
-
-def _dilation_radius(fs_in: float, fs_out: float,
-                     half_taps: int = RESAMPLE_HALF_TAPS) -> int:
-    """Source samples whose invalidity taints one output sample (design §3.4.6)."""
-    return int(math.ceil(float(fs_in) / (2.0 * float(fs_out)))) + int(half_taps)
-
-
-def _dilate_bool(flags: np.ndarray, radius: int) -> np.ndarray:
-    """``True`` where ANY flag lies within ``radius`` samples (edge-replicating).
-
-    ``mode='nearest'`` deliberately treats the file boundary as a copy of the
-    edge sample: a run that starts at sample 0 is not contaminated by the
-    non-existent samples before it, so a session's first window is still usable.
-    """
-    r = int(radius)
-    if r <= 0 or flags.size == 0:
-        return np.asarray(flags, dtype=bool)
-    grown = maximum_filter1d(np.asarray(flags, dtype=np.uint8),
-                             size=2 * r + 1, mode='nearest')
-    return grown.astype(bool)
+    n_w = int(round(float(flat_window_s) * float(fs_in)))
+    if n_w < 3:
+        raise ValueError(
+            f'flatline_window_samples: flat_window_s={flat_window_s!r} at '
+            f'fs_in={fs_in!r} gives {n_w} samples; a probe needs >= 3.')
+    return n_w if n_w % 2 else n_w + 1
 
 
 # --------------------------------------------------------------------------- #
-# 1-4: validity
+# phase 1 — validity on the RAW grid
 # --------------------------------------------------------------------------- #
-def validity_mask(x: Sequence[float], fs_in: float = FS_IN,
-                  sat_v: float = SAT_V, sat_min_s: float = SAT_MIN_S,
-                  flat_window_s: float = FLAT_WINDOW_S,
-                  flat_ptp_v: float = FLAT_PTP_V,
-                  min_run_s: float = MIN_RUN_S
-                  ) -> Tuple[np.ndarray, np.ndarray]:
-    """Per-sample validity of the RAW signal, plus the cause of each rejection.
+def validity_mask(x, fs_in=FS_IN, sat_v=SAT_V, sat_min_s=SAT_MIN_S,
+                  flat_window_s=FLAT_WINDOW_S, flat_ptp_v=FLAT_PTP_V,
+                  min_run_s=MIN_RUN_S):
+    """Per-sample validity of the RAW trace → ``(mask, cause)``.
 
-    :param x: one-value-per-line respiration trace (any real dtype).
-    :param fs_in: source sample rate (Hz).
-    :returns: ``(mask [N] bool, cause [N] uint8)`` with ``mask = cause == 0``.
-        ``True`` means usable.
+    Decided once, on raw volts, before any offset removal or normalisation, so
+    validity is a property of the SESSION and not of whichever window a consumer
+    happens to cut (ADR §2.2 step 1, invariant I1).
 
-    Rules, in this order (the ORDER fixes which rule gets credit when a sample
-    fails several): non-finite -> saturation event -> flatline -> short run.
+    Order, and the reason for each position:
+
+    1. **non-finite** first, because no filter may see a NaN (cause 4).
+    2. **rail is event-based**: maximal contiguous stretches of ``|x| > sat_v``
+       that last at least ``sat_min_s`` invalidate all of their samples; a
+       shorter contact is KEPT (cause 1). A rolling duration or a fraction of the
+       file is wrong by construction — corpus files carry 40-80 % rail fraction
+       made of many sub-second grazes.
+    3. **flatline is a window probe dilated back onto samples**: every sample
+       lying in ANY window of ``flat_window_s`` whose peak-to-peak spread is
+       below ``flat_ptp_v`` is invalid (cause 2). The probe is 5 s so that a
+       0.05 Hz breath (10 s period) cannot be mistaken for a dead channel.
+    4. **runs shorter than ``min_run_s`` become holes** (cause 3). Runs are an
+       internal device and are never stored.
+
+    :returns: ``(mask, cause)``, both length ``x.size``; ``cause == 0`` exactly
+        where ``mask`` is True.
     """
-    if float(fs_in) <= 0.0:
-        raise ValueError(f'fs_in must be positive; got {fs_in!r}')
-    if float(sat_v) < 0.0 or float(flat_ptp_v) < 0.0 or float(min_run_s) < 0.0:
-        raise ValueError('sat_v, flat_ptp_v and min_run_s must be >= 0')
-    xf = np.asarray(x, dtype=np.float64).ravel()
-    n = int(xf.size)
+    x = np.asarray(x)
+    if x.ndim != 1:
+        raise ValueError(f'validity_mask: expected 1-D, got shape {x.shape}')
+    fs_in = float(fs_in)
+    if fs_in <= 0:
+        raise ValueError(f'validity_mask: fs_in must be > 0, got {fs_in!r}')
+
+    n = x.size
+    xf = np.asarray(x, dtype=np.float64)
     cause = np.zeros(n, dtype=np.uint8)
-    if n == 0:
-        return np.zeros(0, dtype=bool), cause
 
-    # --- 1. non-finite ---------------------------------------------------
+    # 1 — non-finite
     finite = np.isfinite(xf)
     nonfinite = ~finite
-    cause[nonfinite] = CAUSE_NONFINITE
 
-    # --- 2. SATURATION EVENTS (maximal contiguous runs, NOT a rolling sum)
-    # A NaN compares False, so it never counts as a rail contact.
-    sat = np.abs(xf) > float(sat_v)
-    min_sat = float(sat_min_s) * float(fs_in)
-    for s, e in contiguous_runs(sat):
-        if (e - s) >= min_sat:
-            cause[s:e] = CAUSE_SAT
+    # 2 — rail, event-based on maximal contiguous runs
+    rail = np.abs(np.where(finite, xf, 0.0)) > float(sat_v)
+    min_event = max(int(round(float(sat_min_s) * fs_in)), 1)
+    # Group `rail OR non-finite`, so a NaN gap INSIDE a saturation block cannot
+    # split one event into two sub-second contacts that would both be kept. The
+    # event qualifies on its number of RAIL samples, not on the group length, so
+    # a short contact followed by a long gap is still just a contact.
+    for a, b in contiguous_runs(rail | nonfinite):
+        seg = slice(a, b)
+        if int(rail[seg].sum()) >= min_event:
+            cause[seg][rail[seg]] = CAUSE_SAT
 
-    # --- 3. FLATLINE: any flat window containing the sample invalidates it.
-    # Non-finite samples are already invalid; feed 0.0 so a NaN cannot hide a
-    # flat stretch in the surrounding windows.
-    n_w = max(1, int(round(float(flat_window_s) * float(fs_in))))
-    valid = cause == CAUSE_VALID
-    if n > 0 and n_w <= n:
-        probe = np.where(finite, xf, 0.0)
-        bad_start = _window_ptp(probe, n_w) < float(flat_ptp_v)
+    # 3 — flatline probe, dilated back onto every sample it covers
+    n_w = flatline_window_samples(fs_in, flat_window_s)
+    if n >= n_w:
+        half = n_w // 2
+        # scipy shifts the filter LEFT for a POSITIVE origin, so -half aligns the
+        # rolling window to [j, j + n_w - 1]: the probe evaluates every start j,
+        # exactly like the brute-force sliding-window loop it is pinned against.
+        hi = maximum_filter1d(xf, size=n_w, origin=-half, mode='nearest')
+        lo = minimum_filter1d(xf, size=n_w, origin=-half, mode='nearest')
+        ptp = (hi - lo)[: n - n_w + 1]
+        # A window holding a non-finite sample is NOT a flatline: the min/max
+        # filters skip NaN instead of propagating it, so a window straddling a
+        # gap would otherwise report a bogus peak-to-peak of the few finite
+        # values it can see. Non-finite samples are already invalid (cause 4).
+        csum = np.concatenate(([0], np.cumsum(finite.astype(np.int64))))
+        full = (csum[n_w:] - csum[:-n_w]) == n_w
+        bad_start = full & (ptp < float(flat_ptp_v))
         if bad_start.any():
-            # A sample k lies in the window starting at j iff j in
-            # [k - n_w + 1, k]; count bad starts in that range with a prefix
-            # sum. The dilation is one-sided ON PURPOSE -- a symmetric window
-            # would also taint samples AFTER a flat stretch, i.e. up to twice
-            # its length, and would silently change the mask.
-            cum = np.concatenate(([0], np.cumsum(bad_start.astype(np.int64))))
-            k = np.arange(n)
-            hi = np.minimum(k, bad_start.size - 1)
-            lo = np.maximum(k - n_w + 1, 0)
-            flat = (cum[hi + 1] - cum[lo]) > 0
-            cause[valid & flat] = CAUSE_FLAT
+            cover = np.zeros(n + 1, dtype=np.int32)
+            idx = np.flatnonzero(bad_start)
+            np.add.at(cover, idx, 1)
+            np.add.at(cover, idx + n_w, -1)
+            covered = np.cumsum(cover[:n]) > 0
+            cause[covered & (cause == CAUSE_VALID)] = CAUSE_FLAT
 
-    # --- 4. short runs become holes --------------------------------------
-    valid = cause == CAUSE_VALID
-    min_run = float(min_run_s) * float(fs_in)
-    for s, e in contiguous_runs(valid):
-        if (e - s) < min_run:
-            cause[s:e] = CAUSE_SHORT
+    # 4 — runs shorter than the minimum become holes
+    cause[nonfinite] = CAUSE_NONFINITE
+    mask = cause == CAUSE_VALID
+    min_run = int(round(float(min_run_s) * fs_in))
+    for a, b in contiguous_runs(mask):
+        if (b - a) < max(min_run, 1):
+            mask[a:b] = False
+            cause[a:b] = CAUSE_SHORT
 
-    return cause == CAUSE_VALID, cause
+    # invariant: the mask and the cause array say the same thing
+    assert np.array_equal(mask, cause == CAUSE_VALID)
+    return mask, cause
 
 
 # --------------------------------------------------------------------------- #
-# 5-7: per-run DC removal, resample, conservative grid mask
+# phase 2 — holes that no grid instant can see
 # --------------------------------------------------------------------------- #
-def _rates_integral(fs_in: float, fs_out: float) -> Tuple[int, int]:
-    """``fs_in``/``fs_out`` as integers, for ``resample_poly``.
+def _hole_cause(cause, a, b):
+    """Most severe cause code inside ``[a, b)``, by :data:`PRECEDENCE_ORDER`."""
+    ranks = CAUSE_RANK[cause[a:b]]
+    if ranks.size == 0:
+        return CAUSE_FLAT
+    return int(PRECEDENCE_ORDER[int(ranks.min())])
 
-    The nominal pair (1000, 100) is exact. A non-integral value is refused
-    rather than silently rounded, because the grid mapping in §3.3 assumes an
-    exact ratio.
+
+def _widen_subperiod_holes(mask, cause, down):
+    """Widen every hole that contains no grid instant, in place.
+
+    A hole is a maximal ``False`` stretch. If it is narrower than one output
+    period it can fall **between** grid instants; the sampled mask would then
+    call both neighbours valid and a window could span two runs whose means
+    differ — a step of arbitrary size inside a window the mask calls valid.
+
+    Widening costs at most ONE grid sample per hole and is extended on the side
+    whose extension is shorter (left on a tie), so a run bounded by holes wider
+    than one period keeps every sample it has. That is what keeps the ADR's
+    ``clip_seconds <= min_run_s`` bound satisfiable (an exactly 8 s run still
+    yields 800 usable samples at 100 Hz).
+
+    :returns: ``True`` if anything changed.
     """
-    fi, fo = float(fs_in), float(fs_out)
-    if fi <= 0.0 or fo <= 0.0:
-        raise ValueError(f'fs_in/fs_out must be positive; got {fs_in!r}/{fs_out!r}')
-    ii, io = int(round(fi)), int(round(fo))
-    if abs(fi - ii) > 1e-9 or abs(fo - io) > 1e-9:
+    changed = False
+    n = mask.size
+    for a, b in contiguous_runs(~mask):
+        first_grid = -(-a // down) * down          # smallest multiple of down >= a
+        if first_grid <= b - 1:
+            continue                               # a grid instant is inside
+        left_pos = ((a - 1) // down) * down if a > 0 else None
+        right_pos = first_grid if first_grid <= n - 1 else None
+        if left_pos is None and right_pos is None:
+            continue
+        cost_left = (a - left_pos) if left_pos is not None else None
+        cost_right = (right_pos - (b - 1)) if right_pos is not None else None
+        code = _hole_cause(cause, a, b)
+        if cost_left is not None and (cost_right is None or cost_left <= cost_right):
+            mask[left_pos:b] = False
+            cause[left_pos:b] = code
+        else:
+            mask[a:right_pos + 1] = False
+            cause[a:right_pos + 1] = code
+        changed = True
+    return changed
+
+
+def _resolve_runs(mask, cause, fs_in, min_run_s, down, max_iter=8):
+    """Apply hole widening and the minimum-run rule until both are stable.
+
+    Terminates because widening is monotone: each step either registers a hole
+    on a grid instant or turns an adjacent run into a hole, and converted runs
+    only ever merge into an existing hole.
+    """
+    mask = np.array(mask, dtype=bool, copy=True)
+    cause = np.array(cause, dtype=np.uint8, copy=True)
+    min_run = max(int(round(float(min_run_s) * fs_in)), 1)
+    for _ in range(max_iter):
+        changed = _widen_subperiod_holes(mask, cause, down)
+        short = [r for r in contiguous_runs(mask) if (r[1] - r[0]) < min_run]
+        if short:
+            for a, b in short:
+                mask[a:b] = False
+                cause[a:b] = CAUSE_SHORT
+            changed = True
+        if not changed:
+            break
+    runs = [r for r in contiguous_runs(mask) if (r[1] - r[0]) >= min_run]
+    return mask, cause, runs
+
+
+# --------------------------------------------------------------------------- #
+# the artefact payload
+# --------------------------------------------------------------------------- #
+def preprocess_session(x, fs_in=FS_IN, fs_out=FS_OUT_DEFAULT,
+                       sat_v=SAT_V, sat_min_s=SAT_MIN_S,
+                       flat_window_s=FLAT_WINDOW_S, flat_ptp_v=FLAT_PTP_V,
+                       min_run_s=MIN_RUN_S,
+                       taps_per_phase=RESAMPLE_TAPS_PER_PHASE,
+                       dtype=STORE_DTYPE):
+    """Clean one session into its whole-session grid payload.
+
+    Pure: no IO, no config object, no globals. The result is everything a shard
+    stores except provenance, and the mask is the ONLY validity statement it
+    makes.
+
+    Per run (ADR §2.2 step 3): subtract the run's own ``float64`` mean, then
+    anti-alias resample onto the master grid at the run's ABSOLUTE position.
+    The pad is the run's own edge values, ``radius + ((down - t) % down)`` on the
+    left and ``radius`` on the right, so (a) the filter's full support is covered
+    — no transient, no guard band — and (b) the retained outputs land on exact
+    grid instants. The pad is built in memory from the run and never read from a
+    file, so a run beginning at sample 0 is treated identically to any other; the
+    outputs produced by a virtual negative start are precisely the discarded
+    ones.
+
+    :returns: dict with ``signal`` (``float32 [N_out]``, ``NaN`` where invalid),
+        ``mask`` (``bool [N_out]``), ``cause`` (``uint8 [N_out]``), ``n_src``,
+        ``fs_in``, ``fs_out``, ``n_runs``, ``valid_frac``, ``n_nonfinite``.
+    """
+    x = np.asarray(x)
+    if x.ndim != 1:
         raise ValueError(
-            f'fs_in and fs_out must be INTEGRAL for resample_poly; got '
-            f'{fs_in!r}/{fs_out!r}')
-    return ii, io
-
-
-def resample_run(y: Sequence[float], fs_in: float, fs_out: float,
-                 half_taps: int = RESAMPLE_HALF_TAPS,
-                 n_out: Optional[int] = None) -> np.ndarray:
-    """Anti-alias resample ONE run, with its own edge values replicated.
-
-    :param y: the run's samples (already DC-removed), float.
-    :param n_out: exact number of output samples to return. ``None`` ->
-        ``round(len(y) * fs_out / fs_in)`` (the run's own length). A consumer
-        filling a FIXED grid passes the count instead: rounding each run
-        independently of the session grid formula
-        ``floor((n_src - 1) * fs_out / fs_in) + 1`` is what used to leave the
-        session's LAST grid sample unfilled whenever a run reached EOF (the
-        leftover became ``NaN`` with cause 0 and could drop the final window).
-    :returns: ``n_out`` output samples, float64.
-
-    The padding is the design's "no transient, no edge guard" applied to the
-    anti-alias filter: ``resample_poly`` pads with ZERO by default, which would
-    create a step at both run edges. Replicating ``half_taps`` samples and then
-    discarding the corresponding output samples keeps the run's interior exact
-    and its edges clean.
-    """
-    yi, fo = _rates_integral(fs_in, fs_out)
-    g = math.gcd(yi, fo)
-    up, down = fo // g, yi // g
-    y = np.asarray(y, dtype=np.float64).ravel()
-    if y.size == 0:
-        return np.zeros(0, dtype=np.float64)
-    count = (int(round(y.size * fo / yi)) if n_out is None else int(n_out))
-    if count <= 0:
-        return np.zeros(0, dtype=np.float64)
-    if up == down:
-        return np.resize(y, count)
-    pad = max(0, int(half_taps))
-    padded = np.pad(y, (pad, pad), mode='edge')
-    out = resample_poly(padded, up, down)
-    n_pad = int(round(pad * fo / yi))
-    out = out[n_pad: n_pad + count]
-    if out.size < count:
-        # the replicated edges support `pad * fo/yi` extra samples on each
-        # side, so this only trips for a count beyond that; extend with the
-        # run's own last value rather than repeating the buffer
-        out = np.concatenate([out, np.full(count - out.size, out[-1])])
-    return out
-
-
-def preprocess_session(x: Sequence[float], fs_in: float = FS_IN,
-                       fs_out: float = FS_OUT,
-                       sat_v: float = SAT_V, sat_min_s: float = SAT_MIN_S,
-                       flat_window_s: float = FLAT_WINDOW_S,
-                       flat_ptp_v: float = FLAT_PTP_V,
-                       min_run_s: float = MIN_RUN_S,
-                       half_taps: int = RESAMPLE_HALF_TAPS,
-                       dtype: str = 'float32') -> Dict[str, object]:
-    """Whole-session artefact payload (the shard members minus provenance).
-
-    :param x: raw ``Resp_Volts.txt`` values at ``fs_in``.
-    :returns: dict with ``signal [N_out]`` (float, ``NaN`` where invalid),
-        ``mask [N_out] bool``, ``cause [N_out] uint8``, and the scalars
-        ``n_src``, ``n_out``, ``fs_in``, ``fs_out``, ``n_runs``,
-        ``valid_frac``, ``n_nonfinite``.
-
-    Validity is decided ONCE on the raw signal (:func:`validity_mask`); nothing
-    here re-tests a window. DC is removed PER RUN, never across a break.
-    """
-    fi, fo = _rates_integral(fs_in, fs_out)
-    xf = np.asarray(x, dtype=np.float64).ravel()
-    n_src = int(xf.size)
-    n_out = grid_length(n_src, fi, fo)
+            f'preprocess_session: expected a 1-D trace, got shape {x.shape}')
+    if x.size == 0:
+        raise ValueError('preprocess_session: empty trace')
+    up, down, radius = resolve_geometry(fs_in, fs_out, taps_per_phase)
+    fs_in = float(fs_in)
+    fs_out = float(fs_out)
+    n_src = int(x.size)
 
     mask_src, cause_src = validity_mask(
-        xf, fs_in=fi, sat_v=sat_v, sat_min_s=sat_min_s,
+        x, fs_in=fs_in, sat_v=sat_v, sat_min_s=sat_min_s,
         flat_window_s=flat_window_s, flat_ptp_v=flat_ptp_v,
         min_run_s=min_run_s)
+    mask_src, cause_src, runs = _resolve_runs(
+        mask_src, cause_src, fs_in, min_run_s, down)
 
-    # --- 6. conservative grid mask (before any per-run work) -------------
-    radius = _dilation_radius(fi, fo, half_taps)
-    tainted = _dilate_bool(~mask_src, radius)
-    if n_out > 0:
-        src_of = np.rint(np.arange(n_out, dtype=np.float64) * (fi / fo))
-        src_of = np.clip(src_of.astype(np.int64), 0, max(0, n_src - 1))
-        grid_mask = ~tainted[src_of]
-        # attribute the cause of a dilated hole to the nearest invalid sample
-        cause_dil = maximum_filter1d(cause_src, size=2 * radius + 1,
-                                     mode='nearest')
-        grid_cause = np.where(cause_src[src_of] != 0,
-                              cause_src[src_of], cause_dil[src_of])
-    else:
-        src_of = np.zeros(0, dtype=np.int64)
-        grid_mask = np.zeros(0, dtype=bool)
-        grid_cause = np.zeros(0, dtype=np.uint8)
-
-    # --- 5. per-run DC removal + resample onto the grid -------------------
+    # N_out = floor((N_src - 1) * fs_out / fs_in) + 1 == the number of multiples
+    # of `down` inside [0, N_src - 1]: the grid never addresses a sample the
+    # file does not have (ADR §4.4).
+    n_out = -(-n_src // down)
     signal = np.full(n_out, np.nan, dtype=np.float64)
-    runs = contiguous_runs(mask_src)
-    for s, e in runs:
-        seg = xf[s:e]
-        # mean in float64 over the run's own samples (all finite by the mask)
-        seg = seg - float(seg.mean())
-        # Fill EVERY grid sample whose instant lies inside this run. The session
-        # grid length is floor((n_src-1)*fo/fi)+1, i.e. NOT round(n_src*fo/fi),
-        # so the last run must reach n_out explicitly -- the +1 is the safe
-        # margin that keeps k0's rounding from leaving an interior sample empty.
-        k0 = int(round(s * fo / fi))
-        want = min(n_out - k0,
-                   int(math.ceil((e - s) * fo / fi)) + 1)
-        out = resample_run(seg, fi, fo, half_taps=half_taps, n_out=want)
-        k1 = min(n_out, k0 + out.size)
-        if k1 > k0:
-            signal[k0:k1] = out[: k1 - k0]
 
-    # --- 7. invalid == NaN, asserted on the way out -----------------------
-    grid_mask = grid_mask & np.isfinite(signal)
-    signal[~grid_mask] = np.nan
-    if not np.array_equal(np.isnan(signal), ~grid_mask):
+    for a, b in runs:
+        k0 = -(-a // down)               # first grid instant inside the run
+        k1 = (b - 1) // down             # last grid instant inside the run
+        if k1 < k0:
+            continue
+        n_keep = k1 - k0 + 1
+
+        y = np.asarray(x[a:b], dtype=np.float64)
+        y -= y.mean()                    # per-run offset, float64, no filtering
+
+        t = (k0 * down - a) % down       # sub-sample offset of the first instant
+        pad_left = radius + (down - t) % down
+        padded = np.pad(y, (pad_left, radius), mode='edge')
+        out = resample_poly(padded, up, down)
+
+        j_first = radius // down + (1 if t > 0 else 0)
+        seg = out[j_first:j_first + n_keep]
+        if seg.size != n_keep:
+            raise AssertionError(
+                f'resp_preprocess: run [{a}, {b}) resampled to {seg.size} '
+                f'samples, expected {n_keep} (grid {k0}..{k1})')
+        signal[k0:k1 + 1] = seg
+
+    # the mask is the raw verdict SAMPLED at the grid instants — never dilated:
+    # resampling is per run, so no invalid volt can enter an output (plan A6).
+    mask = np.asarray(mask_src[::down], dtype=bool)
+    cause = np.asarray(cause_src[::down], dtype=np.uint8)
+
+    if not np.array_equal(np.isnan(signal), ~mask):
         raise AssertionError(
-            'resp_preprocess: signal/mask mismatch -- invalid samples must be '
-            'NaN and every NaN must be invalid')
+            'resp_preprocess: emitted signal/mask disagree — an invalid sample '
+            'must be NaN and every valid one must be filled. Refusing to write '
+            'a shard whose mask is not the sole authority (ADR Criterion 1).')
+    if not np.array_equal(mask, cause == CAUSE_VALID):
+        raise AssertionError(
+            'resp_preprocess: mask and cause disagree — `mask[k] == False` must '
+            'imply `cause[k] != 0`.')
 
-    out_dtype = np.dtype(dtype)
-    signal_out = signal.astype(out_dtype)
-    n_valid = int(grid_mask.sum())
+    signal = signal.astype(dtype, copy=False)
     return {
-        'signal': signal_out,
-        'mask': grid_mask,
-        'cause': grid_cause.astype(np.uint8),
+        'signal': signal,
+        'mask': mask,
+        'cause': cause,
         'n_src': n_src,
-        'n_out': int(n_out),
-        'fs_in': int(fi),
-        'fs_out': int(fo),
-        'n_runs': len(runs),
-        'valid_frac': (float(n_valid) / float(n_out)) if n_out else 0.0,
-        'n_valid': n_valid,
-        'n_nonfinite': int((~np.isfinite(xf)).sum()),
-        'sat_v': float(sat_v),
-        'sat_min_s': float(sat_min_s),
-        'flat_window_s': float(flat_window_s),
-        'flat_ptp_v': float(flat_ptp_v),
-        'min_run_s': float(min_run_s),
-        'half_taps': int(half_taps),
+        'fs_in': int(round(fs_in)),
+        'fs_out': int(round(fs_out)),
+        'n_runs': int(len(runs)),
+        'valid_frac': float(mask.mean()) if mask.size else 0.0,
+        'n_nonfinite': int((~np.isfinite(np.asarray(x, dtype=np.float64))).sum()),
     }
-
-
-__all__ = [
-    'FS_IN', 'FS_OUT', 'SAT_V', 'SAT_MIN_S', 'FLAT_WINDOW_S', 'FLAT_PTP_V',
-    'MIN_RUN_S', 'RESAMPLE_HALF_TAPS', 'RESAMPLE_RULE', 'MASK_RULE',
-    'CAUSE_VALID', 'CAUSE_SAT', 'CAUSE_FLAT', 'CAUSE_SHORT', 'CAUSE_NONFINITE',
-    'CAUSE_NAMES', 'grid_length', 'contiguous_runs', 'validity_mask',
-    'resample_run', 'preprocess_session',
-]

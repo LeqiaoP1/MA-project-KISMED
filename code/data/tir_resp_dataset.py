@@ -88,12 +88,14 @@ try:                                          # `python -m data.tir_resp_dataset
     from . import video_io as vio
     from . import task_groups as tgrp
     from . import resp_preprocess as rpp
+    from . import resp_window as rw
 except ImportError:                           # `python data/tir_resp_dataset.py`
     import sys as _sys
     _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from data import video_io as vio
     from data import task_groups as tgrp
     from data import resp_preprocess as rpp
+    from data import resp_window as rw
 
 #: Decode attempts for ONE clip (``_frames``); see the retry note there.
 _DECODE_ATTEMPTS = max(1, int(os.environ.get('VIDEO_DECODE_ATTEMPTS', '3')))
@@ -966,19 +968,14 @@ class BP4DPlusTIRRespDataset(Dataset):
                         dropped_motion += 1
                         continue
                 if mask is not None:
-                    # THE validity statement of the cache lineage (design D3):
-                    # a window is usable iff every mask sample under it is
-                    # True. The cause of the rejection is taken from the first
-                    # non-zero cause in the window, so the run log keeps the
-                    # per-rule accounting it always had.
+                    # THE validity statement of the cache lineage (ADR I1/I5),
+                    # written once in ``data.resp_window``: a window is usable iff
+                    # it is in range and every mask sample under it is True. The
+                    # cause is only for the per-rule accounting the run log keeps.
                     s = int(round((start / self.fps) * self.resp_fs))
-                    w_mask = mask[s:s + self.resp_len]
-                    if w_mask.size != self.resp_len or not bool(w_mask.all()):
-                        code = 0
-                        if cause is not None:
-                            c = cause[s:s + self.resp_len]
-                            nz = c[c != 0]
-                            code = int(nz[0]) if nz.size else 0
+                    if not rw.usable(mask, s, self.resp_len):
+                        code = rw.window_cause(cause, s, self.resp_len) \
+                            if cause is not None else -1
                         if code == rpp.CAUSE_SAT:
                             dropped_sat += 1
                         elif code == rpp.CAUSE_FLAT:
@@ -1203,13 +1200,8 @@ class BP4DPlusTIRRespDataset(Dataset):
         y = self._resp_full(entry['session'])
         if self.resp_cache_root is not None:
             s = int(round(float(entry['t_start']) * self.resp_fs))
-            out = np.asarray(y[s:s + self.resp_len], dtype=np.float32)
-            if out.size != self.resp_len:
-                raise IndexError(
-                    f'{entry["session"]}: resp grid slice [{s}:{s + self.resp_len}] '
-                    f'is {out.size} of {self.resp_len} samples -- the entry is '
-                    f'outside the cached session (N_out {y.size}).')
-            return out
+            return np.asarray(rw.read_window(y, s, self.resp_len),
+                              dtype=np.float32)
         # The raw file is a 1 kHz series, so the clip maps onto the SOURCE grid
         # and is resampled onto this run's ``resp_fs``.
         idx = (entry['t_start'] + np.arange(self.resp_len) / self.resp_fs) * \
@@ -1283,9 +1275,11 @@ class BP4DPlusTIRRespDataset(Dataset):
         try:
             from . import resp_cache as respc
             from . import resp_preprocess as rpp
+            from . import resp_window as rw
         except ImportError:                 # `python data/tir_resp_dataset.py`
             from data import resp_cache as respc
             from data import resp_preprocess as rpp
+            from data import resp_window as rw
         if self.min_signal_spread > 0.0 or self.rail_touch_v > 0.0:
             raise ValueError(
                 f'resp_cache: {out_root} is attached but the legacy window '
@@ -1296,7 +1290,7 @@ class BP4DPlusTIRRespDataset(Dataset):
         corpus = discover_sessions(self.raw_root)
         want = respc.loader_params(self.raw_root, corpus, fs_in=rpp.FS_IN,
                                    fs_out=self.resp_fs)
-        root = respc.find_cache(out_root, want)
+        root = rw.verify_identity(out_root, want)      # FAIL LOUDLY (ADR I6)
         params = respc.read_params(root)
         fs_out = int(params['fs_out'])
         if fs_out != int(round(self.resp_fs)):
@@ -1304,13 +1298,7 @@ class BP4DPlusTIRRespDataset(Dataset):
                 f'resp_cache: {root} stores a {fs_out} Hz grid but this run '
                 f'reads at resp_fs={self.resp_fs:g}. With a cache, resp_fs IS '
                 f'the artefact rate: pass --resp_fs {fs_out} (and --fs {fs_out}).')
-        if self.clip_seconds > float(params['min_run_s']) + 1e-9:
-            raise ValueError(
-                f'resp_cache: clip_seconds={self.clip_seconds:g} s exceeds the '
-                f'cache min_run_s={params["min_run_s"]:g} s, so a whole clip '
-                f'could not fit inside one valid run. Rebuild with '
-                f'`runners/run_build_resp_cache.py --min_run_s '
-                f'{self.clip_seconds:g}` or shorten the clip.')
+        rw.assert_clip_fits(self.clip_seconds, params)  # ADR §2.4 bound
         self.resp_cache_root = str(root)
         self._resp_params = params
         print(f'[data] resp_cache: {root}')
