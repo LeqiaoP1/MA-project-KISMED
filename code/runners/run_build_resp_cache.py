@@ -78,8 +78,8 @@ def make_params(args, corpus_sessions) -> Dict:
         fs_in=args.fs_in, fs_out=args.fs_out,
         sat_v=args.sat_v, sat_min_s=args.sat_min_s,
         flat_window_s=args.flat_window_s, flat_ptp_v=args.flat_ptp_v,
-        min_run_s=args.min_run_s, half_taps=args.half_taps,
-        dtype=respc.STORE_DTYPE)
+        min_run_s=args.min_run_s, taps_per_phase=args.resample_taps_per_phase,
+        dtype=rpp.STORE_DTYPE)
 
 
 # --------------------------------------------------------------------------- #
@@ -97,10 +97,11 @@ def mode_init(args, corpus, sessions) -> int:
         print(f'[resp_cache] wrote {root / respc.PARAMS_NAME}')
     print(f'[resp_cache] key       : {key}')
     print(f'[resp_cache] corpus    : {params["corpus"]} '
-          f'({params["n_sessions_discovered"]} subject-tasks discovered)')
+          f'({len(corpus)} subject-tasks discovered)')
     print(f'[resp_cache] grid      : src {params["fs_in"]} Hz -> out '
-          f'{params["fs_out"]} Hz, {params["resample"]} '
-          f'(half_taps {params["half_taps"]})')
+          f'{params["fs_out"]} Hz, {params["resample"]["kind"]} '
+          f'(taps/phase {params["resample"]["taps_per_phase"]}, '
+          f'kernel {params["resample"]["kernel_radius_src"]} src samples)')
     print(f'[resp_cache] validity  : sat |V|>{params["sat_v"]:g} for >= '
           f'{params["sat_min_s"]:g} s; flat ptp<{params["flat_ptp_v"]:g} V '
           f'over {params["flat_window_s"]:g} s; runs < '
@@ -287,7 +288,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # VALIDITY / GRID CONTRACT -- every field below is part of the cache key
     p.add_argument('--fs_in', type=float, default=rpp.FS_IN,
                    help='nominal source rate of Resp_Volts.txt (1000 Hz)')
-    p.add_argument('--fs_out', type=float, default=rpp.FS_OUT,
+    p.add_argument('--fs_out', type=float, default=rpp.FS_OUT_DEFAULT,
                    help='output grid rate; MUST equal the run --fs (100 Hz)')
     p.add_argument('--sat_v', type=float, default=rpp.SAT_V,
                    help='rail threshold (volts, magnitude)')
@@ -299,8 +300,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                    help='flatline peak-to-peak threshold (volts)')
     p.add_argument('--min_run_s', type=float, default=rpp.MIN_RUN_S,
                    help='valid runs shorter than this become holes')
-    p.add_argument('--half_taps', type=int, default=rpp.RESAMPLE_HALF_TAPS,
-                   help='source samples replicated on each run edge')
+    p.add_argument('--resample_taps_per_phase', type=int,
+                   default=rpp.RESAMPLE_TAPS_PER_PHASE,
+                   help='polyphase taps per phase; the run-edge pad and the '
+                        'discarded output count are DERIVED from it ' 
+                        f'(>= {rpp.MIN_TAPS_PER_PHASE})')
 
     # array partition
     p.add_argument('--array_index', type=int, default=-1,
@@ -340,14 +344,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         rc = mode_init(args, corpus, sessions)
         if rc:
             return rc
-        if not args.build:                 # --init alone: stop after params
-            return 0
+    # `--status` and `--index` are REPORTS: both may run, and both may accompany
+    # `--check` (the documented recipe is `--status --index --check 20`). Only
+    # `--check` and `--build` are terminal, because they are the expensive ones.
+    rc = 0
     if args.status:
-        return mode_status(args, corpus, sessions)
+        rc = max(rc, mode_status(args, corpus, sessions))
     if args.index:
-        return mode_index(args, corpus, sessions)
+        rc = max(rc, mode_index(args, corpus, sessions))
     if args.check:
         return mode_check(args, corpus, sessions)
+    if args.status or args.index:
+        return rc
+    if args.init and not args.build:       # --init alone: stop after params
+        return 0
     return mode_build(args, corpus, sessions)
 
 

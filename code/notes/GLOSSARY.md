@@ -216,10 +216,19 @@ $$L_\text{joint} = \alpha L_\text{time} + \beta L_\text{Pearson} + \gamma L_\tex
   `task_set`, `task_level`.
 - ROI: `roi_padding` (frozen cache key), `crop_rule`, `roi_landmarks`,
   `max_sway_px`.
-- Caches: `resp_cache` / `resp_preprocess` (`sat_v`, `sat_min_s`,
-  `flat_window_s`, `flat_ptp_v`, `min_run_s`, `fs_out`); `rgb2d_cache`
-  (`STORE_RESOLUTION='native'`).
-- Legacy raw-path gates (refused when a cache is attached): `rail_touch_v`,
+- Respiration artefact (`resp_cache`): the FROZEN identity fields `fs_in`,
+  `fs_out`, `sat_v`, `sat_min_s`, `flat_window_s`, `flat_ptp_v`, `min_run_s`,
+  `resample{kind, taps_per_phase, up, down, kernel_radius_src}`, `store`; the
+  shard members `signal` (NaN where invalid), `mask` (the SOLE validity
+  statement), `cause` (`0` valid / `1` rail / `2` flatline / `3` short run /
+  `4` non-finite); the window arithmetic `s = round(t_start·fs_out)`,
+  `n = round(clip_seconds·fs_out)`.
+- `resp_preprocess` (decision + grid: `validity_mask`, `contiguous_runs`,
+  `preprocess_session`), `resp_cache` (identity + shard IO + `find_cache`),
+  `resp_window` (the ONLY window rule: `window_indices`, `usable`,
+  `read_window`, `window_cause`, `assert_clip_fits`, `verify_identity`).
+- `rgb2d_cache` (`STORE_RESOLUTION='native'`).
+- Legacy raw-path gates (refused when the artefact is attached): `rail_touch_v`,
   `min_signal_spread`.
 - Models: `project_multimae_base` (768-d / 12 layers), `pretrained_encoder` in
   `{videomae:k400, videomae:ssv2}`.
