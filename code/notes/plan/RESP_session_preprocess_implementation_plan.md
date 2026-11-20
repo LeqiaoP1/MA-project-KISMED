@@ -28,7 +28,7 @@ Scope: the **TIR-ROI / RESP lineage** only — `data/tir_resp_dataset.py`, a new
 sbatch drivers. The RGB+BP lineage and the plain (non-ROI) `resp` dataset keep the
 current label path untouched.
 
-Contract of record: `code/notes/design/RESP_session_preprocess.md`. Where that
+Contract of record: `code/notes/design/ADR-003-resp-session-cache-artefact.md`. Where that
 document and the shipped code disagree, **the design wins** — the conflicts are
 enumerated in §2 so nothing is retired by accident.
 Upstream spec: `code/notes/spec/01_data_pipeline.md` §3 (hand-apply, see §10).
@@ -62,7 +62,7 @@ more local (a ≥ 1 s saturation hole drops any window covering it).
 
 ## 2. Conflicts with the shipped pipeline (design wins)
 
-| # | topic | shipped (`data/tir_resp_dataset.py`) | design (`RESP_session_preprocess.md`) | action |
+| # | topic | shipped (`data/tir_resp_dataset.py`) | design (`ADR-003-resp-session-cache-artefact.md`) | action |
 |---|---|---|---|---|
 | C1 | rail rule | `rail_touch_v` (shipped `9.9`): **one** sample at `abs(x) >= 9.9 V` drops the whole window | validity is **per sample**; a sample is invalid only when it sits in a **saturation event of ≥ 1 s** at `abs(V) > 9.95` | replace in the ROI lineage; keep the old flag for the legacy path (§4 D6) |
 | C2 | flat rule | `min_signal_spread` (shipped `0.1 V`): window `ptp < 0.1 V` drops the window | a sample is invalid when it lies in **any 5 s window with `ptp < 0.3 V`** | replace; the artefact records the cause per sample |
@@ -474,7 +474,7 @@ python runners/run_evaluate_session.py --pred_dir <OUT_DIR> --resp_cache "$WORK_
 
 | document | change |
 |---|---|
-| `code/notes/design/RESP_session_preprocess.md` | authority; add the §8 resolutions (R1–R4) once decided |
+| `code/notes/design/ADR-003-resp-session-cache-artefact.md` | authority: the decision, the contract and the acceptance criteria |
 | this file | build order of record |
 | `code/notes/plan/TirROI_Resp_plan.md` | §3 precomputation (second cache), §4 code map (2 modules + builder), §9 doc map rows |
 | `code/notes/spec/01_data_pipeline.md` §3 | hand-applied paragraph: validity mask replaces `rail_touch_v`/`min_signal_spread`; artefact layout; hand-apply the same text to `scripts/project/write_specs.py` |

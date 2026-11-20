@@ -1,6 +1,7 @@
 # Respiration session preprocessing — impact of the cached grid (2026-10-31)
 
-What was measured when `design/RESP_session_preprocess.md` was implemented
+What was measured when the respiration session artefact was implemented
+(`design/ADR-003-resp-session-cache-artefact.md`)
 (plan: `plan/RESP_session_preprocess_implementation_plan.md`). Two things are
 recorded: the **artefact** (what the cache contains) and what it does to the
 **corpus accounting** at the shipped 8 s / 2 s hop. No GPU was spent; the numbers

@@ -287,7 +287,7 @@ drivers do it for you). Semantics that matter:
   `--t_start`/`--frame_start` on a dropped window reports which gate (mask cause,
   motion, sentinel) removed it.
 
-Contract: `notes/design/RESP_session_preprocess.md`; build order:
+Contract: `notes/design/ADR-003-resp-session-cache-artefact.md`; build order:
 `notes/plan/RESP_session_preprocess_implementation_plan.md`; measured impact:
 `notes/eval/tir_resp/resp_preprocess_impact.md`.
 

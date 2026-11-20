@@ -1,6 +1,6 @@
 """Build / inspect the offline respiration-grid cache.
 
-Contract: ``code/notes/design/RESP_session_preprocess.md``. Build order:
+Contract: ``code/notes/design/ADR-003-resp-session-cache-artefact.md``. Build order:
 ``code/notes/plan/RESP_session_preprocess_implementation_plan.md``.
 
 The cache is a pure derived artefact: it stores one whole-session signal grid
