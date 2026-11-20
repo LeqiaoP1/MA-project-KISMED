@@ -229,6 +229,62 @@ seq_len=400, sig_kernel=8  ->  50 tokens == Gt=50  OK
 
 Any violation raises `ValueError` at model construction (never silently misaligned).
 
+### 7.1 Blood-pressure session artefact — `data/bp_preprocess.py`, `data/bp_artefact.py`, `data/bp_windows.py`
+
+Contract: `code/notes/design/ADR-004-bp-session-cache-artefact.md`.
+Build order: `code/notes/plan/ADR-004-bp-session-cache-plan.md`.
+This section is **hand-maintained**: it is written from plan §3, not generated.
+
+One `BP_mmHg.txt` trace (nominal **1000 Hz**, mmHg, no time column) is cleaned
+once, offline, into one per-session artefact. Nothing downstream re-reads or
+re-cleans the raw trace.
+
+**Identity** (hashed into the directory name, compared before any read) —
+`format_version`, `corpus` (digest of the discovered session directories),
+`fs_in = 1000`, `fs_out = 1000`, `gate1_min_mmhg = 30.0`,
+`gate1_max_mmhg = 250.0`, `flatline_max_ms = 200`, `rail_dwell_min_ms = 30`,
+`min_segment_s = 4.0`, and the single `store` string
+`signal+mask+cause+segments:float32,bool,uint8,int64,float64`.
+
+**No resampling exists.** `fs_out == fs_in`, so grid index `k` IS source index
+`k`; the build needs NumPy only.
+
+**Gates**, in this order, each on the previous gate's survivors (the order *is*
+the precedence, so every rejected sample carries exactly one cause):
+
+| gate | rule | boundary |
+| :--- | :--- | :--- |
+| 1 | non-finite, or `< 30.0` / `> 250.0` mmHg | `29.99` rejected, `30.00` admitted |
+| 2 | invariant run **strictly longer** than 200 ms | 201 samples rejected, 200 kept |
+| 3 | dwell **at least** 30 ms at the survivors' `y_max`/`y_min` | 30 rejected, 29 kept |
+
+**Segments.** Maximal continuous stretches of admitted samples; a segment shorter
+than 4.0 s (4000 samples) is invalid. Each valid segment's own arithmetic mean is
+removed — one constant per segment, no filter. An invalid sample is `NaN`, never
+`0`.
+
+**Shard members**: `signal` (`float32`, NaN iff masked), `mask` (the SOLE
+validity statement), `cause` (`0` valid / `1` non-finite / `2` range /
+`3` flatline / `4` rail / `5` short segment), `seg_start`/`seg_stop`
+(`int64`, stop exclusive), `seg_mean_mmhg`/`seg_seconds` (`float64`), plus
+`n_src`, `fs_in`, `fs_out`, `n_segments`, `valid_frac`, `n_nonfinite` and
+provenance.
+
+**Window rule** (the only one; `bp_windows`):
+
+```
+s = round(t_start * fs_out)      n = round(clip_seconds * fs_out)
+usable  <=>  n > 0 and 0 <= s and s + n <= N and mask[s:s+n].all()
+```
+
+An all-`True` window lies inside exactly one valid segment (`segment_of` raises
+`AssertionError` if the mask and the table disagree). There is **no**
+clip-length ceiling: a clip longer than 4 s is legal and simply finds no usable
+window where no segment is long enough.
+
+Builder: `runners/run_build_bp_artefact.py` (`--init` / `--build` / `--status` /
+`--index` / `--check N` / `--check-imports`); CPU-only, torch-free.
+
 ---
 
 ## 8. DataLoader — `runners/_common.py::make_data_loader`

@@ -91,6 +91,31 @@ bash scripts/project/pretrain.sh
 bash scripts/project/finetune.sh
 ```
 
+### Blood-pressure session artefact (`bp_artefact`, ADR-004)
+
+One `BP_mmHg.txt` trace is cleaned **once, offline** into one per-session
+artefact (whole-session grid on the unchanged 1000 Hz grid + per-sample validity
+mask + cause codes + segment table). Contract:
+`code/notes/design/ADR-004-bp-session-cache-artefact.md`; build order:
+`code/notes/plan/ADR-004-bp-session-cache-plan.md`.
+
+```bash
+cd code
+# build (CPU only, no GPU, no torch): one directory per frozen parameter set
+python runners/run_build_bp_artefact.py --init --build \
+    --raw_root "$RAW_DATA_PATH" --out_root "$WORK_SCRATCH/bp_artefact"
+python runners/run_build_bp_artefact.py --status --out_root "$WORK_SCRATCH/bp_artefact"
+python runners/run_build_bp_artefact.py --index  --out_root "$WORK_SCRATCH/bp_artefact"
+python runners/run_build_bp_artefact.py --check 20 --out_root "$WORK_SCRATCH/bp_artefact"
+```
+
+Every knob (`--gate1_min_mmhg`, `--gate1_max_mmhg`, `--flatline_max_ms`,
+`--rail_dwell_min_ms`, `--min_segment_s`, `--fs_in`, `--fs_out`) is part of the
+artefact identity: a non-default value creates a **different** artefact, never an
+edit. `--fs_out` must equal `--fs_in` (no resampling). Consumers read the shard
+and cut windows through `data/bp_windows.py` only; the window at `t_start` is
+usable iff it is in bounds and every mask sample in it is `True`.
+
 ### Stage-2 pre-training was silently training NOTHING (fixed 2026-09-23)
 
 `clip_grad: 0.0` means "no gradient clipping", but the AMP branch of
