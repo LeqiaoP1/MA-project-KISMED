@@ -37,7 +37,7 @@ by whether they move that number.
 | ROI box | `roi_padding 0.10`, `crop_rule='square'` (square **before** the single isotropic rescale), `max_sway_px 40` (drop, not absorb) | `design/ROI_crop_and_rescaling.md` §3.2/§3.4 |
 | patch | `input_size 96` on HPC (6×6 grid), `64` local (4×4); patch 16 | `design/ROI_crop_and_rescaling.md` §4.5 |
 | clip validity | any `(0,0)` landmark line inside the window drops the clip; `min_signal_spread 0.1 V`; `rail_touch_v 9.9 V` | `design/ROI_crop_and_rescaling.md` §3.4 |
-| target space | **dataset-side** per-clip z-score (`physio_norm: zscore`, `data.tir_resp_dataset.TARGET_NORM`); the model is pinned to `target_norm: none` (`run_pretrain.pin_roi_target_norm`) | `design/RESP_session_preprocess.md` §3, `spec/01_data_pipeline.md` |
+| target space | **dataset-side** per-clip z-score (`physio_norm: zscore`, `data.tir_resp_dataset.TARGET_NORM`); the model is pinned to `target_norm: none` (`run_pretrain.pin_roi_target_norm`) | `design/ADR-003-resp-session-cache-artefact.md` §2, `spec/01_data_pipeline.md` |
 | visual mask | tube `0.90` | `design/SolutionC_EarlyTokenMixing_stage2.md` |
 | 1-D mask | `0.50` **scattered** in every shipped config; `physio_mask: span` + `mask_span_s {resp: 4.0}` is the designed alternative (W1) | `design/SpanMask_PhysioSignals.md` §4 |
 | Stage-2 loss | per-stream masked MSE, `λ_tir 1.0`, `λ_resp = signal_weight 0.5`; **MR-STFT 0.0** (it belongs to Stage 3) | `design/SpanMask_PhysioSignals.md` §5, §7 |
@@ -216,7 +216,7 @@ otherwise leaves no epoch lines).
 |---|---|
 | this plan | `code/notes/plan/TirROI_Resp_plan.md` |
 | ROI square box / rescale / motion gate — build order | `code/notes/plan/ROI_crop_implementation_plan.md` |
-| respiration label contract (validity mask, per-run DC, grid) | `design/RESP_session_preprocess.md` |
+| respiration label contract (validity mask, per-run DC, grid) | `design/ADR-003-resp-session-cache-artefact.md` |
 | respiration label build order | `code/notes/plan/RESP_session_preprocess_implementation_plan.md` |
 | respiration label artefact — measured impact + accounting delta | `eval/tir_resp/resp_preprocess_impact.md` |
 | task-tier regrouping | `code/notes/plan/task_tiers_regroup_plan.md` |

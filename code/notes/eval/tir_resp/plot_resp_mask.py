@@ -4,7 +4,7 @@ Green = samples the artefact says are usable (``mask`` True). Grey = samples it
 says are NOT (``mask`` False; the stored signal is ``NaN`` there, so no value is
 invented for them -- the grey is a SPAN plus a per-sample ribbon at the bottom).
 
-Contract: ``code/notes/design/RESP_session_preprocess.md`` §3.
+Contract: ``code/notes/design/ADR-003-resp-session-cache-artefact.md`` §2.5.
 
 Usage (from anywhere)::
 

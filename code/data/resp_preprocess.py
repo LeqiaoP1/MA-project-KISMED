@@ -1,6 +1,6 @@
 """Respiration session preprocessing: validity mask, per-run DC removal, resample.
 
-Contract of record: ``code/notes/design/RESP_session_preprocess.md``.
+Contract of record: ``code/notes/design/ADR-003-resp-session-cache-artefact.md``.
 Build order of record: ``code/notes/plan/RESP_session_preprocess_implementation_plan.md``.
 
 This module is **pure** numpy/scipy: it does no IO and knows no paths. The writer

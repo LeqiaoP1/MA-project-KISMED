@@ -5,7 +5,7 @@ are exact and the test states its own intent; no binary fixture is checked in.
 Real ``Resp_Volts.txt`` files are only used by the builder's ``--check`` parity
 gate.
 
-Design: ``code/notes/design/RESP_session_preprocess.md`` §3.4.
+Design: ``code/notes/design/ADR-003-resp-session-cache-artefact.md`` (mask contract, §2.2; acceptance, §3).
 """
 import os
 import sys

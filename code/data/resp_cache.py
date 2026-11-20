@@ -1,6 +1,6 @@
 """Offline respiration-grid cache: key, params, shard IO, verification.
 
-Contract of record: ``code/notes/design/RESP_session_preprocess.md``.
+Contract of record: ``code/notes/design/ADR-003-resp-session-cache-artefact.md``.
 Build order: ``code/notes/plan/RESP_session_preprocess_implementation_plan.md``.
 
 **The cache is ONE STEP of the pipeline and encodes no downstream decision.**
