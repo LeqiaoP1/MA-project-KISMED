@@ -2,7 +2,7 @@
 
 **Version: v2 (2026-11-10).** v1 described prerendered clip stacks; v2 matches
 the artefact the implementation plan builds. Build order of record:
-`code/notes/plan/2DTexture_ROI_cache_implementation_plan.md`. Geometry doctrine
+`code/notes/plan/features/2DTexture_ROI_cache_implementation_plan.md`. Geometry doctrine
 shared with the thermal stream: `code/notes/design/ROI_crop_and_rescaling.md`.
 
 | v1 → v2 change | why |
@@ -236,7 +236,7 @@ Per session `<S>_<T>`, under `<out_root>/<CACHE_KEY>/tasks/`:
 
 The two sketches below show the *shape* of the geometry helpers. The build
 order and exact signatures live in
-`code/notes/plan/2DTexture_ROI_cache_implementation_plan.md`; when they
+`code/notes/plan/features/2DTexture_ROI_cache_implementation_plan.md`; when they
 disagree, the plan wins.
 
 ### 1. Core Geometric Extractor Module (build side: box only, no resize)

@@ -4,7 +4,7 @@
 coming back when reading `design/ADR-001-subject-disjoint-split-and-selection.md`:
 what a validation set is actually for, and why the selection rule is an explicit,
 recorded parameter rather than something the code just does. The normative text
-is the ADR; the runbook is `plan/kfold_run_checklist.md`; the operational spec is
+is the ADR; the runbook is `plan/experiments/kfold_run_checklist.md`; the operational spec is
 `spec/04_configs_and_execution.md`. Nothing here overrides those — this document
 explains **why** they say what they say, and records the one place where the code
 is currently looser than the ADR.*

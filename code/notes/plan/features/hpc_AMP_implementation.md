@@ -1,7 +1,7 @@
 # AMP Implementation — the `--amp_dtype` switch
 
 **Status:** implemented and verified (CPU test suite) on 2026-10-13.
-**Companion doc:** [`hpc_AMP.md`](hpc_AMP.md) — the pre-implementation audit and
+**Companion doc:** [`hpc_AMP.md`](../../design/hpc_AMP.md) — the pre-implementation audit and
 rationale. Speed/memory figures in that note remain **estimates** until the
 one-GPU comparison below is run.
 **Scope:** `code/` training runners, engines, the AMP scaler module, checkpointing.

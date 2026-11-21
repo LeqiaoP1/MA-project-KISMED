@@ -37,7 +37,7 @@ answer to "why would the spectral loss help then?" (§5-§6). The policy is
 implemented in `core/multimae.py` (`_span_mask`, `physio_mask`, `mask_span_s`)
 and selected per run by the config; whether it changes the outcome is measured by
 the experiment ladder in §6 and judged by the Stage-3 criteria of
-`code/notes/plan/TirROI_Resp_plan.md` §6. The measured negative result for adding
+`code/notes/plan/experiments/TirROI_Resp_plan.md` §6. The measured negative result for adding
 the STFT term to a scattered mask is recorded in
 `code/notes/eval/tir_resp/resp_5fold_cv.md`.
 

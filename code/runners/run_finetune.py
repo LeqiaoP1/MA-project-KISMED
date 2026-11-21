@@ -117,7 +117,7 @@ def main(args):
     # ADR-001 replaced the ratio split with plan-derived roles. This runner's
     # dataset family (the canonical `paired` layout, bp/au lineages) has no
     # subject enumerator, so it cannot take part in the protocol yet — see
-    # code/notes/plan/ADR-001-subject-kfold-plan.md. Refusing here is deliberate:
+    # code/notes/plan/features/ADR-001-subject-kfold-plan.md. Refusing here is deliberate:
     # the alternative is a run that looks healthy and reports a leaked number.
     raise SystemExit(
         '[finetune] OFF-PROTOCOL: data_set='

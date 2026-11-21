@@ -17,7 +17,7 @@ One pure function turns one raw trace into one artefact payload. It decides
 No clip length, hop, stride, split, task subset or normalisation may enter this
 module (ADR Criterion 5). If a function here takes one of those, it is a bug.
 
-Build order of record: ``code/notes/plan/ADR-003-resp-session-cache-plan.md``.
+Build order of record: ``code/notes/plan/features/ADR-003-resp-session-cache-plan.md``.
 
 --------------------------------------------------------------------------------
 FROZEN CONTRACT (code-side copy of ADR §4; the ADR is the authority)

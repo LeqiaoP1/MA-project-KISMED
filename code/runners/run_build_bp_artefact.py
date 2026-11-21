@@ -1,7 +1,7 @@
 """Build / inspect the offline blood-pressure session artefact (ADR-004).
 
 Contract: ``code/notes/design/ADR-004-bp-session-cache-artefact.md``. Build order:
-``code/notes/plan/ADR-004-bp-session-cache-plan.md``.
+``code/notes/plan/features/ADR-004-bp-session-cache-plan.md``.
 
 The artefact is a pure derived artefact: one whole-session signal grid, a
 per-sample validity mask, a per-sample cause code and a segment table, all on the

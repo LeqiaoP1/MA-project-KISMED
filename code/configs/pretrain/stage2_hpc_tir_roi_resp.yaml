@@ -17,7 +17,7 @@
 #    a checkpoint from this run. Fine-tune it with the matching twin
 #    configs/finetune/resp_tir_roi_hpc.yaml (paired by the sweep's digest check).
 #
-# Procedure of record: code/notes/plan/TirROI_Resp_plan.md
+# Procedure of record: code/notes/plan/experiments/TirROI_Resp_plan.md
 # Data source: the RAW tree (Thermal/, IRFeatures/, Physiology/Resp_Volts.txt),
 #   i.e. $RAW_DATA_PATH. On Lichtenberg that is $WORK_PROJ/test
 #   (/work/projects/l0003511/test). NOT data/processed/bp4d_canonical.

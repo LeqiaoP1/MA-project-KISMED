@@ -1,7 +1,7 @@
 """Tri-modal Stage-2 dataset: ``tir`` + ``rgb2d`` + ``resp`` on ONE window.
 
 Contract: ``notes/design/2DTexture_ROI_cache_preprocessing.md`` (v2).
-Build order: ``notes/plan/2DTexture_ROI_cache_implementation_plan.md`` (Phase 3).
+Build order: ``notes/plan/features/2DTexture_ROI_cache_implementation_plan.md`` (Phase 3).
 
 Why a SUBCLASS: ``BP4DPlusTIRRespDataset._build_entries`` is the authority for
 clip enumeration, the sentinel/RESP gates and the motion statistic, and must stay

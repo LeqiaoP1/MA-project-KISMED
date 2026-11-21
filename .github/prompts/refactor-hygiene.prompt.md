@@ -47,10 +47,12 @@ Ensure all notes and documentation produced or touched reside in the correct qua
 code/notes/
 ├── spec/         # [Executable Specs] Read-only, generated via write_specs.py
 ├── design/       # [ADR Decisions] Architecture decisions & parameter exposure (ADR-XXX_*.md)
-├── plan/         # [Active Milestones] ACTIVE_ROADMAP.md and backlog.md
-└── eval/
-    ├── baselines/# Verified configurations supporting paper/thesis
-    └── cemetery/ # Experiment tombstones (retired/dropped branches & postmortems)
+├── plan/         # [Plans] experiments/ = training-run protocols; features/ = ADR implementation plans
+├── eval/         # [Measurements] verified numbers, verdicts, experiment tombstones
+│   ├── baselines/# Verified configurations supporting paper/thesis
+│   └── cemetery/ # Experiment tombstones (retired/dropped branches & postmortems)
+└── explanation/  # [Rationale] plain-English interpretation of results and decisions
+```
 
 
 ## 3. Execution and Validation

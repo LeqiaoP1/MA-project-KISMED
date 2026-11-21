@@ -2,7 +2,7 @@
 
 Every test here is derived from
 ``code/notes/design/ADR-001-subject-disjoint-split-and-selection.md``; the plan
-(``code/notes/plan/ADR-001-subject-kfold-plan.md``) maps clause -> test name.
+(``code/notes/plan/features/ADR-001-subject-kfold-plan.md``) maps clause -> test name.
 Run from ``code/``::
 
     python -m pytest tests/test_protocol.py -q

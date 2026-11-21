@@ -9,7 +9,7 @@ loss scaler, DDP `no_sync` accumulation, checkpoint `amp_dtype` metadata and the
 BDD tests (`code/tests/test_amp.py`) are all in place. It is CUDA-only and the
 default is `none` (autocast off, scaler bypassed), so every pre-existing FP32 run
 is unchanged. The diagnosis below is the pre-implementation audit that motivated
-the change. **As-built details: [`hpc_AMP_implementation.md`](hpc_AMP_implementation.md).**
+the change. **As-built details: [`hpc_AMP_implementation.md`](../plan/features/hpc_AMP_implementation.md).**
 
 ## Executive summary
 
@@ -27,13 +27,13 @@ not as usable FP16/BF16 AMP.
 
 | Area | Current behavior |
 |---|---|
-| [`utils/native_scaler.py`](../utils/native_scaler.py) | `NativeScalerWithGradNormCount` wraps `torch.amp.GradScaler('cuda')`, with a legacy fallback for older PyTorch. It scales the loss, performs backward, unscales gradients, clips or measures the gradient norm, and steps the optimizer. |
-| [`engines/pretrain.py`](../engines/pretrain.py) | Uses the scaler when supplied, otherwise ordinary `loss.backward()` / `optimizer.step()`. There is no autocast around `model(x)`. |
-| [`engines/finetune.py`](../engines/finetune.py) | Same optional scaler branch; `outputs = model(samples)` and criterion evaluation are full precision unless a caller changes global/model behavior. |
-| [`engines/au_probe.py`](../engines/au_probe.py) | Same optional scaler interface. |
-| [`runners/run_pretrain.py`](../runners/run_pretrain.py), [`runners/run_finetune.py`](../runners/run_finetune.py), [`runners/run_waveform.py`](../runners/run_waveform.py), [`runners/run_au_probe.py`](../runners/run_au_probe.py) | Instantiate `NativeScalerWithGradNormCount` unconditionally; there is no `--enable_amp`, `--amp_dtype`, or equivalent switch. |
-| [`utils/checkpoint.py`](../utils/checkpoint.py) | Saves and restores scaler state under the `scaler` checkpoint key, so the current loss-scaling state is resumable. |
-| [`scripts/hpc/submit_sweep.sh`](../scripts/hpc/submit_sweep.sh) | A one-fold sweep (`FOLDS="0"`) is the smoke path now; it exercises the scaler and checkpointing, but validates loss scaling and resumption, not autocast-based mixed precision. |
+| [`utils/native_scaler.py`](../../utils/native_scaler.py) | `NativeScalerWithGradNormCount` wraps `torch.amp.GradScaler('cuda')`, with a legacy fallback for older PyTorch. It scales the loss, performs backward, unscales gradients, clips or measures the gradient norm, and steps the optimizer. |
+| [`engines/pretrain.py`](../../engines/pretrain.py) | Uses the scaler when supplied, otherwise ordinary `loss.backward()` / `optimizer.step()`. There is no autocast around `model(x)`. |
+| [`engines/finetune.py`](../../engines/finetune.py) | Same optional scaler branch; `outputs = model(samples)` and criterion evaluation are full precision unless a caller changes global/model behavior. |
+| [`engines/au_probe.py`](../../engines/au_probe.py) | Same optional scaler interface. |
+| [`runners/run_pretrain.py`](../../runners/run_pretrain.py), [`runners/run_finetune.py`](../../runners/run_finetune.py), [`runners/run_waveform.py`](../../runners/run_waveform.py), [`runners/run_au_probe.py`](../../runners/run_au_probe.py) | Instantiate `NativeScalerWithGradNormCount` unconditionally; there is no `--enable_amp`, `--amp_dtype`, or equivalent switch. |
+| [`utils/checkpoint.py`](../../utils/checkpoint.py) | Saves and restores scaler state under the `scaler` checkpoint key, so the current loss-scaling state is resumable. |
+| [`scripts/hpc/submit_sweep.sh`](../../scripts/hpc/submit_sweep.sh) | A one-fold sweep (`FOLDS="0"`) is the smoke path now; it exercises the scaler and checkpointing, but validates loss scaling and resumption, not autocast-based mixed precision. |
 
 There are no `torch.autocast`, `torch.cuda.amp.autocast`, or
 `torch.amp.autocast` calls in `code/`. The only AMP-related implementation is

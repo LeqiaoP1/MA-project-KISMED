@@ -1,7 +1,7 @@
 """Build / inspect the offline respiration-grid cache.
 
 Contract: ``code/notes/design/ADR-003-resp-session-cache-artefact.md``. Build order:
-``code/notes/plan/ADR-003-resp-session-cache-plan.md``.
+``code/notes/plan/features/ADR-003-resp-session-cache-plan.md``.
 
 The cache is a pure derived artefact: it stores one whole-session signal grid
 plus a per-sample validity mask, both at the output rate, so the training loader

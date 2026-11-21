@@ -7,7 +7,7 @@ per declared stream and receives a :class:`BudgetPlan`. Mask *placement*
 (counts -> per-sample indices) is :mod:`core.mask_placement`.
 
 Design of record: ``code/notes/design/ADR-002-asymmetric-multimodal-masking.md``.
-Plan and gate ids: ``code/notes/plan/ADR-002-constant-budget-masking-plan.md``
+Plan and gate ids: ``code/notes/plan/features/ADR-002-constant-budget-masking-plan.md``
 (Phase 1, G1-G9/G14/G15).
 
 The policy in one paragraph

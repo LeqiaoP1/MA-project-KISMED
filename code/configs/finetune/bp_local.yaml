@@ -10,7 +10,8 @@
 #      output_len 400, samples_per_token 8 == sig_kernel  (aligned)
 # Any other geometry fails loudly: load_stage2_encoder raises on a
 # positions.*.pos_embed shape mismatch and build_waveform_model raises on a
-# samples_per_token != sig_kernel misalignment (see local_downstream_plan.md §1).
+# samples_per_token != sig_kernel misalignment (see
+# code/notes/plan/experiments/local_downstream_plan.md §1).
 #
 # Why not input_size 224 (the thesis-scale simplifiedPlan.yaml geometry): no
 # 224 px Stage-2 checkpoint exists yet, and at 224 px the visual path is 9 800

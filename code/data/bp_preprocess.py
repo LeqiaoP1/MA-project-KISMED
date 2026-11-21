@@ -21,7 +21,7 @@ No clip length, hop, stride, split, task subset or normalisation may enter this
 module (ADR §2.8, Criterion 10). If a function here takes one of those, it is a
 bug.
 
-Build order of record: ``code/notes/plan/ADR-004-bp-session-cache-plan.md``.
+Build order of record: ``code/notes/plan/features/ADR-004-bp-session-cache-plan.md``.
 
 --------------------------------------------------------------------------------
 FROZEN CONTRACT (code-side copy of ADR §2.6/§2.1/§2.3–§2.5; the ADR is authority)

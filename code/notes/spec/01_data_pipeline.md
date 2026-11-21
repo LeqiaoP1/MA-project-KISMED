@@ -134,7 +134,7 @@ Per-frame AU occurrence labels; subject-disjoint split. Used exclusively by the 
 
 ### 3.5 2D-Texture ROI stream (`rgb2d`) — cached (2026-11-10, SHIPPED)
 
-A THIRD cached stream so Stage 2 can run `tir` + `rgb2d` + `resp` on ONE clip window. Contract: `design/2DTexture_ROI_cache_preprocessing.md` (v2). Build order: `plan/2DTexture_ROI_cache_implementation_plan.md`. Nothing in the existing TIR/RESP artefact changes value.
+A THIRD cached stream so Stage 2 can run `tir` + `rgb2d` + `resp` on ONE clip window. Contract: `design/2DTexture_ROI_cache_preprocessing.md` (v2). Build order: `plan/features/2DTexture_ROI_cache_implementation_plan.md`. Nothing in the existing TIR/RESP artefact changes value.
 
 | Piece | Name |
 |---|---|
@@ -232,7 +232,7 @@ Any violation raises `ValueError` at model construction (never silently misalign
 ### 7.1 Blood-pressure session artefact — `data/bp_preprocess.py`, `data/bp_artefact.py`, `data/bp_windows.py`
 
 Contract: `code/notes/design/ADR-004-bp-session-cache-artefact.md`.
-Build order: `code/notes/plan/ADR-004-bp-session-cache-plan.md`.
+Build order: `code/notes/plan/features/ADR-004-bp-session-cache-plan.md`.
 This section is **hand-maintained**: it is written from plan §3, not generated.
 
 One `BP_mmHg.txt` trace (nominal **1000 Hz**, mmHg, no time column) is cleaned

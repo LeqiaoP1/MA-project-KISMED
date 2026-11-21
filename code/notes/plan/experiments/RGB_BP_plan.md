@@ -100,7 +100,7 @@ The contract of record is `design/ROI_crop_and_rescaling.md`: envelope → paddi
   the full doctrine (square span -> native square hull -> one isotropic rescale
   at load, landmark-driven motion gate, dataset-level validity gate) in
   `data/rgb2d_cache.py` + `data/trimodal_dataset.py`. See
-  `plan/2DTexture_ROI_cache_implementation_plan.md`. This **satisfies W4 for the
+  `plan/features/2DTexture_ROI_cache_implementation_plan.md`. This **satisfies W4 for the
   cached 2D path only**; `data/rgb_roi_dataset.py` (the 224 px `rgb` + BP arm) is
   untouched and still legacy, so W4 stays open for that module.
 
@@ -123,7 +123,7 @@ ROI contract keys recorded in the checkpoint (`roi_landmarks`, `roi_padding`,
 `input_size`, …), because those change the pixels without changing any tensor
 shape.
 
-**Visual input contract** (`plan/video_input_preprocessing_implementation_plan.md`,
+**Visual input contract** (`plan/features/video_input_preprocessing_implementation_plan.md`,
 `design/Video_input_Preprocessing.md`): the dataset still returns `[0, 1]`, but
 both stages z-score each clip per channel *before* patch division
 (`core/input_adapters.py::zscore_clip`). A checkpoint therefore belongs to ONE
@@ -232,7 +232,7 @@ Ordered; each item states where it lands and what closes it.
 | **W1** | **RGB decode precomputation.** Extend the ROI cache (or a sibling store) to `rgb_roi`: key on the crop contract, resume-safe, parity-tested against a live decode. Decode is the epoch bottleneck; the TIR cache measured **11.7×** at equal batch. | `data/roi_cache.py`, `runners/run_build_roi_cache.py`, `tests/test_roi_cache.py` | a parity probe reproduces decoded tensors bit-exactly, and epoch time drops by the measured factor |
 | **W2** | **Stage-2, `rgb_roi` + `bp`.** Smoke first (1 epoch, 2 clips, `--warmup_epochs 0`), then the HPC scale-up. | `configs/pretrain/stage2_local_rgb_roi_bp.yaml` | `mse_rgb` clearly below the 1.0 constant-predictor floor; `loss` equals the printed decomposition exactly; encoder-feature variation across clips is non-zero |
 | **W3** | **Stage-3, `bp`.** Mirror the W2 geometry exactly (input size, clip, stride, `sig_kernel`, ROI keys), transfer `heads.bp`, then assemble sessions and score. | `configs/finetune/bp_rgb_roi_local.yaml` → an HPC twin | G1–G6 evaluated and reported per subject; artefacts (`preds.npy`, `targets.npy`, `entries.json`) written |
-| **W4** | **ROI doctrine port to RGB.** Same square-box algebra, same isotropic rescale, same `max_sway_px` gate, same cache-hull rule — one doctrine, no per-modality exception. Threshold is modality-specific (`40 × 1392/726 ≈ 77 px`). **Partially delivered 2026-11-10**: the new `rgb2d` cached stream implements the doctrine in `data/rgb2d_cache.py` (`plan/2DTexture_ROI_cache_implementation_plan.md`); `data/rgb_roi_dataset.py` (the 224 px `rgb` + BP arm) is still legacy, so the W4 acceptance below applies to the cached path only. | `data/rgb_roi_dataset.py`, `data/rgb_features.py`; extend `tests/test_roi_square_rule.py`, `test_roi_motion_gate.py` | the RGB dataset satisfies every invariant in `design/ROI_crop_and_rescaling.md` §5 |
+| **W4** | **ROI doctrine port to RGB.** Same square-box algebra, same isotropic rescale, same `max_sway_px` gate, same cache-hull rule — one doctrine, no per-modality exception. Threshold is modality-specific (`40 × 1392/726 ≈ 77 px`). **Partially delivered 2026-11-10**: the new `rgb2d` cached stream implements the doctrine in `data/rgb2d_cache.py` (`plan/features/2DTexture_ROI_cache_implementation_plan.md`); `data/rgb_roi_dataset.py` (the 224 px `rgb` + BP arm) is still legacy, so the W4 acceptance below applies to the cached path only. | `data/rgb_roi_dataset.py`, `data/rgb_features.py`; extend `tests/test_roi_square_rule.py`, `test_roi_motion_gate.py` | the RGB dataset satisfies every invariant in `design/ROI_crop_and_rescaling.md` §5 |
 | **W5** | **BP evaluation depth.** Morphology-sensitive score (pulse-shape correlation on aligned beats) plus the Tier-3 guards; declare in the protocol what "morphology" means before the first score is reported. | `evaluation/metrics.py`, `evaluation/clinical.py`, `design/Evaluation_RespWaveform_protocol.md` | a metric exists that ranks a deliberately distorted-but-in-phase waveform below a faithful one |
 | **W6** | **RESP branch** on the W2 encoder (`Resp_Volts`), same protocol. | `configs/finetune/resp_local.yaml` + ROI twin | same gates; report against the TIR respiratory result, not against BP |
 | **W7** | **Aliasing A/B**, only if G4/G5 show unexplained high-frequency energy: `tubelet_t 4` with `temporal_stride 1` (same 160 ms token, anti-aliased) at the cost of the verbatim VideoMAE patch-embed transfer. | `configs/pretrain/*` | a measured spectral difference, decided on subject metrics, not on reconstruction loss |
@@ -289,10 +289,10 @@ names the decision, so the gap is visible instead of implicit.
 
 | topic | document |
 |---|---|
-| this plan | `code/notes/plan/RGB_BP_plan.md` |
-| local 64 px two-branch setup (commands, checkpoint, lineage lock) | `code/notes/plan/local_downstream_plan.md` |
-| k-fold rollout | `code/notes/plan/ADR-001-subject-kfold-plan.md` |
-| AMP rollout | `code/notes/plan/hpc_AMP_implementation.md` |
+| this plan | `code/notes/plan/experiments/RGB_BP_plan.md` |
+| local 64 px two-branch setup (commands, checkpoint, lineage lock) | `code/notes/plan/experiments/local_downstream_plan.md` |
+| k-fold rollout | `code/notes/plan/features/ADR-001-subject-kfold-plan.md` |
+| AMP rollout | `code/notes/plan/features/hpc_AMP_implementation.md` |
 | Stage-2 / Stage-3 architecture | `design/SolutionC_EarlyTokenMixing_stage2.md`, `design/SolutionC_EarlyTokenMixing_stage3.md` |
 | span masking for 1-D streams | `design/SpanMask_PhysioSignals.md` |
 | ROI + rescale contract (RGB port pending, W4 — satisfied for the `rgb2d` cache path 2026-11-10) | `design/ROI_crop_and_rescaling.md` |

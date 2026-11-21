@@ -19,6 +19,7 @@
 - `code/`: ALL source modifications happen here (`data/`, `core/`, `models/`, `engines/`, `runners/`, `configs/`, `utils/`, `evaluation/`, `tests/`).
 - `code/configs/`: Baseline parameters loaded as argparse defaults (`-c/--config`). Explicit CLI flags take precedence.
 - `code/notes/spec/`: Reverse-engineered system contracts (`01_data_pipeline.md`, `02_model_architecture.md`, `03_engine_and_loss.md`). Regenerate directly from code using `python code/scripts/project/write_specs.py`.
+- `code/notes/plan/`: Roadmap of record, split by scope — `experiments/` holds training-run protocols (configs, fold orchestration, gates); `features/` holds code implementation plans derived from the `design/ADR-*` records. Measured outcomes land in `code/notes/eval/`, never in a plan.
 - `report/`: Academic LaTeX files (`report/TUDaThesis/`). Do not modify during routine code edits.
 - `data/`, `docs/`, `models/initial/`: Read-only.
 
