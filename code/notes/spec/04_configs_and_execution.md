@@ -32,12 +32,13 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 
 | File | Purpose |
 |------|---------|
-| `stage2_local.yaml` | Local smoke (VideoMAE K400 init), `streams: rgb,bp`, 2 sessions, 8 clips |
-| `stage2_local_pretrained.yaml` | Local with VideoMAE **K400** init, 11 sessions, full local clip budget |
-| `stage2_local_pretrained_ssv2.yaml` | Twin of the above with VideoMAE **SSV2** init (the corpus A/B) |
+| `stage2_local.yaml` | Local smoke, from scratch, `streams: rgb,bp`, 2 sessions, 8 clips |
+| `stage2_local_scratch.yaml` | Local wiring proof with extended rationale comments |
+| `stage2_local_pretrained.yaml` | Local with VideoMAE init, 11 sessions, 32 clips |
 | `stage2_local_rgb_roi_bp.yaml` | RGB face-ROI + BP, raw tree |
 | `stage2_local_tir_roi_resp.yaml` | TIR-ROI + RESP, raw tree |
-| `stage2_hpc_tir_roi_resp_rgb2d.yaml` | TIR-ROI + `rgb2d` + RESP (`streams: tir,rgb2d,resp`) — the only visible+thermal fusion run, HPC |
+| `stage2_budget_tir_roi_resp_rgb2d.yaml` | TIR-ROI + `rgb2d` + RESP (`streams: tir,rgb2d,resp`) — the ADR-002 constant-budget arm, HPC |
+| `stage2_fourstream_tir_rgb2d_bp_resp_small_random.yaml` | TIR-ROI + `rgb2d` + BP + RESP, ViT-Small random init — the four-stream ADR-002 arm |
 | `stage2_multimodal.yaml` | HPC full-data template, 800 epochs, input_size 224 |
 | `example.yaml` | Annotated reference template |
 
@@ -53,6 +54,7 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `resp.yaml` | RESP | canonical, HPC |
 | `resp_tir_roi_local.yaml` | RESP | TIR ROI, 8 s clip, stride 2, fft 128,256,512 |
 | `resp_tir_roi_local_matched.yaml` | RESP | TIR ROI, Stage-3 recipe from the local shared-encoder model (`transposed_conv`, `head_init: none`, `layer_decay 0.75`) |
+| `resp.yaml` | RESP | canonical, HPC |
 | `au_local.yaml` | AU probe | canonical, multi-label BCE |
 | `au_local_pretrained.yaml` | AU probe | canonical, with Stage-2 encoder init |
 | `example.yaml` | Annotated reference template |
@@ -68,7 +70,7 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `model` | str | Registered model name, e.g. `project_multimae_base` |
 | `device` | str | `'cuda'` (default; falls back to CPU silently if unavailable) |
 | `seed` | int | Base random seed; each DDP rank gets `seed + rank` |
-| `output_dir` | str | Root for checkpoints + logs; default `$OUTPUT_DIR` (`$WORK_SCRATCH` on HPC; else `<repo>/output`, which is a symlink to the scratch) |
+| `output_dir` | str | Root for checkpoints + logs; default `$OUTPUT_DIR` or `<repo>/output` |
 | `resume` | str | Checkpoint path to resume from (`$RESUME` or `''`) |
 | `num_workers` | int | DataLoader workers; default `$NUM_WORKERS` or 8 |
 | `pin_mem` | bool | DataLoader pin_memory; default True |
@@ -83,26 +85,22 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 |-----|------|-------------|
 | `streams` | str | Comma-separated: e.g. `rgb,tir,bp,resp` |
 | `tubelet` | str | `t,ph,pw`: e.g. `2,16,16` |
-| `input_size` | int | Square frame px: 64 (local) / 224 (HPC) |
+| `input_size` | int | Square frame px: 64 local / 96 HPC ROI / 224 full-frame |
 | `fps` / `fs` | float | Video fps / signal sample rate Hz |
-| `clip_duration` / `clip_stride` | float | Clip length s / window hop s. The TIR-ROI/RESP study uses an **8 s window**; the hop is **2.0** in the HPC Stage-2 run (4× redundant per-clip decode instead of 8×, to keep the transient breathing dynamics while roughly halving the epoch) and 1.0 in the remaining configs. `clip_stride` is NOT part of the Stage-2/3 ROI contract (`run_waveform.py` does not enforce it) |
+| `clip_duration` / `clip_stride` | float | Clip length s / window hop s (`clip_stride` is NOT part of the Stage-3 ROI contract) |
 | `temporal_stride` | int | Frame decimation inside window (1 = every frame) |
 | `seq_len` | int | Signal samples; 0 = `clip_duration * fs` |
 | `pos_init` | str | `sincos3d` or `random` |
-| `n_budget` | int | Constant visible encoder tokens per step (default 350) |
-| `video_cap_ratio` / `physio_cap_ratio` | float | Kept-ratio ceiling per visual (0.25) / physiological (0.50) stream |
-| `video_min_tubes` | int | Kept-tube floor per visual stream (default 2) |
-| `p_virtual_sensing` | float | Probability of Mode 1 (no physiological token encoded; default 0.50) |
-| `spatial_patches` / `physio_tokens` | int | Tokenizer-derived unit counts (36 / 250 at the ADR geometry); pass them only to ASSERT the identity |
-| `physio_placement` / `physio_span_tokens` | str / int | `scattered` (default) or `span` placement of the kept 1-D tokens, and the span length in tokens |
-| `signal_weight` | float | Loss weight for physio streams (default 0.5) |
-| `target_norm` | str | `token` (per-token z-score), `clip` (per-clip z-score) or `none` (IDENTITY). **NON-ROI paths only** (e.g. `bp4d+`): for the RAW-tree ROI lineages (`tir_roi` = TIR-ROI+RESP, `rgb_roi` = RGB+BP) the DATASET owns the normalisation and `run_pretrain.py` pins this to `none` |
-| `physio_norm` (Stage 2) | str | The 1-D target normalisation for `tir_roi` / `rgb_roi`: `clip` (= `zscore`) per-clip z-score. That is the ONLY value — `none` / `ac` / `session` were removed and are REFUSED (`data.tir_resp_dataset.check_physio_norm`). Applied by the dataset; the model never re-normalises |
-| `pretrained_encoder` | str | Stage-1 VideoMAE corpus: `videomae:k400` / `videomae:ssv2` / `videomae` / `base` (= k400) / a local path. Blank/random is **rejected** |
-| `videomae_dataset` | str | `k400` (default) / `ssv2`: corpus for a bare `videomae` spec |
-| `rail_touch_v` | float | **LEGACY RAW PATH ONLY** (superseded by the stored per-sample validity mask, `--resp_cache`): drop a clip whose respiration window contains ANY sample that touched the recorder rail (`abs(x) >=` volts; 0.0 = off). The shipped `9.90` sits 0.1 V inside the `+/-10 V` clamp, so a dead/pinned channel AND a clipped flat-topped trough are both removed. With a cache attached a non-zero value RAISES (no silent double filtering). Keep equal in Stage 2/3 when no cache is used |
-| `min_signal_spread` | float | **LEGACY RAW PATH ONLY** (same supersession): drop a window whose spread (`max−min`) is below this many volts (0.0 = off). The shipped `0.1` is the **dead-signal guard**: every corpus window below it sits at a median level of `+9.1 V` (pinned just inside the clamp, 0.05–0.09 V ripple); checked AFTER `rail_touch_v`. Must be 0 with `--resp_cache` |
-| `resp_cache` | str (CLI/env `RESP_CACHE`) | TIR-ROI only: OUT_ROOT of the offline respiration grid (`data/resp_cache.py`). Empty = read `Resp_Volts.txt` per epoch. Matched by KEY (corpus, `fs_in`/`fs_out`, validity knobs); a mismatch aborts. With a cache `resp_fs` IS `fs_out` and must equal `--fs`, and the legacy knobs above must be 0. The label space becomes run-mean-removed volts (a new lineage; retrain) |
+| `n_budget` / `video_cap_ratio` / `physio_cap_ratio` | int / float / float | ADR-002 constant-budget masking: visible tokens per step and per-stream caps |
+| `video_min_tubes` / `p_virtual_sensing` / `physio_placement` / `physio_span_tokens` | int / float / str / int | ADR-002 floor, Mode-1 probability, 1-D placement and span length |
+| `spatial_patches` / `physio_tokens` | int | Tokenizer-derived unit counts; passed only to ASSERT identity |
+| `signal_weight` | float | Loss weight for every physio stream (visual streams stay 1.0) |
+| `target_norm` | str | `token` (per-token z-score), `clip` (per-clip z-score) or `none` (IDENTITY). **NON-ROI paths only**: the ROI lineages (`tir_roi`, `rgb_roi`, `tir_roi_resp_rgb2d`, `tir_roi_resp_rgb2d_bp`) are pinned to `none` because the dataset owns the z-score |
+| `physio_norm` (Stage 2) | str | `clip` (= `zscore`) per-clip z-score for every ROI lineage, including the four-stream arm. `none` / `ac` / `session` are refused |
+| `pretrained_encoder` | str | `videomae:k400` / `videomae:ssv2` / `videomae` / `base` / a local `.pth`; the blank aliases `none` / `random` / `scratch` / `c0` are the explicit random-init path (required for `project_multimae_small`) |
+| `roi_cache` / `resp_cache` / `rgb2d_cache` / `bp_artefact` | str | Offline artefact OUT_ROOTs for the ROI lineages; each is matched by its full frozen key |
+| `rgb2d_store` / `rgb2d_landmarks` | str | `native` or a pixel store (`112`); `face` or a 49-point preset |
+| `bp_fs` / `bp_cache_lru` | float / int | BP artefact rate (must equal `fs`) and shard LRU |
 | `epochs` / `batch_size` / `update_freq` / `save_ckpt_freq` | int | Training schedule |
 | `opt` / `lr` / `blr` / `min_lr` / `warmup_epochs` | str / float | Optimizer + LR |
 | `weight_decay` / `clip_grad` | float | Regularisation + grad clip (0.0 = OFF) |
@@ -117,7 +115,7 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `sig_kernel` | int | Signal window size per token; must satisfy `sig_kernel/fs == tubelet_t*stride/fps` |
 | `physio_norm` | str | `clip` (= `zscore`) per-clip z-score — the SAME setting, name and values as the ROI Stage-2 paths, so one clip yields one identical target in both stages. `none` / `ac` / `session` were removed and are REFUSED |
 | `head_hidden` / `head_style` / `head_init` | int / str | Head architecture + initialisation |
-| `fold` / `split_seed` / `split_stratify` / `val_seed` / `eval_freq` / `val_select` / `val_criterion` / `val_kept_<stream>` / `exp_root` / `dev_smoke` | int / int / str / int / int / str / str / float / str / bool | ADR-001 interface, declared once by `runners/_common.py::add_protocol_args`. `K = 5` and `70/10/20` are module constants (`protocol/constants.py`), so there is **no `n_folds` key**: a YAML carrying one fails to load. `exp_root` locates `<exp_root>/fold<k>/partition.json`; `eval_freq = 0` is legal only with `val_select = fixed_epoch`; every masked stream needs `val_kept_<stream>` when `eval_freq > 0` |
+| `train_ratio` / `split_by` / `val_subject` | float / str | Split policy |
 | `alpha` / `beta` / `gamma` | float | `WaveformJointLoss` term weights |
 | `fft_sizes` | str | Stage-3 STFT window sizes |
 | `eval_band` | str | `f_low,f_high` Hz for Tier-2 spectral metrics |
@@ -150,18 +148,8 @@ bash scripts/local/pretrain_rgb_roi_bp.sh
 ### 4.2 HPC Cluster (Lichtenberg / Slurm, multi-GPU) — `code/scripts/env_hpc.sh`
 
 Must edit: `VENV`, `RAW_DATA_PATH`, `DATA_PATH`, `PROJ_DIR`, `OUTPUT_DIR`, `PARTITION`, `GPU_TYPE`, `GPUS_PER_NODE`.
-`OUTPUT_DIR` needs no edit by default: it derives to `$WORK_SCRATCH` (the site
-variable), matching the `OUT_ROOT` the `scripts/hpc/*.sbatch` files use, so runs
-land at `$WORK_SCRATCH/{pretrain,finetune}/<run>`. With no `WORK_SCRATCH` it
-falls back to `<repo>/output` — a symlink to the scratch — so checkpoints never
-fill `$HOME`'s small quota either way.
 
-Available Slurm batch files (`code/scripts/hpc/`): `submit_sweep.sbatch` — the
-ADR-001 five-fold sweep and the **only** Stage-2/Stage-3 path — plus the
-platform jobs `submit_prepare.sbatch`, `submit_inspect.sbatch`,
-`submit_inspect_physio.sbatch`, `submit_inspect_tir_resp.sbatch`,
-`submit_survey_tir_resp.sbatch`, `submit_roi_cache.sbatch`,
-`submit_2d_roi_cache.sbatch`, `submit_recon_eval.sbatch`.
+Available Slurm batch files (`code/scripts/hpc/`): `submit_sweep.sbatch` (the ADR-001 five-fold sweep and the only Stage-2/Stage-3 path), plus the platform jobs `submit_prepare.sbatch`, `submit_inspect.sbatch`, `submit_inspect_physio.sbatch`.
 
 **Launch method**: SLURM `srun` (not torchrun). `init_distributed_mode` auto-detects `SLURM_PROCID` and derives `MASTER_ADDR` from `SLURM_NODELIST`.
 
@@ -223,7 +211,8 @@ Consumers: `runners/run_evaluate_session.py` (per session + figure),
 
 ## 6. Pretrained Weight Management — `models/pretrained.py`
 
-Downloads the Stage-1 **VideoMAE ViT-Base** checkpoints from Hugging Face to `$INITIAL_MODELS_DIR`: `videomae:k400` (Kinetics-400) and `videomae:ssv2` (Something-Something-v2). `resolve_encoder_weights('videomae:k400', initial_dir)` maps a corpus spec to a checkpoint path; Stage-1 callers pass `require=True` so a blank spec is a hard error (no random-init backbone). ImageNet-MAE / timm / ViT-Large sources were removed.
+Downloads Stage-1 ViT weights (VideoMAE-base, MAE-base, etc.) from Hugging Face to `$INITIAL_MODELS_DIR`.
+`resolve_encoder_weights('base', initial_dir)` maps short names to checkpoint paths.
 
 > On HPC: pre-download on a **login node** (compute nodes have no internet). Use `run_download_weights.py --list` to see available specs.
 

@@ -85,6 +85,7 @@ def test_family_without_an_enumerator_is_refused():
 def test_all_protocol_families_are_advertised():
     assert 'tir_roi' in available_data_sets()
     assert 'rgb_roi' in available_data_sets()
+    assert 'tir_roi_resp_rgb2d_bp' in available_data_sets()
 
 
 def test_resolve_corpus_prefers_the_explicit_root(monkeypatch, tmp_path):

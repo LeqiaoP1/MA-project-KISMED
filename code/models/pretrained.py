@@ -11,14 +11,16 @@ corpus** and caches the download under::
     <project_root>/models/initial/videomae_base_patch16_224.pth       # K400
     <project_root>/models/initial/videomae_base_ssv2_patch16_224.pth  # SSV2
 
-Stage 1 is **ViT-Base only** and is **always** initialised from a VideoMAE
-checkpoint: the project compares VideoMAE pre-trained on Kinetics-400 (K400)
-against VideoMAE pre-trained on Something-Something-v2 (SSV2) as the initial
-weights. Both are ``MCG-NJU`` Hub checkpoints with the same ViT-B geometry
-(768/12/12) and the same ``Conv3d(3, D, (2,16,16))`` tubelet patch embed this
-repo's adapters use, so the tokenizer transfers verbatim. There is therefore
-**no blank / random Stage-1 init** and **no ImageNet-MAE / timm / ViT-Large**
-source in the built-in table.
+The published Stage-1 checkpoints are **ViT-Base only** and are the default
+initialisation: the project compares VideoMAE pre-trained on Kinetics-400
+(K400) against VideoMAE pre-trained on Something-Something-v2 (SSV2) as the
+initial weights. Both are ``MCG-NJU`` Hub checkpoints with the same ViT-B
+geometry (768/12/12) and the same ``Conv3d(3, D, (2,16,16))`` tubelet patch
+embed this repo's adapters use, so the tokenizer transfers verbatim. A run may
+explicitly request random initialisation with
+``--pretrained_encoder none|random|scratch|c0`` (required for
+``project_multimae_small``, for which no Stage-1 checkpoint is published).
+There is **no ImageNet-MAE / timm / ViT-Large** source in the built-in table.
 
 (``<project_root>`` is the repository root, i.e. the parent of ``code/``. Use
 the ``INITIAL_MODELS_DIR`` environment variable or ``--weights_dir`` to place
@@ -35,10 +37,11 @@ Stage-1 init (``--pretrained_encoder`` on ``run_pretrain.py``) and the AU probe
     base            alias of ``videomae:k400``
     path/to.pth     a path that exists is returned untouched (never downloaded)
 
-A blank / ``none`` / ``random`` / ``scratch`` / ``c0`` spec is still recognised
-by :func:`_split_spec` (it resolves to "nothing to load") because the Stage-3
-runners treat an empty ``--finetune`` as "no checkpoint". Stage-1 callers pass
-``require=True`` so that a blank spec is a **hard error** instead.
+A blank / ``none`` / ``random`` / ``scratch`` / ``c0`` spec is recognised by
+:func:`_split_spec` (it resolves to "nothing to load"). Stage-3 runners treat
+an empty ``--finetune`` as "no checkpoint"; ``run_pretrain.py`` treats the same
+empty path as the explicit random-init path. Callers that must reject a blank
+source can still pass ``require=True``.
 
 Examples (all from ``code/``)::
 
@@ -532,10 +535,11 @@ def resolve_encoder_weights(spec: str, dest_dir: Optional[str] = None,
 
     :param dataset: corpus used when ``spec`` names the ``videomae`` source
         without one (``videomae``); see ``--videomae_dataset``.
-    :param require: when True (Stage-1 init), a blank / ``random`` / ``scratch``
-        spec is a HARD ERROR instead of returning ``''``. This is what removes
-        the blank Stage-1 backbone path; the Stage-3 runners keep
-        ``require=False`` so an empty ``--finetune`` still means "no checkpoint".
+    :param require: when True, a blank / ``random`` / ``scratch`` spec is a
+        HARD ERROR instead of returning ``''``. ``run_pretrain.py`` passes
+        ``require=False`` because its blank aliases are the explicit
+        random-init path; a caller that must never train from scratch can pass
+        ``require=True``.
     """
     kind, _source, name = _split_spec(spec)
     if kind == 'none':
@@ -543,8 +547,8 @@ def resolve_encoder_weights(spec: str, dest_dir: Optional[str] = None,
             raise ValueError(
                 f'A VideoMAE initial encoder is required, but the spec is '
                 f'{spec!r} (blank/random). Choose one of '
-                f'{", ".join(available_specs())} (or a local .pth path); '
-                f'random-init backbones were removed.')
+                f'{", ".join(available_specs())} (or a local .pth path), or '
+                f'pass require=False to allow the explicit random-init path.')
         return ''
     if kind == 'path':
         return name

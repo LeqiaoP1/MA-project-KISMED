@@ -26,8 +26,12 @@ __all__ = ['is_usable_session', 'corpus_sessions', 'corpus_subjects',
 
 # Dataset families are imported lazily: ``data.tir_resp_dataset`` pulls in torch,
 # and the partition utility must stay importable on a CPU-only login node.
+# BP availability is a CLIP-level filter in the four-stream dataset, not a
+# universe predicate: a subject without a usable BP segment still belongs to
+# the partition and is scored as skipped inside a role (I2).
 _TIR_FAMILIES = ('tir_roi', 'tir_roi_resp', 'tir-roi',
-                 'tir_roi_resp_rgb2d', 'trimodal')
+                 'tir_roi_resp_rgb2d', 'trimodal',
+                 'tir_roi_resp_rgb2d_bp')
 _RGB_FAMILIES = ('rgb_roi', 'rgb_roi_resp', 'rgb-roi')
 
 

@@ -2,7 +2,7 @@
 
 - **Experiment ID**: `EXP-20261121-01`
 - **Author**: LeqiaoP1
-- **Status**: Draft — **P0-blocked**. Sections 1–9 are complete, but the run must not be submitted until the prerequisite gates in §0.4 are merged.
+- **Status**: **Ready (P0 cleared)**. The local fold-0 dev smoke passed on 2026-11-21; see `code/notes/eval/baselines/tir_rgb2d_bp_resp/stage2_smoke.md`. The first target-hardware run is the one-fold HPC smoke.
 - **Associated ADR**: `code/notes/design/ADR-002-asymmetric-multimodal-masking.md` (masking); `code/notes/design/2DTexture_ROI_cache_preprocessing.md` (rgb2d contract)
 - **Target Thesis Section**: Chapter 4, Stage-2 modality ablation / four-stream representation study
 
@@ -21,14 +21,14 @@
 | Model / masking | `code/core/multimae.py`, `code/core/budget_masking.py`, `code/core/mask_placement.py` |
 | Datasets | `code/data/datasets.py`, `trimodal_dataset.py`, `tir_resp_dataset.py`, `paired_dataset.py` |
 | Caches | `code/data/bp_artefact.py`, `bp_windows.py`, `bp_preprocess.py`, `resp_preprocess.py`; `runners/run_build_roi_cache.py`, `run_build_2d_roi_cache.py`, `run_build_resp_cache.py`, `run_build_bp_artefact.py` |
-| HPC | `code/scripts/hpc/submit_sweep.sbatch`, `submit_sweep.sh` |
+| HPC | `code/scripts/hpc/submit_sweep.sbatch`, `submit_sweep.sh`; pretrain-only `submit_pretrain_sweep.sbatch`, `submit_pretrain_sweep.sh` |
 | Verified baseline | `code/notes/eval/rgb2d/resp_recon_zeroshot.md` |
 
 ### 0.2 Active implementation stage and runner
 
 - **Stage**: Stage 2 pre-training only. No Stage 3 fine-tuning and no Stage-3 clinical metrics.
 - **Runner**: `code/runners/run_pretrain.py`.
-- **Model**: `project_multimae_small` (384-d / 12-layer / 6-head, `MULTIMAE_VARIANTS` in `core/multimae.py:123`). The code comment that “only base and large are supported” refers to the published VideoMAE Stage-1 weights; with P0-B’s random-init path, the registered `small` entrypoint is valid.
+- **Model**: `project_multimae_small` (384-d / 12-layer / 6-head, `MULTIMAE_VARIANTS` in `core/multimae.py:123`). The code comment that “only base and large are supported” refers to the published VideoMAE Stage-1 weights; with the landed random-init path, the registered `small` entrypoint is valid.
 - **Masking**: the live **ADR-002 constant-budget** policy (`core/budget_masking.py`), not the removed `masking: ammm` selector. See §0.4.
 
 ### 0.3 Falsifiable hypothesis, delta, baseline, decision
@@ -36,10 +36,12 @@
 - **Falsifiable hypothesis**: At the ADR-002 geometry (8 s clip, `temporal_stride=2`, `tubelet=4,16,16`, `input_size=96`, `fs=1000`, `sig_kernel=32`), the constant-budget policy is feasible for **four** streams (two visuals + two 1 kHz physiologies), and a randomly initialised 384-d ViT-Small trains at least one epoch with `n_batch == 350` on every step, per-stream counts inside the caps/floors, both modes observed, and finite losses. The hypothesis is falsified by any budget, cap, mode-coverage, or finiteness violation.
 - **Exact parameter delta**: add `bp` to the existing `tir,rgb2d,resp` arm; switch `model` from `project_multimae_base` to `project_multimae_small`; switch initialisation from `videomae:k400` to random; set `clip_stride: 4.0`; keep the ADR-002 geometry and seven masking keys.
 - **Baseline**: `None` for the primary infrastructure gate. The verified `code/notes/eval/rgb2d/resp_recon_zeroshot.md` numbers are **not** a valid comparator for this run because they are ViT-Base + VideoMAE-K400, not ViT-Small + random. A matched 3-stream ViT-Small random-init control is defined in §5.4; it uses the existing `data_set: tir_roi_resp_rgb2d`.
-- **Expected decision**: Accept the infrastructure gate if G1–G5 pass; do **not** claim a RESP-accuracy gain. The per-stream decoder has no cross-modal path when a stream is fully masked (`code/notes/eval/rgb2d/resp_recon_zeroshot.md`, “hidden” probe), so BP is not expected to improve RESP reconstruction.
+- **Expected decision**: Accept the infrastructure gate if G1–G5 pass. The local fold-0 dev smoke passed all five on 2026-11-21 (`code/notes/eval/baselines/tir_rgb2d_bp_resp/stage2_smoke.md`). Do **not** claim a RESP-accuracy gain: the per-stream decoder has no cross-modal path when a stream is fully masked (`code/notes/eval/rgb2d/resp_recon_zeroshot.md`, “hidden” probe), so BP is not expected to improve RESP reconstruction.
 - **Rollback**: restore `streams: tir,rgb2d,resp`, `data_set: tir_roi_resp_rgb2d`, `model: project_multimae_base`, `pretrained_encoder: videomae:k400`, `clip_stride: 2.0`.
 
-### 0.4 P0 prerequisite gates (hard blockers, verified in code)
+### 0.4 P0 prerequisite gates (all cleared)
+
+**State (2026-11-21).** P0-A, P0-B and P0-D are implemented; P0-C is the live ADR-002 policy; the four caches are complete and preflighted. P0-E remains optional and unimplemented. The table below is the original blocker audit; measured evidence is in `code/notes/eval/baselines/tir_rgb2d_bp_resp/cache_preflight.md`, `stage2_smoke.md` and `full_dataset_preflight.md`.
 
 | Gate | Blocker | Evidence | What must land before any run |
 |---|---|---|---|
@@ -49,7 +51,7 @@
 | **P0-D** | No pretrain-only HPC sweep. | `scripts/hpc/submit_sweep.sh` always runs `run_waveform.py` (Stage 3) after Stage 2. No pretrain-only `.sbatch` exists in `scripts/hpc/`. | Add a pretrain-only wrapper (or a verified `SKIP_STAGE3` guard) before submitting five folds. Using `submit_sweep.sbatch` unmodified would violate “pre-training only”. |
 | **P0-E** (optional, only for §5.4) | The zero-shot evaluator has no `--kept_bp` pin. | `runners/run_eval_recon.py:pin_masking` assigns `want[s] = 1.0` to any declared stream without a flag, then clamps BP to its 125-token cap, consuming visual budget. | Add an explicit BP pin (e.g. `--kept_bp 0.0`) so the 4-stream and 3-stream arms are evaluated with the same visual budget. |
 
-**Cache verdict.** The four caches are individually buildable with the commands in §3, but the BP cache is **not consumable by any Stage-2 runner today** because P0-A has not landed. The other three are compatible with the requested geometry.
+**Cache verdict (2026-11-21).** The four artefacts are built, key-compatible and parity-checked: TIR-ROI 1385 cached / 0 missing, RGB2D px112 1360 / 0 missing, RESP 1000 Hz 1399 / 0 missing, BP 1400 / 0 missing. The BP 8 s / 4 s-hop usable yield is 98.14 % (13,278 / 13,530 windows). Measured evidence: `code/notes/eval/baselines/tir_rgb2d_bp_resp/cache_preflight.md`.
 
 ---
 
@@ -69,16 +71,15 @@
 - **Stage**: Stage 2 pre-training
 - **Runner**: `code/runners/run_pretrain.py`
 - **Base Config**: `code/configs/pretrain/stage2_budget_tir_roi_resp_rgb2d.yaml`
-- **Proposed Config File** (must be created in P0-A/P0-B): `code/configs/pretrain/stage2_fourstream_tir_rgb2d_bp_resp_small_random.yaml`
+- **Config File**: `code/configs/pretrain/stage2_fourstream_tir_rgb2d_bp_resp_small_random.yaml`
 - **Output Artifacts Directory**: `$EXP_ROOT/fold<k>/stage2/`
-- **Initial Checkpoint**: none (random init; P0-B). `project_multimae_small` is registered, but the current runner rejects a blank source.
+- **Initial Checkpoint**: none (explicit random init, `pretrained_encoder: none`).
 
-> The two identifiers marked **PROPOSED** below (`data_set: tir_roi_resp_rgb2d_bp` and `pretrained_encoder: none`) are **not current repo keys**. They are the exact P0-A/P0-B deliverables, not claims that the code already supports them. Every other key in the block exists in the active parser.
+The config below is the shipped file; every key is in the active parser.
 
 ```yaml
 # --- data source -----------------------------------------------------------
-data_set: tir_roi_resp_rgb2d_bp    # PROPOSED id; NOT registered today (P0-A).
-                                   # The existing tir_roi_resp_rgb2d rejects bp.
+data_set: tir_roi_resp_rgb2d_bp    # registered four-stream Stage-2 data_set
 subjects: ''
 split_seed: 42
 split_stratify: sex
@@ -94,7 +95,7 @@ task_set: ''
 
 # --- model / initialisation ------------------------------------------------
 model: project_multimae_small      # 384-d / 12 layers / 6 heads
-pretrained_encoder: none           # PROPOSED value; currently rejected (P0-B)
+pretrained_encoder: none           # explicit random init (landed)
 
 # --- streams & tokenizer geometry ------------------------------------------
 streams: tir,rgb2d,bp,resp         # two visuals + two 1 kHz physiologies
@@ -162,7 +163,7 @@ log_wandb: false
 ## 3. Data and Split Provenance
 
 - **Dataset**: `tir_roi_resp_rgb2d_bp` (proposed, P0-A). Dataset class: a four-stream extension of `TirRoiResp2DPretrainDataset` that preserves the parent’s `frame_start`/`frame_end` and adds the BP window on the same 1000 Hz grid.
-- **Subjects/Sessions/Windows**: `Not yet measured`. The verified tri-modal fold-0 test set is 3099 clips / 204 sessions / 27 subjects after rgb2d gates (`code/notes/eval/rgb2d/resp_recon_zeroshot.md`); the BP `usable` gate will reduce this and must be read from the dataset `stats` after the smoke.
+- **Subjects/Sessions/Windows**: **Measured** on the full partition (2026-11-21, `code/notes/eval/baselines/tir_rgb2d_bp_resp/full_dataset_preflight.md`). `train` 6648 / 6386 / 6785 / 6307 / 6284 clips and `val` 1106 / 854 / 942 / 977 / 971 clips for folds 0–4; Stage 2 builds only `train`/`val`. The tri-modal fold-0 test set (3099 clips / 204 sessions / 27 subjects) is unchanged by this arm.
 - **Partition**: `<exp_root>/fold<k>/partition.json`
 - **Split Policy**: `split_seed=42`, `split_stratify=sex`, subject-disjoint train/val/test roles.
 - **Fold Scope**: five folds, `fold 0..4`; Stage 2 builds only `train` and `val`, never `test`.
@@ -175,7 +176,7 @@ log_wandb: false
 | `resp` | RESP cache | `fs_in=1000`, `fs_out=1000`, default validity knobs (`min_run_s=8.0`) | `python runners/run_build_resp_cache.py --init --out_root "$RESP_CACHE" --raw_root "$RAW_DATA_PATH" --fs_in 1000 --fs_out 1000 --min_run_s 8.0` then `--build --array_index "$IDX" --array_count "$CNT"` |
 | `bp` | BP artefact | `fs_in=1000`, `fs_out=1000`, `min_segment_s=4.0`, frozen `store` | `python runners/run_build_bp_artefact.py --init --out_root "$BP_CACHE" --raw_root "$RAW_DATA_PATH" --fs_in 1000 --fs_out 1000 --min_segment_s 4.0` then `--build --array_index "$IDX" --array_count "$CNT"` |
 
-- **BP window rule**: `s = round(t_start * 1000)`, `n = round(8.0 * 1000) = 8000`; a clip survives only if `bp_windows.usable(mask, s, n)` is true (the whole 8 s lies in one valid segment). Yield is `Not yet measured`.
+- **BP window rule**: `s = round(t_start * 1000)`, `n = round(8.0 * 1000) = 8000`; a clip survives only if `bp_windows.usable(mask, s, n)` is true (the whole 8 s lies in one valid segment). Yield: 98.14 % of the corpus’s 8 s windows, which costs **1.2–2.0 % of clips** per fold (0 sessions dropped, 0 missing shards) — `full_dataset_preflight.md` §1.
 - **RESP-cache compatibility**: `TirRoiRespPretrainDataset._attach_resp_cache` raises when `min_signal_spread` or `rail_touch_v` is non-zero, because the cache stores the sole validity mask. The base tri-modal YAML still sets 0.1 / 9.900; this protocol overrides both to 0.0. This is a required override, not a tuning choice.
 - **Selection Rule**: `fixed_epoch`, `val_criterion=joint_loss`; no early stopping.
 
@@ -207,7 +208,7 @@ log_wandb: false
   - Mode 1: `350 // 25 = 14` tubes across two visuals.
   - Mode 2 with both physiologies at cap: `125 + 125 = 250` physio tokens; visual residual `350 − 250 = 100` = 4 tubes, exactly `2 × video_min_tubes`.
   - Feasibility condition `N_budget − P·C_p ≥ 2mT` is `350 − 2·125 = 100 ≥ 2·2·25 = 100`, i.e. equality. The configuration is feasible but **tight**; raising `physio_cap_ratio` above 0.50 makes it infeasible.
-- **Normalisation**: the dataset z-scores each 8 s `resp` and `bp` clip (`physio_norm: zscore`); `run_pretrain.py` pins `target_norm='none'` for ROI lineages, so the model never re-normalises a 1-D stream. P0-A must add the new `data_set` to `pin_roi_target_norm`.
+- **Normalisation**: the dataset z-scores each 8 s `resp` and `bp` clip (`physio_norm: zscore`); `run_pretrain.py` pins `target_norm='none'` for ROI lineages, so the model never re-normalises a 1-D stream. P0-A added the new `data_set` to `pin_roi_target_norm`, and the smoke confirmed the pin.
 - **Checkpoint Compatibility**: the 96 px / 8 s / `tubelet=4,16,16` / `sig_kernel=32` geometry is a separate lineage from the 64 px configs. Stage 3 is out of scope; if later added, `run_waveform.py` will enforce the ROI contract and abort on a 64 px mismatch.
 
 ---
@@ -258,36 +259,40 @@ The ViT-Base numbers in `code/notes/eval/rgb2d/resp_recon_zeroshot.md` (`+0.5419
 ## 6. Resource Envelope
 
 - **Hardware**: HPC, 4× RTX 6000 or 4× A100 (Slurm). Local smoke on 1 GPU.
-- **Peak VRAM Cap**: **Provisional** ≤ 24 GB per GPU at `batch_size=8`, 96 px, four streams, ViT-Small. The local environment used for this protocol has no PyTorch, so this is an estimate, not a measurement. Replace it with the `Model = ..., params = ...` and `torch.cuda.max_memory_allocated()` values from the smoke log.
-- **Batch Size**: 8 per GPU (provisional; ViT-Small is smaller than the ViT-Base config’s 16).
+- **Peak VRAM Cap**: ≤ 24 GB per GPU at `batch_size=8`, 96 px, four streams, ViT-Small. **Measured**: 2.897 GB allocated / 3.271 GB reserved for one batch-8 step on a 15 GB T4 (the batch-1 smoke was 0.484 / 0.570 GB) — `code/notes/eval/baselines/tir_rgb2d_bp_resp/full_dataset_preflight.md` §2.
+- **Batch Size**: 8 per GPU (confirmed safe at batch 8 single-process; ViT-Small is smaller than the ViT-Base config’s 16).
 - **Workers**: 8 per rank.
-- **Expected Runtime**: `Not measured`. Do not state a wall-clock claim until the smoke and one full epoch are timed.
+- **Expected Runtime**: 831 steps/epoch on fold 0, 1.48 s/it steady state with 8 workers on a T4 ⇒ ≈ 20.5 min/epoch, ≈ 51 h for 150 epochs **on a T4**. The target-GPU figure is unmeasured; do not state a wall-clock claim for HPC until the one-fold run is timed.
+- **Checkpoint Volume**: `save_ckpt_freq=10` ⇒ 15 checkpoints × 366 MB ≈ 5.5 GB/fold, ≈ 27 GB over five folds; verify the `EXP_ROOT` quota first.
 - **Abort Rule**: OOM; any `NaN`/`Inf` in `loss`/`mse_*`; `n_batch != 350`; any cap/floor violation; partition digest mismatch; checkpoint geometry mismatch; `bp_windows.usable` false for every candidate clip.
 
 ---
 
 ## 7. Local Smoke Verification
 
-Run from `code/` with the active virtual environment. The command below is **executable only after P0-A and P0-B**; before that, the runner must fail loudly on the unregistered `data_set` / rejected `pretrained_encoder`.
+Executed 2026-11-21: **PASS** on the real caches. The command below is the executed smoke.
 
 ```bash
+EXP_ROOT=$WORK_SCRATCH/fourstream_smoke_exp_20261121_01
 python -u runners/run_pretrain.py \
   -c configs/pretrain/stage2_fourstream_tir_rgb2d_bp_resp_small_random.yaml \
-  --exp_root /tmp/exp_20261121_fourstream_vits \
-  --fold 0 --dev_smoke \
+  --exp_root "$EXP_ROOT" --fold 0 --dev_smoke \
+  --data_set tir_roi_resp_rgb2d_bp --raw_root "$RAW_DATA_PATH" \
   --epochs 1 --warmup_epochs 0 --num_workers 0 \
-  --max_entries 2 --batch_size 1 \
+  --max_clips 1 --max_entries 2 --batch_size 1 \
   --roi_cache "$ROI_CACHE" \
+  --rgb2d_cache "$RGB2D_CACHE" \
   --resp_cache "$RESP_CACHE" \
-  --rgb2d_cache "$RGB2D_CACHE"
-  # --bp_artefact "$BP_CACHE"   # PROPOSED flag; add only after P0-A lands
+  --bp_artefact "$BP_ARTEFACT" \
+  --output_dir "$EXP_ROOT/fold0/stage2"
 ```
 
 Exact paths reported by the run:
 
 - Config: `configs/pretrain/stage2_fourstream_tir_rgb2d_bp_resp_small_random.yaml`
-- Output: `/tmp/exp_20261121_fourstream_vits/fold0/stage2/`
-- Partition: `/tmp/exp_20261121_fourstream_vits/fold0/partition.dev.json`
+- Output: `$WORK_SCRATCH/fourstream_smoke_exp_20261121_01/fold0/stage2/`
+- Partition: `$WORK_SCRATCH/fourstream_smoke_exp_20261121_01/fold0/partition.dev.json`
+- Result: PASS; metrics, checkpoint and peak VRAM are recorded in `code/notes/eval/baselines/tir_rgb2d_bp_resp/stage2_smoke.md`.
 
 Matched 3-stream control (runnable after P0-B, using the existing dataset):
 
@@ -306,17 +311,17 @@ python -u runners/run_pretrain.py \
 ```
 
 - **Success Condition**: no crash; `n_batch == 350`; the four `kept_*` keys present; both modes observed if `p_virtual_sensing=0.5` over enough steps; no `NaN`/`Inf`; the dataset `stats` show a non-zero number of clips after the BP `usable` gate.
-- **Recorded Artifacts**: runner log, `partition.dev.json`, checkpoint, `selection.json` (if written), dataset `stats` (including BP drop counters), and the exact cache keys printed by `find_cache`.
+- **Recorded Artifacts**: runner log, `partition.dev.json`, checkpoint, `selection.json` (if written), dataset `stats` (including BP drop counters), and the exact cache keys printed by `find_cache`; measured evidence in `code/notes/eval/baselines/tir_rgb2d_bp_resp/stage2_smoke.md`.
 
 ---
 
 ## 8. HPC and Full Run
 
-**P0-D blocker**: there is no pretrain-only sweep. `scripts/hpc/submit_sweep.sbatch` → `submit_sweep.sh` always runs `run_waveform.py` (Stage 3) after Stage 2, which violates “pre-training only”. Do **not** submit the existing wrapper unmodified.
+**P0-D cleared (2026-11-21)**: `scripts/hpc/submit_pretrain_sweep.sbatch` + `.sh` run partition + Stage 2 only. They never call `run_waveform.py`.
 
 **Fold resolution**: there is no inherited Stage-2 checkpoint; every fold starts from the same random initialisation (`RNG seed 0`) and its own `<exp_root>/fold<k>/partition.json` (`split_seed=42`). The fold index only selects the partition; it must not seed the model differently.
 
-The pretrain-only wrapper that P0-D must add (or the verified skip guard it must expose) must execute, per fold:
+The wrapper executes, per fold:
 
 ```bash
 cd code
@@ -326,36 +331,46 @@ python -u runners/run_pretrain.py \
   --data_set tir_roi_resp_rgb2d_bp \
   --raw_root "$RAW_ROOT" \
   --roi_cache "$ROI_CACHE" \
-  --resp_cache "$RESP_CACHE" \
   --rgb2d_cache "$RGB2D_CACHE" \
-  --bp_artefact "$BP_CACHE" \
+  --resp_cache "$RESP_CACHE" \
+  --bp_artefact "$BP_ARTEFACT" \
   --output_dir "$EXP_ROOT/fold$k/stage2"
 ```
 
-`--bp_artefact` is a **proposed flag**, not an existing one; P0-A must add it. Once P0-D provides a verified pretrain-only `.sbatch`, the submission must carry forward:
+`--bp_artefact` is a live runner flag. Submit the first target-hardware test as ONE fold:
 
 ```bash
-EXP_ROOT=<WORK_SCRATCH>/exp_20261121_fourstream_vits \
-FOLDS="0 1 2 3 4" GPU_TYPE=rtx6000 GPUS=4 \
-bash scripts/hpc/submit.sh scripts/hpc/submit_sweep.sbatch
+EXP_ROOT=<WORK_SCRATCH>/fourstream_fold0 \
+FOLDS="0" GPU_TYPE=rtx6000 GPUS=1 \
+ROI_CACHE=... RGB2D_CACHE=... RESP_CACHE=... BP_ARTEFACT=... \
+bash scripts/hpc/submit.sh scripts/hpc/submit_pretrain_sweep.sbatch
 ```
 
-This command is **not valid today** because `submit_sweep.sbatch` runs Stage 3. A Stage-3-free `.sbatch` must be verified in the repository first.
+After that passes, run the five folds:
+
+```bash
+EXP_ROOT=<WORK_SCRATCH>/fourstream_v1 \
+FOLDS="0 1 2 3 4" GPU_TYPE=rtx6000 GPUS=4 \
+ROI_CACHE=... RGB2D_CACHE=... RESP_CACHE=... BP_ARTEFACT=... \
+bash scripts/hpc/submit.sh scripts/hpc/submit_pretrain_sweep.sbatch
+```
 
 ---
 
 ## 9. Decision, Rollback, and Reporting
 
-- **Accept**: G1–G5 pass on the smoke and the first full epoch; the four-stream dataset reports non-zero clips after the BP gate; all checkpoints are written with the expected geometry.
+- **Accept**: G1–G5 pass on the local smoke (already true: `code/notes/eval/baselines/tir_rgb2d_bp_resp/stage2_smoke.md`) and on the one-fold target-hardware smoke; the four-stream dataset reports non-zero clips after the BP gate; all checkpoints are written with the expected geometry.
 - **Retain for Analysis**: G1–G5 pass but G6 (optional) is mixed; report the run as an infrastructure/representation result, not an accuracy result.
 - **Rollback**: restore `streams: tir,rgb2d,resp`, `data_set: tir_roi_resp_rgb2d`, `model: project_multimae_base`, `pretrained_encoder: videomae:k400`, `clip_stride: 2.0`, and drop the BP cache flag. Do not delete the BP artefact until no other run references it.
-- **Stop/Retire Rule**: if P0-A, P0-B, or P0-D is missing, do not submit. If the 8 s BP `usable` gate leaves zero clips on the corpus, retire the 8 s BP arm rather than silently shortening the clip or relaxing `bp_windows.usable`.
+- **Stop/Retire Rule**: do not submit the five-fold run until the one-fold target-hardware smoke passes. If the 8 s BP `usable` gate leaves zero clips on the corpus, retire the 8 s BP arm rather than silently shortening the clip or relaxing `bp_windows.usable`.
 - **Reproducibility Artifacts**: git commit, config delta, all four cache keys, `partition.json` digest, checkpoint digest, runner log, metric JSON, and the exact `stats` counters.
-- **Outcome Record**: do not populate measured outcomes here. Land them under `code/notes/eval/tir_rgb2d_bp_resp/` once verified.
+- **Outcome Record**: measured outcomes are already landed under `code/notes/eval/baselines/tir_rgb2d_bp_resp/` (`cache_preflight.md`, `stage2_smoke.md`, `full_dataset_preflight.md`). Keep every future run there; do not edit this plan with measured results.
 
 ---
 
 ## 10. P0 Lift Plan (task DAG)
+
+**Status (2026-11-21).** Tasks 1–16 are green. The local fold-0 dev smoke passed. The next steps are the one-fold target-hardware smoke, then the five-fold sweep. Measured evidence: `code/notes/eval/baselines/tir_rgb2d_bp_resp/cache_preflight.md` and `stage2_smoke.md`.
 
 This is the implementation order that removes the blockers in §0.4. The todo list mirrors these IDs. Do not start a later phase before its dependencies are green.
 
@@ -380,9 +395,9 @@ This is the implementation order that removes the blockers in §0.4. The todo li
 | 17 | Add optional BP eval pin | 7, 9 | `code/runners/run_eval_recon.py` | `--kept_bp` is exposed and `pin_masking` handles every declared physio stream explicitly. |
 | 18 | Test matched recon budget | 17 | `code/tests/` | 4-stream with `--kept_bp 0.0` and 3-stream arms produce the same 225 visual tokens for `--kept_tir 0.10 --kept_rgb2d 0.50 --kept_resp 0.5`. |
 
-**Critical path**: 1 → 2 → 3 → 13 → 14 → 15 → 16, with 7/9 feeding 14 and 11/12 required only for the full HPC run.
+**Critical path**: 1 → 2 → 3 → 13 → 14 → 15 → 16, with 7/9 feeding 14 and 11/12 required only for the full HPC run. Tasks 1–16 are green.
 
-**Stop rule**: do not start 13–16 until 1–12 are green; do not start 17–18 until the primary run is accepted.
+**Stop rule**: do not start the five-fold run until the one-fold target-hardware smoke passes; tasks 17–18 remain optional and are not required for the primary run.
 
 ---
 

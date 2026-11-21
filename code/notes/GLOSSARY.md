@@ -200,10 +200,11 @@ $$L_\text{joint} = \alpha L_\text{time} + \beta L_\text{Pearson} + \gamma L_\tex
 
 - `data_set`: `bp4d+` / `paired`, `tir_roi` / `tir_roi_resp` / `tir-roi`,
   `rgb_roi` / `rgb_roi_resp` / `rgb-roi`, `tir_roi_resp_rgb2d` / `trimodal`
-  (Stage-2 only).
+  (Stage-2 only), `tir_roi_resp_rgb2d_bp` (Stage-2 only, four-stream).
 - Dataset classes: `PairedPretrainDataset`, `PairedSessionDataset`,
   `RGBRoiPretrainDataset`, `RGBRoiFinetuneDataset`, `TirRoiRespPretrainDataset`,
-  `TirRoiRespFinetuneDataset`, `TirRoiResp2DPretrainDataset`.
+  `TirRoiRespFinetuneDataset`, `TirRoiResp2DPretrainDataset`,
+  `TirRoiResp2DBPPretrainDataset`.
 - Splits: `FoldPlan` (immutable role assignment), `partition.json`
   (`<exp_root>/fold<k>/`, write-once), `partition digest` (sha256 over the roles
   and their seeds), `split_seed` / `split_stratify` (`none` / `sex`),

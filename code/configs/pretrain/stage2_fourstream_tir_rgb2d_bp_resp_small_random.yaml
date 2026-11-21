@@ -1,0 +1,124 @@
+# Stage 2 -- FOUR-STREAM arm: TIR-ROI + 2D-texture ROI + BP + RESP.
+#
+#   streams: tir, rgb2d, bp, resp
+#   geometry: 8 s clip, 4 s hop, 100 frames after temporal_stride=2,
+#             tubelet 4x16x16 -> 25 temporal tokens per spatial tube,
+#             36 spatial tubes, 250 tokens per 1-D stream.
+#
+# This arm needs THREE offline artefacts plus the BP artefact:
+#   --roi_cache      TIR-ROI pixel cache
+#   --rgb2d_cache    2D-texture ROI cache (store 112; input_size 96 <= 112)
+#   --resp_cache     1000 Hz respiration cache
+#   --bp_artefact    1000 Hz BP artefact (OUT_ROOT)
+# The RESP cache and BP artefact store the source grid unchanged, so both
+# `resp_fs` and `bp_fs` MUST equal `fs`; the datasets refuse a mismatch.
+#
+# `pretrained_encoder: none` is the explicit random-init path. It is the only
+# valid init for `project_multimae_small`: no small Stage-1 checkpoint is
+# published.
+#
+# Run from code/ (always with `-u`):
+#   python -u runners/run_pretrain.py \
+#       -c configs/pretrain/stage2_fourstream_tir_rgb2d_bp_resp_small_random.yaml \
+#       --exp_root <exp_root> --fold 0 \
+#       --roi_cache <ROI_CACHE> --rgb2d_cache <RGB2D_CACHE> \
+#       --resp_cache <RESP_CACHE> --bp_artefact <BP_CACHE>
+#
+# Smoke first:
+#   python -u runners/run_pretrain.py \
+#       -c configs/pretrain/stage2_fourstream_tir_rgb2d_bp_resp_small_random.yaml \
+#       --exp_root /tmp/fourstream_probe --fold 0 --dev_smoke \
+#       --epochs 1 --warmup_epochs 0 --num_workers 0 \
+#       --max_entries 8 --batch_size 1 \
+#       --roi_cache <ROI_CACHE> --rgb2d_cache <RGB2D_CACHE> \
+#       --resp_cache <RESP_CACHE> --bp_artefact <BP_CACHE>
+
+# ---------------------------------------------------------------- data source
+data_set: tir_roi_resp_rgb2d_bp     # four-stream Stage-2 dataset
+subjects: ''                        # '' = every discoverable subject
+# ---- ADR-001 roles (train / val / test) -------------------------------------
+split_seed: 42
+split_stratify: sex
+eval_freq: 5
+val_select: fixed_epoch
+val_criterion: joint_loss
+tasks: ''
+# ---- task GROUPS ("distortion levels") -------------------------------------
+# Keep IDENTICAL to the tri-modal arm and its Stage-3 siblings.
+task_groups:
+  low: [T2, T3, T5]                 # passive viewing + short yes/no answers
+  moderate: [T1, T4]                # laughter / facial expression + startle
+  high: [T6, T7, T8, T9, T10]       # singing, threat, pain, anger, disgust
+task_set: ''
+
+# ------------------------------------------------------- model / initialisation
+model: project_multimae_small       # 384-d / 12-layer / 6-head
+pretrained_encoder: none            # explicit random init (no small Stage-1 ckpt)
+
+# ---- streams & tokenizer geometry (ADR-002 §5) ----
+streams: tir,rgb2d,bp,resp          # EXACTLY two visual + two physiological
+tir_channels: 3                     # false-colour thermal render
+tubelet: 4,16,16                    # 100 frames -> 25 temporal tokens
+fs: 1000.0                          # 8 s x 1000 Hz = 8000 samples
+fps: 25.0
+clip_duration: 8.0                  # 200 source frames -> 100 after decimation
+clip_stride: 4.0                    # requested 4 s hop; NOT a Stage-3 contract
+temporal_stride: 2                  # 12.5 fps effective; one tubelet = 320 ms
+seq_len: 0                          # 0 => round(kept_seconds * fs) = 8000
+sig_kernel: 32                      # 32 ms signal token; 250 tokens per stream
+input_size: 96                      # SHARED by tir and rgb2d (6x6 grid)
+pos_init: sincos3d
+roi_padding: 0.10                   # frozen TIR + rgb2d cache key
+crop_rule: square                   # frozen TIR + rgb2d cache key
+max_sway_px: 40                     # TIR motion gate (source px; 0 = off)
+roi_landmarks: ''                   # '' = the TIR 12-point nose+mouth set
+
+# ---- 2D-TEXTURE (rgb2d) SELECTION GATES -- load-time, never cache keys ------
+rgb2d_landmarks: face               # all 49 points; MUST match the cache build
+rgb2d_store: 112                    # cache stored RESIZED to 112 px
+rgb2d_cache_lru: 8
+rgb2d_min_valid_ratio: 1.0          # zero tolerance on the 49-point track
+rgb2d_area_min_frac: 0.5            # drop a clip whose box is <50 % in-frame
+rgb2d_max_sway_px: 110              # matched to the TIR gate (RGB px conversion)
+
+# ---- BP artefact -----------------------------------------------------------
+bp_fs: 1000.0                       # MUST equal fs (no resampling)
+bp_cache_lru: 8
+# `--bp_artefact` / $BP_ARTEFACT is a runtime path, not a config key.
+
+# ---- 1-D label validity ----------------------------------------------------
+# With the RESP cache attached the stored per-sample mask is the sole validity
+# rule; the legacy per-window gates MUST be 0 or the dataset refuses the cache.
+min_signal_spread: 0.0
+rail_touch_v: 0.0
+
+# ---- MASKING: the ADR-002 constant-budget policy (the whole surface) --------
+n_budget: 350                       # visible encoder tokens on EVERY step
+video_cap_ratio: 0.25               # <= 9 of 36 tubes = 225 tokens per visual
+physio_cap_ratio: 0.50              # <= 125 of 250 tokens per physio
+video_min_tubes: 2                  # >= 50 tokens per visual
+p_virtual_sensing: 0.50             # Mode-1 probability
+spatial_patches: 36                 # tokenizer-derived; asserted at build
+physio_tokens: 250                  # tokenizer-derived; asserted at build
+physio_placement: scattered
+physio_span_tokens: 0
+
+# ---- loss: per-modality masked MSE (masked positions only) ----
+signal_weight: 0.5                  # applies to BOTH bp and resp
+physio_norm: zscore                 # dataset-side per-clip z-score
+
+# ---- training (derive the LR from blr; do not set an absolute lr) ----
+epochs: 150
+batch_size: 8                       # per GPU; provisional for ViT-Small
+save_ckpt_freq: 10
+opt: adamw
+blr: 1.5e-4
+min_lr: 0.0
+warmup_epochs: 10                   # must be < epochs
+weight_decay: 0.05
+clip_grad: 5.0
+num_workers: 8
+
+# ---- logging ----
+log_wandb: false
+wandb_project: thesis-project

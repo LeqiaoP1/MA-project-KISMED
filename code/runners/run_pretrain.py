@@ -55,10 +55,12 @@ def get_args():
 
     # model
     parser.add_argument('--model', default='project_multimae_base', type=str,
-                        help='registered model name. project_multimae_{base,'
-                             'large} run the multimodal masked pre-training '
-                             '(the NAME sets the ViT geometry); any project_vit_* '
-                             'runs the single-stream path')
+                        help='registered model name. project_multimae_{small,'
+                             'base,large} run the multimodal masked '
+                             'pre-training (the NAME sets the ViT geometry); '
+                             'any project_vit_* runs the single-stream path. '
+                             'small requires --pretrained_encoder none because '
+                             'no small Stage-1 checkpoint is published.')
     # ViT geometry comes from the --model variant; 0 = "unset" => take it from
     # the name. Set a value only to OVERRIDE (e.g. an ablation).
     parser.add_argument('--enc_embed_dim', default=0, type=int)
@@ -73,7 +75,10 @@ def get_args():
                              "RAW tree (see code/notes/plan/experiments/TirROI_Resp_plan.md); "
                              "'rgb_roi' = the ADD-ON RGB face-ROI dataset "
                              "(landmark crop from 2DFeatures + RAW physiology; "
-                             "see code/data/rgb_roi_dataset.py). A (subject, "
+                             "see code/data/rgb_roi_dataset.py); "
+                             "'tir_roi_resp_rgb2d_bp' = the FOUR-STREAM Stage-2 "
+                             "path (TIR-ROI + 2D texture + BP + respiration). "
+                             "A (subject, "
                              "task) pair whose 2DFeatures frame count differs "
                              "from the jpeg count is EXCLUDED as 'unusable' "
                              "and its 1-D physiology is dropped too.")
@@ -233,6 +238,23 @@ def get_args():
                              'below it the clip is dropped '
                              '(clips_dropped_2d_envelope). Black padding would '
                              'otherwise feed a mostly-empty clip to the model.')
+    parser.add_argument('--bp_artefact', default=env_or('BP_ARTEFACT', ''),
+                        type=str,
+                        help='tir_roi_resp_rgb2d_bp only: OUT_ROOT of an '
+                             'offline BP artefact (data/bp_artefact.py), i.e. '
+                             'the parent of the CACHE_KEY directories. '
+                             'REQUIRED for that data_set. Matched by the full '
+                             'frozen key (fs_in==fs_out, gate thresholds, '
+                             'min_segment_s, store); the run ABORTS on a '
+                             'mismatch.')
+    parser.add_argument('--bp_fs', default=None, type=float,
+                        help='tir_roi_resp_rgb2d_bp only: BP artefact sample '
+                             'rate. The artefact stores the source grid '
+                             'unchanged, so this MUST equal --fs; default None '
+                             '= use --fs.')
+    parser.add_argument('--bp_cache_lru', default=8, type=int,
+                        help='tir_roi_resp_rgb2d_bp only: number of BP shard '
+                             'payloads kept per worker.')
     parser.add_argument('--decode_scale', default=1, type=int,
                         choices=[1, 2, 4, 8],
                         help='rgb_roi only: JPEG decode scale. 1 = native full '
@@ -379,15 +401,16 @@ def get_args():
                              'prior at init, since the Stage-1 MAE pos_embed '
                              'cannot be reused); \'random\' = trunc_normal.')
     parser.add_argument('--pretrained_encoder', default='videomae', type=str,
-                        help='Stage-1 VideoMAE ViT-Base checkpoint that '
-                             'initialises the shared encoder. Corpus specs: '
-                             'videomae:k400 (Kinetics-400), videomae:ssv2 '
+                        help='Stage-1 checkpoint that initialises the shared '
+                             'encoder. Corpus specs: videomae:k400 '
+                             '(Kinetics-400), videomae:ssv2 '
                              '(Something-Something-v2), videomae (source only '
                              '-> --videomae_dataset), base (alias of '
-                             'videomae:k400), or a local .pth path. A blank / '
-                             'random / scratch / mae / timm / large spec is '
-                             'REJECTED: Stage 1 has no blank-backbone path. '
-                             'Downloads into <project_root>/models/initial.')
+                             'videomae:k400), or a local .pth path. The '
+                             'explicit blank aliases none / random / scratch / '
+                             'c0 select RANDOM initialisation (no checkpoint); '
+                             'any other unknown spec is rejected. Downloads '
+                             'into <project_root>/models/initial.')
     parser.add_argument('--videomae_dataset', default='k400', type=str,
                         choices=['k400', 'ssv2'],
                         help='VideoMAE pre-training corpus used when '
@@ -437,17 +460,19 @@ def pin_roi_target_norm(args) -> bool:
     """Pin the model's 1-D target normalisation to identity for ROI lineages.
 
     For every RAW-tree ROI lineage (``tir_roi`` = TIR-ROI+RESP, ``rgb_roi`` =
-    RGB+BP) the DATASET returns a per-clip z-scored 1-D target. The model must
-    therefore NOT normalise the 1-D stream again, so ``--target_norm`` is forced
-    to ``'none'`` for these data_sets; any other value is reported as a no-op.
+    RGB+BP, ``tir_roi_resp_rgb2d`` = TIR+2D+RESP, ``tir_roi_resp_rgb2d_bp`` =
+    the four-stream arm) the DATASET returns a per-clip z-scored 1-D target.
+    The model must therefore NOT normalise the 1-D stream again, so
+    ``--target_norm`` is forced to ``'none'`` for these data_sets; any other
+    value is reported as a no-op.
 
     Returns ``True`` when the pin was applied. No effect on non-ROI paths.
     """
-    from data import (RGB_ROI_DATA_SETS, TIR_ROI_DATA_SETS,
-                      TIR_ROI_RGB2D_DATA_SETS)
+    from data import (FOURSTREAM_DATA_SETS, RGB_ROI_DATA_SETS,
+                      TIR_ROI_DATA_SETS, TIR_ROI_RGB2D_DATA_SETS)
     data_set = str(getattr(args, 'data_set', '') or '').strip().lower()
     if data_set not in (TIR_ROI_DATA_SETS + RGB_ROI_DATA_SETS
-                        + TIR_ROI_RGB2D_DATA_SETS):
+                        + TIR_ROI_RGB2D_DATA_SETS + FOURSTREAM_DATA_SETS):
         return False
     if str(getattr(args, 'target_norm', 'token')) != 'none':
         print(f'[data] data_set {data_set!r}: the dataset owns the 1-D target '
@@ -455,6 +480,44 @@ def pin_roi_target_norm(args) -> bool:
               f"--target_norm 'none' (the model does not re-normalise).")
     args.target_norm = 'none'
     return True
+
+
+def init_stage1_encoder(model, args):
+    """Initialise the shared encoder from Stage-1 weights or leave it random.
+
+    The explicit blank aliases (``''`` / ``none`` / ``random`` / ``scratch`` /
+    ``c0``) are the random-init path: ``resolve_encoder_weights(...,
+    require=False)`` returns an empty path and the model keeps its
+    ``trunc_normal_`` initialisation. Any other unknown spec still raises, so
+    a typo cannot silently train from scratch.
+
+    :returns: ``{'path', 'loaded', 'random'}`` for the caller/log.
+    """
+    from core.multimae import load_pretrained_encoder
+    from models.pretrained import resolve_encoder_weights
+
+    ckpt = resolve_encoder_weights(
+        args.pretrained_encoder,
+        dataset=getattr(args, 'videomae_dataset', 'k400'),
+        require=False)
+    if not ckpt:
+        print(f'[stage1] random init (spec {args.pretrained_encoder!r})')
+        return {'path': '', 'loaded': 0, 'random': True}
+
+    stats = load_pretrained_encoder(model, ckpt)
+    # Provenance line: every fold must show the SAME pristine Stage-1 file.
+    # Printing size+mtime (cheap) lets a fold sweep prove it started from the
+    # shared read-only baseline and not from another fold's output.
+    try:
+        _st = os.stat(ckpt)
+        _prov = (f'{_st.st_size / 1e6:.1f} MB, '
+                 f'mtime {time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(_st.st_mtime))}')
+    except OSError:
+        _prov = 'stat unavailable'
+    print(f'[stage1] init from {ckpt} '
+          f'(spec {args.pretrained_encoder!r}, '
+          f'{stats["loaded"]} encoder tensors, {_prov})')
+    return {'path': ckpt, 'loaded': int(stats['loaded']), 'random': False}
 
 
 def main(args):
@@ -479,37 +542,15 @@ def main(args):
 
     # ----- model ---------------------------------------------------------- #
     if args.model.startswith('project_multimae'):
-        from core.multimae import (build_pretraining_model,
-                                   load_pretrained_encoder)
-        from models.pretrained import resolve_encoder_weights
+        from core.multimae import build_pretraining_model
         model = build_pretraining_model(args)
-        # Stage 1 ALWAYS inherits a VideoMAE ViT-Base encoder. require=True
-        # makes a blank/random --pretrained_encoder a hard error; the loader
-        # itself raises if the file contributes zero encoder tensors (e.g. a
-        # Stage-2 MultiModalMAE checkpoint).
-        ckpt = resolve_encoder_weights(
-            args.pretrained_encoder,
-            dataset=getattr(args, 'videomae_dataset', 'k400'),
-            require=True)
-        stats = load_pretrained_encoder(model, ckpt)
-        # Provenance line: every fold must show the SAME pristine Stage-1 file.
-        # Printing size+mtime (cheap) lets a fold sweep prove it started from
-        # the shared read-only baseline and not from another fold's output.
-        try:
-            _st = os.stat(ckpt)
-            _prov = (f'{_st.st_size / 1e6:.1f} MB, '
-                     f'mtime {time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(_st.st_mtime))}')
-        except OSError:
-            _prov = 'stat unavailable'
-        print(f'[stage1] init from {ckpt} '
-              f'(spec {args.pretrained_encoder!r}, '
-              f'{stats["loaded"]} encoder tensors, {_prov})')
+        init_stage1_encoder(model, args)
     else:
         raise SystemExit(
             f'--model {args.model!r}: Stage 1 only supports the multimodal '
-            f'ViT-Base entrypoints (project_multimae_*). The single-stream '
-            f'project_vit_* path would build a RANDOM backbone, which is not a '
-            f'valid Stage-1 model here.')
+            f'project_multimae_* entrypoints. The single-stream project_vit_* '
+            f'path would build a RANDOM backbone, which is not a valid Stage-1 '
+            f'model here.')
     model.to(device)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f'Model = {args.model}, params = {n_params:,}')

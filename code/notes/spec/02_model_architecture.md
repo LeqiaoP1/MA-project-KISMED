@@ -1,9 +1,7 @@
 # 02 — Model Architecture
 
-> **READ-ONLY SPECIFICATION** — reverse-engineered from `code/core/` on 2026-10-04;
-> updated 2026-10-05 to incorporate design documents in `code/notes/design/`.
+> **READ-ONLY SPECIFICATION** — reverse-engineered from `code/core/` on 2026-10-04.
 > All tensor shapes are documented from actual `forward()` implementations.
-> Design-level contracts from `code/notes/design/` are marked **[design]**.
 
 ---
 
@@ -74,8 +72,6 @@ x = patch_embed(x)            # [B, D, Gt, Gh, Gw]
 x = x.flatten(2).transpose(1, 2)  # [B, Gt*Gh*Gw, D]
 ```
 
-The implementation must preserve the `(time, height, width)` flattening order and use the matching 3-D positional embedding. Shape assertions are required at the adapter output.
-
 Grid sizes at standard geometries:
 
 | `input_size` | `num_frames` | `tubelet` | `stride` | `Gt` | `Gh=Gw` | `n_visual` |
@@ -83,25 +79,6 @@ Grid sizes at standard geometries:
 | 64 | 100 | 2,16,16 | 1 | 50 | 4 | 800 |
 | 64 | 200 | 2,16,16 | 2 | 50 | 4 | 800 |
 | 224 | 100 | 2,16,16 | 1 | 50 | 14 | 9800 |
-
-**TIR-ROI geometry**:
-
-```
-T = 100 frames  (8 s x 25 fps / temporal_stride 2)
-H, W = 64, 64
-sig_kernel = 16 samples
-L = 800 respiration samples at fs=100 Hz
-grid_t = T / tubelet_t = 50
-n_signal = L / sig_kernel = 50
-n_visual = grid_t * (H/16) * (W/16) = 800
-```
-
-Alignment identity (enforced at construction):
-
-```
-tubelet_t * temporal_stride / fps == sig_kernel / fs
-T / tubelet_t == L / sig_kernel
-```
 
 ### `SignalEmbed` (`core/multimae.py`) — Stage-2 1-D signal adapter
 
@@ -187,144 +164,74 @@ x: [B, C, H, W]
 
 ## 7. Stage-2: `MultiModalMAE` — `core/multimae.py`
 
-### 7.1 Stage-2 pre-training objective
-
-**[design]** — `SolutionC_EarlyTokenMixing_stage2.md`
-
-The Stage-2 SSL path is a shared-encoder masked autoencoder: the visible tokens of every stream enter one ViT, and each stream is reconstructed by the shared self-attention decoder over its own visible tokens plus `mask_token`s. TIR video and the 1-D physiological signal are treated symmetrically.
-
-### 7.2 Construction-time validation
+### Construction-time validation
 
 1. Rejects all-visual or all-signal `streams`.
 2. Validates `tubelet` divides `input_size` and `num_frames`.
-3. `_check_space_time_alignment()`: enforces `sig_kernel/fs == tubelet_t*temporal_stride/fps` AND `n_signal == Gt`. Raises `ValueError` on mismatch.
+3. `_check_space_time_alignment()`: enforces `sig_kernel/fs == tubelet_t*temporal_stride/fps` AND `n_signal == Gt`. Raises `ValueError` otherwise.
 4. `pos_init` in `{'sincos3d', 'random'}`.
-5. `target_norm` in `{'token', 'clip', 'none'}` (`'none'` = IDENTITY: the dataset already normalised the 1-D stream). NON-ROI paths only — `run_pretrain.pin_roi_target_norm` forces `'none'` for `tir_roi`/`rgb_roi`.
+5. `target_norm` in `{'token', 'clip'}`.
 
-### 7.3 Sub-modules
+### Sub-modules
 
-| Key | Module |
-|-----|--------|
-| `adapters` | `nn.ModuleDict` — per-stream `TubeletEmbed` or `SignalEmbed` |
-| `positions` | `nn.ModuleDict` — per-stream `_PosMask` (pos_embed + mask_token) |
-| `enc_blocks` | `nn.ModuleList` — `enc_depth` x `Block` |
-| `enc_norm` | `nn.LayerNorm` — post-encoder norm |
-| `dec_blocks` | `nn.ModuleList` — `dec_depth=2` x `Block` (TIR pixel decoder) |
-| `dec_norm` | `nn.LayerNorm` — post-decoder norm |
-| `heads` | `nn.ModuleDict` — per-stream Linear head `D -> patch_dim` |
+| Key | Module | Description |
+|-----|--------|-------------|
+| `adapters` | `nn.ModuleDict` | Per-stream `TubeletEmbed` or `SignalEmbed` |
+| `positions` | `nn.ModuleDict` | Per-stream `_PosMask` (pos_embed + mask_token) |
+| `enc_blocks` | `nn.ModuleList` | `enc_depth` x `Block` |
+| `enc_norm` | `nn.LayerNorm` | Post-encoder norm |
+| `dec_blocks` | `nn.ModuleList` | `dec_depth=2` x `Block` |
+| `dec_norm` | `nn.LayerNorm` | Post-decoder norm |
+| `heads` | `nn.ModuleDict` | Per-stream Linear head: `D -> patch_dim` |
 
-### 7.4 `forward(x)` — shared-encoder
+### `forward(x: Dict[str, Tensor])` tensor flow
 
 ```
-Input: {'tir': [B,3,T,H,W], 'resp': [B,1,S]}  (or rgb,bp, etc.)
+Input: {'rgb': [B,3,T,H,W], 'tir': [B,3,T,H,W], 'bp': [B,1,S]}
 
-Step 1 — Visual input preprocessing + tokenise (all streams):
-  for visual s: x[s] = zscore_clip(x[s])                 # per-channel z over (T,H,W), per sample
+Step 1 — Visual input preprocessing + tokenise:
+  for visual s: x[s] = zscore_clip(x[s])                   # per-ch z over (T,H,W), per sample
   tokens_s = adapters[s](x[s]) + positions[s].pos_embed   # [B, N_s, D]
 
-Step 2 — Constant-budget masking (ADR-002):
-  plan = ConstantBudgetApportioner.sample_step(counts_generator)  # mode + counts
-  for s: ids_keep[s] = place_video/place_signal(plan.kept_tokens[s],
-                            placement_generator)                   # [B, k_s]
-  mask_s = 1 - scatter(ids_keep[s])                                 # [B, N_s], 1 = masked
+Step 2 — Constant-budget masking (ADR-002, core/budget_masking.py):
+  plan = apportioner.sample_step(counts_generator)   # mode + per-stream counts
+  sum(plan.kept_tokens.values()) == n_budget          # 350, contract 1
+  ids_keep[s] = place_video/place_signal(plan.kept_tokens[s],
+                     placement_generator)           # [B, k_s], per-sample
+  mask_s = 1 - scatter(ids_keep[s])                   # [B, N_s], 1 = masked
 
-Step 3 — Concatenate visible tokens (ALL streams in encoder):
-  z_vis = cat([tokens_s[:, ids_keep[s], :] for s in streams], dim=1)
-  assert z_vis.shape == [B, n_budget, D]              # contract 1
+Step 3 — Concatenate visible encoder-stream tokens:
+  z_vis = cat([visible_s for s in streams], dim=1) # [B, sum(N_vis_s), D]
 
 Step 4 — Shared ViT encoder:
   for blk in enc_blocks: z_vis = blk(z_vis)
-  z_vis = enc_norm(z_vis)                       # [B, n_budget, D]
+  z_vis = enc_norm(z_vis)                                  # [B, sum(N_vis_s), D]
 
-Step 5 — Per-stream decoder input: encoder latents + this stream's mask tokens:
-  dec_s = cat([z_vis, mask_token x n_masked_s], dim=1)
-  dec_s[z_vis part]  += 0                        # z already carries positions
-  dec_s[mask part]   += positions[s].pos_embed[ids_masked_s]
+Step 5 — Re-insert mask tokens:
+  full_s[:, mask_s==0] = z_vis[slice_s]
+  full_s[:, mask_s==1] = positions[s].mask_token
 
-Step 6 — Shared lightweight self-attention decoder (dec_depth=2), ONE stream at a
-          time; the z PREFIX is what gives a 0-kept stream a gradient path to the
-          encoder (contract 7):
-  for blk in dec_blocks: dec_s = blk(dec_s)
-  pred_masked_s = heads[s](dec_s[:, n_budget:])
-  pred_s = scatter(pred_masked_s)                # [B, N_s, patch_dim_s]
+Step 6 — Shared lightweight decoder (dec_depth=2):
+  z_dec = cat([full_s for s in streams], dim=1)
+  for blk in dec_blocks: z_dec = blk(z_dec)
+  z_dec = dec_norm(z_dec)                                  # [B, sum(N_s), D]
 
-Step 7 — Norm-pix targets + weighted masked MSE loss
-Returns: {'loss', 'losses', 'losses_mse', 'masks', 'preds', 'mode', 'kept',
-          'kept_units', 'n_batch'}
+Step 7 — Per-stream linear heads:
+  pred_s = heads[s](z_dec[slice_s])                        # [B, N_s, patch_dim_s]
+
+Step 8 — Norm-pix targets (per-token or per-clip z-score based on target_norm)
+          VISUAL streams: per-cube z ONLY for masked cubes; unmasked cubes keep
+          the clip-normalised values (`_targets(x, stream, mask)`).
+          Datasets still return [0, 1]; the MODEL z-scores before patching
+          (`core/input_adapters.zscore_clip`). Contract:
+          `design/Video_input_Preprocessing.md`.
+
+Step 9 — Weighted masked MSE loss
+
+Returns: {'loss': scalar, 'losses_mse': {...}}
 ```
 
-`zscore_clip` (`core/input_adapters.py`) runs AFTER `_fit_time` and BEFORE patch
-division, so the statistics describe the clip the adapters actually see. The
-datasets keep returning `[0, 1]` — that is the dataset contract, not the network
-input. Contract: `design/Video_input_Preprocessing.md`.
-
-`_targets(x, stream, mask)` is **masked-only**: a masked cube is standardised
-with its OWN mean/var over its `C*t*ph*pw` values; an unmasked cube carries the
-clip-normalised values (no local map), and `MaskedMSELoss` keeps only
-`mask == 1`. `mask=None` means "every cube masked" (unit tests only). The 1-D
-streams ignore the mask — their label space is the dataset's per-clip z-score
-decided by `target_norm`.
-
-### 7.5 Masking — the ADR-002 constant-budget policy
-
-**[design]** — `design/ADR-002-asymmetric-multimodal-masking.md`, implemented in
-`core/budget_masking.py` (policy: counts only) + `core/mask_placement.py`
-(placement: indices only). There is **one** masking policy; `mask_ratio_*`, the
-Dirichlet sampler and the `masking:` selector were removed with it.
-
-**Masking units.** A visual unit is one spatial tube (one patch + all of its
-temporal positions), so a visual count is always a multiple of
-`tokens_per_unit = Gt`. A physiological unit is one temporal token:
-
-| stream kind | unit | units per stream | tokens per unit | tokens |
-| :--- | :--- | ---: | ---: | ---: |
-| visual (`tir`, `rgb2d`, `rgb`) | spatial tube | `Gh*Gw` = 36 | `Gt` = 25 | 900 |
-| physiological (`bp`, `resp`) | temporal token | `seq_len//sig_kernel` = 250 | 1 | 250 |
-
-**Two modes, one constant budget.** Every step the apportioner draws a mode and
-one kept-token count per stream such that
-`sum(kept_tokens) == n_budget` (default 350):
-
-| Mode | draw |
-| :--- | :--- |
-| 1 — pure virtual sensing (p = `p_virtual_sensing`) | `K_p = 0` for every physiological stream; the two visual streams split `n_budget/T` tubes inside `[video_min_tubes, M]` |
-| 2 — waveform inpainting | each physiological stream draws `K_p` uniform on `[0, C_p]`; the modulo remainder is charged to the FIRST declared physiological stream (a deliberate asymmetry); the visual residual is split the same clamped way |
-
-Caps and floors are derived from the run's parameters (`M =
-floor(video_cap_ratio * units)`, `C_p = floor(physio_cap_ratio * unit count)`),
-and three feasibility conditions are validated at CONSTRUCTION (budget a multiple
-of `T`; `2m <= n_budget/T <= 2M`; `n_budget - P*C_p >= 2mT`). An infeasible tuple
-raises `ValueError` naming the condition and the numbers.
-
-**Placement** (`core/mask_placement.py`) is drawn per SAMPLE: `place_video`
-keeps the full temporal column of `k` spatial tubes; `place_signal` keeps `k`
-tokens either scattered (uniform without replacement, default) or as contiguous
-spans of `physio_span_tokens`. Counts are batch-uniform, placements are not.
-
-| knob | default | meaning |
-| :--- | ---: | :--- |
-| `n_budget` | 350 | visible encoder tokens on EVERY step |
-| `video_cap_ratio` | 0.25 | kept-ratio ceiling per visual stream |
-| `physio_cap_ratio` | 0.50 | kept-ratio ceiling per physiological stream |
-| `video_min_tubes` | 2 | kept-tube floor per visual stream |
-| `p_virtual_sensing` | 0.50 | probability of Mode 1 |
-| `spatial_patches` | 36 | tokenizer-derived unit count per visual stream |
-| `physio_tokens` | 250 | tokenizer-derived unit count per physiological stream |
-
-`spatial_patches` / `physio_tokens` are derived from the tokenizer; passing them
-explicitly is allowed only when it agrees, and the model refuses otherwise.
-
-**RNG contract.** Counts come from a generator seeded by `(base_seed, epoch,
-step)` WITHOUT the rank, so every DDP rank derives the same plan without a
-collective. Placements add the rank, so samples differ across ranks. Validation
-replays a fixed-seed sequence instead of pinning per-stream fractions.
-
-**Loss-key stability.** Every declared stream emits its `losses_mse` entry on
-every step and every rank (an explicit zero when it has no masked position). A
-0-kept stream's adapter receives no gradient — the adapter is skipped — while
-its loss still reaches the encoder through the decoder's `z` prefix.
-
-### 7.6 Geometry variants
+### Geometry variants
 
 | Variant | `embed_dim` | `enc_depth` | `enc_num_heads` |
 |---------|------------|------------|----------------|
@@ -339,13 +246,7 @@ its loss still reaches the encoder through the decoder's `z` prefix.
 
 ## 8. Stage-3: `MultiModalWaveformRegressor` — `core/waveform_model.py`
 
-### 8.1 Overview
-
-**[design]** — `SolutionC_EarlyTokenMixing_stage3.md`
-
-Stage 3 is the **sensor-failure** condition: only visual input, **no masking**, no 1-D physio stream. The Stage-2 encoder is fine-tuned end-to-end; `freeze_encoder()` exists but is not called.
-
-### 8.2 Sub-modules (identical key names to Stage-2 encoder)
+### Sub-modules (identical key names to Stage-2 encoder)
 
 | Key | Description |
 |-----|-------------|
@@ -357,16 +258,14 @@ Stage 3 is the **sensor-failure** condition: only visual input, **no masking**, 
 
 > Key name identity with Stage-2 is critical: `load_stage2_encoder` transfers weights by exact key match.
 
-### 8.3 `forward(x)` tensor flow
-
-**[design]** — `SolutionC_EarlyTokenMixing_stage3.md §Input+Encoder`
+### `forward(x)` tensor flow
 
 ```
-x: {'rgb': [B,3,T,H,W]}  (or plain Tensor; NO masking anywhere)
+x: {'rgb': [B,3,T,H,W]}  (or plain Tensor for single-stream)
 
 For each stream s:
   xt = _fit_time(x[s], num_frames, s)    # trim if T > n; raise ValueError if T < n
-  xt = zscore_clip(xt)                   # per-channel z over (T,H,W), per sample
+  xt = zscore_clip(xt)                   # per-ch z over (T,H,W), per sample (same as Stage 2)
   tok = adapters[s](xt)                  # [B, n_visual, D]
   assert tok.shape[1] == n_visual        # hard geometry check
   tok = tok + positions[s].pos_embed
@@ -387,32 +286,23 @@ return pred.reshape(B, -1)                      # [B, output_len]
 
 `output_len = grid_t * k`; must be a multiple of `grid_t` (enforced at construction).
 
-The SAME `zscore_clip` as Stage 2 (`core/input_adapters.py`) runs before the
-adapter, so Stage 3 consumes the exact input space the Stage-2 encoder was
-pre-trained on. Every Stage-3 stream is validated visual, so no branch is needed.
-There is no masking and no target normalisation in this path.
-
-The model must assert the expected `grid_t` and output `L` rather than silently interpolating a desynchronised sequence.
-
-### 8.4 Head variants
+### Head variants
 
 | `head_style` | `head_hidden` | Module |
 |-------------|--------------|--------|
 | `'linear'` | 0 | `Linear(D, k)` |
 | `'linear'` | h > 0 | `Linear(D,h) -> GELU -> Linear(h,k)` |
-| `'transposed_conv'` | N/A | `WaveformUpsampleHead` (recommended) |
+| `'transposed_conv'` | N/A | `WaveformUpsampleHead` |
 
-### 8.5 `WaveformUpsampleHead` tensor flow
-
-Spatial aggregation must preserve the temporal grid before upsampling to the target length.
+### `WaveformUpsampleHead` tensor flow
 
 ```
 h: [B, grid_t, D]
-  -> transpose(1,2)                       -> [B, D, grid_t]
-  -> Conv1d(D, hidden, k=3, pad=1)        -> [B, hidden, grid_t]
+  -> transpose(1,2)                      -> [B, D, grid_t]
+  -> Conv1d(D, hidden, k=3, pad=1)       -> [B, hidden, grid_t]
   -> GELU
   -> ConvTranspose1d(hidden, 1, k=s, s=s) -> [B, 1, grid_t*s]
-  -> transpose(1,2)                       -> [B, grid_t, s]
+  -> transpose(1,2)                      -> [B, grid_t, s]
 ```
 
 `s = samples_per_token`. Segment k covers exactly tubelet window k (time-alignment preserved).
@@ -457,19 +347,13 @@ All: `pred: [B,N,D]`, `target: [B,N,D]`, `mask: [B,N]` (1 = masked = compute los
 
 Denominator: `mask.sum() + 1e-6`.
 
-Targets come from `MultiModalMAE._targets`: for VISUAL streams only the MASKED
-cubes are per-cube z-scored; unmasked cubes carry the clip-normalised values
-(`design/Video_input_Preprocessing.md`). The 1-D targets are decided by
-`target_norm` (`token` / `clip` / `none`) and are unaffected by `mask`.
-
 ### Stage-3 Waveform Losses — `core/waveform_losses.py`
 
 All accept `[B,T]` or `[B,1,T]` (channel squeezed via `_to_1d`).
 
-**`PearsonLoss`**: `mean(1 - r)` where `r = (p_norm . t_norm) / (||p_norm|| * ||t_norm||)`. Must use a variance floor/epsilon and define a finite fallback for near-constant predictions or targets.
+**`PearsonLoss`**: `mean(1 - r)` where `r = (p_norm . t_norm) / (||p_norm|| * ||t_norm||)`.
 
-**`L_time` (point-wise Huber)**: `torch.nn.SmoothL1Loss(beta=huber_beta)`, `mean` reduction, on the raw point-wise error (no per-sample centring). `huber_beta` is in TARGET-STD units; the label is z-scored per clip, so its std is ~1 and the default `1.0` sits at ~1 std — quadratic inside that band, linear beyond.
-Amplitude-only (std-matching) is NOT used: it is blind to POLARITY and SHAPE (an inverted waveform has the same std, mean and magnitude spectrum). A point-wise term does charge a constant phase offset, which is accepted here — the waveform, not just the rate, is the deliverable.
+**`L_time` (point-wise Huber)**: `torch.nn.SmoothL1Loss(beta=huber_beta)`, `mean` reduction, on the raw point-wise error. `huber_beta` is in TARGET-STD units (the label is z-scored per clip, so 1.0 ~= 1 std).
 
 **`MultiResolutionSTFTLoss`**: for each `n_fft` in `fft_sizes`:
 
@@ -483,17 +367,7 @@ total += sc + lm
 
 Degenerate-target guard: skip samples with `||T_mag|| <= 1e-6 * max_batch(||T_mag||)`.
 
-**[design, historical]** — `SpanMask_PhysioSignals.md §5`: while this term was also wired into Stage 2 (removed 2026-11-09), it was informative **only after span masking removed the interpolation shortcut**. Under scattered masking its optimum is already achieved by the linear interpolator (`spec_interp 0.98`); at the weights tried it produced `spec_resp 3.7e8` and destroyed the model. Under a 4 s span the interpolator degrades to `spec_interp 2.37` — a magnitude-spectral loss can then detect spectral damage that amplitude loss forgives.
-
-**[design]** — `SpanMask_PhysioSignals.md §3`: MSE and MR-STFT are complementary and neither is sufficient alone:
-
-| Error type | MSE | MR-STFT |
-|-----------|----|--------|
-| 1 s boxcar smoothing | 0.090 (best in table!) | 2.330 (bad) |
-| Sign flip (-z) | 4.000 (worst) | 0.000 (free) |
-| 1 s time shift | 2.557 | 2.016 |
-
-**`WaveformJointLoss`**: `L = alpha*L_time + beta*PearsonLoss + gamma*MultiResolutionSTFTLoss`, where `L_time` is the point-wise Huber described above (`huber_beta` in target-std units).  
+**`WaveformJointLoss`**: `L = alpha*L_time + beta*PearsonLoss + gamma*MultiResolutionSTFTLoss` with `L_time` the point-wise Huber.  
 Default alpha=beta=gamma=1.0. Weights stored as `register_buffer`.
 
 ---
@@ -510,29 +384,4 @@ Default alpha=beta=gamma=1.0. Weights stored as `register_buffer`.
 
 Geometry guard: `pos_embed` shape mismatch raises `ValueError` with actionable message.
 
-Stage-1 VideoMAE -> Stage-2: `canonicalise_vit_state_dict` handles the official MAE/VideoMAE and the HF-transformers VideoMAE checkpoint layouts. The 3-D `patch_embed.proj.weight [D, C, t, ph, pw]` (VideoMAE tubelet) is copied **verbatim**; a tubelet mismatch raises. The legacy 2-D boxcar inflation was removed with the non-VideoMAE sources.
-
----
-
-## 12. Design Config Map
-
-| Config file | Purpose |
-|------------|---------|
-| `configs/pretrain/stage2_budget_tir_roi_resp_rgb2d.yaml` | Stage 2, shared-encoder MAE at the ADR-002 geometry (the live arm) |
-| `configs/pretrain/stage2_hpc_tir_roi_resp.yaml` | Stage-2 record (single visual stream: refused under contract 5) |
-| `configs/finetune/resp_tir_roi_local.yaml` | Historical Stage-3 |
-| `configs/finetune/resp_tir_roi_local_matched.yaml` | Stage 3, `head_style: transposed_conv`, `head_init: none`, `layer_decay: 0.75` |
-
-### Masking YAML keys (ADR-002 — the whole surface)
-
-```yaml
-n_budget: 350              # constant visible encoder tokens per step
-video_cap_ratio: 0.25      # kept-ratio ceiling per visual stream
-physio_cap_ratio: 0.50     # kept-ratio ceiling per physiological stream
-video_min_tubes: 2         # kept-tube floor per visual stream
-p_virtual_sensing: 0.50    # probability of Mode 1
-spatial_patches: 36        # tokenizer-derived, asserted at build
-physio_tokens: 250         # tokenizer-derived, asserted at build
-physio_placement: scattered  # 'scattered' | 'span' (placement, not policy)
-physio_span_tokens: 0      # required only when physio_placement: span
-```
+Stage-1 ViT -> Stage-2: `canonicalise_vit_state_dict` handles MAE, VideoMAE, and HF-transformers checkpoint layouts. 2-D `patch_embed.proj.weight [D, C, ph, pw]` is inflated along the tubelet time axis to `[D, C, t, ph, pw]` (repeating, divided by t).
