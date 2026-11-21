@@ -59,6 +59,7 @@ ROI_PRETRAIN_CONFIGS = (
     'configs/pretrain/stage2_local_tir_roi_resp.yaml',
     'configs/pretrain/stage2_local_rgb_roi_bp.yaml',
     'configs/pretrain/stage2_budget_tir_roi_resp_rgb2d.yaml',
+    'configs/pretrain/stage2_fourstream_tir_rgb2d_bp_resp_small_random.yaml',
 )
 
 
@@ -226,6 +227,14 @@ def test_pin_roi_target_norm_forces_identity(capsys):
 def test_pin_roi_target_norm_covers_rgb_roi():
     """RGB+BP gets the SAME treatment -- that is the extension."""
     a = argparse.Namespace(data_set='rgb_roi', target_norm='clip')
+    assert pin_roi_target_norm(a) is True
+    assert a.target_norm == 'none'
+
+
+def test_pin_roi_target_norm_covers_fourstream():
+    """The four-stream arm owns BOTH 1-D labels -> the same identity pin."""
+    a = argparse.Namespace(data_set='tir_roi_resp_rgb2d_bp',
+                           target_norm='clip')
     assert pin_roi_target_norm(a) is True
     assert a.target_norm == 'none'
 

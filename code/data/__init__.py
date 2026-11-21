@@ -1,7 +1,7 @@
 """Dataset + masking API."""
-from .datasets import (RGB_ROI_DATA_SETS, TIR_ROI_DATA_SETS,
-                       TIR_ROI_RGB2D_DATA_SETS, build_dataset,
-                       build_pretraining_corpus_dataset,
+from .datasets import (FOURSTREAM_DATA_SETS, RGB_ROI_DATA_SETS,
+                       TIR_ROI_DATA_SETS, TIR_ROI_RGB2D_DATA_SETS,
+                       build_dataset, build_pretraining_corpus_dataset,
                        build_pretraining_dataset, register_dataset,
                        list_datasets)
 from .masking_generator import (RandomMaskingGenerator, TubeMaskingGenerator,

@@ -46,38 +46,10 @@ The session name encodes subject (`'F001_T1'.rsplit('_', 1)[0]` -> `'F001'`), en
 
 **Session discovery** (`scan_sessions`): scans `data_path` for dirs containing `rgb/`, `tir.wmv`, `signals.csv`. Falls back to first `*.wmv`. Raises `FileNotFoundError` if no valid sessions found.
 
-**Split policy (ADR-001, implemented 2026-11-19):**
-- **One implementation**: `code/protocol/` owns every role. `code/utils/splits.py`
-  and its `n_folds` / `use_small_val` / `split_role` / `train_ratio` /
-  `val_subject` / `split_by` arguments are **deleted**; a config that still
-  carries one fails to load (deliberate migration alarm).
-- **Universe** (`data/universe.py::corpus_subjects`): every subject that owns a
-  session with a video, `IRFeatures/<S>_<T>.txt` and
-  `Physiology/<S>/<T>/Resp_Volts.txt`. Independent of `--tasks`, `--subjects`,
-  caps and cleaning thresholds — those narrow the CLIPS a role reads (I2).
-- **Roles** (`protocol.build_plan`): sorted ids, optional seeded `sex`
-  within-stratum shuffle + interleave, `np.array_split` into `K = 5` blocks;
-  block `k` = `test`, ~10% of the universe drawn from the other blocks = `val`,
-  remainder = `train` (`val` is stratified too when `split_stratify='sex'`).
-- **Record**: `<exp_root>/fold<k>/partition.json`, write-once, carrying the three
-  role lists, realised counts, the universe digest and a partition digest.
-  Both stages read the same file; a differing digest is a hard error.
-- **Consumers**: `build_dataset(args, plan, role)` (Stage 3, all three roles) and
-  `build_pretraining_dataset(args, plan, role)` (Stage 2, `train`/`val` only —
-  the test role is never loaded).
-- **Empty roles**: a `val`/`test` role whose subject lost every clip to the
-  cleaning rules is a real EMPTY view with a recorded reason; `train` empty is
-  fatal. An empty role is never forwarded as `subjects=[]`, which every
-  discovery helper reads as "every subject".
-- **Selection**: `val_select=fixed_epoch` (default) or `best_val`, recorded in
-  `selection.json` with `eval_freq`, the selected epoch, the criterion and its
-  value; `best.pth` is written only under `best_val`.
-- **Test scoring**: a separate `--eval_role test` process, once per fold, under
-  `<exp_root>/fold<k>/stage3/test/`; the artefact itself refuses a second run.
-- **Off-protocol**: `bp`/`au` (the canonical `paired` layout) have no subject
-  enumerator, so `build_dataset` / `build_pretraining_dataset` refuse them and
-  `runners/run_finetune.py` stops with a reason. They cannot produce a thesis
-  number until a follow-up adds an enumerator.
+**Split policy**:
+- `split_by='session'` (default): splits sorted session list at `train_ratio`. **Risk: subject leakage.**
+- `split_by='subject'`: groups by subject prefix; subject-disjoint. **Recommended for evaluation.**
+- Stage-2 (`PairedPretrainDataset`): always `train_ratio=1.0` (pretrain on all).
 
 **Dev caps** (applied in order): `max_sessions` -> `max_clips` -> `max_entries`.
 
@@ -104,8 +76,6 @@ The session name encodes subject (`'F001_T1'.rsplit('_', 1)[0]` -> `'F001'`), en
 
 **ROI crop pipeline**: 2DFeature landmarks -> bounding box + `roi_padding` -> crop + resize to `input_size x input_size`. Sessions where 2DFeatures frame count differs from JPEG count are rejected (`unusable`).
 
-**Frame source — extracted OR archived** (added 2026-10-28): the JPEGs may be an extracted `2D+3D/<S>/<T>/` directory **or** a per-subject archive `2D+3D/<S>.zip` (BP4D+ ships 140 archives and unpacks nothing). `discover_rgb_sessions` handles both and tags the spec with `source_kind` (`'dir'` | `'zip'`); a subject present both ways uses the directory. An archived task is addressed by a source URI `zip+file://<abs zip>!/<member prefix>` (`zip_source` / `split_zip_source` / `is_zip_source`), which is what `spec['rgb_dir']` / `entry['rgb_dir']` hold, so `os.path.join(entry['rgb_dir'], name)` still names a frame and `_read_rgb` / `_source_size` decode it with `cv2.imdecode` (same pixels as `cv2.imread` on the extracted file). Consequence for runs: `$RAW_DATA_PATH` may point at a zip-only mount, `stats['sessions_from_zip']` records how many sessions were read that way, and the per-process `ZipFile` handle cache is keyed on `os.getpid()` so a forked DataLoader worker reopens instead of sharing a seek offset.
-
 **Builders**: `build_rgb_roi_pretrain_dataset(args)`, `build_rgb_roi_finetune_dataset(is_train, test_mode, args)`.
 
 **Role (S1 terminology, 2026-11-17).** This lineage emits the `rgb` stream and is **not deprecated**: it is the only visible stream reachable from `PairedSessionDataset` (`data_set: bp4d+`), the AU probe and Stage 3. It is, however, the BP-arm Stage-2 source only, and it can never be fused with `tir` (the model has ONE global `input_size`), so any visible+thermal run uses `rgb2d` instead (§3.5).
@@ -120,9 +90,7 @@ The session name encodes subject (`'F001_T1'.rsplit('_', 1)[0]` -> `'F001'`), en
 
 **ROI crop pipeline**: `IRFeatures` landmarks -> `roi_box_from_landmarks(..., crop_rule)` + `roi_padding`. With `crop_rule: square` (the default) the padded box is squared about its centre FIRST, so the rescale applies ONE scale factor (`sx == sy`) and the anatomy is never deformed; `crop_rule: box` keeps the legacy per-axis geometry for A/B. A box that cannot be placed without cutting the landmark envelope raises `RoiBoxOutOfFrame`. Clips whose target-landmark centroid travels further than `max_sway_px` (40 source px; 0 = off) inside the window are DROPPED (counted as `clips_dropped_motion`), and clips touching a (0,0) sentinel row are dropped whole.
 
-**Label validity + the respiration cache (2026-10-31).** The TIR-ROI label path decides validity ONCE on the RAW signal and can read the label from an offline artefact (`data/resp_preprocess.py`, `data/resp_cache.py`, built by `runners/run_build_resp_cache.py`). A sample is invalid when it sits in a saturation EVENT (`\|V\| > 9.95` lasting `>= 1 s`), in ANY `5 s` window with `ptp < 0.3 V`, or in a valid run shorter than `8 s` (the last three are the cache key's `sat_v`/`sat_min_s`, `flat_window_s`/`flat_ptp_v`, `min_run_s`). The artefact stores the RUN-MEAN-REMOVED signal on a fixed `fs_out == --fs` grid with `NaN` exactly where the mask is False; with `--resp_cache` a window is usable iff `mask[s:s+n].all()` and nothing re-tests its content. The two window rules below are the **LEGACY raw path** and are refused (set to 0) when a cache is attached, so content is never filtered twice. Contract: `design/ADR-003-resp-session-cache-artefact.md`; the artefact's own build accounting and source-rate evidence: `eval/resp/resp_artefact_build.md` (the artefact is modality-independent; `eval/tir_resp/resp_preprocess_impact.md` keeps only the TIR dataset's clip accounting). The window rule itself lives in `data/resp_window.py` and NOWHERE else (`window_indices`, `usable`, `read_window`, `window_cause`, `assert_clip_fits`, `verify_identity`), so the dataset and the evaluator cannot drift apart. Two build-time constraints are refused at `--init`: `fs_out` must DIVIDE `fs_in` (an integral decimation factor is what lands every run on exact master-grid instants, so no run is placed with a sub-sample phase error), and `--resample_taps_per_phase` must be `>= 10` (the run-edge pad and the discarded output count are derived from the filter's real support — 100 source samples at 1000 -> 100 Hz). A hole NARROWER than one output period is widened to cover at least one grid instant; the mask is never dilated, so a run bounded by wider holes keeps every sample and an exactly 8 s run still yields 800 usable samples.
-
-**Legacy window rules (raw `Resp_Volts.txt` path only).** `rail_touch_v` rejects a window that TOUCHED the recorder rail -- i.e. it contains any sample with `abs(x) >= rail_touch_v` volts (the recorder clamps at `+/-10 V`, so the shipped `9.90` drops every window holding a rail-valued target sample: a dead/pinned channel AND a genuinely clipped trough). `min_signal_spread` (shipped `0.1`) then rejects a window whose spread (`max−min`) is below it -- the dead-signal guard for a channel PINNED just inside a clamp without touching it; it is checked second and is complementary to the rail test.
+**Label validity + the respiration cache (2026-10-31).** The TIR-ROI label path decides validity ONCE on the RAW signal and can read the label from an offline artefact (`data/resp_preprocess.py`, `data/resp_cache.py`, built by `runners/run_build_resp_cache.py`). A sample is invalid when it sits in a saturation EVENT (`abs(V) > 9.95` lasting `>= 1 s`), in ANY `5 s` window with `ptp < 0.3 V`, or in a valid run shorter than `8 s`. The artefact stores the RUN-MEAN-REMOVED signal on a fixed `fs_out == --fs` grid with `NaN` exactly where the mask is False; with `--resp_cache` a window is usable iff `mask[s:s+n].all()` and nothing re-tests its content. `rail_touch_v` / `min_signal_spread` are the **LEGACY raw path** knobs and are refused (set to 0) when a cache is attached, so content is never filtered twice. Contract: `design/ADR-003-resp-session-cache-artefact.md`; the artefact's own build accounting and source-rate evidence: `eval/resp/resp_artefact_build.md` (the artefact is modality-independent; `eval/tir_resp/resp_preprocess_impact.md` keeps only the TIR dataset's clip accounting). The window rule itself lives in `data/resp_window.py` and NOWHERE else (`window_indices`, `usable`, `read_window`, `window_cause`, `assert_clip_fits`, `verify_identity`), so the dataset and the evaluator cannot drift apart. Two build-time constraints are refused at `--init`: `fs_out` must DIVIDE `fs_in` (an integral decimation factor is what lands every run on exact master-grid instants, so no run is placed with a sub-sample phase error), and `--resample_taps_per_phase` must be `>= 10` (the run-edge pad and the discarded output count are derived from the filter's real support — 100 source samples at 1000 -> 100 Hz). A hole NARROWER than one output period is widened to cover at least one grid instant; the mask is never dilated, so a run bounded by wider holes keeps every sample and an exactly 8 s run still yields 800 usable samples.
 
 **Task groups** (`data/task_groups.py`): the shipped tiers (v2, 2026-10-24) are `low=[T2,T3,T5]`, `moderate=[T1,T4]`, `high=[T6,T7,T8,T9,T10]` -- a PARTITION of `T1`..`T10`, canonical form `data.task_groups.SHIPPED_TASK_GROUPS`, pinned by `tests/test_task_group_configs.py`. Stage-2 and Stage-3 must use **identical** `task_groups` / `task_set`.
 
@@ -154,6 +122,26 @@ A THIRD cached stream so Stage 2 can run `tir` + `rgb2d` + `resp` on ONE clip wi
 
 **Frame source**: extracted `2D+3D/<S>/<T>/*.jpg` when present, else the members of `2D+3D/<S>.zip` decoded in memory via `cv2.imdecode` — `2D+3D` is **never extracted to disk**, so the cache is the only on-disk form of this stream.
 
+### 3.6 Four-stream Stage-2 (`tir` + `rgb2d` + `bp` + `resp`) — 2026-11-21
+
+Adds the 1000 Hz BP waveform to the tri-modal window. Contract: `data/fourstream_dataset.py`; cache contract `data/bp_artefact.py` + `data/bp_windows.py`; preflight `notes/eval/baselines/tir_rgb2d_bp_resp/cache_preflight.md`.
+
+| Piece | Name |
+|---|---|
+| Dataset | `data/fourstream_dataset.py::TirRoiResp2DBPPretrainDataset` (subclasses `TirRoiResp2DPretrainDataset`) |
+| `data_set` | `tir_roi_resp_rgb2d_bp` — **Stage-2 only** (`build_dataset` refuses it) |
+| Streams | `streams: tir,rgb2d,bp,resp`; two visuals + two physiologies |
+| Builder | `build_tir_roi_rgb2d_bp_pretrain_dataset(args)` |
+| Config | `configs/pretrain/stage2_fourstream_tir_rgb2d_bp_resp_small_random.yaml` |
+
+**Window**: the parent's `t_start`/`frame_start` is used unchanged. The BP window is `s = round(t_start*1000)`, `n = round(kept_seconds*1000) = seq_len`; a clip survives only when `bp_windows.usable(mask, s, n)` is true (the whole 8 s lies in one valid segment). The surviving `bp` window is z-scored per clip with the same `_normalize` used by `resp` (`ddof=0`). Output: `tir [B,3,T,96,96]`, `rgb2d [B,3,T,96,96]`, `resp [B,1,8000]`, `bp [B,1,8000]`.
+
+**BP artefact**: `runners/run_build_bp_artefact.py`; identity `bpsession_src1000_range30-250_flat200ms_rail30ms_seg4s_v1_<hash>`; `fs_in == fs_out == 1000`, no resampling. `bp_artefact` is the OUT_ROOT (parent of the keyed directory). A `skips/` marker is a legitimate exclusion and drops the clip; a missing shard without a marker is an incomplete build and raises. Runner flags: `--bp_artefact`, `--bp_fs` (must equal `--fs`), `--bp_cache_lru`.
+
+**Geometry**: 8 s, 100 frames after `temporal_stride=2`, `tubelet=4,16,16`, `input_size=96`, `fs=1000`, `sig_kernel=32`; 36 spatial tubes x 25 tokens per visual stream, 250 tokens per physio; `n_budget=350`, `video_cap_ratio=0.25`, `physio_cap_ratio=0.50`, `video_min_tubes=2`.
+
+**Initialisation**: the shipped arm uses `project_multimae_small` + `pretrained_encoder: none` (explicit random init; no small Stage-1 checkpoint is published).
+
 ---
 
 ## 4. Dataset Dispatcher — `data/datasets.py`
@@ -166,9 +154,10 @@ A THIRD cached stream so Stage 2 can run `tir` + `rgb2d` + `resp` on ONE clip wi
 | `'tir_roi'`, `'tir_roi_resp'`, `'tir-roi'` | `TirRoiRespFinetuneDataset` |
 | `'rgb_roi'`, `'rgb_roi_resp'`, `'rgb-roi'` | `RGBRoiFinetuneDataset` |
 | `'tir_roi_resp_rgb2d'`, `'trimodal'` | Stage-2 only: `TirRoiResp2DPretrainDataset` (§3.5); `build_dataset` has no fine-tune view |
+| `'tir_roi_resp_rgb2d_bp'` | Stage-2 only: `TirRoiResp2DBPPretrainDataset` (§3.6); `build_dataset` has no fine-tune view |
 | custom registered | `@register_dataset` decorator |
 
-`build_pretraining_dataset(args)` dispatches similarly for Stage-2: `TIR_ROI_DATA_SETS` -> `build_tir_roi_pretrain_dataset`, `RGB_ROI_DATA_SETS` -> `build_rgb_roi_pretrain_dataset`, and `TIR_ROI_RGB2D_DATA_SETS` -> `build_tir_roi_rgb2d_pretrain_dataset` (in `data/trimodal_dataset.py`; it cannot reuse the TIR builder, which forwards `args.streams` into a class that refuses anything outside `('tir','resp')`).
+`build_pretraining_dataset(args)` dispatches similarly for Stage-2: `TIR_ROI_DATA_SETS` -> `build_tir_roi_pretrain_dataset`, `RGB_ROI_DATA_SETS` -> `build_rgb_roi_pretrain_dataset`, `TIR_ROI_RGB2D_DATA_SETS` -> `build_tir_roi_rgb2d_pretrain_dataset` (in `data/trimodal_dataset.py`; it cannot reuse the TIR builder, which forwards `args.streams` into a class that refuses anything outside `('tir','resp')`), and `FOURSTREAM_DATA_SETS` -> `build_tir_roi_rgb2d_bp_pretrain_dataset` (in `data/fourstream_dataset.py`).
 
 ---
 
@@ -229,62 +218,6 @@ seq_len=400, sig_kernel=8  ->  50 tokens == Gt=50  OK
 
 Any violation raises `ValueError` at model construction (never silently misaligned).
 
-### 7.1 Blood-pressure session artefact — `data/bp_preprocess.py`, `data/bp_artefact.py`, `data/bp_windows.py`
-
-Contract: `code/notes/design/ADR-004-bp-session-cache-artefact.md`.
-Build order: `code/notes/plan/features/ADR-004-bp-session-cache-plan.md`.
-This section is **hand-maintained**: it is written from plan §3, not generated.
-
-One `BP_mmHg.txt` trace (nominal **1000 Hz**, mmHg, no time column) is cleaned
-once, offline, into one per-session artefact. Nothing downstream re-reads or
-re-cleans the raw trace.
-
-**Identity** (hashed into the directory name, compared before any read) —
-`format_version`, `corpus` (digest of the discovered session directories),
-`fs_in = 1000`, `fs_out = 1000`, `gate1_min_mmhg = 30.0`,
-`gate1_max_mmhg = 250.0`, `flatline_max_ms = 200`, `rail_dwell_min_ms = 30`,
-`min_segment_s = 4.0`, and the single `store` string
-`signal+mask+cause+segments:float32,bool,uint8,int64,float64`.
-
-**No resampling exists.** `fs_out == fs_in`, so grid index `k` IS source index
-`k`; the build needs NumPy only.
-
-**Gates**, in this order, each on the previous gate's survivors (the order *is*
-the precedence, so every rejected sample carries exactly one cause):
-
-| gate | rule | boundary |
-| :--- | :--- | :--- |
-| 1 | non-finite, or `< 30.0` / `> 250.0` mmHg | `29.99` rejected, `30.00` admitted |
-| 2 | invariant run **strictly longer** than 200 ms | 201 samples rejected, 200 kept |
-| 3 | dwell **at least** 30 ms at the survivors' `y_max`/`y_min` | 30 rejected, 29 kept |
-
-**Segments.** Maximal continuous stretches of admitted samples; a segment shorter
-than 4.0 s (4000 samples) is invalid. Each valid segment's own arithmetic mean is
-removed — one constant per segment, no filter. An invalid sample is `NaN`, never
-`0`.
-
-**Shard members**: `signal` (`float32`, NaN iff masked), `mask` (the SOLE
-validity statement), `cause` (`0` valid / `1` non-finite / `2` range /
-`3` flatline / `4` rail / `5` short segment), `seg_start`/`seg_stop`
-(`int64`, stop exclusive), `seg_mean_mmhg`/`seg_seconds` (`float64`), plus
-`n_src`, `fs_in`, `fs_out`, `n_segments`, `valid_frac`, `n_nonfinite` and
-provenance.
-
-**Window rule** (the only one; `bp_windows`):
-
-```
-s = round(t_start * fs_out)      n = round(clip_seconds * fs_out)
-usable  <=>  n > 0 and 0 <= s and s + n <= N and mask[s:s+n].all()
-```
-
-An all-`True` window lies inside exactly one valid segment (`segment_of` raises
-`AssertionError` if the mask and the table disagree). There is **no**
-clip-length ceiling: a clip longer than 4 s is legal and simply finds no usable
-window where no segment is long enough.
-
-Builder: `runners/run_build_bp_artefact.py` (`--init` / `--build` / `--status` /
-`--index` / `--check N` / `--check-imports`); CPU-only, torch-free.
-
 ---
 
 ## 8. DataLoader — `runners/_common.py::make_data_loader`
@@ -308,6 +241,7 @@ DataLoader(dataset,
 |-------|------|-------|
 | Stage 2 | `{stream: Tensor}` | `{'rgb': [B,3,T,H,W], 'bp': [B,1,S], ...}` |
 | Stage 2 (`tir_roi_resp_rgb2d`, §3.5) | `{stream: Tensor}` | `{'tir': [B,3,T,96,96], 'rgb2d': [B,3,T,96,96], 'resp': [B,1,S]}` — **one shared window** for all three; both visual streams report `T` frames and `6x6 = 36` patches/frame |
+| Stage 2 (`tir_roi_resp_rgb2d_bp`, §3.6) | `{stream: Tensor}` | `{'tir': [B,3,T,96,96], 'rgb2d': [B,3,T,96,96], 'bp': [B,1,8000], 'resp': [B,1,8000]}` — **one shared window** for all four; visuals report `T=100` frames and `6x6=36` patches/frame |
 | Stage 3 | `(Tensor, Tensor)` | `([B,C,T,H,W], [B,output_len])` |
 | AU probe | `(Tensor, Tensor)` | `([B,C,T,H,W], [B,n_aus])` |
 

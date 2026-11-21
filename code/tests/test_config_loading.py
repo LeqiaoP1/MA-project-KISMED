@@ -137,16 +137,24 @@ def test_stage2_carries_no_eda_keys(monkeypatch):
             f'{rel}: EDA is no longer a supported stream ({args.streams!r})')
 
 
-def test_every_pretrain_config_declares_a_videomae_init(monkeypatch):
-    """Stage 1 has no blank path: every shipped Stage-2 config must name a
-    VideoMAE corpus (never '' / random / scratch / mae / timm / large)."""
+#: The explicit random-init aliases accepted by ``run_pretrain``.
+BLANK_INIT_SPECS = ('', 'none', 'random', 'scratch', 'c0')
+
+
+def test_every_pretrain_config_declares_a_valid_init(monkeypatch):
+    """Every shipped Stage-2 config declares either a VideoMAE corpus or the
+    explicit random-init path. Random init is only allowed for
+    ``project_multimae_small``, which has no published Stage-1 checkpoint."""
     assert PRETRAIN_CONFIGS
     for cfg in PRETRAIN_CONFIGS:
         a = _args_for(cfg, monkeypatch)
-        spec = a.pretrained_encoder
+        spec = str(a.pretrained_encoder or '')
         rel = os.path.relpath(cfg, CODE_DIR)
-        assert spec and spec not in ('none', 'random', 'scratch', 'c0'), (
-            f'{rel}: blank Stage-1 init {spec!r}')
+        if spec in BLANK_INIT_SPECS:
+            assert a.model == 'project_multimae_small', (
+                f'{rel}: blank Stage-1 init {spec!r} is only allowed for '
+                f'project_multimae_small; got model={a.model!r}')
+            continue
         assert not spec.startswith(('mae:', 'timm:')) and spec != 'large', (
             f'{rel}: removed Stage-1 source {spec!r}')
         assert spec.startswith(('videomae', 'base')), (
@@ -214,6 +222,34 @@ def test_the_budget_arm_carries_the_adr_geometry(monkeypatch):
     assert a.video_min_tubes == 2
     assert a.p_virtual_sensing == pytest.approx(0.50)
     assert a.spatial_patches == 36 and a.physio_tokens == 250
+
+
+def test_the_fourstream_arm_carries_the_requested_geometry(monkeypatch):
+    """The four-stream arm is the ADR-002 geometry plus the requested 4 s hop."""
+    a = _args_for(os.path.join(
+        CODE_DIR,
+        'configs/pretrain/stage2_fourstream_tir_rgb2d_bp_resp_small_random.yaml'),
+        monkeypatch)
+    assert a.data_set == 'tir_roi_resp_rgb2d_bp'
+    assert a.model == 'project_multimae_small'
+    assert a.pretrained_encoder == 'none'
+    assert a.streams == 'tir,rgb2d,bp,resp'
+    assert a.clip_duration == pytest.approx(8.0)
+    assert a.clip_stride == pytest.approx(4.0)
+    assert a.temporal_stride == 2
+    assert a.tubelet == '4,16,16'
+    assert a.input_size == 96
+    assert a.fs == pytest.approx(1000.0)
+    assert a.sig_kernel == 32
+    assert a.bp_fs == pytest.approx(1000.0)
+    assert a.min_signal_spread == pytest.approx(0.0)
+    assert a.rail_touch_v == pytest.approx(0.0)
+    assert a.n_budget == 350
+    assert a.video_cap_ratio == pytest.approx(0.25)
+    assert a.physio_cap_ratio == pytest.approx(0.50)
+    assert a.video_min_tubes == 2
+    assert a.spatial_patches == 36
+    assert a.physio_tokens == 250
 
 
 def test_stage2_and_stage3_agree_on_the_roi_contract(monkeypatch):

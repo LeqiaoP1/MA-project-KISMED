@@ -169,10 +169,8 @@ No spectral term: the optional Stage-2 MR-STFT loss was removed 2026-11-09.
 **`target_s` is masked-only for VISUAL streams** (`MultiModalMAE._targets(x,
 stream, mask)`, `design/Video_input_Preprocessing.md`): a masked cube is
 z-scored with its own per-cube mean/var, an unmasked cube carries the
-clip-normalised values (the adapter's input space). `MaskedMSELoss` keeps only
-`mask == 1`, so the unmasked half never contributes — but the returned target
-tensor is honest. The 1-D targets are decided by `target_norm`
-(`token`/`clip`/`none`) and ignore the mask.
+clip-normalised values. `MaskedMSELoss` keeps only `mask == 1`. The 1-D targets
+are decided by `target_norm` and ignore the mask.
 
 **The encoder input is z-scored before patch division** in both stages
 (`core/input_adapters.py::zscore_clip`, per channel over `(T,H,W)`, per sample).
@@ -183,58 +181,38 @@ network input.
 
 ```python
 # WaveformJointLoss.forward:
-L = alpha * SmoothL1(pred, target)      # huber_beta in target-std units
+L = alpha * SmoothL1(pred, target)
   + beta  * PearsonLoss(pred, target)
   + gamma * MultiResolutionSTFTLoss(pred, target)
 ```
 
 Gradient norm balance (measured 2026-09-28, N=496 @ 100 Hz):
-- `L_time` (point-wise Huber): `1/sqrt(N)`-scaled like Pearson; it does not
-  dominate the composite
-- `MultiResolutionSTFTLoss`: ~63–84 % of composite norm at alpha=beta=gamma=1,
-  so `alpha`/`beta` need explicit weights to be heard at all
+- `L_time` (point-wise Huber): `1/sqrt(N)`-scaled like Pearson, does not dominate
+- `MultiResolutionSTFTLoss`: ~63–84 % of composite norm at alpha=beta=gamma=1
 
 ---
 
-## 7. AMP — `utils/native_scaler.py`
-
-One switch, ``--amp_dtype {none,fp16,bf16}`` (default ``none``), resolved once
-per run by ``resolve_amp`` into an ``AmpConfig``. Engines wrap the forward/loss
-in ``autocast_context(amp_config)``; the model is never ``.half()``-ed.
-
-| Mode | Autocast | Loss scaling |
-|---|---|---|
-| `none` | OFF | OFF (scaler bypassed) |
-| `fp16` | `torch.float16` | ON (`GradScaler`) |
-| `bf16` | `torch.bfloat16` | OFF |
+## 7. AMP — `utils/native_scaler.py::NativeScalerWithGradNormCount`
 
 ```python
-# utils/native_scaler.py (core)
-if scaler_enabled:                      # False for none/bf16
+self._scaler = torch.cuda.amp.GradScaler()  # deprecated PyTorch >= 2.4
+
+def __call__(self, loss, optimizer, clip_grad=None, ...):
     self._scaler.scale(loss).backward()
-else:
-    loss.backward()
-if update_grad:
-    if scaler_enabled:
-        self._scaler.unscale_(optimizer)
-    if clip_grad is not None and clip_grad > 0:   # GUARD: 0.0 = OFF
-        norm = torch.nn.utils.clip_grad_norm_(parameters, clip_grad)
-    else:
-        norm = get_grad_norm_(parameters)
-    if scaler_enabled:
+    if update_grad:
+        if clip_grad is not None and clip_grad > 0:  # GUARD: 0.0 = OFF
+            self._scaler.unscale_(optimizer)
+            norm = torch.nn.utils.clip_grad_norm_(parameters, clip_grad)
+        else:
+            self._scaler.unscale_(optimizer)
+            norm = get_grad_norm_(parameters)
         self._scaler.step(optimizer); self._scaler.update()
-    else:
-        optimizer.step()                     # same path, no scaling
-return norm
+    return norm
 ```
 
 > **Critical fix (2026-09-23)**: Before this fix, `clip_grad=0.0` (the default in many configs) entered the `clip_grad_norm_` branch with `max_norm=0.0`, which scales every gradient to zero (`clip_coef = 0 / (norm + eps)`). Learning was silently disabled. The guard `clip_grad > 0` now routes 0.0 to the no-clip path.
 
-> **AMP (2026-10-13)**: autocast is now available but OPT-IN. `none` bypasses the
-> scaler entirely, so existing FP32 runs are bit-identical. `bf16` autocasts
-> without loss scaling; `fp16` autocasts and scales. The numerically sensitive
-> waveform criteria run in FP32 (`loss_in_fp32=True` in `run_waveform.py`). See
-> `notes/design/hpc_AMP.md`.
+> **No `torch.amp.autocast`** anywhere in the codebase. Forward passes run in full precision; only the backward is scaled.
 
 ---
 

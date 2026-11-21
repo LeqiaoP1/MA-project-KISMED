@@ -26,7 +26,7 @@ import os
 __all__ = ['build_dataset', 'build_pretraining_dataset',
            'build_pretraining_corpus_dataset', 'register_dataset',
            'list_datasets', 'TIR_ROI_DATA_SETS', 'RGB_ROI_DATA_SETS',
-           'TIR_ROI_RGB2D_DATA_SETS']
+           'TIR_ROI_RGB2D_DATA_SETS', 'FOURSTREAM_DATA_SETS']
 
 #: ``data_set`` values that select the ADD-ON thermal-ROI + respiration Stage-2
 #: dataset (RAW tree) instead of the canonical paired layout.
@@ -36,6 +36,11 @@ TIR_ROI_DATA_SETS = ('tir_roi', 'tir_roi_resp', 'tir-roi')
 #: texture + respiration, all three from offline caches). Stage 2 ONLY: there is
 #: no fine-tune view of the 2D stream yet, so ``build_dataset`` rejects it.
 TIR_ROI_RGB2D_DATA_SETS = ('tir_roi_resp_rgb2d', 'trimodal')
+
+#: ``data_set`` values that select the FOUR-STREAM Stage-2 path (TIR-ROI +
+#: 2D-texture + BP + respiration). Stage 2 ONLY: there is no fine-tune view of
+#: the BP stream yet, so ``build_dataset`` rejects it.
+FOURSTREAM_DATA_SETS = ('tir_roi_resp_rgb2d_bp',)
 
 #: ``data_set`` values that select the ADD-ON RGB face-ROI path (RAW tree): the
 #: visual stream is the landmark-defined face crop, so Stage 2 and Stage 3 share
@@ -99,6 +104,10 @@ def build_dataset(args, plan, role: str = 'train'):
             f'hook), so it cannot provide a role. The canonical paired / bp / '
             f'au lineages are off-protocol until a follow-up adds an '
             f'enumerator; they must not produce a thesis number.')
+    if name in FOURSTREAM_DATA_SETS:
+        raise NotImplementedError(
+            f'data_set={name!r} is Stage-2 only: the BP stream has no '
+            f'fine-tuning view yet, so it must not produce a Stage-3 number.')
     if name in TIR_ROI_DATA_SETS:
         from .tir_resp_dataset import build_tir_roi_finetune_dataset
         return build_tir_roi_finetune_dataset(args, plan=plan, role=role)
@@ -126,6 +135,7 @@ def build_pretraining_dataset(args, plan, role: str = 'train'):
       crop needs native-resolution frames and the ``IRFeatures`` landmark
       track, neither of which exists in the canonical session layout).
     * ``tir_roi_resp_rgb2d`` / ``trimodal`` -> the three-stream Stage-2 path.
+    * ``tir_roi_resp_rgb2d_bp`` -> the four-stream Stage-2 path (adds BP).
     * ``rgb_roi`` -> :class:`RGBRoiPretrainDataset`.
 
     Stage 2 CONTRACT: at least TWO modalities — >=1 video (``rgb``/``tir``) and
@@ -155,7 +165,8 @@ def build_pretraining_dataset(args, plan, role: str = 'train'):
 
     name = str(getattr(args, 'data_set', '') or '').strip().lower()
     if role == 'val' and name not in (TIR_ROI_DATA_SETS + TIR_ROI_RGB2D_DATA_SETS
-                                      + RGB_ROI_DATA_SETS):
+                                      + RGB_ROI_DATA_SETS
+                                      + FOURSTREAM_DATA_SETS):
         raise ProtocolError(
             f'data_set={name!r} has no ADR-001 universe, so it cannot provide '
             f'a validation role. Off-protocol lineages (paired / bp / au) must '
@@ -190,6 +201,9 @@ def _build_pretrain_source(args):
     if name in TIR_ROI_DATA_SETS:
         from .tir_resp_dataset import build_tir_roi_pretrain_dataset
         return build_tir_roi_pretrain_dataset(args)
+    if name in FOURSTREAM_DATA_SETS:
+        from .fourstream_dataset import build_tir_roi_rgb2d_bp_pretrain_dataset
+        return build_tir_roi_rgb2d_bp_pretrain_dataset(args)
     if name in TIR_ROI_RGB2D_DATA_SETS:
         from .trimodal_dataset import build_tir_roi_rgb2d_pretrain_dataset
         return build_tir_roi_rgb2d_pretrain_dataset(args)

@@ -1,9 +1,11 @@
 """Unit tests for the Stage-1 VideoMAE weight-spec grammar.
 
-Stage 1 is **ViT-Base only** and is **always** initialised from a VideoMAE
-checkpoint (Kinetics-400 or Something-Something-v2), so ``models/pretrained.py``
-serves exactly two corpora and rejects every blank / non-VideoMAE source. These
-tests pin that contract (no network: ``plan_download`` never touches the Hub).
+The published Stage-1 checkpoints are **ViT-Base only** (Kinetics-400 or
+Something-Something-v2), so ``models/pretrained.py`` serves exactly two corpora
+and rejects every non-VideoMAE source. The blank aliases remain recognised: the
+Stage-3 runners use them as "no checkpoint", and ``run_pretrain.py`` uses them
+as the explicit random-init path. These tests pin that contract (no network:
+``plan_download`` never touches the Hub).
 
 The loaders' behaviour (the ``n_loaded == 0`` hard error, the 3-D-only patch
 embed) is covered at the bottom and needs torch.
@@ -72,7 +74,7 @@ def test_path_like_typo_raises_filenotfound():
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize('spec', ['', 'none', 'random', 'scratch', 'c0'])
 def test_blank_spec_is_empty_without_require(spec):
-    """Stage-3 keeps treating an empty --finetune as "no checkpoint"."""
+    """Stage-3 and the Stage-2 random-init path both use the empty path."""
     assert P.resolve_encoder_weights(spec) == ''
 
 
