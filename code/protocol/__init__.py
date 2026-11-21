@@ -1,6 +1,6 @@
 """ADR-001 implementation: the only place a train/val/test role is computed.
 
-Public API (see `code/notes/plan/ADR-001-subject-kfold-plan.md`)::
+Public API (see `code/notes/plan/features/ADR-001-subject-kfold-plan.md`)::
 
     from protocol import build_plan, load_plan, save_plan, FoldPlan
 

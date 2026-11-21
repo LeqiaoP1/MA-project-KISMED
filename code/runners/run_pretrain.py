@@ -70,7 +70,7 @@ def get_args():
                         help="Stage-2 data source: 'bp4d+' (default) = the "
                              "canonical paired layout; 'tir_roi' = the ADD-ON "
                              "thermal-ROI + respiration dataset built from the "
-                             "RAW tree (see code/notes/plan/TirROI_Resp_plan.md); "
+                             "RAW tree (see code/notes/plan/experiments/TirROI_Resp_plan.md); "
                              "'rgb_roi' = the ADD-ON RGB face-ROI dataset "
                              "(landmark crop from 2DFeatures + RAW physiology; "
                              "see code/data/rgb_roi_dataset.py). A (subject, "

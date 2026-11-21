@@ -1,6 +1,6 @@
 # Stage 2 -- LOCAL run: thermal ROI (visual) -> RESPIRATION (1-D target).
 #
-# ADD-ON experiment, procedure of record: code/notes/plan/TirROI_Resp_plan.md.
+# ADD-ON experiment, procedure of record: code/notes/plan/experiments/TirROI_Resp_plan.md.
 # The counterpart of configs/pretrain/stage2_local_pretrained.yaml for the
 # thermal-only setting: the ONLY visual information is the mouth+nose ROI of the
 # thermal rendering, and the ONLY waveform is respiration.

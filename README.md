@@ -315,7 +315,9 @@ python -m compileall .
   training contracts
 - [`code/notes/design/`](code/notes/design/): design decisions and review
   verdicts
-- [`code/notes/plan/`](code/notes/plan/): current experiment plans
+- [`code/notes/plan/`](code/notes/plan/): training-run protocols
+  ([`experiments/`](code/notes/plan/experiments/)) and code implementation plans
+  ([`features/`](code/notes/plan/features/))
 - [`code/notes/eval/`](code/notes/eval/): measurements and evaluation verdicts
 - [`code/notes/explanation/`](code/notes/explanation/): result interpretations
 - [`notebooks/TirROI_Resp_Guide.md`](notebooks/TirROI_Resp_Guide.md): thermal-ROI

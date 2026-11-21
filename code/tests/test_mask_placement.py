@@ -1,7 +1,7 @@
 """Contract tests for the mask placement layer (ADR-002, Phase 2).
 
 Design: ``code/notes/design/ADR-002-asymmetric-multimodal-masking.md``.
-Plan + gate ids: ``code/notes/plan/ADR-002-constant-budget-masking-plan.md``
+Plan + gate ids: ``code/notes/plan/features/ADR-002-constant-budget-masking-plan.md``
 (Phase 2 and §8 G10a/G17).
 """
 import pytest

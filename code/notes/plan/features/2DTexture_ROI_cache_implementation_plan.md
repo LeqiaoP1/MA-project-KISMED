@@ -122,7 +122,7 @@ reader will ask why the doc no longer matches its own first version.
    task, as `code/notes/design/ROI_crop_and_rescaling.md` requires.
 
 This plan also delivers, for the new cache path, the geometry half of the
-*Deferred: the RGB port* (W4 in `code/notes/plan/RGB_BP_plan.md`): square box,
+*Deferred: the RGB port* (W4 in `code/notes/plan/experiments/RGB_BP_plan.md`): square box,
 one isotropic scale, landmark-driven motion gate. `data/rgb_roi_dataset.py` is
 still untouched and still runs the legacy `crop_rule='box'` geometry.
 
@@ -151,7 +151,7 @@ be built before the threshold is pinned. Phase 4 needs Phase 3's API frozen.
 | 3 | dataset | `data/trimodal_dataset.py` | 1, 2 |
 | 4 | model / runner / config | `configs/pretrain/stage2_hpc_tir_roi_resp_rgb2d.yaml` | 0, 3 |
 | 5 | tests | `tests/test_rgb2d_cache.py` + 3 others + 4 count pins | 1–4 |
-| 6 | docs | design **v2 (DONE)**, `spec/01_data_pipeline.md` §3.5 + `write_specs.py` **(DONE)**, `RGB_BP_plan` W4 **(DONE)** | 5 |
+| 6 | docs | design **v2 (DONE)**, `spec/01_data_pipeline.md` §3.5 + `write_specs.py` **(DONE)**, `experiments/RGB_BP_plan.md` W4 **(DONE)** | 5 |
 
 ---
 
@@ -773,7 +773,7 @@ the generator still compiles (`python -m py_compile`). The spec's *Config File
 Inventory* was deliberately **not** touched — it is a stale static list and the
 new YAML does not exist yet, so it should gain the row when the config lands.
 
-**Step 6.3 — DONE (2026-11-10).** `code/notes/plan/RGB_BP_plan.md` §3.3 and the
+**Step 6.3 — DONE (2026-11-10).** `code/notes/plan/experiments/RGB_BP_plan.md` §3.3 and the
 **W4** row now record that the `rgb2d` cache implements the full ROI doctrine
 (square span → native square hull → one isotropic rescale at load, landmark
 motion gate, dataset-level validity), and that W4 stays OPEN for

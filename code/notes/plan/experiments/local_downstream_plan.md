@@ -4,7 +4,7 @@
 > downstream track**: two Stage-3 fine-tuning runs, one per target waveform (`bp`,
 > `resp`), executed on the local dev GPU over the 11 canonical sessions.
 >
-> **Relationship to the other docs.** `code/notes/plan/RGB_BP_plan.md` is the plan of
+> **Relationship to the other docs.** `code/notes/plan/experiments/RGB_BP_plan.md` is the plan of
 > record for the whole study and lists every lineage it supports (§3.1). This file is
 > the setup record for **one** of them: the 64 px canonical lineage that the existing
 > Stage-2 checkpoint belongs to. It supersedes nothing in `RGB_BP_plan.md`. Lineages
@@ -26,7 +26,7 @@
 lineage geometry and its dedicated work items (npy frame store, query-based decoder,
 mask-ratio 1.0 and per-step ratio, 1-D span masking, zero-init modality embeddings
 + weight-decay groups, xavier conv init) — all of them
-are tracked in `code/notes/plan/RGB_BP_plan.md` §3 and §7. (The 1-D label itself
+are tracked in `code/notes/plan/experiments/RGB_BP_plan.md` §3 and §7. (The 1-D label itself
 is settled pipeline-wide: a per-clip z-score, `spec/01_data_pipeline.md`.) Also out
 of scope: HPC submission wiring (`env_hpc.sh` placeholders; the cluster tree has no
 `2D+3D/` RGB folder that `prepare_bp4d.py` requires), the TIR stream and the EDA
@@ -183,7 +183,7 @@ MLP case (`:149-152`) copy only what has a counterpart and say so. Also add the 
 `data/paired_dataset.py` splits sessions with `sessions[:n_train]` / `sessions[n_train:]`
 (:211-217), i.e. **per session**, which lets one subject straddle train and val — the
 Stage-3 protocol requires subject-disjoint (see the acceptance gates in
-`code/notes/plan/RGB_BP_plan.md` §6).
+`code/notes/plan/experiments/RGB_BP_plan.md` §6).
 
 Change: add `split_by: str = 'session'` to `PairedSessionDataset.__init__`
 (:140-155) and group at the split block with a module-level `_subject_of(session)`

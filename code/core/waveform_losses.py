@@ -2,7 +2,7 @@
 
 Implements the unified loss of the Stage-3 design
 (``code/notes/design/SolutionC_EarlyTokenMixing_stage3.md``; plan entry in
-``code/notes/plan/RGB_BP_plan.md`` §4):
+``code/notes/plan/experiments/RGB_BP_plan.md`` §4):
 
     L_joint = alpha * L_time + beta * L_Pearson + gamma * L_MR-STFT
 

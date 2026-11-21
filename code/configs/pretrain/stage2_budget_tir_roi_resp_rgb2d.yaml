@@ -2,7 +2,7 @@
 #   TIR-ROI + 2D-texture ROI + Resp_Volts -> constant 350-token encoder input.
 #
 # Design of record: code/notes/design/ADR-002-asymmetric-multimodal-masking.md
-# Plan:            code/notes/plan/ADR-002-constant-budget-masking-plan.md
+# Plan:            code/notes/plan/features/ADR-002-constant-budget-masking-plan.md
 #
 # ONE masking policy. Each step draws a mode and one kept-token count per
 # stream; the counts of all streams sum to `n_budget`, so the encoder input has

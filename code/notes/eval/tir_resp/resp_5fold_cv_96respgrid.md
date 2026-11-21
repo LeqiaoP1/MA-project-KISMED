@@ -4,7 +4,7 @@
 > false`, i.e. an 80/0/20 allocation and no validation role: the retired
 > Option-A variant. Keep this page as a historical record; it must not be pooled
 > with, compared against, or quoted as an ADR-001 result
-> (`code/notes/plan/ADR-001-subject-kfold-plan.md`).
+> (`code/notes/plan/features/ADR-001-subject-kfold-plan.md`).
 >
 > Measured 2026-11-01 → 2026-11-06 · protocol
 > `code/notes/design/Evaluation_RespWaveform_protocol.md` §3.2 ·
@@ -47,7 +47,7 @@ five Stage-2 runs, five Stage-3 runs and five re-dumps.
 
 ## Contract frozen before launch
 
-Recorded in `experiment_freeze.json`; see also `code/notes/plan/kfold_run_checklist.md`.
+Recorded in `experiment_freeze.json`; see also `code/notes/plan/experiments/kfold_run_checklist.md`.
 
 | key | value |
 |---|---|

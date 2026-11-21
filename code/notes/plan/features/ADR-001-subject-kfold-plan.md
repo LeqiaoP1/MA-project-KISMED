@@ -3,8 +3,9 @@
 > Specification: `code/notes/design/ADR-001-subject-disjoint-split-and-selection.md`.
 > Where code, configs, scripts or notes disagree with it they are **deleted or
 > overwritten**; no compatibility path survives on the reporting pipeline.
-> Runbook: `kfold_run_checklist.md`. Metric definitions:
-> `Evaluation_RespWaveform_protocol.md`.
+> Runbook:
+> `code/notes/plan/experiments/kfold_run_checklist.md`. Metric definitions:
+> `code/notes/design/Evaluation_RespWaveform_protocol.md`.
 
 ## 1. Decisions
 
@@ -141,7 +142,7 @@ carrying one fails to load (that is the migration alarm).
 | P4 | `run_pretrain.py` val role, pinned masks | Stage 2 val loss reproducible twice; same digest as Stage 3 |
 | P5 | four HPC configs, one `submit_sweep.sh` | `grep -r 'n_folds\|use_small_val\|split_role\|val_subject\|train_ratio\|pretrain_split' code/configs code/scripts` empty |
 | P6 | `run_evaluate_kfold.py` gate | pooling refuses dev-smoke, single-fold or mixed-partition input |
-| P7 | spec 01/04/05, GLOSSARY, checklist, `TirROI_Resp_plan.md`, delete retired tests | docs use the ADR vocabulary only |
+| P7 | spec 01/04/05, GLOSSARY, checklist, `TirROI_Resp_plan.md` (`code/notes/plan/experiments/`), delete retired tests | docs use the ADR vocabulary only |
 | P8 | pilots: determinism (two val passes byte-identical) and cost (`eval_freq × cost ≤ 5%`, VRAM `< 5%`) | measured numbers recorded below |
 | P9 | Stage 2 ×5, Stage 3 ×5, test ×5, pool; then the Criterion 5 study | headline sweep unchanged by the study |
 

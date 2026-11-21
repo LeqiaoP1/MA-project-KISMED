@@ -25,7 +25,7 @@ do not undergo local per-patch normalization, but they do receive clip-level inp
 
 # Implementation (landed 2026-11-01)
 
-Plan of record: `code/notes/plan/video_input_preprocessing_implementation_plan.md`.
+Plan of record: `code/notes/plan/features/video_input_preprocessing_implementation_plan.md`.
 This section maps every clause above to the symbol that implements it. **The
 clauses above stay authoritative**; on any conflict the contract wins and the
 code is the bug.

@@ -1,6 +1,6 @@
 # Thesis codebase — scaffold
 
-Target (`code/notes/plan/RGB_BP_plan.md`, `code/notes/plan/TirROI_Resp_plan.md`):
+Target (`code/notes/plan/experiments/RGB_BP_plan.md`, `code/notes/plan/experiments/TirROI_Resp_plan.md`):
 contactless **2D RGB / Thermal-IR video → 1D BP / RESP waveform** recovery via a
 3-stage progressive pipeline (space-time init -> multimodal masked pre-training on
 BP4D+ -> task-specific waveform fine-tuning branches).
@@ -24,8 +24,10 @@ code/
 
 `code/notes/` is the single home for project context: `spec/` is the generated
 contract (see `scripts/project/write_specs.py`), `design/` says how it is built,
-`plan/` is the roadmap of record, `eval/` holds the measurements and their
-verdicts. The repository-root `docs/` is literature only. See `AGENTS.md` §3/§5.
+`plan/` is the roadmap of record (`plan/experiments/` holds training-run
+protocols; `plan/features/` holds the code implementation plans derived from the
+`design/ADR-*` records), and `eval/` holds the measurements and their verdicts.
+The repository-root `docs/` is literature only. See `AGENTS.md` §3/§5.
 
 ## Source mapping (where to port the heavy parts from)
 
@@ -83,7 +85,7 @@ python runners/run_evaluate.py --pred_path out.npy --target_path gt.npy \
 python runners/run_au_probe.py -c configs/finetune/au_local.yaml
 
 # (5) OPTIONAL ADD-ON Stage 2: thermal ROI (visual) -> RESPIRATION (1-D)
-#     procedure of record: code/notes/plan/TirROI_Resp_plan.md
+#     procedure of record: code/notes/plan/experiments/TirROI_Resp_plan.md
 python runners/run_pretrain.py -c configs/pretrain/stage2_local_tir_roi_resp.yaml
 
 # multi-GPU (HPC)
@@ -97,7 +99,7 @@ One `BP_mmHg.txt` trace is cleaned **once, offline** into one per-session
 artefact (whole-session grid on the unchanged 1000 Hz grid + per-sample validity
 mask + cause codes + segment table). Contract:
 `code/notes/design/ADR-004-bp-session-cache-artefact.md`; build order:
-`code/notes/plan/ADR-004-bp-session-cache-plan.md`.
+`code/notes/plan/features/ADR-004-bp-session-cache-plan.md`.
 
 ```bash
 cd code
@@ -240,7 +242,7 @@ dataset behind `build_pretraining_dataset`: the default `bp4d+` keeps
 ADD-ON thermal-ROI + respiration dataset from the RAW tree and is the only
 path whose visual stream is the landmark-derived mouth/nose crop. The first
 such run is `configs/pretrain/stage2_local_tir_roi_resp.yaml` (`streams: tir,resp`);
-its procedure of record is `code/notes/plan/TirROI_Resp_plan.md`. A measured diagnosis of
+its procedure of record is `code/notes/plan/experiments/TirROI_Resp_plan.md`. A measured diagnosis of
 *why* the physio stream collapses under scattered masking, and the span-masking
 design that replaces it, is in `code/notes/design/SpanMask_PhysioSignals.md` (with the STFT
 term's role re-derived under spans).
@@ -316,7 +318,7 @@ drivers do it for you). Semantics that matter:
   motion, sentinel) removed it.
 
 Contract: `notes/design/ADR-003-resp-session-cache-artefact.md`; build order of
-record: `notes/plan/ADR-003-resp-session-cache-plan.md`; the artefact's own build
+record: `notes/plan/features/ADR-003-resp-session-cache-plan.md`; the artefact's own build
 accounting: `notes/eval/resp/resp_artefact_build.md` (the artefact is
 modality-independent, so its evidence is not filed under a visual lineage; the TIR
 dataset's clip accounting stays in `notes/eval/tir_resp/resp_preprocess_impact.md`).
@@ -524,7 +526,7 @@ see §"Whole-session waveform reconstruction" below. (RESP streams in Stage 2
 *are* implemented — the local configs now train the four streams, see the
 flexible-modalities subsection above.)
 
-## Thesis plan alignment (`code/notes/plan/RGB_BP_plan.md`)
+## Thesis plan alignment (`code/notes/plan/experiments/RGB_BP_plan.md`)
 
 > **ADD-ON (not a pipeline stage):** the *AU-occurrence probe* (semantic
 > representation quality, `runners/run_au_probe.py`) is a separate diagnostic
@@ -648,7 +650,7 @@ new input that first passes the gate).
 **+0.307**, i.e. below the single-tone template (**+0.535**, beaten on only 18 %
 of subjects), amplitude ~3x under-scaled, rate MAE 4.6 BPM. The acceptance
 criteria and the stop rule derived from those numbers are in
-`code/notes/plan/TirROI_Resp_plan.md` §6.
+`code/notes/plan/experiments/TirROI_Resp_plan.md` §6.
 
 ### Recorded data layout (asymmetric RGB jpg-seq + TIR .wmv)
 

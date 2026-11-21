@@ -11,7 +11,7 @@ accounting. No GPU time is spent; every number is a dataset statistic, not a
 model result.
 
 Artefact contract: `code/notes/design/ADR-003-resp-session-cache-artefact.md`.
-Build order of record: `code/notes/plan/ADR-003-resp-session-cache-plan.md`.
+Build order of record: `code/notes/plan/features/ADR-003-resp-session-cache-plan.md`.
 The **TIR-specific** clip accounting of an earlier artefact lineage remains in
 `code/notes/eval/tir_resp/resp_preprocess_impact.md` (that note is about the TIR
 dataset's clip counts at its 8 s / 2 s hop, and is not comparable with this one).

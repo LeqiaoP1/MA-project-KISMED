@@ -10,7 +10,7 @@ hours and answer the same question.
     python scripts/local/pilot_protocol.py --device cpu --out /tmp/pilot.json
 
 Output is one JSON document plus a printed table. The numbers are recorded in
-`code/notes/plan/ADR-001-subject-kfold-plan.md` (P8).
+`code/notes/plan/features/ADR-001-subject-kfold-plan.md` (P8).
 """
 import argparse
 import json

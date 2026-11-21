@@ -14,7 +14,7 @@ Two invariants that used to be comments only:
   label list).
 
 Rationale of record: ``code/notes/design/TIR_ROI_RESP_TasksDistortion.md``.
-The plan: ``code/notes/plan/task_tiers_regroup_plan.md``.
+The plan: ``code/notes/plan/features/task_tiers_regroup_plan.md``.
 
 Run from ``code/``:  ``python -m pytest tests/test_task_group_configs.py -q``
 """

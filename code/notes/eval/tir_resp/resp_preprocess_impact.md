@@ -5,7 +5,7 @@ What was measured when the respiration session artefact was implemented
 (plan: `plan/RESP_session_preprocess_implementation_plan.md`, **removed
 2026-11-20** as superseded — recover it with `git show 7ace300:code/notes/plan/
 RESP_session_preprocess_implementation_plan.md`; the build order of record for the
-current artefact is `plan/ADR-003-resp-session-cache-plan.md`, whose own evidence
+current artefact is `plan/features/ADR-003-resp-session-cache-plan.md`, whose own evidence
 is `eval/resp/resp_artefact_build.md`). Two things are
 recorded: the **artefact** (what the cache contains) and what it does to the
 **corpus accounting** at the shipped 8 s / 2 s hop. No GPU was spent; the numbers

@@ -5,7 +5,7 @@ accounting. No GPU time is spent and no model is involved; every number is a
 dataset statistic.
 
 Artefact contract: `code/notes/design/ADR-004-bp-session-cache-artefact.md`.
-Build order of record: `code/notes/plan/ADR-004-bp-session-cache-plan.md`.
+Build order of record: `code/notes/plan/features/ADR-004-bp-session-cache-plan.md`.
 
 ---
 

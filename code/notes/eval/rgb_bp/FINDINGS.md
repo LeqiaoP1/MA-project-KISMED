@@ -1,7 +1,7 @@
 # RGB → arterial BP waveform — findings
 
 > Measurement record for the visible-light (RGB) half of the cascade. The *plan*
-> for this study is `code/notes/plan/RGB_BP_plan.md`; this file is the evidence
+> for this study is `code/notes/plan/experiments/RGB_BP_plan.md`; this file is the evidence
 > it is judged against.
 > **Scope:** facial RGB video → arterial blood-pressure waveform, BP4D+,
 > 40 sessions / 4 subjects (F001–F004 × T1–T10).
@@ -269,7 +269,7 @@ a wrong intermediate result, caught only because a second, independent control
 ## 9. Consequences for the plan
 
 1. **Do not claim waveform reconstruction from RGB without first beating the
-   rate and amplitude baselines** listed in `code/notes/plan/RGB_BP_plan.md` §6.
+   rate and amplitude baselines** listed in `code/notes/plan/experiments/RGB_BP_plan.md` §6.
    A model that cannot track rate on 20 s windows cannot be shown to track
    morphology.
 2. **The front-end is a contract, not a detail**: the same pixels give 68 % or

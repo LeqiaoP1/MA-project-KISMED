@@ -5,7 +5,7 @@
 > Authority: `code/notes/spec/` (what it must be) ->
 > `code/notes/design/ADR-001-subject-disjoint-split-and-selection.md` and
 > `code/notes/design/Evaluation_RespWaveform_protocol.md` (intent) ->
-> `code/notes/plan/TirROI_Resp_plan.md` (code placement) ->
+> `code/notes/plan/experiments/TirROI_Resp_plan.md` (code placement) ->
 > `code/notes/eval/tir_resp/resp_5fold_cv.md` (measured facts).
 > Where this file disagrees with any of them, they win.
 >

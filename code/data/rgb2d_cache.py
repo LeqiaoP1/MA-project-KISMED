@@ -1,7 +1,7 @@
 """Offline 2D-texture face-ROI pixel cache (`rgb2d`): key, hull, shard IO.
 
 Contract: ``notes/design/2DTexture_ROI_cache_preprocessing.md`` (v2).
-Build order: ``notes/plan/2DTexture_ROI_cache_implementation_plan.md`` (Phase 1).
+Build order: ``notes/plan/features/2DTexture_ROI_cache_implementation_plan.md`` (Phase 1).
 
 **The cache is ONE STEP of the pipeline and encodes no downstream decision** --
 the same doctrine as :mod:`data.roi_cache`, which this module deliberately

@@ -8,7 +8,7 @@
 >
 > Companion documents: `code/notes/design/SolutionC_EarlyTokenMixing_stage2.md` holds the
 > Stage-2 pre-training diagrams (input + encoder, decoder + loss);
-> `code/notes/plan/local_downstream_plan.md` is the setup record for
+> `code/notes/plan/experiments/local_downstream_plan.md` is the setup record for
 > the two local 64 px runs. Numbers below are the **local 64 px** geometry with the
 > 224 px variant called out in a note.
 

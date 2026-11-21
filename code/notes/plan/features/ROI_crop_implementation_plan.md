@@ -4,7 +4,7 @@ Status: **IMPLEMENTED** (all six phases landed; kept as the build order of recor
 Scope: the TIR lineage — `data/tir_resp_dataset.py` and `data/roi_cache.py`.
 The RGB lineage keeps the legacy geometry in this change but is bound to the same
 contract when it is ported (*Deferred: the RGB port* — tracked as W4 in
-`code/notes/plan/RGB_BP_plan.md`).
+`code/notes/plan/experiments/RGB_BP_plan.md`).
 
 Contract of record: `code/notes/design/ROI_crop_and_rescaling.md`.
 Upstream spec: `code/notes/spec/01_data_pipeline.md` §3.3.

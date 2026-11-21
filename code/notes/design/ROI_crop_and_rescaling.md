@@ -2,7 +2,7 @@
 
 **Status**: implemented 2026-10-29 in the TIR lineage (`data/tir_resp_dataset.py`,
 `data/roi_cache.py`); contract moved to `roi_padding 0.10` + `input_size 96` on
-2026-10-30 (the pairing argument is §4.1). Implementation plan: `code/notes/plan/ROI_crop_implementation_plan.md`.
+2026-10-30 (the pairing argument is §4.1). Implementation plan: `code/notes/plan/features/ROI_crop_implementation_plan.md`.
 The RGB lineage keeps the legacy geometry and is bound to the same contract when it
 is ported.
 **Owners of the behaviour**: `data/tir_resp_dataset.py` (thermal), `data/rgb_roi_dataset.py` (visible), `data/rgb_features.py` (49-pt track), `data/roi_cache.py` (storage).
