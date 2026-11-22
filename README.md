@@ -199,6 +199,27 @@ Other Stage-2 entry points:
   respiration datasets.
 - `configs/pretrain/stage2_budget_tir_roi_resp_rgb2d.yaml` — the constant-budget
   masking arm on `tir,rgb2d,resp`.
+- `configs/pretrain/stage2_fourstream_tir_rgb2d_bp_resp_small_random.yaml` —
+  the four-stream arm (`tir,rgb2d,bp,resp`) on a **randomly initialised
+  ViT-Small**.
+
+Pre-training does not require downloaded encoder weights. Set
+`pretrained_encoder: none` (equivalently `--pretrained_encoder none`) to skip
+`resolve_encoder_weights` and keep the model's own `trunc_normal_`
+initialisation; the run logs `[stage1] random init`. This is the only valid
+initialisation for `model: project_multimae_small`, because no ViT-Small
+Stage-1 checkpoint is published — the published VideoMAE weights exist for
+`base` and `large` only. The shipped example is
+`configs/pretrain/stage2_fourstream_tir_rgb2d_bp_resp_small_random.yaml`:
+
+```bash
+python runners/run_pretrain.py \
+  -c configs/pretrain/stage2_fourstream_tir_rgb2d_bp_resp_small_random.yaml
+```
+
+A non-empty `--pretrained_encoder` spec (e.g. `videomae:k400`) still resolves and
+loads weights as before; an unknown spec fails loudly rather than silently
+falling back to random init.
 
 The local configurations are intentionally small smoke tests or milestone runs.
 Before a long experiment, verify the data path, output directory, stream
@@ -289,6 +310,40 @@ required, along with `FOLDS`, `CFG2`, `CFG3`, `RAW_ROOT`, `SPLIT_SEED`, and
 template containing site-specific values that must be reviewed before
 submission. Local scripts under `code/scripts/local/` are single-process smoke
 wrappers and do not require a DDP launcher.
+
+## Latest results — four-stream Stage-2, fold 0
+
+A four-stream arm (`tir` + `rgb2d` + `bp` + `resp`, ViT-Small, random init,
+ADR-002 constant 350-token budget) was pre-trained for **150 epochs** on fold 0
+(6,648 train / 1,106 val clips): `val/loss` **3.5040 → 2.1051**, executed as a
+chain of 30-minute Slurm allocations on 4×A100. Measured records:
+[`fold0_pretrain_150ep.md`](code/notes/eval/baselines/tir_rgb2d_bp_resp/fold0_pretrain_150ep.md),
+[`kept_ratio_distribution.md`](code/notes/eval/baselines/tir_rgb2d_bp_resp/kept_ratio_distribution.md),
+[`resp_recon_arms_ab.md`](code/notes/eval/baselines/tir_rgb2d_bp_resp/resp_recon_arms_ab.md),
+[`multimae_style_panel.md`](code/notes/eval/baselines/tir_rgb2d_bp_resp/multimae_style_panel.md).
+
+![Four-stream masked reconstruction at three budget allocations](code/notes/eval/baselines/tir_rgb2d_bp_resp/multimae_style_kept_density.png)
+
+*MultiMAE-Figure-6-style panel for the frozen fold-0 checkpoint, on a **held-out**
+test clip (subject `M012`, session `M012_T3`). Rows are the four streams; columns
+are the original and, per budget allocation, the masked input and the prediction.
+The total visible budget is fixed at 350 tokens (the encoder length is asserted),
+so what varies is the allocation: 3/36 tubes + 40 % physiology → 6/36 + 10 % →
+7/36 + 0 %. Visual reconstruction improves monotonically with the number of
+visible tubes; **RESP reconstruction tracks its own visible tokens and collapses to
+noise when they are zero**, even with the visuals at their densest — i.e. the
+visual streams are not carrying respiration information into the 1-D decoder.*
+
+Three findings worth stating plainly:
+
+- The policy held: the four per-stream counts summed to exactly 350 on all
+  31,050 training steps, and the realised ranges were exactly the configured
+  floors/caps (2–9 of 36 tubes; ≤125 of 250 tokens).
+- Visuals averaged ~15.6 % visible and were split symmetrically between TIR and
+  RGB2D; in ~50 % of steps (mode 1) the encoder saw **no** physiological token.
+- Zero-shot RESP reconstruction on three held-out subjects is at the noise floor
+  (`r_masked` +0.006 with TIR-max vs +0.014 with RGB2D-max, paired Δ = +0.008 ±
+  0.010), so this arm supports no cross-modal reconstruction claim.
 
 ## Testing
 
