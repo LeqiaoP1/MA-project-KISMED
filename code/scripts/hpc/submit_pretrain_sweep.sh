@@ -17,6 +17,13 @@
 #   EXP_ROOT=... ROI_CACHE=... RGB2D_CACHE=... RESP_CACHE=... BP_ARTEFACT=... \
 #       bash scripts/hpc/submit.sh scripts/hpc/submit_pretrain_sweep.sbatch
 #
+# A hardware probe uses EPOCHS=1 AND its own EXP_ROOT: the LR schedule is
+# rebuilt from --epochs on every submit, so a probe followed by the real run in
+# the SAME exp_root would silently move the schedule.
+#
+# Args after the .sbatch path (and any "$@" here) are forwarded to
+# run_pretrain.py verbatim; a bare --epochs there has the same caveat.
+#
 # DRY_RUN=1 prints the exact commands without executing them.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -25,6 +32,12 @@ cd "$(dirname "$0")/../.."
 
 FOLDS="${FOLDS:-0 1 2 3 4}"
 PY="${PY:-python}"
+# DDP WORLD SIZE. utils/dist.py takes world_size from SLURM_NTASKS, so the
+# runner must be spawned with `srun --ntasks=$SLURM_NTASKS`: one plain `python`
+# in a 4-task allocation would initialise a 4-rank process group from a single
+# process and block in init_process_group() until the wall clock kills it.
+NTASKS="${SLURM_NTASKS:-1}"
+SRUN="${SRUN:-srun}"
 RAW_ROOT="${RAW_ROOT:-${RAW_DATA_PATH:-}}"
 CFG2="${CFG2:-configs/pretrain/stage2_fourstream_tir_rgb2d_bp_resp_small_random.yaml}"
 DATA_SET2="${DATA_SET2:-tir_roi_resp_rgb2d_bp}"
@@ -35,10 +48,26 @@ ROI_CACHE="${ROI_CACHE:-}"
 RGB2D_CACHE="${RGB2D_CACHE:-}"
 RESP_CACHE="${RESP_CACHE:-}"
 BP_ARTEFACT="${BP_ARTEFACT:-}"
+EPOCHS="${EPOCHS:-}"
 
 if [ -z "$RAW_ROOT" ]; then
   echo "ERROR: RAW_ROOT/\$RAW_DATA_PATH is empty; the subject universe cannot be enumerated." >&2
   exit 2
+fi
+
+# One task per GPU. Refuse to guess when the allocation asks for >1 task but no
+# launcher exists: a plain python there hangs in init_process_group() instead of
+# failing, which costs the whole wall-clock budget.
+if [ "$NTASKS" -gt 1 ] && ! command -v "$SRUN" >/dev/null 2>&1; then
+  echo "ERROR: SLURM_NTASKS=$NTASKS but '$SRUN' is unavailable; cannot start $NTASKS ranks." >&2
+  echo "       Resubmit with GPUS=1, or run inside a Slurm allocation." >&2
+  exit 2
+fi
+
+# Rendezvous address. srun/--ntasks gives each rank the same MASTER_ADDR, but a
+# batch step must resolve the first host of its own nodelist explicitly.
+if [ -n "${SLURM_JOB_NODELIST:-}" ] && command -v scontrol >/dev/null 2>&1; then
+  export MASTER_ADDR="${MASTER_ADDR:-$(scontrol show hostname "$SLURM_JOB_NODELIST" | sed -n '1p')}"
 fi
 
 # The four-stream arm needs all four artefacts. Other arms can omit them.
@@ -54,6 +83,7 @@ CACHE_ARGS=()
 [ -n "$RGB2D_CACHE" ] && CACHE_ARGS+=(--rgb2d_cache "$RGB2D_CACHE")
 [ -n "$RESP_CACHE" ] && CACHE_ARGS+=(--resp_cache "$RESP_CACHE")
 [ -n "$BP_ARTEFACT" ] && CACHE_ARGS+=(--bp_artefact "$BP_ARTEFACT")
+[ -n "$EPOCHS" ] && CACHE_ARGS+=(--epochs "$EPOCHS")
 
 run() {
   printf '[pretrain-sweep]'
@@ -76,9 +106,12 @@ FAILED=()
 for k in $FOLDS; do
   dir="$EXP_ROOT/fold$k"
   mkdir -p "$dir/stage2"
-  # Per-fold rendezvous port: a requeued fold must not collide with a socket
-  # still in TIME_WAIT from the previous attempt.
-  export MASTER_PORT=$((29500 + 10 * k))
+  # Per-fold rendezvous port, derived from the JOB id: a hard-coded 29500 range
+  # collides whenever two of these jobs land on the same node (this cluster
+  # packs 4-GPU jobs 2-per-node), and the loser dies in barrier() with an NCCL
+  # connection error. Below 20000-29999 keeps clear of the ephemeral range
+  # (32768-60999).
+  export MASTER_PORT="$(( 20000 + (${SLURM_JOB_ID:-0} * 17 + k) % 10000 ))"
 
   echo "================ fold $k ================"
   if ! run "$PY" -u runners/run_partition.py \
@@ -90,11 +123,19 @@ for k in $FOLDS; do
     continue
   fi
 
-  if ! run "$PY" -u runners/run_pretrain.py -c "$CFG2" \
+  # Only the TRAINING step is multi-rank: the partition record must be written
+  # once, not once per rank.
+  LAUNCH=()
+  if [ "$NTASKS" -gt 1 ]; then
+    LAUNCH=("$SRUN" --ntasks="$NTASKS" \
+            --ntasks-per-node="${SLURM_NTASKS_PER_NODE:-$NTASKS}")
+  fi
+
+  if ! run ${LAUNCH[@]+"${LAUNCH[@]}"} "$PY" -u runners/run_pretrain.py -c "$CFG2" \
         --exp_root "$EXP_ROOT" --fold "$k" \
         --data_set "$DATA_SET2" --raw_root "$RAW_ROOT" \
         --output_dir "$dir/stage2" \
-        ${CACHE_ARGS[@]+"${CACHE_ARGS[@]}"}; then
+        ${CACHE_ARGS[@]+"${CACHE_ARGS[@]}"} ${1+"$@"}; then
     echo "ERROR: fold $k: Stage 2 failed" >&2
     FAILED+=("$k")
     continue

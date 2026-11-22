@@ -696,12 +696,21 @@ def main(args):
             start_steps=epoch * steps_per_epoch,
             amp_config=amp_config,
             mask_base=mask_base, steps_per_epoch=steps_per_epoch,
-            rank=rank)
+            rank=rank, log_writer=wandb_logger)
         epoch_seconds = time.time() - _t_epoch
         print(f'Epoch {epoch} stats: {stats}')
-        wandb_logger.log({**{f'train/{k}': v for k, v in stats.items()},
-                          'train/epoch_seconds': epoch_seconds,
-                          'epoch': epoch}, step=epoch)
+        # ONE step axis for the whole run: the global optimizer step. The
+        # per-step `train/loss` curve is written by the engine at `sched_idx`,
+        # so epoch and validation points must land on that same axis -- an
+        # epoch-indexed point after a per-step one is rejected as
+        # non-monotonic by the backend.
+        wb_step = (epoch + 1) * max(1, int(steps_per_epoch))
+        # ``train/loss`` is the per-STEP series written by the engine; the
+        # epoch mean is published separately as ``train_epoch/loss`` so the two
+        # meanings never share one key.
+        wandb_logger.log({**{f'train_epoch/{k}': v for k, v in stats.items()},
+                          'train_epoch/seconds': epoch_seconds,
+                          'epoch': epoch}, step=wb_step)
 
         if tracker.should_eval(epoch):
             _t_val = time.time()
@@ -724,8 +733,8 @@ def main(args):
                 append_jsonl(metrics_path, record)
             wandb_logger.log({f'val/{k}': v
                               for k, v in val['components'].items()},
-                             step=epoch)
-            wandb_logger.log({'val/loss': val['val_loss']}, step=epoch)
+                             step=wb_step)
+            wandb_logger.log({'val/loss': val['val_loss']}, step=wb_step)
             if improved and tracker.writes_best_checkpoint and is_main_process():
                 os.makedirs(args.output_dir, exist_ok=True)
                 torch.save({'model': model_without_ddp.state_dict(),

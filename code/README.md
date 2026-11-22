@@ -1282,6 +1282,11 @@ Three cluster rules the `submit_*.sbatch` files already encode (verified with
   CPU work, `acc_short` / `acc` / `acc_long` for GPU work -- there is no `gpu`
   partition on Lichtenberg II. `--account` may be omitted; the plugin bills your
   default project either way.
+- **Long GPU jobs**: `acc_short` carries `PriorityJobFactor=100` while `acc` and
+  `acc_long` carry `10`, and a 4-GPU request needs a wholly free 4-GPU node, so a
+  multi-hour run only starts as a chain of 30-minute allocations. Use
+  `scripts/hpc/submit_pretrain_chain.sh`; the mechanics are explained in
+  `notes/explanation/hpc_why_long_gpu_jobs_never_start.md`.
 
 Multi-GPU jobs run one task per GPU through `srun`; `utils/dist.py` initialises
 DDP from the SLURM environment (`SLURM_PROCID`/`SLURM_NTASKS`/`SLURM_LOCALID`)

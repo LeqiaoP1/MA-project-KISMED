@@ -153,8 +153,18 @@ warmup_epochs: 10                  # must be < epochs
 weight_decay: 0.05
 clip_grad: 5.0
 num_workers: 8
-log_wandb: false
+log_wandb: true                    # train/loss per step + val/loss per eval epoch
 ```
+
+**W&B series (2026-11-21).** `log_wandb: true` in the four-stream YAML; `utils/wandb_logger.py` is the consumer (rank 0 only, lazy import, never fatal). All points share ONE step axis, the global optimizer step:
+
+| Series | Written by | When |
+|---|---|---|
+| `train/loss` | `engines/pretrain.py` via the runner's `log_writer=wandb_logger` | every optimizer step (`sched_idx`) |
+| `train_epoch/loss`, `train_epoch/mse_*`, `train_epoch/mode` | `runners/run_pretrain.py` | once per epoch, at `(epoch+1) × steps_per_epoch` |
+| `val/loss`, `val/mse_<stream>` | `runners/run_pretrain.py` | every `eval_freq` epochs, same axis |
+
+Inside a Slurm job `WANDB_MODE` defaults to `offline` (compute nodes have no egress) and writes `<output_dir>/wandb/offline-run-*`; upload from a LOGIN node with `wandb sync <output_dir>/wandb/offline-run-*`. On a requeue/resume, export the same `WANDB_RUN_ID` to continue the run instead of starting a new one. One W&B run per fold, since `output_dir` is `<exp_root>/fold<k>/stage2`.
 
 **Rejected keys.** Do not use `temporal_window`, `mask_ratio_visual`, `mask_ratio_signal`, `loss_weight_waveform`, `masking`, `dirichlet_alpha`, `video_kept_cap`, `physio_kept_cap`, `min_kept`, `modality_dropout`, or `kept_ratio_override`. They are not in the active parser and are asserted gone by `tests/test_config_loading.py`.
 
@@ -319,6 +329,8 @@ python -u runners/run_pretrain.py \
 
 **P0-D cleared (2026-11-21)**: `scripts/hpc/submit_pretrain_sweep.sbatch` + `.sh` run partition + Stage 2 only. They never call `run_waveform.py`.
 
+**Execution shape on Lichtenberg (measured 2026-11-22)**: a single multi-hour GPU job does not start here — `acc_short` has `PriorityJobFactor=100` against `10` for `acc`/`acc_long`, and a 4-GPU request needs a wholly free 4-GPU node. Fold 0 therefore runs as a **chain** of 30-minute `acc_short` allocations (`scripts/hpc/submit_pretrain_chain.sh`, `--dependency=afterany`, `--save_ckpt_freq 5`), each link resuming from `checkpoints/latest_checkpoint.txt`. Measured: 66 s/epoch at 4×a100 (batch 8/GPU, global 32) ⇒ ~24 epochs per link ⇒ 7 links for 150 epochs. Rationale: `code/notes/explanation/hpc_why_long_gpu_jobs_never_start.md`; numbers: `code/notes/eval/baselines/tir_rgb2d_bp_resp/hpc_throughput.md`. Every link must pass the **same** `--epochs`, because the LR schedule is rebuilt from it.
+
 **Fold resolution**: there is no inherited Stage-2 checkpoint; every fold starts from the same random initialisation (`RNG seed 0`) and its own `<exp_root>/fold<k>/partition.json` (`split_seed=42`). The fold index only selects the partition; it must not seed the model differently.
 
 The wrapper executes, per fold:
@@ -370,7 +382,7 @@ bash scripts/hpc/submit.sh scripts/hpc/submit_pretrain_sweep.sbatch
 
 ## 10. P0 Lift Plan (task DAG)
 
-**Status (2026-11-21).** Tasks 1–16 are green. The local fold-0 dev smoke passed. The next steps are the one-fold target-hardware smoke, then the five-fold sweep. Measured evidence: `code/notes/eval/baselines/tir_rgb2d_bp_resp/cache_preflight.md` and `stage2_smoke.md`.
+**Status (2026-11-22).** Tasks 1–16 are green, and **fold 0 finished on target hardware**: 150/150 epochs via the 7-link `acc_short` chain (4×a100), `val/loss` 3.5040 → **2.1051**, `selection.json` → epoch 149, 11 GB of checkpoints. Record: `code/notes/eval/baselines/tir_rgb2d_bp_resp/fold0_pretrain_150ep.md`. The one-fold hardware gate in §9 is therefore cleared; folds 1–4 and the optional P0-E items remain.
 
 This is the implementation order that removes the blockers in §0.4. The todo list mirrors these IDs. Do not start a later phase before its dependencies are green.
 
@@ -395,9 +407,9 @@ This is the implementation order that removes the blockers in §0.4. The todo li
 | 17 | Add optional BP eval pin | 7, 9 | `code/runners/run_eval_recon.py` | `--kept_bp` is exposed and `pin_masking` handles every declared physio stream explicitly. |
 | 18 | Test matched recon budget | 17 | `code/tests/` | 4-stream with `--kept_bp 0.0` and 3-stream arms produce the same 225 visual tokens for `--kept_tir 0.10 --kept_rgb2d 0.50 --kept_resp 0.5`. |
 
-**Critical path**: 1 → 2 → 3 → 13 → 14 → 15 → 16, with 7/9 feeding 14 and 11/12 required only for the full HPC run. Tasks 1–16 are green.
+**Critical path**: 1 → 2 → 3 → 13 → 14 → 15 → 16, with 7/9 feeding 14 and 11/12 required only for the full HPC run. Tasks 1–16 are green; task 15 was completed on target hardware for fold 0 (see the status note above).
 
-**Stop rule**: do not start the five-fold run until the one-fold target-hardware smoke passes; tasks 17–18 remain optional and are not required for the primary run.
+**Stop rule**: the five-fold sweep is unblocked for fold 0 only; folds 1–4 still need the same chain treatment and the same `--epochs`. Tasks 17–18 remain optional and are not required for the primary run.
 
 ---
 
