@@ -140,9 +140,33 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable,
             if 'n_batch' in out:
                 metric_logger.update(n_batch=out['n_batch'])
 
+        # Per-step loss series for the optional writer (W&B / TensorBoard).
+        # The step axis is the GLOBAL optimizer step, the same axis the runner
+        # uses for its epoch and validation points: mixing a per-epoch axis
+        # with a per-step one makes the backend reject the run as
+        # non-monotonic. ``log_writer`` is None (no-op) unless a logger is
+        # passed, so a run without --log_wandb behaves exactly as before.
+        if log_writer is not None:
+            log_writer.add_scalar('train/loss', loss.item() * update_freq,
+                                  sched_idx)
+
     metric_logger.synchronize_between_processes()
     print('Averaged stats:', metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+
+
+def _merge_sums(parts: Iterable[dict]) -> dict:
+    """Add per-rank ``{key: batch_n-weighted sum}`` dicts key by key.
+
+    Split out of :func:`evaluate_pretrain` because it is the part of the DDP
+    aggregation that can be wrong without any shape error: keys missing on one
+    rank (a mask mode that rank never drew) must contribute 0, not raise.
+    """
+    out: dict = {}
+    for part in parts:
+        for key, value in (part or {}).items():
+            out[key] = out.get(key, 0.0) + float(value)
+    return out
 
 
 @torch.inference_mode()
@@ -164,6 +188,12 @@ def evaluate_pretrain(model: torch.nn.Module, data_loader: Iterable,
       deterministic DRAW sequence instead;
     * the caller supplies an ORDERED, single-worker loader (``shuffle=False``,
       ``drop_last=False``, ``num_workers=0``).
+
+    DDP: the loader is SHARDED, so each rank scores only its own slice of the
+    validation role. The per-rank ``(loss_sum, n_samples, components, kept,
+    mode)`` payloads are therefore all-gathered before averaging; without that,
+    the reported ``val_loss`` silently depended on the WORLD SIZE (a 4-rank run
+    reported a quarter of the val set as if it were the whole).
 
     :returns: ``{'val_loss', 'components': {'mse_<stream>': …}, 'kept':
         {'kept_<stream>': …}, 'mode': {…}, 'n_samples', 'n_batches',
@@ -215,6 +245,28 @@ def evaluate_pretrain(model: torch.nn.Module, data_loader: Iterable,
         raise SystemExit(
             '[val] the validation loader produced no sample; an empty '
             'validation pass cannot produce a criterion value (I7).')
+
+    # DDP: fold every rank's slice into the corpus-wide value. The payload is a
+    # picklable dict, so dict KEYS may differ between ranks (e.g. only one rank
+    # drew mode 2); _merge_sums adds them key-by-key and missing keys count 0.
+    payload = {
+        'loss_sum': total_loss, 'n_samples': n_samples,
+        'n_batches': n_batches, 'components': components,
+        'kept': kept_totals, 'mode': mode_totals,
+    }
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        gathered = [None] * torch.distributed.get_world_size()
+        torch.distributed.all_gather_object(gathered, payload)
+        total_loss = sum(float(g['loss_sum']) for g in gathered)
+        n_samples = sum(int(g['n_samples']) for g in gathered)
+        n_batches = sum(int(g['n_batches']) for g in gathered)
+        components = _merge_sums([g['components'] for g in gathered])
+        kept_totals = _merge_sums([g['kept'] for g in gathered])
+        mode_totals = _merge_sums([g['mode'] for g in gathered])
+        if n_samples == 0:
+            raise SystemExit(
+                '[val] the gathered validation pass contains no sample across '
+                'any rank; the criterion value is undefined (I7).')
 
     return {
         'val_loss': total_loss / n_samples,

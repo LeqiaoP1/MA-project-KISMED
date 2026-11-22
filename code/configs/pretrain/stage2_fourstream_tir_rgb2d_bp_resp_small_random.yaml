@@ -120,5 +120,11 @@ clip_grad: 5.0
 num_workers: 8
 
 # ---- logging ----
-log_wandb: false
+# W&B is ON for this arm. Inside a Slurm job utils/wandb_logger.py defaults
+# WANDB_MODE=offline (compute nodes have no egress) and writes to
+# <output_dir>/wandb/offline-run-*; sync from a LOGIN node afterwards. Logged
+# series: `train/loss` per OPTIMIZER STEP, `train_epoch/*` epoch aggregates,
+# and `val/loss` + `val/mse_<stream>` on every eval epoch -- all on one
+# global-step axis. Rank 0 only; on resume export WANDB_RUN_ID to continue the same run.
+log_wandb: true
 wandb_project: thesis-project

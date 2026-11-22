@@ -105,6 +105,13 @@ def get_args(argv=None):
                    help='fraction of the 36 rgb2d patches kept. 0.0 = the 2D '
                         'stream contributes NO encoder token (the ablation). '
                         'Inert for a 2-stream checkpoint.')
+    p.add_argument('--kept_bp', default=1.0, type=float,
+                   help='fraction of the 250 bp tokens kept. 1.0 (default) '
+                        'reproduces the legacy rule (a declared stream with no '
+                        'flag keeps all, clamped to the 125-token physio cap); '
+                        '0.0 gives BP no encoder token, so it cannot consume '
+                        'the visual budget of a 4-stream checkpoint (P0-E). '
+                        'Inert for checkpoints without a bp stream.')
     p.add_argument('--resp_probe', default='span',
                    choices=('span', 'random', 'hidden'),
                    help="how the waveform is hidden. 'random' keeps "
@@ -126,6 +133,12 @@ def get_args(argv=None):
                    help='cap the number of evaluated clips (0 = all); the '
                         'subset is drawn with --seed so it is reproducible')
     p.add_argument('--seed', default=0, type=int)
+    p.add_argument('--subjects', default='', type=str,
+                   help='comma-separated subject ids to restrict the probe to. '
+                        'They must lie inside the evaluated role; the test '
+                        'block is subject-disjoint by construction (ADR-001), '
+                        "so naming a TRAIN subject here is refused rather "
+                        "than silently scored.")
     p.add_argument('--device', default='cpu', type=str)
     return p.parse_args(argv)
 
@@ -181,6 +194,8 @@ def pin_masking(model, a):
             want[s] = float(a.kept_rgb2d)
         elif s == 'resp':
             want[s] = 0.0 if a.resp_probe == 'hidden' else float(a.kept_resp)
+        elif s == 'bp':
+            want[s] = float(a.kept_bp)
         else:                      # a declared stream with no flag: keep it all
             want[s] = 1.0
         if not 0.0 <= want[s] <= 1.0:
@@ -357,6 +372,18 @@ def main(argv=None):
         print(f'[eval] split     : test -> fold {getattr(cargs, "fold", 0)}/'
               f'{getattr(cargs, "n_folds", 1)}, {len(held)} held-out subject(s) '
               f'({src}), {len(train)} train')
+    if str(a.subjects or '').strip():
+        wanted = {x.strip() for x in str(a.subjects).split(',') if x.strip()}
+        if held is not None:
+            outside = wanted - held
+            if outside:
+                raise SystemExit(
+                    f'[eval] --subjects names {sorted(outside)}, which is not in '
+                    f'the evaluated role ({len(held)} held-out subject(s)). The '
+                    f'test block is subject-disjoint (ADR-001 I2); scoring a '
+                    f'train subject here would not be a held-out probe.')
+        held = wanted
+        print(f'[eval] subjects  : {len(wanted)} -> {", ".join(sorted(wanted))}')
     ds, idx = build_eval_dataset(data_cargs, a, held)
     subjects = {str(ds.entries[i].get('subject', '')) for i in idx}
     sessions = {str(ds.entries[i].get('session', '')) for i in idx}

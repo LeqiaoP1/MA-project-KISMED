@@ -155,6 +155,15 @@ class WandbLogger:
         if clean:
             self._run.log(clean, step=step)
 
+    def add_scalar(self, tag: str, value: Any, step: int) -> None:
+        """TensorBoard-compatible sink: ``add_scalar(tag, value, global_step)``.
+
+        Exists so an engine can write a per-step series through its generic
+        ``log_writer`` parameter without importing W&B. A disabled logger makes
+        it a no-op, exactly like :meth:`log`.
+        """
+        self.log({tag: value}, step=step)
+
     def finish(self) -> None:
         """Close the run (safe to call twice / on a disabled logger)."""
         if self._run is None:
