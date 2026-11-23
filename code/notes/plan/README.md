@@ -37,6 +37,7 @@ Rules of thumb:
 | [`features/ADR-002-constant-budget-masking-plan.md`](features/ADR-002-constant-budget-masking-plan.md) | `design/ADR-002-asymmetric-multimodal-masking.md` |
 | [`features/ADR-003-resp-session-cache-plan.md`](features/ADR-003-resp-session-cache-plan.md) | `design/ADR-003-resp-session-cache-artefact.md` |
 | [`features/ADR-004-bp-session-cache-plan.md`](features/ADR-004-bp-session-cache-plan.md) | `design/ADR-004-bp-session-cache-artefact.md` |
+| [`features/ADR-005-asymmetric-multimodal-masking-3streams-plan.md`](features/ADR-005-asymmetric-multimodal-masking-3streams-plan.md) | `design/ADR-005-asymmetric-multimodal-masking-3streams.md` |
 | [`features/2DTexture_ROI_cache_implementation_plan.md`](features/2DTexture_ROI_cache_implementation_plan.md) | `design/2DTexture_ROI_cache_preprocessing.md` |
 | [`features/ROI_crop_implementation_plan.md`](features/ROI_crop_implementation_plan.md) | `design/ROI_crop_and_rescaling.md` |
 | [`features/video_input_preprocessing_implementation_plan.md`](features/video_input_preprocessing_implementation_plan.md) | `design/Video_input_Preprocessing.md` |
