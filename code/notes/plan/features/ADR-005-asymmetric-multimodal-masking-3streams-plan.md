@@ -220,6 +220,94 @@ the second one with `--virtual_sensing_warmup_epochs 0`, which is the ADR §3.3 
 variant. The first command must be byte-identical in output to a run of the same config from the
 pre-change commit.
 
+### 6.1 BDD-style acceptance test scenarios
+
+The scenarios below specify the behavioural contracts to be implemented in
+`code/tests/test_curriculum_schedule.py` and runner verification tests.
+
+```gherkin
+Feature: Three-Stream Constant-Budget Masking with Virtual-Sensing Curriculum (ADR-005)
+
+  Background:
+    Given a declared stream set with two visual streams (tir, rgb2d) and one signal stream (resp)
+    And a total budget N = 350 visible tokens with visual unit size T = 25 tokens
+    And visual cap c_v = 0.25 (M = 9 tubes), visual floor m = 2 tubes, physio cap c_p = 0.50 (C = 125 tokens)
+
+  Scenario: Neutral backwards-compatible count sequence for ADR-002 runs (Gate G1, DoD 1)
+    Given an apportioner initialized with virtual_sensing_warmup_epochs = 0
+    When 50,000 steps are sampled with fixed (mask_base, epoch, step) generators
+    Then the generated sequence of kept token counts is bit-identical to the pre-change baseline fixture
+    And the visible token count sum(K_m) equals 350 on every step.
+
+  Scenario: Curriculum schedule resolution and monotonicity across epochs (Gate G2, ADR §2.7)
+    Given an apportioner configured with virtual_sensing_warmup_p = 0.10, p_virtual_sensing = 0.50, and virtual_sensing_warmup_epochs = 50
+    When p_at(epoch) is evaluated for epoch indices from 0 to 100 and for epoch is None
+    Then p_at(epoch) evaluates to exactly 0.10 for all epoch < 50 (Phase I — grounding)
+    And p_at(epoch) evaluates to exactly 0.50 for all epoch >= 50 (Phase II — deployment)
+    And p_at(None) evaluates to 0.50 (un-epoched evaluation fallback)
+    And p_at(epoch) is monotonically non-decreasing over all epoch >= 0.
+
+  Scenario: Construction-time parameter validation and feasibility bounds (Gate G3, ADR §2.5, §2.7)
+    Given invalid curriculum parameters where virtual_sensing_warmup_p > p_virtual_sensing or virtual_sensing_warmup_epochs < 0
+    When ConstantBudgetApportioner is constructed
+    Then construction raises ValueError naming the failing bound before any training step
+    Given valid baseline parameters with virtual_sensing_warmup_epochs = 0
+    When ConstantBudgetApportioner is constructed
+    Then construction succeeds and p_at(epoch) evaluates to p_virtual_sensing for all epoch.
+
+  Scenario: Statistical mode fractions match target probabilities across phase boundaries (Gate G4, ADR §3.1.4)
+    Given an apportioner with virtual_sensing_warmup_p = 0.10, p_virtual_sensing = 0.50, and virtual_sensing_warmup_epochs = 50
+    When 10,000 steps are sampled at epoch = 10 (Phase I)
+    Then the empirical Mode-1 fraction from mode is within 0.10 ± 4σ (0.10 ± 0.012)
+    And the empirical Mode-1 fraction from mode_by_counts is within (0.10 + 0.90 * 1/126) ± 4σ
+    When 10,000 steps are sampled at epoch = 60 (Phase II)
+    Then the empirical Mode-1 fraction from mode is within 0.50 ± 4σ (0.50 ± 0.020)
+    And the empirical Mode-1 fraction from mode_by_counts is within (0.50 + 0.50 * 1/126) ± 4σ.
+
+  Scenario: Contract 4 mode classification and resolution of Mode-2 K_tilde = 0 draw (Gate G5, ADR §2.3 Contract 4)
+    Given a sampled step where the inpainting draw (Mode 2) produces K_tilde_resp = 0
+    When the resulting BudgetPlan is created
+    Then plan.mode remains MODE_INPAINTING (preserving sampled draw identity)
+    And plan.mode_by_counts evaluates to MODE_VIRTUAL_SENSING (satisfying Contract 4)
+    Given a sampled step where the physiological stream has kept_tokens > 0
+    When the resulting BudgetPlan is created
+    Then plan.mode_by_counts evaluates to MODE_INPAINTING.
+
+  Scenario: Deterministic within-phase validation mask sequence and RNG stability (Plan §3.3, ADR §2.7)
+    Given evaluate_pretrain called with fixed mask_base and a deterministic validation loader
+    When validation is executed at epoch = 1 and at epoch = 2 (both in Phase I, p = 0.10)
+    Then the drawn mode, stream token counts, and spatial tube placements across all batches are identical bit-for-bit
+    When validation is executed at epoch = 50 (Phase II, p = 0.50)
+    Then the underlying PRNG sequence matches epoch 1
+    And all validation steps with uniform draw u < 0.10 remain Mode 1 with identical visual tube splits
+    And steps with 0.10 <= u < 0.50 transition deterministically from Mode 2 to Mode 1.
+
+  Scenario: Model forward diagnostics and latent gradient path under complete sensor loss (Gate G6, G7, ADR §2.3 Contract 7, §3.1.6)
+    Given a MultiModalMAE instance with curriculum apportioner and a multimodal input batch of shape [B, ...]
+    When forward(x, epoch=epoch) is executed on a step where K_resp = 0
+    Then the combined visible token sequence has shape [B, 350, D]
+    And the forward output dictionary contains mode_resolved == MODE_VIRTUAL_SENSING and p_virtual == p_at(epoch)
+    When the respiration loss L_resp is backpropagated
+    Then the gradient with respect to the encoder latent representations ∂L_resp/∂z is non-zero (satisfying Contract 7 prefixing).
+
+  Scenario: Config resolution, CLI flag registration, and manifest creation (Plan §3.4, §4.3, §4.4)
+    Given the configuration configs/pretrain/stage2_budget_3stream_curriculum.yaml
+    When parse_args_with_config resolves the CLI arguments
+    Then _check_config_keys accepts virtual_sensing_warmup_p, virtual_sensing_warmup_epochs, and patch_stream without error
+    And patch_stream resolves to 'tir'
+    And masking.json is written to output_dir containing the §2.9 tuple, placement, conditioning, and recipient
+    And multi-rank distributed launches guard the file write with is_main_process().
+
+  Scenario: VideoMAE patch embed kernel compatibility and designated routing (ADR §2.6 I1, I2)
+    Given a model with tubelet (2, 16, 16) and a VideoMAE ViT-Base pretrained checkpoint
+    When load_pretrained_encoder is called with patch_stream = 'tir'
+    Then the Conv3d(3, D, (2, 16, 16)) weight tensor is loaded verbatim into adapters.tir.patch_embed.weight
+    And adapters.rgb2d.patch_embed.weight remains randomly initialized
+    Given a model configured with an incompatible tubelet (4, 16, 16)
+    When load_pretrained_encoder is called
+    Then fit_visual_patch_embed raises ValueError rejecting the tubelet mismatch (satisfying I1).
+```
+
 ## 7. Phase 5 — measurement (not this plan)
 
 The eight-fold protocol, the fold orchestration and the headline comparison belong to
