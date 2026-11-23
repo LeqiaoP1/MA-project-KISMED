@@ -32,7 +32,8 @@
    construction rather than at the first step.
 3. Validation evaluates at the phase's own `p`, with the mask RNG sequence unchanged.
 4. The resolved mode of contract 4 is observable **without** changing the meaning of the existing
-   `mode` label.
+   `mode` label — `MultiModalMAE.forward` returns `mode_resolved` and `p_virtual` in its payload
+   next to `mode`, and the engine publishes the Mode-1 fraction they imply (§2.8).
 5. The pre-trained kernel recipient (I2) is designated explicitly and recorded with the run.
 6. Every record required by ADR-005 §2.8 is emitted, and a manifest captures the parameter tuple.
 7. The three-stream curriculum configuration exists, resolves through `_check_config_keys`, and
@@ -62,8 +63,10 @@ behaviour exactly.
 
 **3.1 `code/core/budget_masking.py`**
 
-- `ConstantBudgetApportioner.__init__` gains `p_virtual_sensing_warmup: float = 0.10` and
-  `virtual_sensing_warmup_epochs: int = 0`.
+- `ConstantBudgetApportioner.__init__` gains `virtual_sensing_warmup_p: float = 0.10` and
+  `virtual_sensing_warmup_epochs: int = 0` — the **exact** names of ADR-005 §2.9, so the YAML key
+  and the Python keyword are identical and `parser.set_defaults(**cfg)` reaches the apportioner
+  without a translation layer. (`p_virtual_sensing_warmup` appears nowhere.)
 - `_validate` adds: `0 ≤ p_warm ≤ p_target`; `E_warm ≥ 0`. (`E_warm = 0` must be legal — it is the
   compatibility default and disables the curriculum.)
 - New `p_at(epoch: Optional[int]) -> float` — ADR-005 §2.7, on the **0-based** index:
@@ -74,10 +77,22 @@ behaviour exactly.
 
 **3.2 `code/core/multimae.py`**
 
+- `MultiModalMAE.__init__` gains `virtual_sensing_warmup_p: float = 0.10` and
+  `virtual_sensing_warmup_epochs: int = 0`, stores them and passes both to the
+  `ConstantBudgetApportioner` it builds at lines 372–377. Without this the apportioner keeps the
+  `0` signature default and the YAML key is inert.
+- `build_pretraining_model(args)` (lines 874–968) reads both keys off `args` with
+  `getattr(args, ..., default)` — exactly the pattern of the seven ADR-002 keys it already
+  forwards — and adds them to the `MultiModalMAE(...)` call. Extend the `[mask]` provenance print
+  with the resolved `(p_warm, E_warm)`.
 - `make_masks(..., epoch: Optional[int] = None)` and `forward(..., epoch: Optional[int] = None)`
   forward `epoch` to `apportioner.sample_step`. `plan=None` and `epoch=None` remain the defaults,
   so every existing caller (evaluation pins, `run_eval_recon.py`, `run_visualize_pretrain.py`, the
   unit-test helpers) is untouched.
+- `forward`'s returned dictionary (lines 854–865) gains two keys next to `mode`:
+  `'mode_resolved': int(plan.mode_by_counts)` and
+  `'p_virtual': float(self.apportioner.p_at(epoch))`. `plan` and `epoch` are both already in scope
+  there. Without these the engine cannot log §2.8's resolved mode or the active `p(e)`.
 
 **3.3 `code/engines/pretrain.py`**
 
@@ -88,15 +103,28 @@ behaviour exactly.
   with the epoch. Its docstring line "the same sequence of modes, counts and placements every
   epoch" becomes "…every epoch **within a phase**".
 
-**3.4 `code/runners/_common.py` / `code/runners/run_pretrain.py`**
+**3.4 `code/runners/run_pretrain.py`**
 
-- No new plumbing beyond the flags of Phase 2.3; the epoch is already in the loop.
+- Register `--virtual_sensing_warmup_p` (float, default `0.10`) and
+  `--virtual_sensing_warmup_epochs` (int, default `0`) in `get_args()` beside `--p_virtual_sensing`
+  (line 321). `code/runners/_common.py::_check_config_keys` fails with `SystemExit` on any YAML key
+  that is not a parser `dest`, so the config of Phase 3 is unusable until these exist. `_common.py`
+  itself needs no edit.
+- Pass `epoch=epoch` at the validation call (line 717):
+  `evaluate_pretrain(model, data_loader_val, device, mask_base=mask_base, epoch=epoch)`. The epoch
+  is in the loop scope but is **not** currently forwarded, so validation would otherwise pin at
+  `epoch=0` forever (Trap 2).
+- No other change here; Phase 2.3 adds the `--patch_stream` flag on the same parser.
 
 ## 4. Phase 2 — observability, designation, contract 4
 
-**4.1 `BudgetPlan` gains `mode_by_counts`** (`code/core/budget_masking.py`) — a read-only property
-returning `MODE_VIRTUAL_SENSING` iff every declared signal stream keeps 0 tokens, else
-`MODE_INPAINTING`. `mode` keeps its current meaning ("the sampled mode"), so:
+**4.1 `BudgetPlan` gains `mode_by_counts`** (`code/core/budget_masking.py`) — a fourth frozen
+field `mode_by_counts: int`, equal to `MODE_VIRTUAL_SENSING` iff every declared signal stream keeps
+0 tokens, else `MODE_INPAINTING`; `__post_init__` validates it against `MODES`. `BudgetPlan`
+currently carries no stream kinds, so it cannot evaluate the rule itself: `_plan` computes the value
+from `self.signal` and passes it in (preferred over adding a `signal_streams` field, since `_plan`
+is the single construction site — lines 315–317 — and `plan_from_counts` already derives the same
+label from its inferred `mode`). `mode` keeps its current meaning ("the sampled mode"), so:
 
 - existing tests (`test_ten_thousand_draws_hold_the_exact_sum`,
   `test_probability_extremes_are_absorbing`) keep asserting the draw and stay untouched;
@@ -105,18 +133,28 @@ returning `MODE_VIRTUAL_SENSING` iff every declared signal stream keeps 0 tokens
 Do **not** redefine `mode`: relabelling would flip ≈ 0.8 % of Mode-2 draws (the `K̃_resp = 0` case)
 and break those two assertions for every ADR-002 run as well.
 
-**4.2 `code/engines/pretrain.py` logging** — add per step: `p_virtual` (the resolved `p(e)`),
+**4.2 `code/engines/pretrain.py` logging** — inside the existing `if isinstance(out, dict):` block
+of `train_one_epoch` (lines 126–141), add per step: `p_virtual` (the resolved `p(e)`),
 `kept_units_<stream>` (already in the forward payload as `kept_units`, just unpublished) and
 `mode_resolved` (`plan.mode_by_counts`). Key set stays a function of the configuration, so the DDP
 collective pattern of contract 9 is preserved.
 
-**4.3 `--patch_stream`** (`code/runners/run_pretrain.py`, default `''`) — pass it to
-`core/multimae.py::load_pretrained_encoder(model, ckpt, patch_stream=args.patch_stream)`. The
-default reproduces today's adapter-ordering resolution, so no existing run changes; the ADR-005 arm
-sets `tir` explicitly (I2).
+Also add the contract-4 indicator `is_virtual = 1 if out['mode_resolved'] == MODE_VIRTUAL_SENSING
+else 0`. §2.8's **per-epoch** requirement is the *Mode-1 fraction*, and `metric_logger` averages
+whatever it is given: the mean of `mode ∈ {1, 2}` is `2 − f` (≈ 1.5), not `f`. The mean of
+`is_virtual` is exactly `f`, which must land in `0.10 ± 0.02` / `0.50 ± 0.02` (Criterion 1.4).
+`mode`, `mode_resolved` and `is_virtual` are all logged; none of them is redefined.
 
-**4.4 Run manifest** — write `masking.json` into `args.output_dir` before the first step, carrying
-the ADR-005 §2.9 tuple, `physio_placement`, `physio_span_tokens`, the conditioning mechanism, the
+**4.3 `--patch_stream`** (`code/runners/run_pretrain.py::get_args`, default `''`) — thread it to the
+call site in `run_pretrain.py::init_stage1_encoder` (currently line 507):
+`load_pretrained_encoder(model, ckpt, patch_stream=args.patch_stream)`. The default reproduces
+today's adapter-ordering resolution, so no existing run changes; the ADR-005 arm sets `tir`
+explicitly (I2). The flag must exist on the parser before the config of Phase 3 is valid
+(`_check_config_keys`).
+
+**4.4 Run manifest** — write `masking.json` into `args.output_dir` before the first step, guarded by
+`if is_main_process():` (`code/utils/dist.py`) so the ranks never race on one path, carrying the
+ADR-005 §2.9 tuple, `physio_placement`, `physio_span_tokens`, the conditioning mechanism, the
 kernel recipient, `mask_base`, `epochs` and the resolved `(p_warm, p_target, E_warm)`. It is the
 only record that makes a resumed run's mask sequence reproducible, because the apportioner is not
 an `nn.Module` and therefore is **not** inside the checkpoint.
@@ -161,11 +199,26 @@ below `epochs` for the cosine schedule.
 cd code
 python -m pytest tests/test_budget_masking.py tests/test_mask_placement.py \
                  tests/test_curriculum_schedule.py -q
+
+# G8 — ADR-002 regression: the untouched arm must reproduce its pre-change loss.
 python -u runners/run_pretrain.py -c configs/pretrain/stage2_budget_tir_roi_resp_rgb2d.yaml \
     --exp_root /tmp/adr005_regress --fold 0 --dev_smoke --epochs 1 --warmup_epochs 0 \
     --max_clips 100 --batch_size 8 --num_workers 0 --output_dir /tmp/adr005_regress/out \
     --roi_cache <ROI_CACHE> --rgb2d_cache <RGB2D_CACHE> --resp_cache <RESP_CACHE>
+
+# Criterion 3.3 — ADR-005 smoke: prints 36 tubes, 250 signal tokens, T=25, R=10
+# under tubelet (2,16,16) / temporal_stride 4, and emits every §2.8 record.
+python -u runners/run_pretrain.py -c configs/pretrain/stage2_budget_3stream_curriculum.yaml \
+    --exp_root /tmp/adr005_smoke --fold 0 --dev_smoke --epochs 1 --warmup_epochs 0 \
+    --virtual_sensing_warmup_epochs 0 \
+    --max_clips 100 --batch_size 8 --num_workers 0 --output_dir /tmp/adr005_smoke/out \
+    --roi_cache <ROI_CACHE> --rgb2d_cache <RGB2D_CACHE> --resp_cache <RESP_CACHE>
 ```
+
+Both smokes use `--warmup_epochs 0` (the *learning-rate* schedule); the curriculum is disabled on
+the second one with `--virtual_sensing_warmup_epochs 0`, which is the ADR §3.3 "warm-up disabled"
+variant. The first command must be byte-identical in output to a run of the same config from the
+pre-change commit.
 
 ## 7. Phase 5 — measurement (not this plan)
 
@@ -180,9 +233,10 @@ The eight-fold protocol, the fold orchestration and the headline comparison belo
 1. **Non-neutral defaults.** If `virtual_sensing_warmup_epochs` defaults to anything but `0`, every
    existing configuration silently acquires a curriculum the moment the code lands. The ADR's `50`
    is the *shipped arm's* value and lives in the config, not in the signature.
-2. **Validation epoch.** `evaluate_pretrain` currently hardcodes the epoch slot at `0`. Without
-   Phase 1.3, validation evaluates every epoch at `p_warm`, so the tracked curve never reflects the
-   phase after the boundary.
+2. **Validation epoch.** `evaluate_pretrain` currently hardcodes the epoch slot at `0`, and its
+   call site (line 717) does not forward the loop's `epoch`. Without both halves of §3.3/§3.4,
+   validation evaluates every epoch at `p_warm`, so the tracked curve never reflects the phase
+   after the boundary.
 3. **Mutating `p_virtual_sensing` per epoch.** Rejected: it bypasses the `(0, 1]` validation and
    makes the plan depend on mutable state, breaking replay from `(seed, epoch, step)`.
 4. **Resume determinism.** The apportioner is not checkpointed. A run resumed with different
@@ -190,7 +244,17 @@ The eight-fold protocol, the fold orchestration and the headline comparison belo
    mismatch detectable.
 5. **Relabelling `mode`.** See §4.1 — it would change ADR-002 logs and two existing assertions.
 6. **Config/parser coupling.** `code/runners/_common.py::_check_config_keys` rejects unknown YAML
-   keys, so the three new keys must be added to the parser in the same change as the config.
+   keys with `SystemExit`, so all three new keys (`virtual_sensing_warmup_p`,
+   `virtual_sensing_warmup_epochs`, `patch_stream`) must be registered in
+   `runners/run_pretrain.py::get_args` in the same change as the config. A missing flag is not a
+   silent no-op — it aborts the run before step 0 — which is why the YAML name and the Python
+   keyword must be spelled identically.
+7. **Half-plumbed warm-up.** Adding the parameters to `ConstantBudgetApportioner` without threading
+   them through `MultiModalMAE.__init__` and `build_pretraining_model` leaves the apportioner at
+   `E_warm = 0`: the run looks healthy, logs `p(e) = 0.50` throughout, and silently drops the
+   curriculum. The `[mask]` provenance print must therefore show the resolved `(p_warm, E_warm)`.
+8. **Mean of `mode` is not the Mode-1 fraction.** See §4.2 — `mode` averages to `2 − f`; the
+   per-epoch Criterion-1.4 check needs the `is_virtual` indicator.
 
 ## 9. Non-goals
 
