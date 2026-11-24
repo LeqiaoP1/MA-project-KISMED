@@ -14,12 +14,36 @@ the model implements ``forward(samples, bool_masked_pos)`` returning
 Unpack and adapt inside the loop below where marked.
 """
 import contextlib
+import inspect
 from typing import Iterable, Optional
 
 import torch
 
 from utils import (MetricLogger, SmoothedValue, autocast_context,
                    scaler_enabled)
+
+
+def _accepts_epoch(fn) -> bool:
+    """True when ``fn`` takes an ``epoch`` keyword (real model vs stub).
+
+    ADR-005 §2.7 requires the epoch to reach the policy, but several contract
+    tests pass small duck-typed models whose ``forward`` predates that
+    argument. Introspecting the signature keeps both call shapes working
+    without wrapping the forward in a ``try/except TypeError``, which would
+    also swallow real argument errors.
+
+    A ``**kwargs`` signature (e.g. ``DistributedDataParallel.forward``) is
+    accepted, and an un-introspectable callable is assumed to support the
+    documented signature.
+    """
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return True
+    if 'epoch' in params:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD
+               for p in params.values())
 
 
 def train_one_epoch(model: torch.nn.Module, data_loader: Iterable,
@@ -34,13 +58,18 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable,
                     rank: int = 0):
     """One pre-training epoch.
 
-    ``mask_base`` / ``steps_per_epoch`` / ``rank`` drive the ADR-002 mask RNG:
+    ``mask_base`` / ``steps_per_epoch`` / ``rank`` drive the ADR-005 mask RNG:
     every step gets a COUNTS generator from a rank-independent key (so all
     ranks derive the same plan without a collective) and a PLACEMENT generator
     that includes the rank (so the samples differ across ranks). The global RNG
     is left to the model's own dropout and is never used for masking, which is
     what keeps the counts identical across DDP ranks.
+
+    ``epoch`` also selects the Mode-1 probability of the ADR-005 §2.7
+    curriculum (``p(e)``); with ``virtual_sensing_warmup_epochs = 0`` the
+    threshold is the constant target and the draw is unchanged.
     """
+    from core.budget_masking import MODE_VIRTUAL_SENSING
     from core.mask_placement import counts_generator, placement_generator
     model.train(True)
     metric_logger = MetricLogger(delimiter='  ')
@@ -48,6 +77,8 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable,
     header = 'Epoch: [{}]'.format(epoch)
 
     use_scaler = scaler_enabled(amp_config)   # False for --amp_dtype none/bf16
+    # Computed once: the epoch only reaches models that declare it.
+    epoch_kwarg = _accepts_epoch(model.forward)
 
     optimizer.zero_grad()
     for data_iter_step, batch in enumerate(
@@ -89,7 +120,8 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable,
                     counts_generator=counts_generator(
                         mask_base, epoch, global_step),
                     placement_generator=placement_generator(
-                        mask_base, epoch, global_step, rank=rank))
+                        mask_base, epoch, global_step, rank=rank),
+                    **({'epoch': epoch} if epoch_kwarg else {}))
                 loss = out['loss'] / update_freq
             else:
                 samples = batch[0].to(device, non_blocking=True)
@@ -127,16 +159,30 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable,
         if isinstance(out, dict):
             for name, value in (out.get('losses_mse') or {}).items():
                 metric_logger.update(**{f'mse_{name}': value})
-            # ADR-002 plan diagnostics: the sampled MODE and the kept TOKEN
-            # count per stream. Logged every step because they are a property
-            # of the step's draw, not of the run; the key set is a function of
-            # the config (every declared stream appears on every step).
+            # ADR-005 §2.8 plan diagnostics: the sampled mode, the contract-4
+            # RESOLVED mode, the active p(e), and the kept TOKEN and UNIT count
+            # per stream. Logged every step because they are a property of the
+            # step's draw, not of the run; the key set is a function of the
+            # config (every declared stream appears on every step).
             kept = out.get('kept') or {}
             if kept:
                 metric_logger.update(**{f'kept_{name}': value
                                         for name, value in kept.items()})
+            kept_units = out.get('kept_units') or {}
+            if kept_units:
+                metric_logger.update(**{f'kept_units_{name}': value
+                                        for name, value in kept_units.items()})
             if 'mode' in out:
                 metric_logger.update(mode=out['mode'])
+            if 'mode_resolved' in out:
+                # The epoch mean of `mode` is 2 - f, NOT the Mode-1 fraction f
+                # that ADR-005 §2.8 asks for; this 0/1 indicator averages to f.
+                resolved = int(out['mode_resolved'])
+                metric_logger.update(mode_resolved=resolved)
+                metric_logger.update(
+                    is_virtual=int(resolved == MODE_VIRTUAL_SENSING))
+            if 'p_virtual' in out:
+                metric_logger.update(p_virtual=out['p_virtual'])
             if 'n_batch' in out:
                 metric_logger.update(n_batch=out['n_batch'])
 
@@ -171,7 +217,8 @@ def _merge_sums(parts: Iterable[dict]) -> dict:
 
 @torch.inference_mode()
 def evaluate_pretrain(model: torch.nn.Module, data_loader: Iterable,
-                      device: torch.device, *, mask_base: int) -> dict:
+                      device: torch.device, *, mask_base: int,
+                      epoch: int = 0) -> dict:
     """One deterministic validation pass (ADR-001 I6, Criterion 2).
 
     The recipe is fixed here rather than left to the caller, because a
@@ -183,7 +230,10 @@ def evaluate_pretrain(model: torch.nn.Module, data_loader: Iterable,
       checkpoint compare equal bit-for-bit;
     * the mask generators are re-created per batch as
       ``protocol.val_mask_seed(mask_base, batch_idx)`` -- the same sequence of
-      modes, counts and placements every epoch, different across batches. No
+      modes, counts and placements every epoch **within a phase**, different
+      across batches. The epoch slot of the generator stays ``0`` on purpose:
+      only the THRESHOLD ``p(epoch)`` of ADR-005 §2.7 moves, so the draw
+      sequence is replayed, not resampled. No
       per-stream fraction is hand-pinned (ADR-002 §6): the policy replays a
       deterministic DRAW sequence instead;
     * the caller supplies an ORDERED, single-worker loader (``shuffle=False``,
@@ -191,25 +241,30 @@ def evaluate_pretrain(model: torch.nn.Module, data_loader: Iterable,
 
     DDP: the loader is SHARDED, so each rank scores only its own slice of the
     validation role. The per-rank ``(loss_sum, n_samples, components, kept,
-    mode)`` payloads are therefore all-gathered before averaging; without that,
-    the reported ``val_loss`` silently depended on the WORLD SIZE (a 4-rank run
-    reported a quarter of the val set as if it were the whole).
+    mode, resolved)`` payloads are therefore all-gathered before averaging;
+    without that, the reported ``val_loss`` silently depended on the WORLD SIZE
+    (a 4-rank run reported a quarter of the val set as if it were the whole).
 
     :returns: ``{'val_loss', 'components': {'mse_<stream>': …}, 'kept':
-        {'kept_<stream>': …}, 'mode': {…}, 'n_samples', 'n_batches',
-        'mask_base', 'pinned'}``.
+        {'kept_<stream>': …}, 'mode': {'mode1': …, 'mode2': …},
+        'resolved': {'mode1': …, 'mode2': …}, 'n_samples', 'n_batches',
+        'mask_base', 'pinned'}`` — ``mode`` counts the DRAWN modes, ``resolved``
+        the contract-4 modes, so their Mode-1 shares differ by the
+        ``K_tilde = 0`` draws (ADR-005 §2.8).
     """
     from core.mask_placement import counts_generator, placement_generator
     from protocol import val_mask_seed
 
     was_training = model.training
     model.eval()
+    epoch_kwarg = _accepts_epoch(model.forward)
     total_loss = 0.0
     n_samples = 0
     n_batches = 0
     components: dict = {}
     kept_totals: dict = {}
     mode_totals: dict = {}
+    resolved_totals: dict = {}
 
     for batch_idx, batch in enumerate(data_loader):
         seed = int(val_mask_seed(mask_base, batch_idx))
@@ -218,7 +273,8 @@ def evaluate_pretrain(model: torch.nn.Module, data_loader: Iterable,
             out = model(x,
                         counts_generator=counts_generator(seed, 0, batch_idx),
                         placement_generator=placement_generator(
-                            seed, 0, batch_idx, rank=0))
+                            seed, 0, batch_idx, rank=0),
+                        **({'epoch': epoch} if epoch_kwarg else {}))
         else:
             samples = batch[0].to(device, non_blocking=True)
             out = model(samples)
@@ -239,6 +295,9 @@ def evaluate_pretrain(model: torch.nn.Module, data_loader: Iterable,
         if 'mode' in out:
             mode_totals.setdefault(f'mode{int(out["mode"])}', 0.0)
             mode_totals[f'mode{int(out["mode"])}'] += batch_n
+        if 'mode_resolved' in out:
+            resolved_totals.setdefault(f'mode{int(out["mode_resolved"])}', 0.0)
+            resolved_totals[f'mode{int(out["mode_resolved"])}'] += batch_n
 
     model.train(was_training)
     if n_samples == 0:
@@ -253,6 +312,7 @@ def evaluate_pretrain(model: torch.nn.Module, data_loader: Iterable,
         'loss_sum': total_loss, 'n_samples': n_samples,
         'n_batches': n_batches, 'components': components,
         'kept': kept_totals, 'mode': mode_totals,
+        'resolved': resolved_totals,
     }
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         gathered = [None] * torch.distributed.get_world_size()
@@ -263,6 +323,8 @@ def evaluate_pretrain(model: torch.nn.Module, data_loader: Iterable,
         components = _merge_sums([g['components'] for g in gathered])
         kept_totals = _merge_sums([g['kept'] for g in gathered])
         mode_totals = _merge_sums([g['mode'] for g in gathered])
+        resolved_totals = _merge_sums([g.get('resolved') or {}
+                                       for g in gathered])
         if n_samples == 0:
             raise SystemExit(
                 '[val] the gathered validation pass contains no sample across '
@@ -273,6 +335,7 @@ def evaluate_pretrain(model: torch.nn.Module, data_loader: Iterable,
         'components': {k: v / n_samples for k, v in components.items()},
         'kept': {k: v / n_samples for k, v in kept_totals.items()},
         'mode': {k: v / n_samples for k, v in mode_totals.items()},
+        'resolved': {k: v / n_samples for k, v in resolved_totals.items()},
         'n_samples': n_samples,
         'n_batches': n_batches,
         'mask_base': int(mask_base),

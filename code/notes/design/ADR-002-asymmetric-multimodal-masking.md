@@ -1,10 +1,19 @@
 # ADR-002: Asymmetric Multi-Modal Masking with a Constant 350-Token Encoder Budget
 
-- **Status**: Accepted
+- **Status**: Superseded by `ADR-005-asymmetric-multimodal-masking-3streams.md` (2026-11-23)
 - **Date**: 2026-11-19
 - **Author**: Refined Study MA KISMED Research Team
 - **Related specification**: `N/A`
 - **Supersedes**: `N/A`
+- **Superseded by**: ADR-005 — the three-stream set (`tir`, `rgb2d`, `resp`), the `2×16×16`
+  tubelet at decimation 4, the `tir` kernel designation and the virtual-sensing curriculum.
+
+> **Historical record.** The body below is unchanged and remains the normative description of the
+> counting / alignment / placement arithmetic, which ADR-005 inherits verbatim (§§2.3–2.5 there).
+> It is no longer the design of record for the stream set, the tokenizer geometry, the
+> initialisation contract or the mode probability; ADR-005 governs those, and where the two
+> disagree ADR-005 wins. The implementation of this policy remains additive for the transition
+> (see the ADR-005 plan), but this arm is not a long-lived parallel branch.
 
 **Scope.** This ADR decides one thing: **how many tokens of each input stream reach the encoder on a training step, and which ones**. Model architecture, tokenization, initialisation, data preprocessing and the evaluation protocol are out of scope; they appear here only as the fixed quantities the masking policy is defined over.
 

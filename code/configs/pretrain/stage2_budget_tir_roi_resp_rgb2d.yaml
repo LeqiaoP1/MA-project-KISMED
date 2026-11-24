@@ -1,6 +1,12 @@
 # Stage 2 -- ADR-002 constant-budget masking arm:
 #   TIR-ROI + 2D-texture ROI + Resp_Volts -> constant 350-token encoder input.
 #
+# SUPERSEDED: ADR-005 is the design of record. This config is retained as the
+#   NO-CURRICULUM COMPARATOR: it carries the ADR-005 tokenizer geometry
+#   (2x16x16 tubelet, decimation 4) so the VideoMAE kernel loads, and omits the
+#   virtual_sensing_warmup_* keys, so p(e) = p_target = 0.50 from the first
+#   step. Diffing it against stage2_budget_3stream_curriculum.yaml isolates R6.
+#
 # Design of record: code/notes/design/ADR-002-asymmetric-multimodal-masking.md
 # Plan:            code/notes/plan/features/ADR-002-constant-budget-masking-plan.md
 #
@@ -11,15 +17,16 @@
 # policy keys below are the whole surface -- there is no ratio/mask_ratio_*
 # fallback to switch back to.
 #
-# GEOMETRY (ADR-002 §5 -- the policy is DEFINED over these units):
-#   visual : input_size 96, tubelet 4x16x16 -> 6x6 = 36 spatial tubes,
-#            100 frames / tubelet_t 4 = 25 tokens per tube (T = 25)
+# GEOMETRY (ADR-005 §2.2 / I1 -- the policy is DEFINED over these units):
+#   visual : input_size 96, tubelet 2x16x16 -> 6x6 = 36 spatial tubes,
+#            50 decimated frames / tubelet_t 2 = 25 tokens per tube (T = 25)
 #   signal : fs 1000 Hz over the 8 s window, sig_kernel 32 ->
 #            8000/32 = 250 tokens, i.e. R = 250/25 = 10 signal tokens per
 #            visual token (32 ms vs 320 ms)
 #   => 36 tubes x 25 tokens = 900 tokens per visual stream, 250 per physio
 #      stream, and the 2-tube floor / 9-tube cap / 125-token physio cap are the
-#      ADR's own numbers.
+#      ADR's own numbers. The token RATE is unchanged from the retired
+#      4x16x16 variant: only the Conv3d kernel shape moves, to the VideoMAE one.
 #
 # REQUIRES the Phase-3 respiration cache: `fs: 1000` invalidates the 100 Hz
 # artefact, so the cache key changes and a stale artefact cannot be reused
@@ -66,12 +73,12 @@ pretrained_encoder: videomae:k400  # pre-fetch ONCE on a login node
 # ---- streams & tokenizer geometry (ADR-002 §5) ----
 streams: tir,rgb2d,resp            # EXACTLY two visual + one physiological
 tir_channels: 3                    # thermal is a false-colour render, not gray
-tubelet: 4,16,16                   # 4-frame tubelet: 100 frames -> 25 tokens
+tubelet: 2,16,16                   # I1: VERBATIM VideoMAE kernel; 50 -> 25 tokens
 fs: 1000.0                         # Phase-3 grid: 8 s x 1000 Hz = 8000 samples
 fps: 25.0
-clip_duration: 8.0                 # 200 source frames -> 100 after decimation
-clip_stride: 2.0                   # window hop (s); NOT part of the ROI contract
-temporal_stride: 2                 # 12.5 fps effective; one tubelet = 320 ms
+clip_duration: 8.0                 # 200 source frames -> 50 after decimation
+clip_stride: 4.0                   # window hop (s): 50% overlap; NOT a cache key
+temporal_stride: 4                 # 6.25 fps effective; one tubelet = 320 ms
 seq_len: 0                         # 0 => round(kept_seconds * fs) = 8000 samples
 sig_kernel: 32                     # 32 ms signal token; 250 tokens per stream
 input_size: 96                     # SHARED by tir and rgb2d (one patch grid)
@@ -98,7 +105,7 @@ n_budget: 350                      # visible encoder tokens on EVERY step
 video_cap_ratio: 0.25              # <= 9 of 36 tubes per visual stream (225 tok)
 physio_cap_ratio: 0.50             # <= 125 of 250 tokens per physio stream
 video_min_tubes: 2                 # >= 2 tubes (50 tokens) per visuals stream
-p_virtual_sensing: 0.50            # Mode-1 probability (no physio token encoded)
+p_virtual_sensing: 0.50            # p_target; E_warm absent => 0 (no curriculum)
 spatial_patches: 36                # tokenizer-derived; asserted at build
 physio_tokens: 250                 # tokenizer-derived; asserted at build
 # placement of the kept 1-D tokens (a RUN setting, recorded with the run)

@@ -6,9 +6,9 @@ no modality data and no token grids — the caller passes one :class:`StreamSpec
 per declared stream and receives a :class:`BudgetPlan`. Mask *placement*
 (counts -> per-sample indices) is :mod:`core.mask_placement`.
 
-Design of record: ``code/notes/design/ADR-002-asymmetric-multimodal-masking.md``.
-Plan and gate ids: ``code/notes/plan/features/ADR-002-constant-budget-masking-plan.md``
-(Phase 1, G1-G9/G14/G15).
+Design of record: ``code/notes/design/ADR-005-asymmetric-multimodal-masking-3streams.md``
+(it supersedes ADR-002 and restates the arithmetic normatively).
+Plan and gate ids: ``code/notes/plan/features/ADR-005-asymmetric-multimodal-masking-3streams-plan.md``.
 
 The policy in one paragraph
 ---------------------------
@@ -20,9 +20,15 @@ the visual streams what remains. Either way the visible tokens of all streams
 sum to ``n_budget`` exactly, so the encoder input has a constant length and
 carries no ``[MASK]`` placeholders and no padding.
 
+The Mode-1 probability is a schedule, not a constant (ADR-005 §2.7):
+``p(e) = p_warm`` for epochs ``e < E_warm`` and ``p_target`` from ``E_warm``
+onwards, through :meth:`ConstantBudgetApportioner.p_at`. ``E_warm = 0`` — the
+compatibility default — makes ``p(e)`` the constant ``p_target`` again, which
+is what keeps every pre-ADR-005 configuration bit-identical.
+
 Rules, in order
 ---------------
-1. **mode** — one draw per step with ``p_virtual_sensing`` for Mode 1.
+1. **mode** — one draw per step with ``p(e)`` (see :meth:`p_at`) for Mode 1.
 2. **Mode 1** — ``total = n_budget // tokens_per_unit`` tubes are split
    uniformly inside both the per-stream tube cap ``M`` and the floor ``m``.
 3. **Mode 2** — each physiological stream draws ``K_p`` uniformly on
@@ -118,20 +124,31 @@ class StreamSpec:
 class BudgetPlan:
     """Counts for one training step (identical for every sample of a batch).
 
-    :param mode: :data:`MODE_VIRTUAL_SENSING` or :data:`MODE_INPAINTING`.
+    :param mode: :data:`MODE_VIRTUAL_SENSING` or :data:`MODE_INPAINTING` —
+        the mode the policy DREW (with ``p(e)``). Kept for compatibility and
+        for replay: it is what the sampler decided, not what the counts say.
     :param kept_tokens: per declared stream, how many encoder tokens survive.
     :param kept_units: the same allocation in masking units — kept tubes for a
         visual stream, kept tokens for a physiological one.
+    :param mode_by_counts: the RESOLVED mode of ADR-005 contract 4 —
+        :data:`MODE_VIRTUAL_SENSING` iff every signal stream keeps 0 tokens,
+        else :data:`MODE_INPAINTING`. Differs from ``mode`` on exactly the
+        Mode-2 draw with ``K_tilde = 0`` (1 of 126), which contract 4 relabels.
     """
 
     mode: int
     kept_tokens: Dict[str, int]
     kept_units: Dict[str, int]
+    mode_by_counts: int
 
     def __post_init__(self):
         if int(self.mode) not in MODES:
             raise ValueError(
                 f'BudgetPlan: mode must be one of {MODES}; got {self.mode!r}.')
+        if int(self.mode_by_counts) not in MODES:
+            raise ValueError(
+                f'BudgetPlan: mode_by_counts must be one of {MODES}; got '
+                f'{self.mode_by_counts!r}.')
 
     @property
     def total_tokens(self) -> int:
@@ -155,7 +172,15 @@ class ConstantBudgetApportioner:
     :param physio_cap_ratio: kept-ratio ceiling per physiological stream; the
         cap in tokens is ``floor(physio_cap_ratio * n_units)``.
     :param video_min_tubes: kept-tube floor per visual stream.
-    :param p_virtual_sensing: probability of Mode 1.
+    :param p_virtual_sensing: Mode-1 probability from ``E_warm`` onwards
+        (``p_target`` in ADR-005 §2.9).
+    :param virtual_sensing_warmup_p: Mode-1 probability strictly below
+        ``E_warm`` (``p_warm``). While the curriculum is active it must not
+        exceed ``p_virtual_sensing`` (a decreasing schedule is rejected);
+        with ``E_warm = 0`` it is never read and therefore unconstrained.
+    :param virtual_sensing_warmup_epochs: number of leading epochs at
+        ``p_warm`` (``E_warm``). ``0`` disables the curriculum and is the
+        compatibility default — the shipped arm's ``50`` lives in its config.
     :param generator: optional default RNG for :meth:`sample_step`.
     """
 
@@ -164,6 +189,8 @@ class ConstantBudgetApportioner:
                  physio_cap_ratio: float = 0.50,
                  video_min_tubes: int = 2,
                  p_virtual_sensing: float = 0.50,
+                 virtual_sensing_warmup_p: float = 0.10,
+                 virtual_sensing_warmup_epochs: int = 0,
                  generator: Optional[torch.Generator] = None):
         self.streams: Tuple[StreamSpec, ...] = tuple(streams)
         self.n_budget = int(n_budget)
@@ -171,6 +198,8 @@ class ConstantBudgetApportioner:
         self.physio_cap_ratio = float(physio_cap_ratio)
         self.video_min_tubes = int(video_min_tubes)
         self.p_virtual_sensing = float(p_virtual_sensing)
+        self.virtual_sensing_warmup_p = float(virtual_sensing_warmup_p)
+        self.virtual_sensing_warmup_epochs = int(virtual_sensing_warmup_epochs)
         self.generator = generator
 
         self.visual: Tuple[StreamSpec, ...] = tuple(
@@ -236,6 +265,29 @@ class ConstantBudgetApportioner:
             raise ValueError(
                 f'ConstantBudgetApportioner: p_virtual_sensing must be in '
                 f'[0, 1]; got {self.p_virtual_sensing!r}.')
+        if not 0.0 <= self.virtual_sensing_warmup_p <= 1.0:
+            raise ValueError(
+                f'ConstantBudgetApportioner: virtual_sensing_warmup_p must be '
+                f'in [0, 1]; got {self.virtual_sensing_warmup_p!r}.')
+        if self.virtual_sensing_warmup_epochs < 0:
+            raise ValueError(
+                f'ConstantBudgetApportioner: virtual_sensing_warmup_epochs '
+                f'must be >= 0 (0 disables the curriculum); got '
+                f'{self.virtual_sensing_warmup_epochs!r}.')
+        # The ordering is only meaningful when Phase I exists. With E_warm = 0
+        # the warm-up value is never read, and rejecting it would make an
+        # ADR-002 configuration with p_target = 0.0 (a legal value) fail merely
+        # because the warm-up key kept its 0.10 default -- i.e. it would break
+        # the neutrality guarantee of DoD 1.
+        if (self.virtual_sensing_warmup_epochs > 0
+                and self.virtual_sensing_warmup_p > self.p_virtual_sensing):
+            raise ValueError(
+                f'ConstantBudgetApportioner: virtual_sensing_warmup_p '
+                f'{self.virtual_sensing_warmup_p!r} exceeds p_virtual_sensing '
+                f'{self.p_virtual_sensing!r}; the schedule of ADR-005 §2.7 '
+                f'would be decreasing. Lower the warm-up value, raise the '
+                f'target, or set virtual_sensing_warmup_epochs=0 to disable '
+                f'the curriculum.')
         if self.n_budget < 1:
             raise ValueError(
                 f'ConstantBudgetApportioner: n_budget must be >= 1; got '
@@ -314,8 +366,14 @@ class ConstantBudgetApportioner:
 
     def _plan(self, mode: int, units: Dict[str, int],
               tokens: Dict[str, int]) -> BudgetPlan:
+        # ADR-005 contract 4: the RESOLVED mode is a function of the counts,
+        # not of the draw. Computed here because this is the single
+        # construction site of a plan and only the policy knows the signal set.
+        by_counts = (MODE_VIRTUAL_SENSING
+                     if all(int(tokens[s.name]) == 0 for s in self.signal)
+                     else MODE_INPAINTING)
         plan = BudgetPlan(mode=int(mode), kept_tokens=dict(tokens),
-                          kept_units=dict(units))
+                          kept_units=dict(units), mode_by_counts=by_counts)
         # exact sum, caps, floors and the tube multiple, re-checked
         if plan.total_tokens != self.n_budget:
             raise RuntimeError(
@@ -352,16 +410,35 @@ class ConstantBudgetApportioner:
     # ------------------------------------------------------------------ #
     # public API
     # ------------------------------------------------------------------ #
-    def sample_step(self, generator: Optional[torch.Generator] = None
-                    ) -> BudgetPlan:
+    def p_at(self, epoch: Optional[int]) -> float:
+        """Mode-1 probability at ``epoch`` (ADR-005 §2.7, 0-based index).
+
+        ``p_warm`` strictly below the boundary, ``p_target`` from ``E_warm``
+        onwards. ``epoch=None`` means "no epoch context" (pinned evaluation,
+        a single-step probe) and resolves to ``p_target`` — the schedule's
+        steady state, never its warm-up value.
+
+        :param epoch: 0-based training-epoch index, or ``None``.
+        """
+        if epoch is None:
+            return self.p_virtual_sensing
+        if int(epoch) >= self.virtual_sensing_warmup_epochs:
+            return self.p_virtual_sensing
+        return self.virtual_sensing_warmup_p
+
+    def sample_step(self, generator: Optional[torch.Generator] = None,
+                    epoch: Optional[int] = None) -> BudgetPlan:
         """Draw the step's mode and per-stream counts.
 
         :param generator: RNG to use; defaults to the one given at
             construction. Pass one for a replayable sequence.
+        :param epoch: 0-based epoch index selecting ``p(e)`` (ADR-005 §2.7).
+            ``None`` uses ``p_target``, so a caller that has no epoch context
+            reproduces the pre-curriculum behaviour exactly.
         """
         g = generator if generator is not None else self.generator
         u = float(torch.rand(1, dtype=_F64, generator=g).item())
-        if u < self.p_virtual_sensing:
+        if u < self.p_at(epoch):
             return self._mode1(g)
         return self._mode2(g)
 

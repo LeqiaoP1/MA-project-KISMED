@@ -209,12 +209,20 @@ def test_stage2_exposes_the_adr002_policy_surface(monkeypatch):
 
 
 def test_the_budget_arm_carries_the_adr_geometry(monkeypatch):
-    """The arm config declares the ADR-002 §5 units explicitly."""
+    """The no-curriculum comparator declares the ADR-005 §2.2 units explicitly.
+
+    Its tokenizer geometry is the I1 one (``2,16,16`` at decimation 4) so the
+    VideoMAE kernel loads; it omits the curriculum keys, so ``E_warm = 0`` and
+    ``p(e) = p_target`` from the first step -- which is what isolates R6 when
+    it is diffed against the curriculum arm.
+    """
     a = _args_for(os.path.join(
         CODE_DIR, 'configs/pretrain/stage2_budget_tir_roi_resp_rgb2d.yaml'),
         monkeypatch)
     assert a.streams == 'tir,rgb2d,resp'
-    assert a.tubelet == '4,16,16' and a.input_size == 96
+    assert a.tubelet == '2,16,16' and a.input_size == 96
+    assert a.temporal_stride == 4
+    assert a.virtual_sensing_warmup_epochs == 0
     assert a.sig_kernel == 32 and a.fs == pytest.approx(1000.0)
     assert a.n_budget == 350
     assert a.video_cap_ratio == pytest.approx(0.25)

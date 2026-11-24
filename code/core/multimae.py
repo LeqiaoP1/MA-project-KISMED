@@ -213,6 +213,8 @@ class MultiModalMAE(nn.Module):
                  physio_cap_ratio: float = 0.50,
                  video_min_tubes: int = 2,
                  p_virtual_sensing: float = 0.50,
+                 virtual_sensing_warmup_p: float = 0.10,
+                 virtual_sensing_warmup_epochs: int = 0,
                  spatial_patches: Optional[int] = None,
                  physio_tokens: Optional[int] = None,
                  signal_weight: float = 0.5,
@@ -312,12 +314,17 @@ class MultiModalMAE(nn.Module):
                 f"'none'; got {target_norm!r}")
         self.target_norm = target_norm
 
-        # ---- masking policy: ONE constant-budget apportioner (ADR-002) ----- #
+        # ---- masking policy: ONE constant-budget apportioner (ADR-005) ----- #
         # There is exactly one policy. Each step samples a mode and one
         # kept-token count per stream such that the visible tokens of all
         # streams sum to ``n_budget``; ``core.mask_placement`` then draws which
         # tubes / which temporal tokens per sample. Design of record:
-        # ``code/notes/design/ADR-002-asymmetric-multimodal-masking.md``.
+        # ``code/notes/design/ADR-005-asymmetric-multimodal-masking-3streams.md``.
+        #
+        # ``virtual_sensing_warmup_p`` / ``virtual_sensing_warmup_epochs`` are
+        # the ADR-005 §2.7 curriculum (R6). ``E_warm = 0`` is the neutral
+        # default: ``p(e)`` is then the constant ``p_virtual_sensing`` and the
+        # mask sequence of every pre-ADR-005 run is unchanged.
         #
         # ``spatial_patches`` and ``physio_tokens`` are TOKENIZER-DERIVED: they
         # come from ``input_size``/``tubelet`` and ``seq_len``/``sig_kernel``.
@@ -328,6 +335,8 @@ class MultiModalMAE(nn.Module):
         self.physio_cap_ratio = float(physio_cap_ratio)
         self.video_min_tubes = int(video_min_tubes)
         self.p_virtual_sensing = float(p_virtual_sensing)
+        self.virtual_sensing_warmup_p = float(virtual_sensing_warmup_p)
+        self.virtual_sensing_warmup_epochs = int(virtual_sensing_warmup_epochs)
         self.spatial_patches = int(self.grid_h * self.grid_w)
         self.physio_tokens = int(self.n_signal)
         if spatial_patches is not None and int(spatial_patches) != self.spatial_patches:
@@ -374,7 +383,9 @@ class MultiModalMAE(nn.Module):
             video_cap_ratio=self.video_cap_ratio,
             physio_cap_ratio=self.physio_cap_ratio,
             video_min_tubes=self.video_min_tubes,
-            p_virtual_sensing=self.p_virtual_sensing)
+            p_virtual_sensing=self.p_virtual_sensing,
+            virtual_sensing_warmup_p=self.virtual_sensing_warmup_p,
+            virtual_sensing_warmup_epochs=self.virtual_sensing_warmup_epochs)
         self._last_plan: Optional[BudgetPlan] = None
 
         # per-modality weights of the final weighted masked-MSE sum.
@@ -600,7 +611,8 @@ class MultiModalMAE(nn.Module):
     def make_masks(self, B: int, device,
                    counts_generator: Optional[torch.Generator] = None,
                    placement_generator: Optional[torch.Generator] = None,
-                   plan: Optional[BudgetPlan] = None):
+                   plan: Optional[BudgetPlan] = None,
+                   epoch: Optional[int] = None):
         """Per-stream 1=masked tensors and the step's plan.
 
         One ``sample_step()`` fixes the counts of the whole batch (ADR-002
@@ -614,12 +626,15 @@ class MultiModalMAE(nn.Module):
         :param placement_generator: RNG of the per-sample placement. ``None``
             uses the global RNG.
         :param plan: an explicit plan (evaluation pin); no count is drawn.
+        :param epoch: 0-based epoch index selecting ``p(e)`` (ADR-005 §2.7).
+            ``None`` uses ``p_target``, so an old caller is unchanged.
         :return: ``(masks, plan, indices)`` — masks are ``{stream: [B, N]}``
             with 1 = masked, ``indices`` are the kept encoder indices per
             stream, ascending.
         """
         if plan is None:
-            plan = self.apportioner.sample_step(generator=counts_generator)
+            plan = self.apportioner.sample_step(
+                generator=counts_generator, epoch=epoch)
         self._last_plan = plan
         masks: Dict[str, Tensor] = {}
         indices: Dict[str, Tensor] = {}
@@ -719,7 +734,7 @@ class MultiModalMAE(nn.Module):
         return x[:, :, :n]
 
     def forward(self, x, counts_generator=None, placement_generator=None,
-                plan=None):
+                plan=None, epoch: Optional[int] = None):
         """Masked multimodal forward.
 
         :param counts_generator: RNG of the step's PLAN (mode + counts). ``None``
@@ -729,6 +744,8 @@ class MultiModalMAE(nn.Module):
             draws from the global RNG; the runners pass a rank-distinct one.
         :param plan: an explicit :class:`BudgetPlan` (evaluation pin). When
             given, no count is drawn.
+        :param epoch: 0-based epoch index selecting ``p(e)`` (ADR-005 §2.7).
+            ``None`` uses ``p_target`` and reproduces the pre-curriculum draw.
         """
         B = next(iter(x.values())).shape[0]
         device = next(iter(x.values())).device
@@ -758,7 +775,7 @@ class MultiModalMAE(nn.Module):
         # no randomness, so the order does not change the RNG stream.
         masks, plan, ids_keep = self.make_masks(
             B, device, counts_generator=counts_generator,
-            placement_generator=placement_generator, plan=plan)
+            placement_generator=placement_generator, plan=plan, epoch=epoch)
 
         # --- tokenize + add positional embedding -------------------------- #
         tokens = {}
@@ -858,6 +875,11 @@ class MultiModalMAE(nn.Module):
                 # function of the CONFIG: every declared stream has an entry on
                 # every step, whatever the mode.
                 'mode': int(plan.mode),
+                # ADR-005 §2.8: the contract-4 resolved mode (differs from the
+                # draw on the K_tilde=0 step) and the schedule value that
+                # produced it. Both are properties of the step's plan.
+                'mode_resolved': int(plan.mode_by_counts),
+                'p_virtual': float(self.apportioner.p_at(epoch)),
                 'kept': {s: int(plan.kept_tokens[s]) for s in self.streams},
                 'kept_units': {s: int(plan.kept_units[s])
                                for s in self.streams},
@@ -957,6 +979,13 @@ def build_pretraining_model(args):
         physio_cap_ratio=float(getattr(args, 'physio_cap_ratio', 0.50)),
         video_min_tubes=int(getattr(args, 'video_min_tubes', 2)),
         p_virtual_sensing=float(getattr(args, 'p_virtual_sensing', 0.50)),
+        # ADR-005 §2.7 curriculum. Both defaults are NEUTRAL: E_warm=0 makes
+        # p(e) the constant p_target, so a config that omits them behaves
+        # exactly as before. The shipped arm's (0.10, 50) lives in its YAML.
+        virtual_sensing_warmup_p=float(
+            getattr(args, 'virtual_sensing_warmup_p', 0.10)),
+        virtual_sensing_warmup_epochs=int(
+            getattr(args, 'virtual_sensing_warmup_epochs', 0)),
         spatial_patches=getattr(args, 'spatial_patches', None) or None,
         physio_tokens=getattr(args, 'physio_tokens', None) or None,
         signal_weight=signal_weight,
@@ -975,6 +1004,8 @@ def build_pretraining_model(args):
           f'({model.apportioner.physio_cap_tokens} tokens)  '
           f'video_min_tubes={model.video_min_tubes}  '
           f'p_virtual_sensing={model.p_virtual_sensing:g}  '
+          f'p_warm={model.virtual_sensing_warmup_p:g}  '
+          f'E_warm={model.virtual_sensing_warmup_epochs}  '
           f'units={[(s.name, s.n_units, s.tokens_per_unit) for s in model.specs]}'
           f'  physio_placement={model.physio_placement}')
     return model

@@ -44,7 +44,9 @@ STRIDE_S = 1.0                             # the shipped hop (synthetic tests)
 #: Stage 3 must MATCH its Stage-2 encoder's hop (the config says so), and the
 #: rest of the TIR-ROI study stays at the 1 s hop.
 EXPECTED_STRIDE_S = {'stage2_hpc_tir_roi_resp.yaml': 2.0,
-                     'stage2_budget_tir_roi_resp_rgb2d.yaml': 2.0,
+                     # the Stage-2 budget pair (arm + no-curriculum comparator)
+                     # halves the window overlap: 4 s hop on an 8 s window.
+                     'stage2_budget_tir_roi_resp_rgb2d.yaml': 4.0,
                      'resp_tir_roi_hpc.yaml': 2.0}
 N_RESP = int(N_FRAMES / FPS * RESP_FS)     # 16000 samples
 RAIL = trd.RESP_RAIL_V
