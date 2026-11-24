@@ -1,0 +1,185 @@
+{
+  "schema": "adr-005/policy-replay/1",
+  "checkpoint": "/work/scratch/ne95ocyg/pretrain/adr005_3stream_fold0/fold0/stage2/checkpoints/checkpoint-0149.pth",
+  "epochs": 150,
+  "steps_per_epoch": 105,
+  "n_steps": 15750,
+  "mask_base": 42,
+  "streams": [
+    "tir",
+    "rgb2d",
+    "resp"
+  ],
+  "policy": {
+    "n_budget": 350,
+    "tokens_per_unit": 25,
+    "video_min_tubes": 2,
+    "video_cap_units": {
+      "tir": 9,
+      "rgb2d": 9
+    },
+    "physio_cap_tokens": {
+      "resp": 125
+    },
+    "physio_placement": "scattered",
+    "p_virtual_sensing": 0.5,
+    "virtual_sensing_warmup_p": 0.1,
+    "virtual_sensing_warmup_epochs": 50
+  },
+  "per_stream": {
+    "tir": {
+      "total_tokens_per_step": 900,
+      "min": 50,
+      "q25": 125.0,
+      "median": 150.0,
+      "q75": 200.0,
+      "max": 225,
+      "mean": 151.4142857142857,
+      "mean_ratio": 0.16823809523809524,
+      "kept_units_distribution": {
+        "2": 0.05511111111111111,
+        "3": 0.07453968253968254,
+        "4": 0.09219047619047618,
+        "5": 0.16666666666666666,
+        "6": 0.16507936507936508,
+        "7": 0.1702857142857143,
+        "8": 0.146984126984127,
+        "9": 0.12914285714285714
+      }
+    },
+    "rgb2d": {
+      "total_tokens_per_step": 900,
+      "min": 50,
+      "q25": 125.0,
+      "median": 150.0,
+      "q75": 200.0,
+      "max": 225,
+      "mean": 151.36031746031745,
+      "mean_ratio": 0.16817813051146382,
+      "kept_units_distribution": {
+        "2": 0.053015873015873016,
+        "3": 0.07517460317460317,
+        "4": 0.09479365079365079,
+        "5": 0.16514285714285715,
+        "6": 0.16914285714285715,
+        "7": 0.1664126984126984,
+        "8": 0.14863492063492065,
+        "9": 0.12768253968253968
+      }
+    },
+    "resp": {
+      "total_tokens_per_step": 250,
+      "min": 0,
+      "q25": 0.0,
+      "median": 50.0,
+      "q75": 75.0,
+      "max": 125,
+      "mean": 47.22539682539683,
+      "mean_ratio": 0.18890158730158732,
+      "share_exactly_0": 0.36558730158730157,
+      "share_exactly_cap": 0.12266666666666666,
+      "n_distinct_nonzero": 5,
+      "nonzero_mean": 74.43955164131305
+    }
+  },
+  "mode_split": {
+    "drawn": {
+      "mode1": 5695,
+      "mode2": 10055,
+      "mode1_share": 0.36158730158730157
+    },
+    "resolved": {
+      "mode1": 5758,
+      "mode2": 9992,
+      "mode1_share": 0.36558730158730157
+    }
+  },
+  "mode_conditional": {
+    "mode1_virtual_sensing": {
+      "n_steps": 5758,
+      "tir": {
+        "mean_tokens": 174.65265717262938,
+        "mean_ratio": 0.1940585079695882
+      },
+      "rgb2d": {
+        "mean_tokens": 175.34734282737062,
+        "mean_ratio": 0.1948303809193007
+      },
+      "resp": {
+        "mean_tokens": 0.0,
+        "mean_ratio": 0.0
+      }
+    },
+    "mode2_inpainting": {
+      "n_steps": 9992,
+      "tir": {
+        "mean_tokens": 138.02291833466774,
+        "mean_ratio": 0.15335879814963083
+      },
+      "rgb2d": {
+        "mean_tokens": 137.53753002401922,
+        "mean_ratio": 0.1528194778044658
+      },
+      "resp": {
+        "mean_tokens": 74.43955164131305,
+        "mean_ratio": 0.2977582065652522
+      }
+    }
+  },
+  "curriculum": {
+    "p_warm": 0.1,
+    "p_target": 0.5,
+    "E_warm": 50,
+    "phase1": {
+      "p": 0.1100952380952381,
+      "lo": 0.10191172050197664,
+      "hi": 0.11884893014031331,
+      "n": 5250,
+      "k": 578
+    },
+    "phase2": {
+      "p": 0.49333333333333335,
+      "lo": 0.48377472512386105,
+      "hi": 0.5028968178017574,
+      "n": 10500,
+      "k": 5180
+    },
+    "expected_phase1": 0.10714285714285715,
+    "expected_phase2": 0.503968253968254
+  },
+  "criterion_1": {
+    "exact_sum": {
+      "ok": true,
+      "n_violations": 0,
+      "n_steps": 15750
+    },
+    "visual_multiple_of_T": true,
+    "visual_inside_floor_cap": {
+      "tir": true,
+      "rgb2d": true
+    },
+    "signal_inside_cap": {
+      "resp": true
+    },
+    "signal_on_token_grid": {
+      "resp": true
+    },
+    "mode_iff_signal_zero": {
+      "ok": true
+    },
+    "mode2_k_tilde_zero_share": {
+      "observed": 0.00626553953257086,
+      "expected": 0.007936507936507936
+    }
+  },
+  "replay_vs_logs": {
+    "max_abs_epoch_mean_diff": {
+      "kept_tir": 0.0,
+      "kept_rgb2d": 0.0,
+      "kept_resp": 0.0,
+      "is_virtual": 0.0
+    },
+    "logged_epochs": 150,
+    "steps_per_epoch": 105
+  }
+}

@@ -129,6 +129,11 @@ def get_args(argv=None):
                         'as seed+r so two runs with the same seed see the SAME '
                         'masks (the paired ablation relies on this)')
     p.add_argument('--batch_size', default=16, type=int)
+    p.add_argument('--preload', action='store_true', default=False,
+                   help='decode every evaluation clip ONCE and reuse it across '
+                        'the mask repeats. Same numbers (the batch is copied to '
+                        'the device per step); costs ~10-20 MB of host RAM per '
+                        'clip. Without it every repeat re-reads the caches.')
     p.add_argument('--max_clips', default=0, type=int,
                    help='cap the number of evaluated clips (0 = all); the '
                         'subset is drawn with --seed so it is reproducible')
@@ -139,6 +144,20 @@ def get_args(argv=None):
                         'block is subject-disjoint by construction (ADR-001), '
                         "so naming a TRAIN subject here is refused rather "
                         "than silently scored.")
+    # ---- input ablation (presence/absence of a visual stream's CONTENT) ----
+    # The budget policy cannot express a zero-token visual stream (the floor is
+    # mandatory), so presence/absence is tested by corrupting the stream's input
+    # while keeping its token count, the masked plan and the placement seeds
+    # IDENTICAL. 'roll' circularly shifts the time axis (keeps every frame and
+    # the frame statistics, destroys alignment with respiration); 'zero' blanks
+    # the stream. The same flags on TIR are the positive control that the probe
+    # is sensitive to a visual stream's content.
+    p.add_argument('--ablate_stream', default='', type=str,
+                   help='visual stream whose INPUT is corrupted (default: none)')
+    p.add_argument('--ablate_mode', default='roll', choices=('roll', 'zero'),
+                   help="'roll' = circular time shift; 'zero' = blank frames")
+    p.add_argument('--ablate_shift', default=0, type=int,
+                   help='frames to roll; 0 = max(1, T//3)')
     p.add_argument('--device', default='cpu', type=str)
     return p.parse_args(argv)
 
@@ -168,6 +187,29 @@ def build_model(ckpt: Dict, device: torch.device):
         if unexpected:
             print('[eval]   unexpected:', unexpected[:5])
     return model.to(device).eval()
+
+
+def ablate_batch(batch: Dict, model, stream: str, mode: str, shift: int):
+    """Corrupt ONE visual stream's input; return ``(batch, used_shift)``.
+
+    Only the content changes: the tensor shape, the per-stream token count, the
+    masked plan and the placement seeds are untouched, so an intact/ablated pair
+    with the same ``--seed`` is exactly paired.
+    """
+    if stream not in model.visual:
+        raise SystemExit(f'[eval] --ablate_stream {stream!r} is not a visual '
+                         f'stream of this checkpoint (visual={model.visual})')
+    x = batch[stream]
+    if mode == 'zero':
+        used = -1
+        x = torch.zeros_like(x)
+    else:
+        t = int(x.shape[2])
+        used = int(shift) or max(1, t // 3)
+        x = torch.roll(x, shifts=used, dims=2)
+    out = dict(batch)
+    out[stream] = x
+    return out, used
 
 
 def pin_masking(model, a):
@@ -329,6 +371,61 @@ def mean_std(vals: List[float]) -> Dict[str, float]:
             'std': float(a.std()), 'n': int(a.size)}
 
 
+def subject_aggregate(per_clip: List[Dict], seed: int,
+                      n_boot: int = 2000) -> Dict:
+    """Median over each subject's clips, then a bootstrap over subjects.
+
+    The evaluation protocol counts a SUBJECT as one independent observation, so
+    this block takes the median of every subject's clip-level values first and
+    then bootstraps the across-subject median. It is reported next to (not
+    instead of) the clip-level summary, because the two answer different
+    questions: the clip mean says how a random clip behaves, the subject median
+    says how a random subject behaves.
+
+    The headline protocol's extra per-session step is **not** applied here: this
+    is a zero-shot clip probe, not the band-limited waveform metric, and a session
+    contributes only a handful of 8 s windows. ``n_sessions`` is recorded so the
+    imbalance can be judged.
+
+    :param per_clip: rows carrying at least ``subject``/``session`` and the
+        metric keys.
+    :param seed: bootstrap RNG seed (deterministic report).
+    :param n_boot: bootstrap resamples over subjects.
+    """
+    by_subject: Dict[str, List[Dict]] = {}
+    for r in per_clip:
+        by_subject.setdefault(str(r.get('subject', '')), []).append(r)
+    rows = []
+    for subj in sorted(by_subject):
+        rs = by_subject[subj]
+        sessions = sorted({str(r.get('session', '')) for r in rs})
+        row = {'subject': subj, 'n_clips': len(rs), 'n_sessions': len(sessions)}
+        for k in ('r_masked', 'r_full', 'mse', 'mae', 'rmse'):
+            vals = np.asarray([r[k] for r in rs], dtype=np.float64)
+            vals = vals[np.isfinite(vals)]
+            row[f'median_{k}'] = float(np.median(vals)) if vals.size else float('nan')
+        rows.append(row)
+
+    def _boot(key: str) -> Dict[str, float]:
+        vals = np.asarray([r[key] for r in rows], dtype=np.float64)
+        vals = vals[np.isfinite(vals)]
+        if vals.size < 2:
+            return {'median': float(vals[0]) if vals.size else float('nan'),
+                    'lo': float('nan'), 'hi': float('nan'), 'n_subjects': int(vals.size)}
+        rng = np.random.default_rng(int(seed))
+        idx = rng.integers(0, vals.size, size=(int(n_boot), vals.size))
+        boot = np.median(vals[idx], axis=1)
+        return {'median': float(np.median(vals)),
+                'lo': float(np.percentile(boot, 2.5)),
+                'hi': float(np.percentile(boot, 97.5)),
+                'n_subjects': int(vals.size), 'n_boot': int(n_boot)}
+
+    return {'per_subject': rows,
+            'r_masked_median': _boot('median_r_masked'),
+            'r_full_median': _boot('median_r_full'),
+            'mse_median': _boot('median_mse')}
+
+
 # --------------------------------------------------------------------------- #
 def main(argv=None):
     a = get_args(argv)
@@ -358,6 +455,13 @@ def main(argv=None):
     print(f'[eval] target_norm={getattr(cargs, "target_norm", "?")} '
           f'input_size={getattr(cargs, "input_size", "?")} '
           f'n_signal={model.n_signal} sig_kernel={model.sig_kernel}')
+    if a.ablate_stream:
+        probe = {'stream': a.ablate_stream, 'mode': a.ablate_mode,
+                 'shift': int(a.ablate_shift)}
+        print(f'[eval] INPUT ABLATION: {a.ablate_stream} {a.ablate_mode} '
+              f'(shift={a.ablate_shift or "auto"}); plan and masks unchanged')
+    else:
+        probe = None
 
     # ---- data (from --data_checkpoint when given) -------------------------
     data_cargs = cargs
@@ -394,6 +498,9 @@ def main(argv=None):
     # ---- loop -------------------------------------------------------------
     per_clip: List[Dict] = []
     B = int(a.batch_size)
+    preloaded = [ds[i] for i in idx] if a.preload else None
+    if preloaded is not None:
+        print(f'[eval] preloaded {len(preloaded)} clip(s) into host RAM')
     for rep in range(max(1, int(a.repeats))):
         # identical masks across arms: the PLAN is stated above and the
         # PLACEMENT is seeded per repeat, so two runs with the same --seed see
@@ -401,13 +508,27 @@ def main(argv=None):
         rep_rows: List[Dict] = []
         for start in range(0, len(idx), B):
             chunk = idx[start:start + B]
-            items = [ds[i] for i in chunk]
+            if preloaded is None:
+                items = [ds[i] for i in chunk]
+            else:
+                items = preloaded[start:start + B]
             batch = {k: torch.stack([it[k] for it in items]).to(dev).float()
                      for k in items[0]}
+            used_shift = None
+            if probe is not None:
+                batch, used_shift = ablate_batch(
+                    batch, model, probe['stream'], probe['mode'],
+                    probe['shift'])
             gen = torch.Generator().manual_seed(int(a.seed) + rep)
             with torch.inference_mode():
                 out = model(batch, plan=plan, placement_generator=gen)
-            rep_rows.extend(score_batch(out, batch, model.sig_kernel))
+            rows = score_batch(out, batch, model.sig_kernel)
+            for row, i in zip(rows, chunk):
+                entry = ds.entries[i]
+                row['subject'] = str(entry.get('subject', ''))
+                row['session'] = str(entry.get('session', ''))
+                row['t_start'] = float(entry.get('t_start', float('nan')))
+            rep_rows.extend(rows)
         # average the clip over its draws FIRST, then aggregate over clips
         if rep == 0:
             per_clip = [dict(r) for r in rep_rows]
@@ -422,6 +543,7 @@ def main(argv=None):
     # ---- aggregate --------------------------------------------------------
     summary = {k: mean_std([r[k] for r in per_clip])
                for k in ('mse', 'mae', 'rmse', 'r_masked', 'r_full')}
+    by_subject = subject_aggregate(per_clip, a.seed)
     print()
     print('=' * 68)
     print(f'{label}: {len(per_clip)} clip(s) x {a.repeats} draw(s)')
@@ -433,6 +555,10 @@ def main(argv=None):
         s = summary[k]
         print(f'  {k:9s} mean {s["mean"]:+.4f}  median {s["median"]:+.4f} '
               f'sd {s["std"]:.4f}  (n={s["n"]})')
+    subj_r = by_subject['r_masked_median']
+    print(f'  subject   median r_masked {subj_r["median"]:+.4f}  '
+          f'[{subj_r["lo"]:+.4f}, {subj_r["hi"]:+.4f}] 95% CI  '
+          f'({subj_r["n_subjects"]} subjects)')
     print('=' * 68)
 
     if a.out:
@@ -441,10 +567,13 @@ def main(argv=None):
                        'data_checkpoint': a.data_checkpoint,
                        'split': a.split, 'fold': getattr(cargs, 'fold', None),
                        'masking': caption, 'repeats': a.repeats,
+                       'ablation': ({**probe, 'resolved_shift': used_shift}
+                                    if probe is not None else None),
                        'n_clips': len(per_clip),
                        'n_sessions': len(sessions),
                        'n_subjects': len(subjects),
                        'summary': summary,
+                       'subject_aggregate': by_subject,
                        'per_clip': per_clip}, fh, indent=2)
         print(f'[eval] wrote {a.out}')
     return 0

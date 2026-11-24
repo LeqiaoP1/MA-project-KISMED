@@ -1,11 +1,19 @@
-"""MultiMAE Figure-6-style panel for the FOUR-stream Stage-2 checkpoint.
+"""MultiMAE Figure-6-style panel for a Stage-2 checkpoint.
 
-Rows = streams (`tir`, `rgb2d`, `bp`, `resp`); columns = the original clip and,
-per kept-density, [masked input | prediction]. The three densities are stated
-as KEPT TOKEN COUNTS that sum to the checkpoint's constant budget (350), because
-the architecture asserts an encoder length of exactly `n_budget` — a "fewer
+Rows = the checkpoint's streams; columns = the original clip and, per kept
+density, [masked input | prediction]. The three densities are stated as KEPT
+TOKEN COUNTS that sum to the checkpoint's constant budget (350), because the
+architecture asserts an encoder length of exactly `n_budget` -- a "fewer
 visible tokens overall" sweep like the paper's is not expressible here, so what
 varies is how the fixed budget is allocated.
+
+Two presets exist, selected from the checkpoint's own stream set:
+
+* four streams (`tir`, `rgb2d`, `bp`, `resp`) -- the ADR-002 predecessor arm;
+* three streams (`tir`, `rgb2d`, `resp`) -- the ADR-005 arm.  Here the
+  physiological cap (125 of 250 tokens) plus the 350-token budget leave at
+  least 225 visual tokens, so the sparsest expressible visual column is 4 + 5
+tubes, not the four-stream panel's 3 + 3.
 
 Clip: one sample from the fold's HELD-OUT test subjects (never trained on).
 
@@ -30,14 +38,25 @@ from runners.run_visualize_pretrain import (                 # noqa: E402
     reconstruct_visual)
 
 #: (label, kept tokens per stream). Each row MUST sum to the model's n_budget.
-DENSITIES = (
-    ('sparse  (3/36 tubes, physio 100/250)', {'tir': 75, 'rgb2d': 75,
-                                              'bp': 100, 'resp': 100}),
-    ('mid  (6/36 tubes, physio 25/250)', {'tir': 150, 'rgb2d': 150,
-                                          'bp': 25, 'resp': 25}),
-    ('dense visual  (7/36 tubes, physio 0)', {'tir': 175, 'rgb2d': 175,
-                                              'bp': 0, 'resp': 0}),
-)
+#: Keyed by the checkpoint's stream set so one script serves both arms.
+DENSITIES = {
+    frozenset(('tir', 'rgb2d', 'bp', 'resp')): (
+        ('sparse  (3/36 tubes, physio 100/250)', {'tir': 75, 'rgb2d': 75,
+                                                  'bp': 100, 'resp': 100}),
+        ('mid  (6/36 tubes, physio 25/250)', {'tir': 150, 'rgb2d': 150,
+                                              'bp': 25, 'resp': 25}),
+        ('dense visual  (7/36 tubes, physio 0)', {'tir': 175, 'rgb2d': 175,
+                                                  'bp': 0, 'resp': 0}),
+    ),
+    frozenset(('tir', 'rgb2d', 'resp')): (
+        ('resp-max  (5+4/36 tubes, resp 125/250)', {'tir': 125, 'rgb2d': 100,
+                                                    'resp': 125}),
+        ('mid  (6/36 tubes, resp 50/250)', {'tir': 150, 'rgb2d': 150,
+                                            'resp': 50}),
+        ('dense visual  (7/36 tubes, physio 0)', {'tir': 175, 'rgb2d': 175,
+                                                  'resp': 0}),
+    ),
+}
 
 
 def get_args(argv=None):
@@ -85,12 +104,21 @@ def main(argv=None):
     model.load_state_dict(ck['model'], strict=False)
     model.to(dev).eval()
     budget = int(model.n_budget)
+    key = frozenset(model.streams)
+    if key not in DENSITIES:
+        raise SystemExit(
+            f'[fig] no allocation preset for streams {sorted(key)}; known sets: '
+            f'{[sorted(k) for k in DENSITIES]}')
+    densities = DENSITIES[key]
 
     batch_cpu, entry = pick_clip(cargs, a.partition, a.seed)
     batch = {k: v.to(dev).float() for k, v in batch_cpu.items()}
 
     plans = []
-    for label, counts in DENSITIES:
+    for label, counts in densities:
+        if set(counts) != set(model.streams):
+            raise SystemExit(f'[fig] {label}: allocation keys {sorted(counts)} '
+                             f'!= model streams {sorted(model.streams)}')
         if sum(counts.values()) != budget:
             raise SystemExit(f'[fig] {label}: counts sum to '
                              f'{sum(counts.values())}, budget is {budget}')
@@ -173,7 +201,9 @@ def main(argv=None):
         axes[0][1 + 2 * g].annotate(label, xy=(0.5, 1.20), xycoords='axes fraction',
                                     ha='center', fontsize=8)
     e = entry
-    fig.suptitle(f'Four-stream reconstruction at three budget allocations — '
+    n_streams = len(rows)
+    word = {3: 'Three', 4: 'Four'}.get(n_streams, str(n_streams))
+    fig.suptitle(f'{word}-stream reconstruction at three budget allocations — '
                  f'subject {e.get("subject")}, session {e.get("session")}, '
                  f'held-out (fold 0 test)', fontsize=10)
     out_png = a.out or os.path.join(
