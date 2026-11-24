@@ -221,7 +221,10 @@ what “not used for this target” looks like, as opposed to “used and necess
   conclusion about RGB2D is therefore conditional on that tokenizer.
 - The **allocation** contrast (A vs B) and the **content** ablation (§5) answer
   different questions; neither is a substitute for a matched 2-stream training
-  run.
+  run. An off-policy all-TIR / no-RGB2D diagnostic is in
+  `diag_full_tir_no_rgb2d.md`: it collapses to `r ≈ 0` at both 900 and 350
+  tokens, which shows the pathway is allocation-specific, not that a 2-stream
+  model would fail.
 - The content ablation uses **one** temporal shift (16 of 50 frames) and one
   blanking variant. A static RGB2D cue would survive a roll, but respiration is
   dynamic, and the TIR control shows the probe is sensitive to content; a

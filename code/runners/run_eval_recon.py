@@ -60,6 +60,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np                                      # noqa: E402
 import torch                                            # noqa: E402
 
+from core.budget_masking import (                        # noqa: E402
+    BudgetPlan, MODE_INPAINTING, MODE_VIRTUAL_SENSING)
 from core.multimae import build_pretraining_model        # noqa: E402
 from runners.run_visualize_pretrain import _held_out_subjects  # noqa: E402
 
@@ -158,6 +160,14 @@ def get_args(argv=None):
                    help="'roll' = circular time shift; 'zero' = blank frames")
     p.add_argument('--ablate_shift', default=0, type=int,
                    help='frames to roll; 0 = max(1, T//3)')
+    # ---- OFF-POLICY diagnostic: arbitrary kept counts ---------------------
+    # Bypasses the constant-budget contract (the encoder input need not be
+    # n_budget) and the floor/cap arithmetic. Use ONLY for an explicitly
+    # requested distribution-shift probe, e.g. 'tir=900,rgb2d=0,resp=0'.
+    p.add_argument('--override_counts', default='', type=str,
+                   help="diagnostic only: comma list 'stream=kept_tokens' for "
+                        'EVERY declared stream; bypasses n_budget, floor and '
+                        'cap. The model then runs with strict_budget=False.')
     p.add_argument('--device', default='cpu', type=str)
     return p.parse_args(argv)
 
@@ -225,9 +235,60 @@ def pin_masking(model, a):
     because the floor exists so the encoder always has visual evidence -- while
     a physiological stream CAN be pinned to exactly 0 (that is Mode 1).
 
+    ``--override_counts`` is the **off-policy diagnostic** path: it builds the
+    plan directly from the caller's counts, without the budget/floor/cap
+    arithmetic, and the model runs with ``strict_budget=False``. It exists only
+    for probes the policy cannot express (e.g. full-TIR / no-RGB2D).
+
     :return: ``(plan, caption)``; the realised counts are what the caption and
         the report record, never the requested fractions.
     """
+    if str(a.override_counts or '').strip():
+        counts: Dict[str, int] = {}
+        for item in str(a.override_counts).split(','):
+            if not item.strip():
+                continue
+            if '=' not in item:
+                raise SystemExit(f'[eval] --override_counts item {item!r} is '
+                                 f"not 'stream=kept_tokens'")
+            name, val = item.split('=', 1)
+            counts[name.strip()] = int(val)
+        missing = set(model.streams) - set(counts)
+        extra = set(counts) - set(model.streams)
+        if missing or extra:
+            raise SystemExit(
+                f'[eval] --override_counts must name EVERY declared stream: '
+                f'missing {sorted(missing)}, unknown {sorted(extra)} '
+                f'(streams={list(model.streams)})')
+        units: Dict[str, int] = {}
+        for spec in model.specs:
+            k = int(counts[spec.name])
+            if k < 0 or k > int(spec.n_tokens):
+                raise SystemExit(
+                    f'[eval] --override_counts {spec.name}={k} is outside '
+                    f'[0, {spec.n_tokens}]')
+            if spec.kind == 'visual':
+                t = int(spec.tokens_per_unit)
+                if k % t:
+                    raise SystemExit(
+                        f'[eval] --override_counts {spec.name}={k} is not a '
+                        f'multiple of its {t} tokens/tube')
+                units[spec.name] = k // t
+            else:
+                units[spec.name] = k
+        virtual = all(int(counts[s]) == 0 for s in model.signal)
+        plan = BudgetPlan(
+            mode=MODE_VIRTUAL_SENSING if virtual else MODE_INPAINTING,
+            kept_tokens=dict(counts), kept_units=dict(units),
+            mode_by_counts=MODE_VIRTUAL_SENSING if virtual
+            else MODE_INPAINTING)
+        caption = ('OVERRIDE (off-policy) KEPT '
+                   + ' '.join(f'{s}={counts[s]}' for s in model.streams)
+                   + f' tokens  total={plan.total_tokens} '
+                   f'(n_budget={model.n_budget})  placement='
+                   f'{model.physio_placement}')
+        return plan, caption
+
     want = {}
     for s in model.streams:
         if s == 'tir':
@@ -448,6 +509,7 @@ def main(argv=None):
 
     model = build_model(ckpt, dev)
     plan, caption = pin_masking(model, a)
+    strict_budget = not bool(str(a.override_counts or '').strip())
     print(f'[eval] {label}')
     print(f'[eval] weights   : {a.checkpoint} (epoch {ckpt.get("epoch")})')
     print(f'[eval] streams   : {model.streams}  (2-stream ckpts ignore rgb2d)')
@@ -521,7 +583,8 @@ def main(argv=None):
                     probe['shift'])
             gen = torch.Generator().manual_seed(int(a.seed) + rep)
             with torch.inference_mode():
-                out = model(batch, plan=plan, placement_generator=gen)
+                out = model(batch, plan=plan, placement_generator=gen,
+                            strict_budget=strict_budget)
             rows = score_batch(out, batch, model.sig_kernel)
             for row, i in zip(rows, chunk):
                 entry = ds.entries[i]
@@ -567,6 +630,9 @@ def main(argv=None):
                        'data_checkpoint': a.data_checkpoint,
                        'split': a.split, 'fold': getattr(cargs, 'fold', None),
                        'masking': caption, 'repeats': a.repeats,
+                       'override_counts': (str(a.override_counts).strip()
+                                           or None),
+                       'strict_budget': strict_budget,
                        'ablation': ({**probe, 'resolved_shift': used_shift}
                                     if probe is not None else None),
                        'n_clips': len(per_clip),

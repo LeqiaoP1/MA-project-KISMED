@@ -734,7 +734,8 @@ class MultiModalMAE(nn.Module):
         return x[:, :, :n]
 
     def forward(self, x, counts_generator=None, placement_generator=None,
-                plan=None, epoch: Optional[int] = None):
+                plan=None, epoch: Optional[int] = None,
+                strict_budget: bool = True):
         """Masked multimodal forward.
 
         :param counts_generator: RNG of the step's PLAN (mode + counts). ``None``
@@ -746,6 +747,11 @@ class MultiModalMAE(nn.Module):
             given, no count is drawn.
         :param epoch: 0-based epoch index selecting ``p(e)`` (ADR-005 §2.7).
             ``None`` uses ``p_target`` and reproduces the pre-curriculum draw.
+        :param strict_budget: ``True`` (the contract) asserts that the encoder
+            input is exactly ``n_budget`` tokens. ``False`` is a **diagnostic
+            escape hatch** used only by an explicitly requested off-policy probe
+            (e.g. full-TIR / no-RGB2D): it asserts the length implied by the
+            given plan instead. Training and every scored arm keep the default.
         """
         B = next(iter(x.values())).shape[0]
         device = next(iter(x.values())).device
@@ -804,10 +810,13 @@ class MultiModalMAE(nn.Module):
                 tok, 1, keep.unsqueeze(-1).expand(B, keep.shape[1],
                                                   tok.shape[2])))
         z = torch.cat(enc_parts, dim=1)                 # [B, n_budget, D]
-        assert tuple(z.shape) == (B, self.n_budget, self.embed_dim), (
+        expected = (int(self.n_budget) if strict_budget
+                    else int(plan.total_tokens))
+        assert tuple(z.shape) == (B, expected, self.embed_dim), (
             f'MultiModalMAE.forward: the encoder input is {tuple(z.shape)} but '
-            f'the constant budget requires {(B, self.n_budget, self.embed_dim)} '
-            f'(plan {plan.kept_tokens}, mode {plan.mode}).')
+            f'the constant budget requires {(B, expected, self.embed_dim)} '
+            f'(plan {plan.kept_tokens}, mode {plan.mode}, '
+            f'strict_budget={strict_budget}).')
 
         # --- shared encoder -------------------------------------------------
         for blk in self.enc_blocks:

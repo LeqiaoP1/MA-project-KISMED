@@ -64,6 +64,13 @@ Paired Δ (B − A) = **−0.0292 ± 0.0044**, t = −6.62; 876 of 1,594 clips w
 RGB2D carries 9 of the 14 visual tubes yet contributes nothing measurable; TIR's
 5 tubes carry the effect. Details: `resp_recon_arms_ab.md` §§4–5.
 
+**Off-policy check — full TIR, no RGB2D.** Feeding the whole TIR stream (900
+tokens) and removing RGB2D collapses the model to the noise floor: `r = −0.003`,
+paired Δ vs TIR-max = −0.112 (t = −12.2). A length-matched variant (350 TIR / 0 /
+0) is statistically identical (`r = −0.008`), so the collapse is compositional,
+not a 900-token artefact. This is a diagnostic outside the constant-budget
+contract, not a 2-stream model: see `diag_full_tir_no_rgb2d.md`.
+
 **What this does not say.** The RGB2D tokenizer is random-initialised (ADR-005
 I2), so “RGB2D is not used by this model” is not “RGB2D carries no information”.
 A training-time presence/absence test needs a matched 2-stream arm, which does
@@ -78,6 +85,7 @@ not exist.
 | `kept_ratio_hist.png`, `kept_ratio_by_mode.png` | Figures for the replay |
 | `multimae_style_panel.md`, `multimae_style_kept_density.png` | Qualitative single-clip reconstruction at three allocations |
 | `resp_recon_arms_ab.md` | Quantitative held-out respiration probe (the two questions above) |
+| `diag_full_tir_no_rgb2d.md` | Off-policy diagnostic: full-TIR / no-RGB2D input (not a valid arm) |
 | `hpc_throughput.md` | Measured execution shape of the 4×A100 chain |
 | `policy_replay.json` | Machine-readable replay record |
 | `artifacts/` | Per-clip reports: reference, A, B, and the three ablations; paired contrasts |
@@ -123,3 +131,6 @@ python -m scripts.project.compare_recon_arms \
 - Subject CIs use the median over clips (the per-session step is not applied).
 - The RGB2D tokenizer is random-initialised; TIR is the only stream that
   inherited the VideoMAE kernel.
+- The full-TIR diagnostic in `diag_full_tir_no_rgb2d.md` is **outside** the
+  constant-budget contract and is not an arm; a 2-stream comparison needs a new
+  single-visual masking policy and a new training run.
