@@ -41,7 +41,11 @@ S_V = 14
 P_WARM = 0.10
 P_TARGET = 0.50
 P_S = 0.20
-E_WARM = 20
+E_WARM = 50
+#: a Mode-2 draw lands on K_tilde = 0 with probability 1/(C_p+1) and is then a
+#: sensor-absent step (ADR-006 §2.3 contract 4), so the sensor-absent mass is
+#: p + (1-p)/126, not p. Every expectation below uses that exact value.
+MODE2_DRAWS = C_P + 1
 
 
 def visual(name='tir'):
@@ -62,6 +66,23 @@ def make(**kw):
 def draw(app, steps, seed=0, **kw):
     gen = torch.Generator().manual_seed(seed)
     return [app.sample_step(generator=gen, **kw) for _ in range(steps)]
+
+
+class _Scripted(ConstantBudgetApportioner):
+    """An apportioner whose integer draws are scripted, in call order.
+
+    Used to place a step on a specific branch (e.g. the ``K_tilde = 0`` draw)
+    without sampling 126 times.
+    """
+
+    def __init__(self, draws, **kw):
+        super().__init__(**kw)
+        self._script = list(draws)
+
+    def _randint(self, lo, hi, generator):
+        value = self._script.pop(0)
+        assert lo <= value <= hi, (value, lo, hi)
+        return value
 
 
 def _summary(plan):
@@ -143,10 +164,20 @@ def test_infeasible_single_carrier_tuples_are_rejected(kw, needle):
     assert needle in str(exc.value).lower()
 
 
-def test_ordering_is_not_enforced_when_the_curriculum_is_off():
-    """E_warm = 0 never reads p_s_warm, so it must stay unconstrained."""
-    app = make(p_virtual_sensing=0.0, p_single_modality=0.0,
-               single_modality_warmup_p=0.9)
+def test_single_modality_ordering_is_enforced_even_without_a_curriculum():
+    """ADR-006 §2.7/§2.9 validate ``p_s_warm <= p_s_target`` unconditionally.
+
+    Unlike ``virtual_sensing_warmup_p`` — whose 0.10 default would otherwise
+    make a legal ``p_virtual_sensing = 0.0`` run unbuildable — the
+    single-carrier warm-up defaults to 0.00, so this check can never make a
+    neutral configuration infeasible.
+    """
+    with pytest.raises(ValueError) as exc:
+        make(p_virtual_sensing=0.0, p_single_modality=0.0,
+             single_modality_warmup_p=0.9)
+    assert 'single_modality_warmup_p' in str(exc.value)
+    # The neutral tuple still builds: that is what keeps ADR-005 configs valid.
+    app = make(p_virtual_sensing=0.0)
     assert app.virtual_sensing_warmup_epochs == 0
     assert app.p_s_at(0) == 0.0
 
@@ -170,16 +201,32 @@ def test_regime_mix_follows_the_two_schedules():
     phase2 = draw(app, steps=n, seed=7, epoch=E_WARM + 10)
     singles = [p for p in phase2 if p.regime == REGIME_SINGLE]
     f_single = len(singles) / n
-    p_joint = P_TARGET * P_S
+    # Sensor-absent = Mode-1 draws PLUS the 1/126 zero-count Mode-2 draws.
+    p_absent = P_TARGET + (1.0 - P_TARGET) / MODE2_DRAWS
+    p_joint = p_absent * P_S
     assert abs(f_single - p_joint) <= 4 * math.sqrt(
         p_joint * (1 - p_joint) / n), f_single
     # 3A and 3B are equiprobable INSIDE the class.
     a = sum(p.carrier == 'rgb2d' for p in singles)
     b = sum(p.carrier == 'tir' for p in singles)
     assert abs(a - b) <= 4 * math.sqrt(len(singles) * 0.25), (a, b)
-    # The three classes partition the run.
+    # The three classes partition the run, with the 1/126 correction applied.
     regimes = {p.regime for p in phase2}
     assert regimes == {REGIME_INPAINTING, REGIME_BI_VISUAL, REGIME_SINGLE}
+    shares = {
+        REGIME_INPAINTING: sum(p.regime == REGIME_INPAINTING for p in phase2) / n,
+        REGIME_BI_VISUAL: sum(p.regime == REGIME_BI_VISUAL for p in phase2) / n,
+        REGIME_SINGLE: f_single,
+    }
+    expected = {
+        REGIME_INPAINTING: P_TARGET * (1.0 - 1.0 / MODE2_DRAWS),
+        REGIME_BI_VISUAL: p_absent * (1.0 - P_S),
+        REGIME_SINGLE: p_joint,
+    }
+    for name, want in expected.items():
+        sd = math.sqrt(want * (1.0 - want) / n)
+        assert abs(shares[name] - want) <= 4 * sd, (name, shares[name], want)
+    assert abs(sum(shares.values()) - 1.0) < 1e-12
 
 
 # --------------------------------------------------------------------------- #
@@ -305,6 +352,36 @@ def test_zeroed_visual_stream_still_reaches_the_encoder():
         assert float(captured['z'].grad.abs().sum()) > 0.0
     finally:
         hook.remove()
+
+
+def test_mode2_zero_count_falls_through_to_the_sensor_absent_class():
+    """ADR-006 §2.3(4)/§2.5: aligned K_resp = 0 is sensor-absent, not inpainting.
+
+    The sampled ``mode`` keeps its ADR-005 meaning (the draw was Mode 2); only
+    the resolved regime/label change.
+    """
+    app = _Scripted([0, 7], streams=[visual('tir'), visual('rgb2d'),
+                                     signal('resp')], n_budget=N_BUDGET,
+                    p_virtual_sensing=0.0, p_single_modality=0.0)
+    plan = app.sample_step(generator=torch.Generator().manual_seed(0))
+    assert plan.kept_tokens['resp'] == 0
+    assert plan.mode == MODE_INPAINTING            # the sampled draw
+    assert plan.mode_by_counts == MODE_VIRTUAL_SENSING
+    assert plan.regime == REGIME_BI_VISUAL         # NOT 'inpainting'
+    assert plan.carrier is None
+    assert plan.total_tokens == N_BUDGET
+
+
+def test_mode2_fall_through_can_reach_the_single_carrier_regime():
+    """p_s(e) applies to the fall-through too (both are sensor-absent)."""
+    app = _Scripted([0], streams=[visual('tir'), visual('rgb2d'),
+                                  signal('resp')], n_budget=N_BUDGET,
+                    p_virtual_sensing=0.0, p_single_modality=1.0)
+    plan = app.sample_step(generator=torch.Generator().manual_seed(0))
+    assert plan.mode == MODE_INPAINTING
+    assert plan.regime == REGIME_SINGLE
+    assert plan.carrier in ('tir', 'rgb2d')
+    assert plan.kept_tokens[plan.carrier] == N_BUDGET
 
 
 # --------------------------------------------------------------------------- #

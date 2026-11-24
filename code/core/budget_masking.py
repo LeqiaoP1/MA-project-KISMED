@@ -345,13 +345,17 @@ class ConstantBudgetApportioner:
             raise ValueError(
                 f'ConstantBudgetApportioner: single_modality_warmup_p must be '
                 f'in [0, 1]; got {self.single_modality_warmup_p!r}.')
-        if (self.virtual_sensing_warmup_epochs > 0
-                and self.single_modality_warmup_p > self.p_single_modality):
+        # ADR-006 §2.7/§2.9 validates this ordering UNCONDITIONALLY. It is not
+        # given the ``E_warm > 0`` exemption that ``virtual_sensing_warmup_p``
+        # needs: that value defaults to 0.10, so the exemption there protects a
+        # legal ``p_target = 0.0`` configuration, whereas this one defaults to
+        # 0.00 and therefore cannot make a neutral configuration infeasible.
+        if self.single_modality_warmup_p > self.p_single_modality:
             raise ValueError(
                 f'ConstantBudgetApportioner: single_modality_warmup_p '
                 f'{self.single_modality_warmup_p!r} exceeds p_single_modality '
                 f'{self.p_single_modality!r}; the ADR-006 §2.7 schedule would '
-                f'be decreasing.')
+                f'be decreasing (admissible: [0, p_single_modality]).')
         if self.n_budget < 1:
             raise ValueError(
                 f'ConstantBudgetApportioner: n_budget must be >= 1; got '
@@ -472,13 +476,16 @@ class ConstantBudgetApportioner:
                 f'tokens {plan.total_tokens} != n_budget {self.n_budget} '
                 f'({plan.kept_tokens}, mode {mode}).')
         if regime == REGIME_SINGLE:
-            # A single-carrier step IS a sensor-absent step; anything else is a
-            # mislabelled plan.
-            if int(mode) != MODE_VIRTUAL_SENSING:
+            # A single-carrier step IS a sensor-absent step, so the check is on
+            # the RESOLVED label: a zero-count Mode-2 fall-through keeps
+            # ``mode = MODE_INPAINTING`` (the sampled draw) while its counts
+            # resolve to Mode 1 and its regime to Regime 3 (ADR-006 §2.3(4)).
+            if int(by_counts) != MODE_VIRTUAL_SENSING:
                 raise RuntimeError(
                     f'ConstantBudgetApportioner: invariant violated — a '
-                    f'{REGIME_SINGLE!r} plan must be '
-                    f'MODE_VIRTUAL_SENSING; got mode {mode}.')
+                    f'{REGIME_SINGLE!r} plan must resolve to '
+                    f'MODE_VIRTUAL_SENSING; got {by_counts} '
+                    f'(sampled mode {mode}, tokens {plan.kept_tokens}).')
             names = [s.name for s in self.visual]
             if carrier not in names:
                 raise RuntimeError(
@@ -572,21 +579,35 @@ class ConstantBudgetApportioner:
         u = float(torch.rand(1, dtype=_F64, generator=g).item())
         if u < self.p_at(epoch):
             return self._mode1(g, epoch)
-        return self._mode2(g)
+        return self._mode2(g, epoch)
 
     def _mode1(self, g, epoch: Optional[int] = None) -> BudgetPlan:
-        """Pure virtual sensing: no physiological token, whole budget visual.
+        """Sampled sensor-absent step (Mode 1): no physiology, budget visual.
 
-        ADR-006: a share ``p_s(e)`` of these steps is SINGLE-modality, i.e. the
-        whole budget goes to exactly one visual stream. The ``p_s > 0`` guard is
-        evaluated BEFORE any draw, so with ``p_single_modality = 0`` (the
-        default) this method consumes exactly the RNG it always did and the
-        pre-ADR-006 mask sequence is bit-identical.
+        Delegates to :meth:`_sensor_absent`, which is also the path a Mode-2
+        draw takes when its aligned respiration count lands on zero — both are
+        the same step class (ADR-006 §2.3 contract 4).
 
         :param g: RNG for this step's draws.
         :param epoch: 0-based epoch index; ``None`` uses the steady state.
             Keep the default: ``tests/test_curriculum_schedule.py`` calls this
             helper with one positional argument.
+        """
+        return self._sensor_absent(g, epoch)
+
+    def _sensor_absent(self, g, epoch: Optional[int],
+                       mode: int = MODE_VIRTUAL_SENSING) -> BudgetPlan:
+        """The ADR-006 sensor-absent class: Regime 3 with p_s(e), else Regime 2.
+
+        Reached from BOTH draws, exactly as ADR-006 §2.5 specifies: a Mode-1
+        draw AND a Mode-2 draw whose aligned respiration count is zero. The
+        ``p_s > 0`` guard is evaluated BEFORE any draw, so with
+        ``p_single_modality = 0`` (the default) this method consumes exactly the
+        RNG the pre-ADR-006 engine did and the mask sequence is bit-identical.
+
+        :param mode: the SAMPLED mode, kept for ADR-005 contract 4 — a Mode-2
+            draw that falls through here keeps ``MODE_INPAINTING`` while its
+            counts resolve to Mode 1.
         """
         p_s = self.p_s_at(epoch)
         if p_s > 0.0:
@@ -594,7 +615,7 @@ class ConstantBudgetApportioner:
                 first = float(torch.rand(1, dtype=_F64,
                                          generator=g).item())
                 carrier = self.visual[0] if first < 0.5 else self.visual[1]
-                return self._single_carrier(carrier.name)
+                return self._single_carrier(carrier.name, mode)
         total = self.n_budget // self.tokens_per_unit
         s1, s2 = self._split_tubes(total, g)
         first, second = self.visual[0], self.visual[1]
@@ -604,9 +625,10 @@ class ConstantBudgetApportioner:
         for s in self.signal:
             units[s.name] = 0
             tokens[s.name] = 0
-        return self._plan(MODE_VIRTUAL_SENSING, units, tokens, REGIME_BI_VISUAL)
+        return self._plan(mode, units, tokens, REGIME_BI_VISUAL)
 
-    def _single_carrier(self, carrier: str) -> BudgetPlan:
+    def _single_carrier(self, carrier: str,
+                        mode: int = MODE_VIRTUAL_SENSING) -> BudgetPlan:
         """ADR-006 Regime 3: one visual stream takes the whole budget.
 
         Built directly: ``_split_tubes`` clamps to ``[m, M]`` and would return
@@ -621,11 +643,17 @@ class ConstantBudgetApportioner:
         tokens = {s.name: 0 for s in self.streams}
         units[carrier] = self.single_carrier_tubes
         tokens[carrier] = self.single_carrier_tubes * int(spec.tokens_per_unit)
-        return self._plan(MODE_VIRTUAL_SENSING, units, tokens, REGIME_SINGLE,
-                          carrier)
+        return self._plan(mode, units, tokens, REGIME_SINGLE, carrier)
 
-    def _mode2(self, g) -> BudgetPlan:
-        """Waveform inpainting: physiological draws, tube-aligned residual."""
+    def _mode2(self, g, epoch: Optional[int] = None) -> BudgetPlan:
+        """Waveform inpainting: physiological draws, tube-aligned residual.
+
+        A draw whose ALIGNED physiological total is zero is a sensor-absent step
+        (contract 4), so it falls through to :meth:`_sensor_absent` rather than
+        returning an ``inpainting`` plan with no respiration token — ADR-006
+        §2.5. The sampled ``mode`` stays ``MODE_INPAINTING``; only the resolved
+        regime changes.
+        """
         t = self.tokens_per_unit
         raw: Dict[str, int] = {
             s.name: self._randint(0, self.physio_cap_tokens[s.name], g)
@@ -649,6 +677,14 @@ class ConstantBudgetApportioner:
                     f'{remainder} cannot be absorbed — {first!r} would fall to '
                     f'{raw[first]}. Feasibility condition 3 should have '
                     f'rejected this tuple.')
+
+        # ADR-006 §2.3 contract 4 / §2.5: an aligned total of zero is a
+        # SENSOR-ABSENT step, not an inpainting one — it falls through to the
+        # same Regime-3/Regime-2 decision as a sampled Mode-1 step. (Only the
+        # K_tilde = 0 draw can reach this: 350 - 0 is already a multiple of T,
+        # so the alignment cannot raise it.)
+        if sum(raw.values()) == 0:
+            return self._sensor_absent(g, epoch, MODE_INPAINTING)
 
         remaining = self.n_budget - sum(raw.values())
         if remaining % t:
