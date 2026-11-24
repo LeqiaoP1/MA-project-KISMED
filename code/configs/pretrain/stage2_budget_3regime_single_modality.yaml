@@ -1,0 +1,156 @@
+# Stage 2 -- ADR-006 three-REGIME constant-budget arm: TIR-ROI + 2D-texture ROI +
+#   Resp_Volts -> constant 350-token encoder input, with a SINGLE-CARRIER
+#   (single-modality) step class.
+#
+# Design of record: code/notes/design/ADR-006-three-regime-virtual-sensing-masking.md
+# Plan:            code/notes/plan/features/ADR-006-three-regime-masking-plan.md
+#
+# ONE masking policy, THREE step classes, resolved from the counts:
+#   Regime 1  inpainting        K_resp > 0; both visuals share the residual
+#   Regime 2  bi-visual         K_resp = 0; both visuals share the 14 tubes
+#   Regime 3  single-carrier    K_resp = 0; ONE visual holds all 350 tokens
+#                               (3A rgb2d-only, 3B tir-only, 50/50 inside 3)
+#
+# DELTA vs configs/pretrain/stage2_budget_3stream_curriculum.yaml (the ADR-005
+# arm -- same stream set, same tokenizer geometry, same 350-token policy, same
+# E_warm = 50):
+#   p_single_modality              ---  -> 0.20   (§2.7 p_s_target)
+#   single_modality_warmup_p       ---  -> 0.00   (§2.7 p_s_warm: no Regime 3
+#                                                  during Phase I)
+#   single_carrier_tubes           ---  -> 14     (§2.4 S_v = n_budget / T)
+# Everything else is identical, including the caps, the floor, the curriculum
+# length, the loss, the optimiser and `patch_stream: tir`. The step class is
+# therefore the ONLY difference from the ADR-005 arm, so a comparison between
+# the two isolates the policy and nothing else. The same binary runs the ADR-005
+# arm by leaving the three ADR-006 keys unset (p_s = 0 makes Regime 3
+# unreachable and consumes no RNG).
+#
+# MASKING ARITHMETIC (ADR-006 §2.4 over the ADR-005 §2.2 geometry):
+#   visual : input_size 96, tubelet 2x16x16 -> 6x6 = 36 tubes, T = 25 tok/tube
+#   signal : fs 1000 Hz over 8 s, sig_kernel 32 -> 250 tokens (R = 10)
+#   Regime 1: K_resp in {0,25,...,125}; S_total = (350 - K_resp)/25 in [9,13]
+#   Regime 2: S_total = 14, split clamped-uniform -> 5..9 tubes per visual
+#   Regime 3: S_v = 14 tubes = 350 tokens on ONE stream, the other streams 0
+#             (38.9 % of that stream kept, 61.1 % masked -- the sole carrier
+#             satisfies the visibility floor on its own; ADR-006 §2.3(3))
+#
+# CACHES: the two ROI caches and the respiration cache stay VALID -- their keys
+# carry clip length, fps and fs, not the temporal stride or the window hop.
+#
+# Run from code/ (ALWAYS with `-u`, else stdout is block-buffered through tee):
+#     python -u runners/run_pretrain.py \
+#         -c configs/pretrain/stage2_budget_3regime_single_modality.yaml \
+#         --exp_root <exp_root> --fold 0 \
+#         2>&1 | tee ../output/pretrain/stage2_budget_3regime_fold0/train.log
+# Smoke first (--warmup_epochs 0: epochs < warmup trips the cosine_scheduler;
+# the forced p_virtual makes the Regime-3 branch deterministic in a 2-step run,
+# and --max_entries is the per-SPLIT cap -- --max_clips is per session):
+#     python -u runners/run_pretrain.py \
+#         -c configs/pretrain/stage2_budget_3regime_single_modality.yaml \
+#         --exp_root /tmp/regime3_probe --fold 0 --dev_smoke \
+#         --epochs 1 --warmup_epochs 0 --virtual_sensing_warmup_epochs 0 \
+#         --p_virtual_sensing 1.0 --p_single_modality 1.0 \
+#         --max_entries 16 --batch_size 8 --num_workers 0 \
+#         --output_dir /tmp/regime3_probe/out
+
+# ---------------------------------------------------------------- data source
+data_set: tir_roi_resp_rgb2d       # TIR-ROI + 2D-texture ROI + Resp_Volts.txt
+subjects: ''                       # '' = every discoverable subject
+# ---- ADR-001 roles (train / val / test) -- MUST mirror the Stage-3 sibling ---
+# TRAIN + VAL come from <exp_root>/fold<k>/partition.json; TEST is never loaded.
+split_seed: 42
+split_stratify: sex
+# Validation replays a FIXED-SEED mask sequence (ADR-006 §2.7): the draw is
+# unchanged, only the threshold p(e)/p_s(e) follows the phase, so the curve is a
+# WITHIN-PHASE observable and must not be pooled across e = E_warm.
+eval_freq: 5
+val_select: fixed_epoch
+val_criterion: joint_loss
+tasks: ''
+# ---- task GROUPS ("distortion levels") --------------------------------------
+task_groups:
+  low: [T2, T3, T5]                # passive viewing + short yes/no answers
+  moderate: [T1, T4]               # laughter / facial expression + startle
+  high: [T6, T7, T8, T9, T10]      # singing, threat, pain, anger, disgust
+task_set: ''
+
+# ------------------------------------------------------- model / initialisation
+model: project_multimae_base       # 768-d / 12-layer -- MUST match pretrained_encoder
+pretrained_encoder: videomae:k400  # pre-fetch ONCE on a login node
+                                   #   (scripts/hpc/download_weights.sh).
+patch_stream: tir                  # I2: the TIR adapter receives the Conv3d
+                                   #   tubelet verbatim; rgb2d stays random and
+                                   #   is recorded as random-init (I2 debt).
+                                   #   CONSEQUENCE for Regime 3A: on rgb2d-only
+                                   #   steps the sole carrier is the RANDOM
+                                   #   tokenizer, so a null for Target C is not
+                                   #   attributable to visible light alone.
+
+# ---- streams & tokenizer geometry (ADR-005 §2.2, inherited) ----
+streams: tir,rgb2d,resp            # EXACTLY two visual + one physiological
+tir_channels: 3                    # thermal is a false-colour render, not gray
+tubelet: 2,16,16                   # I1: VERBATIM VideoMAE kernel (2 frame)
+fs: 1000.0                         # Phase-3 grid: 8 s x 1000 Hz = 8000 samples
+fps: 25.0
+clip_duration: 8.0                 # 200 source frames -> 50 after decimation
+clip_stride: 4.0                   # window hop (s): 50% overlap; NOT a cache key
+temporal_stride: 4                 # 6.25 fps effective; one tubelet = 320 ms
+seq_len: 0                         # 0 => round(kept_seconds * fs) = 8000 samples
+sig_kernel: 32                     # 32 ms signal token; 250 tokens per stream
+input_size: 96                     # SHARED by tir and rgb2d (one patch grid)
+pos_init: sincos3d
+roi_padding: 0.10                  # frozen CACHE KEY (both caches)
+crop_rule: square                  # frozen CACHE KEY; one isotropic rescale
+max_sway_px: 40                    # TIR motion gate (source px; 0 = off)
+roi_landmarks: ''                  # '' = the TIR 12-point nose+mouth set
+
+# ---- 2D-TEXTURE (rgb2d) SELECTION GATES -- load-time, never cache-key fields --
+rgb2d_landmarks: face              # all 49 points. MUST match the cache build
+rgb2d_store: 112                   # cache stored RESIZED to 112 px (input_size <= 112)
+rgb2d_cache_lru: 8
+rgb2d_min_valid_ratio: 1.0         # zero tolerance on the 49-point track
+rgb2d_area_min_frac: 0.5           # drop a clip whose box is <50 % in-frame
+rgb2d_max_sway_px: 110             # matched to the TIR gate (see the TIR twin)
+
+# ---- 1-D label validity ----
+min_signal_spread: 0.1             # VOLTS: dead-signal guard
+rail_touch_v: 9.900                # VOLTS: recorder-rail guard
+
+# ---- MASKING: the ADR-006 three-regime policy (the whole surface) -----------
+n_budget: 350                      # visible encoder tokens on EVERY step
+video_cap_ratio: 0.25              # <= 9 of 36 tubes on a MULTI-carrier step
+                                   #   (Regime 3's sole carrier is exempt: it
+                                   #   holds S_v, ADR-006 §2.3 contract 2)
+physio_cap_ratio: 0.50             # <= 125 of 250 tokens per physio stream
+video_min_tubes: 2                 # >= 2 tubes per visual stream on Regimes 1/2
+p_virtual_sensing: 0.50            # p_target: sensor-absent probability from E_warm
+virtual_sensing_warmup_p: 0.10     # p_warm: sensor-absent probability below E_warm
+virtual_sensing_warmup_epochs: 50  # E_warm: 50 warm-up epochs (0 disables) --
+                                   #   deliberately the SAME as the ADR-005 arm
+# ---- ADR-006 single-carrier class (Regime 3) --------------------------------
+p_single_modality: 0.20            # p_s_target: share of sensor-absent steps that
+                                   #   are single-carrier (=> 10 % of Phase II)
+single_modality_warmup_p: 0.00     # p_s_warm: none during Phase I (grounding)
+single_carrier_tubes: 14           # S_v = 350 / 25; must equal that derivation
+spatial_patches: 36                # tokenizer-derived; asserted at build
+physio_tokens: 250                 # tokenizer-derived; asserted at build
+# placement of the kept 1-D tokens (a RUN setting, recorded with the run)
+physio_placement: scattered        # 'scattered' | 'span'
+physio_span_tokens: 0              # required only when physio_placement: span
+
+# ---- loss: per-modality masked MSE (masked positions only) ----
+signal_weight: 0.5
+# THE label normalisation (the ONLY one in the pipeline): the DATASET z-scores
+# each respiration target with its OWN mean/std; the model never touches it
+# (run_pretrain.py pins target_norm='none' for every ROI lineage).
+physio_norm: zscore
+
+# ---- training (full corpus: derive the LR from blr, do NOT set an absolute lr) ----
+epochs: 150                        # Phase I = 50, Phase II = the remaining 100
+batch_size: 16                     # per GPU; lr = blr * batch * world / 256
+save_ckpt_freq: 10
+opt: adamw
+blr: 1.5e-4
+min_lr: 0.0
+warmup_epochs: 10                  # MUST be < epochs (LR warm-up, independent
+                                   # of the masking curriculum's E_warm=50)
