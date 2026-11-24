@@ -611,9 +611,11 @@ Step 1 — Visual input preprocessing + tokenise:
   for visual s: x[s] = zscore_clip(x[s])                   # per-ch z over (T,H,W), per sample
   tokens_s = adapters[s](x[s]) + positions[s].pos_embed   # [B, N_s, D]
 
-Step 2 — Constant-budget masking (ADR-002, core/budget_masking.py):
-  plan = apportioner.sample_step(counts_generator)   # mode + per-stream counts
+Step 2 — Constant-budget masking (ADR-005, core/budget_masking.py):
+  plan = apportioner.sample_step(counts_generator, epoch)  # mode + counts, p(e)
   sum(plan.kept_tokens.values()) == n_budget          # 350, contract 1
+  plan.mode_by_counts == MODE_VIRTUAL_SENSING iff all(signal counts == 0)
+                                                      # contract 4 label
   ids_keep[s] = place_video/place_signal(plan.kept_tokens[s],
                      placement_generator)           # [B, k_s], per-sample
   mask_s = 1 - scatter(ids_keep[s])                   # [B, N_s], 1 = masked
@@ -1149,7 +1151,7 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `stage2_local_pretrained.yaml` | Local with VideoMAE init, 11 sessions, 32 clips |
 | `stage2_local_rgb_roi_bp.yaml` | RGB face-ROI + BP, raw tree |
 | `stage2_local_tir_roi_resp.yaml` | TIR-ROI + RESP, raw tree |
-| `stage2_budget_tir_roi_resp_rgb2d.yaml` | TIR-ROI + `rgb2d` + RESP (`streams: tir,rgb2d,resp`) — the ADR-002 constant-budget arm, HPC |
+| `stage2_budget_tir_roi_resp_rgb2d.yaml` | TIR-ROI + `rgb2d` + RESP (`streams: tir,rgb2d,resp`) — the no-curriculum comparator at the ADR-005 geometry, HPC |
 | `stage2_fourstream_tir_rgb2d_bp_resp_small_random.yaml` | TIR-ROI + `rgb2d` + BP + RESP, ViT-Small random init — the four-stream ADR-002 arm |
 | `stage2_multimodal.yaml` | HPC full-data template, 800 epochs, input_size 224 |
 | `example.yaml` | Annotated reference template |

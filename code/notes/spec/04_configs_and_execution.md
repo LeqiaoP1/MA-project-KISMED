@@ -37,7 +37,7 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `stage2_local_pretrained.yaml` | Local with VideoMAE init, 11 sessions, 32 clips |
 | `stage2_local_rgb_roi_bp.yaml` | RGB face-ROI + BP, raw tree |
 | `stage2_local_tir_roi_resp.yaml` | TIR-ROI + RESP, raw tree |
-| `stage2_budget_tir_roi_resp_rgb2d.yaml` | TIR-ROI + `rgb2d` + RESP (`streams: tir,rgb2d,resp`) — the ADR-002 constant-budget arm, HPC |
+| `stage2_budget_tir_roi_resp_rgb2d.yaml` | TIR-ROI + `rgb2d` + RESP (`streams: tir,rgb2d,resp`) — the no-curriculum comparator at the ADR-005 geometry, HPC |
 | `stage2_fourstream_tir_rgb2d_bp_resp_small_random.yaml` | TIR-ROI + `rgb2d` + BP + RESP, ViT-Small random init — the four-stream ADR-002 arm |
 | `stage2_multimodal.yaml` | HPC full-data template, 800 epochs, input_size 224 |
 | `example.yaml` | Annotated reference template |

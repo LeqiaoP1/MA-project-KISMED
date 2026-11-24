@@ -9,14 +9,19 @@
 > policy, and introduces the three-stream arm configuration. Model architecture, tokenization,
 > data preprocessing, the Stage-3 recipe and the evaluation protocol stay out of scope.
 >
-> **Parallel-operation requirement.** The ADR-002 arm must keep running unchanged while this lands.
-> The implementation is therefore **additive and neutral**: no module is forked, no existing
-> parameter changes meaning, and a configuration that does not mention a new key behaves exactly as
-> it did before. "Parallel" is achieved by *defaults*, not by a second implementation — a forked
-> engine would drift from the invariants and the 10⁴-draw suite would guard only one branch.
+> **Transition guarantee (ADR-002 is being retired).** ADR-002 is superseded by ADR-005, so the two
+> arms are not meant to coexist indefinitely: ADR-002 is the *comparator* for the runs in flight
+> and disappears once ADR-005 is validated. While this lands, however, the implementation must
+> stay **additive and neutral**: no module is forked, no existing parameter changes meaning, and a
+> configuration that does not mention a new key behaves exactly as it did before. Neutrality is
+> achieved by *defaults*, not by a second implementation — a forked engine would drift from the
+> invariants and the 10⁴-draw suite would guard only one branch. It also keeps any in-flight
+> ADR-002 job bit-identical and makes the diff auditable. The neutrality gates (DoD 1, G1, G8)
+> therefore retire with the arm; they are not permanent architecture.
 >
-> **State (2026-11-23).** Nothing implemented. Phases 1–3 are additive code; Phase 4 is the arm
-> configuration; Phase 5 is measurement and belongs to `code/notes/plan/experiments/`.
+> **State (2026-11-23).** Nothing implemented. Phases 1–2 are additive code (plumbing, then
+> observability); Phase 3 is the arm configuration; Phase 4 is the test suite and the smoke runs;
+> Phase 5 is measurement and belongs to `code/notes/plan/experiments/`.
 >
 > **Judged by** ADR-005 §3: Criterion 1 (policy conformance) is a gate for this plan; Criterion 2
 > (the subject-level headline) is the *arm's* gate and is recorded in `code/notes/eval/`, never
@@ -39,7 +44,8 @@
 7. The three-stream curriculum configuration exists, resolves through `_check_config_keys`, and
    reaches its first step with `[B, 350, D]`.
 8. Gates G1–G8 pass; `code/tests/test_budget_masking.py` and `code/tests/test_mask_placement.py`
-   are **unchanged** and green — that is the parallel-operation proof.
+   are **unchanged** and green — that is the transition proof (it expires with the arm, see the
+   note above).
 
 ## 2. What already satisfies ADR-005 (nothing to build)
 
@@ -67,8 +73,11 @@ behaviour exactly.
   `virtual_sensing_warmup_epochs: int = 0` — the **exact** names of ADR-005 §2.9, so the YAML key
   and the Python keyword are identical and `parser.set_defaults(**cfg)` reaches the apportioner
   without a translation layer. (`p_virtual_sensing_warmup` appears nowhere.)
-- `_validate` adds: `0 ≤ p_warm ≤ p_target`; `E_warm ≥ 0`. (`E_warm = 0` must be legal — it is the
-  compatibility default and disables the curriculum.)
+- `_validate` adds: `p_warm ∈ [0, 1]`; `E_warm ≥ 0`; and `p_warm ≤ p_target` **only when
+  `E_warm > 0`**. (`E_warm = 0` must be legal — it is the compatibility default and disables the
+  curriculum.) The ordering check must be conditional: with `E_warm = 0` the warm-up value is never
+  read, and `p_target = 0.0` is a legal ADR-002 value that would otherwise be rejected merely
+  because `p_warm` kept its `0.10` default — a DoD-1 neutrality break.
 - New `p_at(epoch: Optional[int]) -> float` — ADR-005 §2.7, on the **0-based** index:
   `p_target if epoch is None or epoch >= E_warm else p_warm`.
 - `sample_step(generator=None, epoch=None)` uses `self.p_at(epoch)` instead of
@@ -102,6 +111,11 @@ behaviour exactly.
   `seed = val_mask_seed(mask_base, batch_idx)` exactly as it is; only the *threshold* `p` changes
   with the epoch. Its docstring line "the same sequence of modes, counts and placements every
   epoch" becomes "…every epoch **within a phase**".
+- `evaluate_pretrain` accumulates only `mode_totals[f'mode{mode}']`. Add the same sample-weighted
+  accumulation for `out['mode_resolved']` (e.g. `resolved{mode}`) to `payload`, the DDP merge and
+  the returned dict. §2.7 makes validation a within-phase observable *of the resolved policy*, so
+  without it the run's artefacts record the training-side fraction only and a reading of
+  validation's Mode-1 share has to re-derive it from `mode`, which is the wrong quantity (§4.2).
 
 **3.4 `code/runners/run_pretrain.py`**
 
@@ -114,6 +128,10 @@ behaviour exactly.
   `evaluate_pretrain(model, data_loader_val, device, mask_base=mask_base, epoch=epoch)`. The epoch
   is in the loop scope but is **not** currently forwarded, so validation would otherwise pin at
   `epoch=0` forever (Trap 2).
+- Assert `0 <= args.virtual_sensing_warmup_epochs <= args.epochs` before the loop. §2.9 limits
+  `E_warm` to `[0, epochs]`, but the apportioner has no notion of the run length, so this half of
+  the admissibility check belongs to the runner. An `E_warm > epochs` run is not dangerous, only a
+  curriculum that never ends — it must not pass silently.
 - No other change here; Phase 2.3 adds the `--patch_stream` flag on the same parser.
 
 ## 4. Phase 2 — observability, designation, contract 4
@@ -140,7 +158,8 @@ of `train_one_epoch` (lines 126–141), add per step: `p_virtual` (the resolved 
 collective pattern of contract 9 is preserved.
 
 Also add the contract-4 indicator `is_virtual = 1 if out['mode_resolved'] == MODE_VIRTUAL_SENSING
-else 0`. §2.8's **per-epoch** requirement is the *Mode-1 fraction*, and `metric_logger` averages
+else 0`, importing `MODE_VIRTUAL_SENSING` from `core.budget_masking` (no literal `1`/`2` in the
+engine). §2.8's **per-epoch** requirement is the *Mode-1 fraction*, and `metric_logger` averages
 whatever it is given: the mean of `mode ∈ {1, 2}` is `2 − f` (≈ 1.5), not `f`. The mean of
 `is_virtual` is exactly `f`, which must land in `0.10 ± 0.02` / `0.50 ± 0.02` (Criterion 1.4).
 `mode`, `mode_resolved` and `is_virtual` are all logged; none of them is redefined.
@@ -162,12 +181,16 @@ an `nn.Module` and therefore is **not** inside the checkpoint.
 ## 5. Phase 3 — the arm configuration
 
 New file `code/configs/pretrain/stage2_budget_3stream_curriculum.yaml` *(new)*, derived from
-`code/configs/pretrain/stage2_budget_tir_roi_resp_rgb2d.yaml`. Delta only:
+`code/configs/pretrain/stage2_budget_tir_roi_resp_rgb2d.yaml`. Both files were put on the ADR-005
+**tokenizer** geometry when this landed — the base's `4,16,16` could not load the VideoMAE kernel,
+so that arm was infeasible rather than merely different, and it is now the no-curriculum comparator
+(`E_warm` absent → `0`, `p(e) = p_target` from step 1). The delta is therefore the curriculum and
+the kernel designation only:
 
 | key | base value | ADR-005 value | why |
 | :--- | :--- | :--- | :--- |
-| `tubelet` | `4,16,16` | `2,16,16` | I1: the pre-trained kernel is `(2,16,16)`; the base value is infeasible |
-| `temporal_stride` | `2` | `4` | keeps `T = 25` at the new tubelet (ADR-005 §2.2) |
+| `tubelet` | `2,16,16` | `2,16,16` | I1 geometry, shared by both arms |
+| `temporal_stride` | `4` | `4` | keeps `T = 25`, shared by both arms |
 | `virtual_sensing_warmup_p` | — | `0.10` | §2.7 |
 | `virtual_sensing_warmup_epochs` | — | `50` | §2.7 |
 | `p_virtual_sensing` | `0.50` | `0.50` | unchanged; now means "from `E_warm` onwards" |
@@ -175,9 +198,11 @@ New file `code/configs/pretrain/stage2_budget_3stream_curriculum.yaml` *(new)*, 
 | `patch_stream` | — | `tir` | I2 |
 | `streams`, `n_budget`, caps, floor, `input_size`, `fs`, `sig_kernel`, `clip_duration`, `fps` | — | unchanged | already the ADR-005 geometry |
 
-Two operational notes for the header comment: the two ROI caches and the respiration cache stay
-valid (their keys carry clip length, fps and fs, not the stride), and `--warmup_epochs` must stay
-below `epochs` for the cosine schedule.
+Three operational notes for both configs: the two ROI caches and the respiration cache stay valid
+(their keys carry clip length, fps and fs, not the hop or the temporal stride); `clip_stride` is
+**4.0 s** in both arms (50 % window overlap) — it selects windows only, so it is neither in a cache
+key nor part of ADR-005 §2.9, and the pair must share it or the comparison is confounded; and
+`--warmup_epochs` must stay below `epochs` for the cosine schedule.
 
 ## 6. Phase 4 — tests
 
@@ -188,37 +213,54 @@ below `epochs` for the cosine schedule.
 | :--- | :--- |
 | **G1** | With `E_warm = 0` (and with the new keys absent), the kept-count sequence over 50 000 draws is identical to a reference sequence captured from the pre-change engine at the same `(mask_base, epoch, step)`. Captured once, committed as a fixture. |
 | **G2** | `p_at(e) == p_target` for every `e ≥ E_warm`, `p_at(None) == p_target`, `p_at(e) == p_warm` for `e < E_warm`, and `p_at` is non-decreasing in `e` (R6). |
-| **G3** | Construction rejects `p_warm > p_target` and `E_warm < 0`; `E_warm = 0` is accepted and yields `p_at(e) == p_target` for all `e`. |
+| **G3** | Construction rejects `p_warm > p_target` while the curriculum is active (`E_warm > 0`) and `E_warm < 0`; `E_warm = 0` is accepted with any `p_warm` and yields `p_at(e) == p_target` for all `e` (so `p_target = 0.0` stays legal). |
 | **G4** | Over 10⁴ draws at `E_warm > 0`, the Mode-1 fraction (from `mode`, and separately from `mode_by_counts`) is `p_warm ± 4σ` below the boundary and `p_target ± 4σ` above it. |
 | **G5** | `mode_by_counts` equals `MODE_VIRTUAL_SENSING` iff all signal counts are 0; the `K̃ = 0` draw is labelled Mode 1 by `mode_by_counts` and Mode 2 by `mode` (contract 4 vs the draw). |
 | **G6** | Model-level: a forward with `epoch=0` and with `epoch=E_warm` on the same batch and the same `counts_generator` yields plans with the expected mode fractions; `[B, 350, D]` holds in both. |
 | **G7** | Gradient path: with `K_resp = 0`, `∂L_resp/∂z ≠ 0` (contract 7, ADR-005 §3.1(6)). |
-| **G8** | The two existing suites pass unmodified, and a 1-epoch smoke of the ADR-002 config reproduces its pre-change loss to the last printed digit. |
+| **G8** | The two existing suites pass unmodified, and a 1-epoch smoke of the no-curriculum comparator (`stage2_budget_tir_roi_resp_rgb2d.yaml`) runs at the same tokenizer geometry. Its `4,16,16` tubelet was retuned to `2,16,16` / decimation 4 when I1 made the old value infeasible, so it no longer needs random initialisation. |
+
+`code/tests/test_config_loading.py` is a gate of its own for this change: it parametrises over
+**every** YAML in `configs/pretrain/` and `configs/finetune/` and parses each with its real
+runner's `get_args()`, so the new config fails it until the three flags of §3.4/§4.3 exist. It is
+not modified, only newly exercised by the added file.
+
+I1 is enforced at **weight-load** time, not at model construction: `MultiModalMAE` accepts any
+tubelet, and `fit_visual_patch_embed` raises when a 5-D checkpoint kernel differs from
+`model.tubelet`. For any run that supplies `pretrained_encoder` that is still "resolved before step
+0" (I1, Criterion 1.7); a `random`-init run is not covered and must be labelled per I4.
 
 ```text
 cd code
 python -m pytest tests/test_budget_masking.py tests/test_mask_placement.py \
-                 tests/test_curriculum_schedule.py -q
+                 tests/test_curriculum_schedule.py tests/test_config_loading.py -q
 
-# G8 — ADR-002 regression: the untouched arm must reproduce its pre-change loss.
+# G8 — the no-curriculum comparator, same tokenizer geometry.
 python -u runners/run_pretrain.py -c configs/pretrain/stage2_budget_tir_roi_resp_rgb2d.yaml \
-    --exp_root /tmp/adr005_regress --fold 0 --dev_smoke --epochs 1 --warmup_epochs 0 \
-    --max_clips 100 --batch_size 8 --num_workers 0 --output_dir /tmp/adr005_regress/out \
-    --roi_cache <ROI_CACHE> --rgb2d_cache <RGB2D_CACHE> --resp_cache <RESP_CACHE>
+    --exp_root /tmp/adr002_cmp --fold 0 --dev_smoke --epochs 1 --warmup_epochs 0 \
+    --max_entries 16 --batch_size 8 --num_workers 0 --output_dir /tmp/adr002_cmp/out \
+    --roi_cache <ROI_CACHE> --rgb2d_cache <RGB2D_CACHE> --resp_cache <RESP_CACHE> \
+    --min_signal_spread 0 --rail_touch_v 0
 
 # Criterion 3.3 — ADR-005 smoke: prints 36 tubes, 250 signal tokens, T=25, R=10
 # under tubelet (2,16,16) / temporal_stride 4, and emits every §2.8 record.
 python -u runners/run_pretrain.py -c configs/pretrain/stage2_budget_3stream_curriculum.yaml \
     --exp_root /tmp/adr005_smoke --fold 0 --dev_smoke --epochs 1 --warmup_epochs 0 \
-    --virtual_sensing_warmup_epochs 0 \
-    --max_clips 100 --batch_size 8 --num_workers 0 --output_dir /tmp/adr005_smoke/out \
-    --roi_cache <ROI_CACHE> --rgb2d_cache <RGB2D_CACHE> --resp_cache <RESP_CACHE>
+    --virtual_sensing_warmup_epochs 0 --max_entries 16 \
+    --batch_size 8 --num_workers 0 --output_dir /tmp/adr005_smoke/out \
+    --roi_cache <ROI_CACHE> --rgb2d_cache <RGB2D_CACHE> --resp_cache <RESP_CACHE> \
+    --min_signal_spread 0 --rail_touch_v 0
 ```
+
+`--max_entries` is the per-SPLIT corpus cap. `--max_clips` is per SESSION (it does not bound a
+whole run), and `--max_sessions` is not forwarded by the ROI lineage, so `--max_entries 16` is what
+makes the smoke a 2-step epoch instead of a 1 650-step one. `--min_signal_spread 0` /
+`--rail_touch_v 0` are required whenever `--resp_cache` is attached: the stored per-sample mask is
+the only validity rule, and the legacy window filters must be off (data/tir_resp_dataset.py).
 
 Both smokes use `--warmup_epochs 0` (the *learning-rate* schedule); the curriculum is disabled on
 the second one with `--virtual_sensing_warmup_epochs 0`, which is the ADR §3.3 "warm-up disabled"
-variant. The first command must be byte-identical in output to a run of the same config from the
-pre-change commit.
+variant. The first command exercises the no-curriculum comparator at the same tokenizer geometry.
 
 ### 6.1 BDD-style acceptance test scenarios
 
@@ -308,6 +350,32 @@ Feature: Three-Stream Constant-Budget Masking with Virtual-Sensing Curriculum (A
     Then fit_visual_patch_embed raises ValueError rejecting the tubelet mismatch (satisfying I1).
 ```
 
+### 6.2 Executed record (2026-11-23)
+
+Environment: project venv (`.env`), the three offline caches, the raw tree at `$WORK_PROJ/test`.
+The smoke runs on `acc_short` (1 × A100, `--ntasks=1 --cpus-per-task=16 --mem-per-cpu=4G`,
+`--time=00:25:00`) through `scripts/hpc/smoke_adr005.sbatch`. A first attempt on the login node's
+shared T4 was abandoned: `--max_clips` is PER SESSION, so an uncapped command built a 1 650-step
+epoch and never finished inside an hour.
+
+- `python -m pytest -q` over the whole `code/` tree: **818 passed**.
+- **Criterion 3.3 smoke — passed** (job 57104267, `COMPLETED` 00:03:33, `gaoc0001`).
+  `stage2_budget_3stream_curriculum.yaml`, `--dev_smoke --epochs 1 --warmup_epochs 0
+  --virtual_sensing_warmup_epochs 0 --max_entries 16 --batch_size 8 --num_workers 8`. Two steps,
+  no assertion failure, no `NaN`, 2.30 s/step after warm-up; `n_batch = 350.0` on both;
+  `[pretrained] … 148 encoder tensors … patch embed -> adapters.tir, 0 skipped, 0
+  shape-mismatched`; `[mask]` printed `units=[('tir', 36, 25), ('rgb2d', 36, 25), ('resp', 250,
+  1)]`; every §2.8 key present (`kept_*`, `kept_units_*`, `mode`, `mode_resolved`, `is_virtual`,
+  `p_virtual`, `mse_*`, `n_batch`); `[val] epoch 0: loss 5.090683 over 16 sample(s)`;
+  `selection.json` and `metrics.jsonl` written; `masking.json` records `tubelet [2,16,16]`,
+  `temporal_stride 4`, `clip_stride 4.0`, `tokens_per_unit 25`,
+  `signal_tokens_per_visual_token 10`, recipient `tir`, `rgb2d` random. **Resource (§3.3):**
+  `allocated 6.18 GB / reserved 7.22 GB` at batch 8, precision `none` (FP32).
+- **No-curriculum comparator — passed** (job 57104409, `COMPLETED` 00:03:53, `gaoc0002`): same
+  two steps, same geometry, kernel loaded with `0 shape-mismatched`. With the curriculum disabled
+  on both sides (`--virtual_sensing_warmup_epochs 0`) the two configs produce the *same* loss to
+  the last printed digit, which is the expected result of a pair that differs only by `E_warm`.
+
 ## 7. Phase 5 — measurement (not this plan)
 
 The eight-fold protocol, the fold orchestration and the headline comparison belong to
@@ -346,7 +414,9 @@ The eight-fold protocol, the fold orchestration and the headline comparison belo
 
 ## 9. Non-goals
 
-- Migrating, rewriting or deleting the ADR-002 configuration — it stays as the parallel arm.
+- Retiring the ADR-002 configuration **in this change**. It is already superseded as a design and is
+  now only the transition comparator; migrating or deleting it is a follow-up once ADR-005 is
+  validated, so the diff that lands ADR-005 never also moves the baseline.
 - Any change to the counting, alignment or placement arithmetic.
 - Re-opening the kernel-routing decision (I2 defaults to `tir`; a second-visual-stream study needs
   its own ADR).

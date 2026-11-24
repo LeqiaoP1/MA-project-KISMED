@@ -321,7 +321,20 @@ def get_args():
     parser.add_argument('--p_virtual_sensing', default=0.50, type=float,
                         help='probability of Mode 1 (pure virtual sensing: no '
                              'physiological token reaches the encoder). The '
-                             'other steps run Mode 2 (waveform inpainting).')
+                             'other steps run Mode 2 (waveform inpainting). '
+                             'From ADR-005 §2.7 this is the TARGET '
+                             'probability, applied from '
+                             '--virtual_sensing_warmup_epochs onwards.')
+    parser.add_argument('--virtual_sensing_warmup_p', default=0.10, type=float,
+                        help='ADR-005 §2.7 p_warm: Mode-1 probability strictly '
+                             'below --virtual_sensing_warmup_epochs. Must lie '
+                             'in [0, --p_virtual_sensing].')
+    parser.add_argument('--virtual_sensing_warmup_epochs', default=0, type=int,
+                        help='ADR-005 §2.7 E_warm: number of leading epochs at '
+                             'p_warm. 0 (default) DISABLES the curriculum, so '
+                             'p(e) stays the constant --p_virtual_sensing and '
+                             'a pre-ADR-005 configuration is unchanged. The '
+                             'shipped arm sets 50 in its YAML.')
     parser.add_argument('--spatial_patches', default=0, type=int,
                         help='tokenizer-derived (default 0 = derive from '
                              'input_size/tubelet); pass it only to ASSERT the '
@@ -419,6 +432,13 @@ def get_args():
                              '(Kinetics-400, default) or ssv2 '
                              '(Something-Something-v2). An explicit '
                              'videomae:k400 / videomae:ssv2 spec wins.')
+    parser.add_argument('--patch_stream', default='', type=str,
+                        help='ADR-005 I2: which VISUAL stream receives the '
+                             'Stage-1 Conv3d tubelet. Empty (default) keeps '
+                             'the adapter-ordering resolution (rgb when that '
+                             'adapter exists, else the first visual adapter), '
+                             'so no existing run changes. The three-stream arm '
+                             'sets tir explicitly and records it.')
     # training
     parser.add_argument('--batch_size', default=64, type=int)
     parser.add_argument('--epochs', default=800, type=int)
@@ -491,7 +511,9 @@ def init_stage1_encoder(model, args):
     ``trunc_normal_`` initialisation. Any other unknown spec still raises, so
     a typo cannot silently train from scratch.
 
-    :returns: ``{'path', 'loaded', 'random'}`` for the caller/log.
+    :returns: ``{'path', 'loaded', 'random', 'patch_stream'}`` for the
+        caller/log. ``patch_stream`` is the RESOLVED recipient (``''`` on the
+        random-init path), which the masking manifest records (I2).
     """
     from core.multimae import load_pretrained_encoder
     from models.pretrained import resolve_encoder_weights
@@ -504,7 +526,21 @@ def init_stage1_encoder(model, args):
         print(f'[stage1] random init (spec {args.pretrained_encoder!r})')
         return {'path': '', 'loaded': 0, 'random': True}
 
-    stats = load_pretrained_encoder(model, ckpt)
+    # ``patch_stream`` is only passed when declared: with the empty default the
+    # loader resolves the recipient by adapter order exactly as before, and the
+    # call shape stays identical for every existing caller (and its doubles).
+    declared_patch_stream = str(getattr(args, 'patch_stream', '') or '')
+    stats = (load_pretrained_encoder(model, ckpt,
+                                     patch_stream=declared_patch_stream)
+             if declared_patch_stream
+             else load_pretrained_encoder(model, ckpt))
+    # The RESOLVED recipient is recorded on the model, not in the return dict:
+    # that dict's shape is pinned by test_pretrain_random_init.py, and the run
+    # manifest is the only consumer (I2).
+    try:
+        model.patch_stream_resolved = str(stats.get('patch_stream', '') or '')
+    except AttributeError:          # duck-typed double without __dict__
+        pass
     # Provenance line: every fold must show the SAME pristine Stage-1 file.
     # Printing size+mtime (cheap) lets a fold sweep prove it started from the
     # shared read-only baseline and not from another fold's output.
@@ -518,6 +554,121 @@ def init_stage1_encoder(model, args):
           f'(spec {args.pretrained_encoder!r}, '
           f'{stats["loaded"]} encoder tensors, {_prov})')
     return {'path': ckpt, 'loaded': int(stats['loaded']), 'random': False}
+
+
+def write_masking_manifest(args, model, *, plan, mask_base: int,
+                           stage1: dict) -> dict:
+    """Write the ADR-005 §2.8/§2.9 masking record into ``output_dir``.
+
+    The apportioner is NOT an ``nn.Module``, so nothing of the policy is inside
+    the checkpoint. This file is therefore the only record that makes a resumed
+    run's mask sequence reproducible: it captures the resolved parameter tuple,
+    the schedule, the placement policy, the conditioning mechanism and the
+    kernel recipient (I2). Rank 0 writes it once, before the first step.
+
+    A resumed run must not silently overwrite the record: if the file exists
+    and its stable fields (geometry, policy, conditioning, kernel, mask_base)
+    disagree, the run would replay a DIFFERENT mask sequence than the one the
+    checkpoints were trained on, so this raises instead (plan Trap 4).
+
+    :returns: the written record (also convenient for tests).
+    """
+    import json
+
+    def _stable(rec: dict) -> dict:
+        return {
+            'streams': rec.get('streams'),
+            'geometry': rec.get('geometry'),
+            'policy': rec.get('policy'),
+            'conditioning': rec.get('conditioning'),
+            'kernel': rec.get('kernel'),
+            'mask_base': (rec.get('run') or {}).get('mask_base'),
+        }
+
+    app = model.apportioner
+    record = {
+        'format': 'ADR-005 masking record v1',
+        'written_at': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
+        'argv': list(sys.argv[1:]),
+        'streams': list(model.streams),
+        'visual_streams': list(model.visual),
+        'signal_streams': list(model.signal),
+        'geometry': {
+            'tubelet': [int(x) for x in model.tubelet],
+            'input_size': int(model.input_size),
+            'num_frames': int(model.num_frames),
+            'temporal_stride': int(model.temporal_stride),
+            'fps': float(model.fps),
+            'fs': float(model.fs),
+            'clip_duration': float(getattr(args, 'clip_duration', 0.0) or 0.0),
+            'sig_kernel': int(model.sig_kernel),
+            'seq_len': int(model.seq_len),
+            'tokens_per_unit': int(app.tokens_per_unit),
+            'signal_tokens_per_visual_token': int(
+                model.signal_tokens_per_visual),
+        },
+        'policy': {
+            'n_budget': int(model.n_budget),
+            'video_cap_ratio': float(model.video_cap_ratio),
+            'physio_cap_ratio': float(model.physio_cap_ratio),
+            'video_min_tubes': int(model.video_min_tubes),
+            'video_cap_units': dict(app.video_cap_units),
+            'physio_cap_tokens': dict(app.physio_cap_tokens),
+            'spatial_patches': int(model.spatial_patches),
+            'physio_tokens': int(model.physio_tokens),
+            'p_virtual_sensing': float(model.p_virtual_sensing),
+            'virtual_sensing_warmup_p': float(model.virtual_sensing_warmup_p),
+            'virtual_sensing_warmup_epochs': int(
+                model.virtual_sensing_warmup_epochs),
+            'physio_placement': str(model.physio_placement),
+            'physio_span_tokens': int(model.physio_span_tokens),
+        },
+        # Contract 7, mechanism (a): the encoder latents are prefixed into the
+        # decoder input, so a stream with 0 visible tokens still conditions.
+        'conditioning': {'mechanism': 'prefix'},
+        'kernel': {
+            'recipient': str(getattr(model, 'patch_stream_resolved', '') or ''),
+            'pretrained': not bool(stage1.get('random', True)),
+            'checkpoint': str(stage1.get('path', '') or ''),
+            'loaded_tensors': int(stage1.get('loaded', 0) or 0),
+            # I2 technical debt, recorded rather than inferred: a random
+            # tokenizer cannot support an R4 claim for these streams.
+            'random_init_visuals': [
+                s for s in model.visual
+                if s != str(getattr(model, 'patch_stream_resolved', '')
+                            or '')],
+        },
+        'run': {
+            'mask_base': int(mask_base),
+            'epochs': int(getattr(args, 'epochs', 0) or 0),
+            'fold': int(getattr(plan, 'fold', -1)),
+            'role_digest': str(getattr(plan, 'digest', '')),
+        },
+    }
+    os.makedirs(args.output_dir, exist_ok=True)
+    path = os.path.join(args.output_dir, 'masking.json')
+    if os.path.exists(path):
+        try:
+            with open(path, 'r') as fh:
+                previous = json.load(fh)
+        except (OSError, ValueError):
+            previous = None
+        if isinstance(previous, dict):
+            mine, theirs = _stable(record), _stable(previous)
+            changed = [k for k in mine if mine[k] != theirs.get(k)]
+            if changed:
+                raise SystemExit(
+                    f'{path} already records a different masking policy '
+                    f'({", ".join(changed)} differ). Resuming this '
+                    f'output_dir with different masking keys would replay a '
+                    f'different mask sequence than the checkpoints were '
+                    f'trained on. Restore the original keys or point '
+                    f'--output_dir elsewhere (ADR-005 §2.8).')
+            # Identical policy: keep the run's FIRST record untouched.
+            return previous
+    with open(path, 'w') as fh:
+        json.dump(record, fh, indent=2, sort_keys=True)
+    return record
 
 
 def main(args):
@@ -544,7 +695,7 @@ def main(args):
     if args.model.startswith('project_multimae'):
         from core.multimae import build_pretraining_model
         model = build_pretraining_model(args)
-        init_stage1_encoder(model, args)
+        stage1 = init_stage1_encoder(model, args)
     else:
         raise SystemExit(
             f'--model {args.model!r}: Stage 1 only supports the multimodal '
@@ -552,6 +703,10 @@ def main(args):
             f'path would build a RANDOM backbone, which is not a valid Stage-1 '
             f'model here.')
     model.to(device)
+    if torch.cuda.is_available():
+        # ADR-005 §3.3 (Resource): peak device memory is part of the record,
+        # and the predecessor's figure does not transfer to this geometry.
+        torch.cuda.reset_peak_memory_stats(device)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f'Model = {args.model}, params = {n_params:,}')
 
@@ -676,10 +831,29 @@ def main(args):
         dev_smoke=bool(getattr(args, 'dev_smoke', False)))
     mask_base = int(getattr(args, 'val_seed', None)
                     or getattr(args, 'split_seed', 42))
-    # Mask RNG of the training loop (ADR-002 §6). The COUNTS generator is
-    # seeded from a rank-independent key, so every rank derives the same plan
-    # without a collective; the PLACEMENT generator includes the rank, so the
-    # samples differ across ranks. ``get_rank()`` is 0 outside DDP.
+    # ADR-005 §2.9 limits E_warm to [0, epochs]; the apportioner cannot see the
+    # run length, so the upper half of the admissibility check lives here. An
+    # E_warm beyond the run is not dangerous, only a curriculum that never
+    # ends, and it must not pass silently.
+    e_warm = int(getattr(args, 'virtual_sensing_warmup_epochs', 0) or 0)
+    if e_warm > int(args.epochs):
+        raise SystemExit(
+            f'--virtual_sensing_warmup_epochs {e_warm} exceeds --epochs '
+            f'{int(args.epochs)}: the curriculum would never reach its target '
+            f'probability (ADR-005 §2.9 admits [0, epochs]).')
+    if is_main_process():
+        _masking = write_masking_manifest(
+            args, model_without_ddp, plan=plan, mask_base=mask_base,
+            stage1=stage1)
+        print(f'[mask] wrote {os.path.join(args.output_dir, "masking.json")} '
+              f'(p_warm={_masking["policy"]["virtual_sensing_warmup_p"]:g}, '
+              f'p_target={_masking["policy"]["p_virtual_sensing"]:g}, '
+              f'E_warm={_masking["policy"]["virtual_sensing_warmup_epochs"]}, '
+              f'patch_stream={_masking["kernel"]["recipient"] or "(random)"})')
+    # Mask RNG of the training loop (ADR-005 §2.3 contract 8). The COUNTS
+    # generator is seeded from a rank-independent key, so every rank derives
+    # the same plan without a collective; the PLACEMENT generator includes the
+    # rank, so the samples differ across ranks. ``get_rank()`` is 0 outside DDP.
     rank = get_rank()
     metrics_path = os.path.join(args.output_dir, 'metrics.jsonl')
     selection_path = os.path.join(args.output_dir, 'selection.json')
@@ -715,7 +889,7 @@ def main(args):
         if tracker.should_eval(epoch):
             _t_val = time.time()
             val = evaluate_pretrain(model, data_loader_val, device,
-                                    mask_base=mask_base)
+                                    mask_base=mask_base, epoch=epoch)
             improved = tracker.observe(epoch, val['val_loss'])
             record = make_eval_record(
                 epoch=epoch, value_kind=tracker.criterion,
@@ -754,6 +928,12 @@ def main(args):
               f'{selection["selected_epoch"]}, '
               f'{selection["criterion"]} '
               f'{selection["criterion_value"]} -> {selection_path}')
+        if torch.cuda.is_available():
+            alloc = torch.cuda.max_memory_allocated(device) / 1e9
+            reserv = torch.cuda.max_memory_reserved(device) / 1e9
+            print(f'[resource] peak device memory: allocated {alloc:.2f} GB, '
+                  f'reserved {reserv:.2f} GB (batch {args.batch_size}, '
+                  f'precision {getattr(args, "amp_dtype", "none")})')
     wandb_logger.finish()
 
 
