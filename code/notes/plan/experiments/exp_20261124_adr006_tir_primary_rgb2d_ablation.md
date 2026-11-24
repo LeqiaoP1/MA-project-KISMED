@@ -2,8 +2,8 @@
 
 - **Experiment ID**: `EXP-20261124-01`
 - **Author**: LeqiaoP1
-- **Status**: **Withdrawn** — this protocol belongs to the *alternative* design (`code/notes/design/alt-adr-006-visual-only-resp-conditioning.md`), not to the ADR of record. Superseded by a run protocol for `ADR-006-three-regime-virtual-sensing-masking.md`, which is not yet written.
-- **Associated ADR**: `code/notes/design/ADR-006-visual-only-resp-conditioning-and-primary-stream-saturation.md`
+- **Status**: **Withdrawn** — this protocol belongs to an *alternative* design that was not adopted and has been removed from the tree (2026-11-24). The design of record is `ADR-006-three-regime-virtual-sensing-masking.md`; the run protocol for that arm is not yet written.
+- **Associated ADR**: `code/notes/design/ADR-006-three-regime-virtual-sensing-masking.md`
 - **Target Thesis Section**: Chapter 4 (experiments) — the pre-training ablation table; Chapter 3 (methodology) — the masking-policy and conditioning specification.
 
 ---
