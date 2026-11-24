@@ -215,6 +215,9 @@ class MultiModalMAE(nn.Module):
                  p_virtual_sensing: float = 0.50,
                  virtual_sensing_warmup_p: float = 0.10,
                  virtual_sensing_warmup_epochs: int = 0,
+                 single_carrier_tubes: int = 0,
+                 p_single_modality: float = 0.0,
+                 single_modality_warmup_p: float = 0.0,
                  spatial_patches: Optional[int] = None,
                  physio_tokens: Optional[int] = None,
                  signal_weight: float = 0.5,
@@ -337,6 +340,10 @@ class MultiModalMAE(nn.Module):
         self.p_virtual_sensing = float(p_virtual_sensing)
         self.virtual_sensing_warmup_p = float(virtual_sensing_warmup_p)
         self.virtual_sensing_warmup_epochs = int(virtual_sensing_warmup_epochs)
+        # ADR-006 §2.7: the single-carrier class is a share of the sensor-absent
+        # steps. Both defaults are NEUTRAL (0.0), so a config that omits them
+        # keeps the ADR-005 policy bit-identically -- the arm's (0.20, 0.00) and
+        # S_v = 14 live in its YAML.
         self.spatial_patches = int(self.grid_h * self.grid_w)
         self.physio_tokens = int(self.n_signal)
         if spatial_patches is not None and int(spatial_patches) != self.spatial_patches:
@@ -385,7 +392,16 @@ class MultiModalMAE(nn.Module):
             video_min_tubes=self.video_min_tubes,
             p_virtual_sensing=self.p_virtual_sensing,
             virtual_sensing_warmup_p=self.virtual_sensing_warmup_p,
-            virtual_sensing_warmup_epochs=self.virtual_sensing_warmup_epochs)
+            virtual_sensing_warmup_epochs=self.virtual_sensing_warmup_epochs,
+            single_carrier_tubes=single_carrier_tubes,
+            p_single_modality=p_single_modality,
+            single_modality_warmup_p=single_modality_warmup_p)
+        # ``S_v`` is resolved (0 -> whole budget) by the apportioner; publish the
+        # resolved value so the runner's record names what actually ran.
+        self.single_carrier_tubes = int(self.apportioner.single_carrier_tubes)
+        self.p_single_modality = float(self.apportioner.p_single_modality)
+        self.single_modality_warmup_p = float(
+            self.apportioner.single_modality_warmup_p)
         self._last_plan: Optional[BudgetPlan] = None
 
         # per-modality weights of the final weighted masked-MSE sum.
@@ -880,6 +896,12 @@ class MultiModalMAE(nn.Module):
                 # produced it. Both are properties of the step's plan.
                 'mode_resolved': int(plan.mode_by_counts),
                 'p_virtual': float(self.apportioner.p_at(epoch)),
+                # ADR-006 §2.8: the step class and, on a single-carrier step,
+                # the stream that carries the whole budget. ADDITIVE labels:
+                # `mode` and `mode_resolved` above keep their ADR-005 meaning.
+                'regime': str(plan.regime),
+                'carrier': (str(plan.carrier) if plan.carrier else None),
+                'p_single': float(self.apportioner.p_s_at(epoch)),
                 'kept': {s: int(plan.kept_tokens[s]) for s in self.streams},
                 'kept_units': {s: int(plan.kept_units[s])
                                for s in self.streams},
@@ -986,6 +1008,13 @@ def build_pretraining_model(args):
             getattr(args, 'virtual_sensing_warmup_p', 0.10)),
         virtual_sensing_warmup_epochs=int(
             getattr(args, 'virtual_sensing_warmup_epochs', 0)),
+        # ADR-006 §2.7/§2.9. All three defaults are NEUTRAL: with p_s = 0 the
+        # single-carrier branch is unreachable and consumes no RNG, so every
+        # pre-ADR-006 config reproduces its mask sequence exactly.
+        single_carrier_tubes=int(getattr(args, 'single_carrier_tubes', 0) or 0),
+        p_single_modality=float(getattr(args, 'p_single_modality', 0.0) or 0.0),
+        single_modality_warmup_p=float(
+            getattr(args, 'single_modality_warmup_p', 0.0) or 0.0),
         spatial_patches=getattr(args, 'spatial_patches', None) or None,
         physio_tokens=getattr(args, 'physio_tokens', None) or None,
         signal_weight=signal_weight,
@@ -1006,6 +1035,9 @@ def build_pretraining_model(args):
           f'p_virtual_sensing={model.p_virtual_sensing:g}  '
           f'p_warm={model.virtual_sensing_warmup_p:g}  '
           f'E_warm={model.virtual_sensing_warmup_epochs}  '
+          f'p_single={model.p_single_modality:g}  '
+          f'p_s_warm={model.single_modality_warmup_p:g}  '
+          f'S_v={model.single_carrier_tubes}  '
           f'units={[(s.name, s.n_units, s.tokens_per_unit) for s in model.specs]}'
           f'  physio_placement={model.physio_placement}')
     return model

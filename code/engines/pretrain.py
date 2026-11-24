@@ -69,7 +69,7 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable,
     curriculum (``p(e)``); with ``virtual_sensing_warmup_epochs = 0`` the
     threshold is the constant target and the draw is unchanged.
     """
-    from core.budget_masking import MODE_VIRTUAL_SENSING
+    from core.budget_masking import MODE_VIRTUAL_SENSING, REGIME_SINGLE
     from core.mask_placement import counts_generator, placement_generator
     model.train(True)
     metric_logger = MetricLogger(delimiter='  ')
@@ -183,6 +183,19 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable,
                     is_virtual=int(resolved == MODE_VIRTUAL_SENSING))
             if 'p_virtual' in out:
                 metric_logger.update(p_virtual=out['p_virtual'])
+            # ADR-006 §2.8: the step class. ``is_single`` averages to the
+            # realized single-carrier fraction, and the per-carrier indicators
+            # are emitted for EVERY declared visual stream on EVERY step (a key
+            # set that depended on the sampled regime would desynchronise a
+            # distributed run -- ADR-005 contract 9).
+            if 'regime' in out:
+                metric_logger.update(is_single=int(out['regime'] == REGIME_SINGLE))
+                carrier = out.get('carrier')
+                for name in getattr(model, 'visual', []) or []:
+                    metric_logger.update(
+                        **{f'is_single_{name}': int(carrier == name)})
+            if 'p_single' in out:
+                metric_logger.update(p_single=out['p_single'])
             if 'n_batch' in out:
                 metric_logger.update(n_batch=out['n_batch'])
 
@@ -252,6 +265,7 @@ def evaluate_pretrain(model: torch.nn.Module, data_loader: Iterable,
         the contract-4 modes, so their Mode-1 shares differ by the
         ``K_tilde = 0`` draws (ADR-005 §2.8).
     """
+    from core.budget_masking import REGIME_SINGLE
     from core.mask_placement import counts_generator, placement_generator
     from protocol import val_mask_seed
 
@@ -265,6 +279,7 @@ def evaluate_pretrain(model: torch.nn.Module, data_loader: Iterable,
     kept_totals: dict = {}
     mode_totals: dict = {}
     resolved_totals: dict = {}
+    single_totals: dict = {}
 
     for batch_idx, batch in enumerate(data_loader):
         seed = int(val_mask_seed(mask_base, batch_idx))
@@ -298,6 +313,16 @@ def evaluate_pretrain(model: torch.nn.Module, data_loader: Iterable,
         if 'mode_resolved' in out:
             resolved_totals.setdefault(f'mode{int(out["mode_resolved"])}', 0.0)
             resolved_totals[f'mode{int(out["mode_resolved"])}'] += batch_n
+        # ADR-006 §2.8: the realized step-class shares of the validation pass.
+        # Sample-weighted, so the payload is an average over the corpus and not
+        # over the batches.
+        if 'regime' in out:
+            single_totals.setdefault('single', 0.0)
+            single_totals['single'] += float(out['regime'] == REGIME_SINGLE) * batch_n
+            carrier = out.get('carrier')
+            for name in getattr(model, 'visual', []) or []:
+                single_totals.setdefault(name, 0.0)
+                single_totals[name] += float(carrier == name) * batch_n
 
     model.train(was_training)
     if n_samples == 0:
@@ -313,6 +338,7 @@ def evaluate_pretrain(model: torch.nn.Module, data_loader: Iterable,
         'n_batches': n_batches, 'components': components,
         'kept': kept_totals, 'mode': mode_totals,
         'resolved': resolved_totals,
+        'single': single_totals,
     }
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         gathered = [None] * torch.distributed.get_world_size()
@@ -325,6 +351,8 @@ def evaluate_pretrain(model: torch.nn.Module, data_loader: Iterable,
         mode_totals = _merge_sums([g['mode'] for g in gathered])
         resolved_totals = _merge_sums([g.get('resolved') or {}
                                        for g in gathered])
+        single_totals = _merge_sums([g.get('single') or {}
+                                     for g in gathered])
         if n_samples == 0:
             raise SystemExit(
                 '[val] the gathered validation pass contains no sample across '
@@ -336,6 +364,7 @@ def evaluate_pretrain(model: torch.nn.Module, data_loader: Iterable,
         'kept': {k: v / n_samples for k, v in kept_totals.items()},
         'mode': {k: v / n_samples for k, v in mode_totals.items()},
         'resolved': {k: v / n_samples for k, v in resolved_totals.items()},
+        'single': {k: v / n_samples for k, v in single_totals.items()},
         'n_samples': n_samples,
         'n_batches': n_batches,
         'mask_base': int(mask_base),

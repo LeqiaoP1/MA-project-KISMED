@@ -1,12 +1,12 @@
 # ADR-005: Three-Stream Constant-Budget Asymmetric Multi-Modal Masking with a Virtual-Sensing Curriculum (`tir`, `rgb2d`, `resp`)
 
-- **Status**: Proposed
+- **Status**: **Superseded by `ADR-006-three-regime-virtual-sensing-masking.md`** (2026-11-24). ADR-006 is the sole design of record for this policy and restates everything it needs (§2.2–§2.4, §2.7, §2.9–§2.10 of that document). This file is retained as the record of the two-mode decision and of the measurements that motivated its successor; it is **not** an authority, and nothing should be implemented from it.
 - **Date**: 2026-11-23
 - **Author**: KISMED MA research team
 - **Related Spec/Plan**: `code/notes/design/Evaluation_RespWaveform_protocol.md` — normative for the definition and aggregation of the headline metric used in §3. `code/notes/plan/features/ADR-005-asymmetric-multimodal-masking-3streams-plan.md` records the build order and gates; it is not an authority. Everything else in this ADR is self-contained.
 - **Supersedes**: `code/notes/design/ADR-002-asymmetric-multimodal-masking.md` — the four-stream arm, now **obsolete**. This ADR is the sole design of record for the masking policy: the counting, alignment and placement arithmetic it inherits is stated normatively here (§§2.3–2.5), together with the declared stream set, the tokenizer geometry, the initialisation contract and the virtual-sensing curriculum. No clause of this document depends on the superseded record.
 
-**Normative status of this document.** This ADR is the authority for the masking policy it defines. It is written to stand on its own: the policy, its units, its arithmetic, its feasibility conditions, its initialisation requirements, its observability requirements, its parameter surface and its acceptance criteria are all specified here, so the decision survives any change to the software that implements it. No statement in §§1–5 depends on a particular source file, configuration file, checkpoint or run. Appendix A is the only place that maps the specification onto the present toolchain, it is marked informative, and it may drift without affecting the decision.
+**Normative status of this document.** *Superseded.* While it was live, this ADR was the authority for the masking policy it defines, and it was written to stand on its own: the policy, its units, its arithmetic, its feasibility conditions, its initialisation requirements, its observability requirements, its parameter surface and its acceptance criteria are all specified here. It no longer governs: **ADR-006 supersedes it**, and where the two differ ADR-006 wins. Appendix A is the only place that maps the specification onto the present toolchain, it is marked informative, and it may drift without affecting any decision.
 
 ## 1. Context & Problem Statement
 

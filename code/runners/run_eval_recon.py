@@ -105,6 +105,14 @@ def get_args(argv=None):
                    help='fraction of the 36 rgb2d patches kept. 0.0 = the 2D '
                         'stream contributes NO encoder token (the ablation). '
                         'Inert for a 2-stream checkpoint.')
+    p.add_argument('--pin_single_carrier', default='none', type=str,
+                   choices=('none', 'tir', 'rgb2d'),
+                   help='ADR-006 §2.4 Regime 3: pin ONE visual stream to the '
+                        'whole budget and every other stream to 0, bypassing '
+                        'the 2-tube floor and the 25 % cap (which would '
+                        'otherwise realise 225/125 and make the TIR-only / '
+                        'RGB2D-only probe inexpressible). none (default) = '
+                        'the clamped split of the --kept_* fractions.')
     p.add_argument('--kept_bp', default=1.0, type=float,
                    help='fraction of the 250 bp tokens kept. 1.0 (default) '
                         'reproduces the legacy rule (a declared stream with no '
@@ -246,13 +254,27 @@ def pin_masking(model, a):
     app = model.apportioner
     floor = model.video_min_tubes
     counts: Dict[str, int] = {}
-    for spec in model.specs:
-        k = int(round(want[spec.name] * spec.n_units))
-        if spec.kind == 'visual':
-            k = max(floor, min(k, app.video_cap_units[spec.name]))
-            counts[spec.name] = k * int(spec.tokens_per_unit)
-        else:
-            counts[spec.name] = max(0, min(k, app.physio_cap_tokens[spec.name]))
+    pin_carrier = str(getattr(a, 'pin_single_carrier', 'none') or 'none')
+    if pin_carrier != 'none':
+        # ADR-006 §2.3 contract 3 / §2.4: one stream carries the WHOLE budget
+        # and every other stream keeps nothing. The floor/cap clamp below is
+        # bypassed on purpose -- it exists so a SPLIT always leaves visual
+        # evidence, and a sole carrier already satisfies that.
+        if pin_carrier not in model.visual:
+            raise SystemExit(
+                f'[eval] --pin_single_carrier {pin_carrier!r} is not a visual '
+                f'stream of this checkpoint (visual={model.visual})')
+        counts = {spec.name: (int(model.n_budget)
+                              if spec.name == pin_carrier else 0)
+                  for spec in model.specs}
+    else:
+        for spec in model.specs:
+            k = int(round(want[spec.name] * spec.n_units))
+            if spec.kind == 'visual':
+                k = max(floor, min(k, app.video_cap_units[spec.name]))
+                counts[spec.name] = k * int(spec.tokens_per_unit)
+            else:
+                counts[spec.name] = max(0, min(k, app.physio_cap_tokens[spec.name]))
 
     residual = int(model.n_budget) - sum(counts.values())
     for spec in model.specs:
@@ -289,6 +311,8 @@ def pin_masking(model, a):
                + f'  placement={model.physio_placement}')
     if a.resp_probe == 'span':
         caption += f' (span {model.physio_span_tokens} tokens)'
+    if getattr(plan, 'regime', None) == 'single':
+        caption += f'  regime=single carrier={plan.carrier}'
     return plan, caption
 
 

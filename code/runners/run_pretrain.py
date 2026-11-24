@@ -335,6 +335,27 @@ def get_args():
                              'p(e) stays the constant --p_virtual_sensing and '
                              'a pre-ADR-005 configuration is unchanged. The '
                              'shipped arm sets 50 in its YAML.')
+    # ---- ADR-006 single-carrier class (all three default to NEUTRAL) ----- #
+    parser.add_argument('--single_carrier_tubes', default=0, type=int,
+                        help='ADR-006 §2.4 S_v: kept tubes of a SOLE visual '
+                             'carrier, which then holds the whole budget. '
+                             '0 (default) DERIVES n_budget/tokens_per_unit; '
+                             'any other value must equal that derivation or '
+                             'the run is rejected at resolve time. An '
+                             'assertion, not a knob.')
+    parser.add_argument('--p_single_modality', default=0.0, type=float,
+                        help='ADR-006 §2.7 p_s_target: probability, WITHIN a '
+                             'sensor-absent step, that exactly ONE visual '
+                             'stream carries the whole budget (the other '
+                             'visuals keep 0). 0.0 (default) DISABLES the '
+                             'class, so the mask sequence stays bit-identical '
+                             'to ADR-005.')
+    parser.add_argument('--single_modality_warmup_p', default=0.0, type=float,
+                        help='ADR-006 §2.7 p_s_warm: single-carrier '
+                             'probability strictly below '
+                             '--virtual_sensing_warmup_epochs. Must lie in '
+                             '[0, --p_single_modality] while the curriculum '
+                             'is active.')
     parser.add_argument('--spatial_patches', default=0, type=int,
                         help='tokenizer-derived (default 0 = derive from '
                              'input_size/tubelet); pass it only to ASSERT the '
@@ -645,6 +666,21 @@ def write_masking_manifest(args, model, *, plan, mask_base: int,
             'role_digest': str(getattr(plan, 'digest', '')),
         },
     }
+    # ADR-006 §2.4/§2.7: the single-carrier keys are written ONLY when they are
+    # non-neutral. The resume guard below compares the NEW record's keys against
+    # the stored file, so an unconditional write would make an in-flight
+    # ADR-005 run fail to resume (`theirs.get(key)` is None for a key the old
+    # record never had). With this guard an ADR-005 record is byte-identical to
+    # the one the engine wrote before ADR-006.
+    _p_s = float(getattr(args, 'p_single_modality', 0.0) or 0.0)
+    _p_s_warm = float(getattr(args, 'single_modality_warmup_p', 0.0) or 0.0)
+    _s_v_raw = int(getattr(args, 'single_carrier_tubes', 0) or 0)
+    if _p_s > 0.0 or _p_s_warm > 0.0 or _s_v_raw != 0:
+        record['policy'].update({
+            'p_single_modality': float(app.p_single_modality),
+            'single_modality_warmup_p': float(app.single_modality_warmup_p),
+            'single_carrier_tubes': int(app.single_carrier_tubes),
+        })
     os.makedirs(args.output_dir, exist_ok=True)
     path = os.path.join(args.output_dir, 'masking.json')
     if os.path.exists(path):
@@ -849,6 +885,8 @@ def main(args):
               f'(p_warm={_masking["policy"]["virtual_sensing_warmup_p"]:g}, '
               f'p_target={_masking["policy"]["p_virtual_sensing"]:g}, '
               f'E_warm={_masking["policy"]["virtual_sensing_warmup_epochs"]}, '
+              f'p_single={_masking["policy"].get("p_single_modality", 0.0):g}, '
+              f'S_v={_masking["policy"].get("single_carrier_tubes", "derive")}, '
               f'patch_stream={_masking["kernel"]["recipient"] or "(random)"})')
     # Mask RNG of the training loop (ADR-005 §2.3 contract 8). The COUNTS
     # generator is seeded from a rank-independent key, so every rank derives

@@ -63,8 +63,9 @@ from typing import Dict, Mapping, Optional, Sequence, Tuple
 
 import torch
 
-__all__ = ['VISUAL', 'SIGNAL', 'KINDS', 'MODES', 'StreamSpec', 'BudgetPlan',
-           'ConstantBudgetApportioner']
+__all__ = ['VISUAL', 'SIGNAL', 'KINDS', 'MODES', 'REGIMES',
+           'REGIME_INPAINTING', 'REGIME_BI_VISUAL', 'REGIME_SINGLE',
+           'StreamSpec', 'BudgetPlan', 'ConstantBudgetApportioner']
 
 #: stream-kind tags. The visual/signal taxonomy itself is owned by
 #: ``core.multimae`` (``_VISUAL_STREAMS`` / ``_SIGNAL_STREAMS``); this module
@@ -77,6 +78,16 @@ KINDS: Tuple[str, str] = (VISUAL, SIGNAL)
 MODE_VIRTUAL_SENSING = 1
 MODE_INPAINTING = 2
 MODES: Tuple[int, int] = (MODE_VIRTUAL_SENSING, MODE_INPAINTING)
+
+#: ADR-006 step classes. These REFINE the modes above, they do not replace
+#: them: a single-carrier step is still ``MODE_VIRTUAL_SENSING`` (no
+#: physiological token reaches the encoder), so ``mode`` and ``mode_by_counts``
+#: keep their ADR-005 meaning and every existing assertion stays valid.
+REGIME_INPAINTING = 'inpainting'      # K_resp > 0; both visuals carry tokens
+REGIME_BI_VISUAL = 'bi_visual'        # K_resp = 0; both visuals carry tokens
+REGIME_SINGLE = 'single'              # K_resp = 0; ONE visual carries all of N
+REGIMES: Tuple[str, str, str] = (REGIME_INPAINTING, REGIME_BI_VISUAL,
+                                 REGIME_SINGLE)
 
 _F64 = torch.float64
 
@@ -134,12 +145,19 @@ class BudgetPlan:
         :data:`MODE_VIRTUAL_SENSING` iff every signal stream keeps 0 tokens,
         else :data:`MODE_INPAINTING`. Differs from ``mode`` on exactly the
         Mode-2 draw with ``K_tilde = 0`` (1 of 126), which contract 4 relabels.
+    :param regime: the ADR-006 step class — :data:`REGIME_INPAINTING`,
+        :data:`REGIME_BI_VISUAL` or :data:`REGIME_SINGLE`. ADDITIVE: it refines
+        ``mode_by_counts`` and changes no existing field.
+    :param carrier: the sole visual stream of a :data:`REGIME_SINGLE` plan;
+        ``None`` on every other regime.
     """
 
     mode: int
     kept_tokens: Dict[str, int]
     kept_units: Dict[str, int]
     mode_by_counts: int
+    regime: str = REGIME_BI_VISUAL
+    carrier: Optional[str] = None
 
     def __post_init__(self):
         if int(self.mode) not in MODES:
@@ -149,6 +167,19 @@ class BudgetPlan:
             raise ValueError(
                 f'BudgetPlan: mode_by_counts must be one of {MODES}; got '
                 f'{self.mode_by_counts!r}.')
+        if self.regime not in REGIMES:
+            raise ValueError(
+                f'BudgetPlan: regime must be one of {REGIMES}; got '
+                f'{self.regime!r}.')
+        if self.regime == REGIME_SINGLE:
+            if not self.carrier:
+                raise ValueError(
+                    'BudgetPlan: a single-carrier plan must name its carrier.')
+        elif self.carrier is not None:
+            raise ValueError(
+                f'BudgetPlan: carrier is only meaningful on a '
+                f'{REGIME_SINGLE!r} plan; got regime {self.regime!r} with '
+                f'carrier {self.carrier!r}.')
 
     @property
     def total_tokens(self) -> int:
@@ -191,6 +222,9 @@ class ConstantBudgetApportioner:
                  p_virtual_sensing: float = 0.50,
                  virtual_sensing_warmup_p: float = 0.10,
                  virtual_sensing_warmup_epochs: int = 0,
+                 single_carrier_tubes: int = 0,
+                 p_single_modality: float = 0.0,
+                 single_modality_warmup_p: float = 0.0,
                  generator: Optional[torch.Generator] = None):
         self.streams: Tuple[StreamSpec, ...] = tuple(streams)
         self.n_budget = int(n_budget)
@@ -200,6 +234,10 @@ class ConstantBudgetApportioner:
         self.p_virtual_sensing = float(p_virtual_sensing)
         self.virtual_sensing_warmup_p = float(virtual_sensing_warmup_p)
         self.virtual_sensing_warmup_epochs = int(virtual_sensing_warmup_epochs)
+        # ADR-006 §2.7: the single-carrier probability WITHIN the sensor-absent
+        # class, and its warm-up value (Phase I has no single-carrier step).
+        self.p_single_modality = float(p_single_modality)
+        self.single_modality_warmup_p = float(single_modality_warmup_p)
         self.generator = generator
 
         self.visual: Tuple[StreamSpec, ...] = tuple(
@@ -211,6 +249,14 @@ class ConstantBudgetApportioner:
         #: streams -- one patch grid means one tube layout.
         self.tokens_per_unit = (int(self.visual[0].tokens_per_unit)
                                 if self.visual else 0)
+        # ADR-006 §2.4: ``S_v`` — the allocation of a SOLE carrier. ``0`` means
+        # DERIVE (the whole budget); any other value must equal that derivation
+        # and ``_validate`` rejects everything else, so this is an assertion
+        # expressed as an option (the ``spatial_patches`` pattern).
+        self.single_carrier_tubes = (
+            int(single_carrier_tubes)
+            or (self.n_budget // self.tokens_per_unit
+                if self.tokens_per_unit else 0))
         #: per-stream cap in TUBES (``M_v``) for visual streams.
         self.video_cap_units: Dict[str, int] = {
             s.name: int(math.floor(self.video_cap_ratio * int(s.n_units)))
@@ -288,6 +334,24 @@ class ConstantBudgetApportioner:
                 f'would be decreasing. Lower the warm-up value, raise the '
                 f'target, or set virtual_sensing_warmup_epochs=0 to disable '
                 f'the curriculum.')
+        # ADR-006 §2.7: same two checks for the single-carrier schedule. The
+        # ordering is read only while Phase I exists, for the same reason as
+        # above -- with E_warm = 0 a neutral ADR-005 config must stay legal.
+        if not 0.0 <= self.p_single_modality <= 1.0:
+            raise ValueError(
+                f'ConstantBudgetApportioner: p_single_modality must be in '
+                f'[0, 1]; got {self.p_single_modality!r}.')
+        if not 0.0 <= self.single_modality_warmup_p <= 1.0:
+            raise ValueError(
+                f'ConstantBudgetApportioner: single_modality_warmup_p must be '
+                f'in [0, 1]; got {self.single_modality_warmup_p!r}.')
+        if (self.virtual_sensing_warmup_epochs > 0
+                and self.single_modality_warmup_p > self.p_single_modality):
+            raise ValueError(
+                f'ConstantBudgetApportioner: single_modality_warmup_p '
+                f'{self.single_modality_warmup_p!r} exceeds p_single_modality '
+                f'{self.p_single_modality!r}; the ADR-006 §2.7 schedule would '
+                f'be decreasing.')
         if self.n_budget < 1:
             raise ValueError(
                 f'ConstantBudgetApportioner: n_budget must be >= 1; got '
@@ -316,6 +380,31 @@ class ConstantBudgetApportioner:
                 f'n_budget {self.n_budget} is not a multiple of tokens_per_unit '
                 f'T={t} (remainder {self.n_budget % t}), so Mode 1 cannot map '
                 f'the whole budget onto whole visual tubes.')
+
+        # ADR-006 §2.6 rules 4-5: a SOLE carrier must be able to hold the whole
+        # budget in its own tube grid, and ``single_carrier_tubes`` must agree
+        # with the derivation (pass 0 to derive it).
+        total_units = self.n_budget // t
+        if self.single_carrier_tubes != total_units:
+            raise ValueError(
+                f'ConstantBudgetApportioner: single_carrier_tubes '
+                f'{self.single_carrier_tubes} must equal n_budget/T = '
+                f'{self.n_budget}/{t} = {total_units} (ADR-006 §2.6 rule 4; '
+                f'pass 0 to derive it). A single-carrier step keeps either the '
+                f'whole budget or nothing, so this is an assertion, not a '
+                f'knob.')
+        carrier_rooms = {s.name: int(s.n_units) for s in self.visual}
+        if not 1 <= self.single_carrier_tubes <= min(carrier_rooms.values()):
+            raise ValueError(
+                f'ConstantBudgetApportioner: the sole carrier needs '
+                f'{self.single_carrier_tubes} tube(s) but the visual streams '
+                f'have {carrier_rooms} (ADR-006 §2.6 rule 5).')
+        if self.p_single_modality > 0.0 and len(self.visual) != 2:
+            raise ValueError(
+                f'ConstantBudgetApportioner: p_single_modality='
+                f'{self.p_single_modality!r} > 0 needs exactly TWO visual '
+                f'streams (one to carry, one to zero); got '
+                f'{[s.name for s in self.visual]} (ADR-006 §2.6 rule 6).')
 
         # 2. Mode 1 must be splittable inside both the floor and the cap
         total_units = self.n_budget // t
@@ -365,7 +454,8 @@ class ConstantBudgetApportioner:
         return s_first, total - s_first
 
     def _plan(self, mode: int, units: Dict[str, int],
-              tokens: Dict[str, int]) -> BudgetPlan:
+              tokens: Dict[str, int], regime: str,
+              carrier: Optional[str] = None) -> BudgetPlan:
         # ADR-005 contract 4: the RESOLVED mode is a function of the counts,
         # not of the draw. Computed here because this is the single
         # construction site of a plan and only the policy knows the signal set.
@@ -373,16 +463,42 @@ class ConstantBudgetApportioner:
                      if all(int(tokens[s.name]) == 0 for s in self.signal)
                      else MODE_INPAINTING)
         plan = BudgetPlan(mode=int(mode), kept_tokens=dict(tokens),
-                          kept_units=dict(units), mode_by_counts=by_counts)
+                          kept_units=dict(units), mode_by_counts=by_counts,
+                          regime=regime, carrier=carrier)
         # exact sum, caps, floors and the tube multiple, re-checked
         if plan.total_tokens != self.n_budget:
             raise RuntimeError(
                 f'ConstantBudgetApportioner: invariant violated — visible '
                 f'tokens {plan.total_tokens} != n_budget {self.n_budget} '
                 f'({plan.kept_tokens}, mode {mode}).')
+        if regime == REGIME_SINGLE:
+            # A single-carrier step IS a sensor-absent step; anything else is a
+            # mislabelled plan.
+            if int(mode) != MODE_VIRTUAL_SENSING:
+                raise RuntimeError(
+                    f'ConstantBudgetApportioner: invariant violated — a '
+                    f'{REGIME_SINGLE!r} plan must be '
+                    f'MODE_VIRTUAL_SENSING; got mode {mode}.')
+            names = [s.name for s in self.visual]
+            if carrier not in names:
+                raise RuntimeError(
+                    f'ConstantBudgetApportioner: invariant violated — carrier '
+                    f'{carrier!r} is not a declared visual stream {names}.')
         for s in self.visual:
             kept = plan.kept_units[s.name]
-            if not self.video_min_tubes <= kept <= self.video_cap_units[s.name]:
+            if regime == REGIME_SINGLE:
+                # ADR-006 §2.3 contract 3: the floor is satisfied BY the
+                # carrier, so it and the multi-carrier cap both skip here. The
+                # carrier holds S_v and every other visual holds exactly 0.
+                want = self.single_carrier_tubes if s.name == carrier else 0
+                if kept != want:
+                    raise RuntimeError(
+                        f'ConstantBudgetApportioner: invariant violated — '
+                        f'visual stream {s.name!r} keeps {kept} tube(s) on a '
+                        f'single-carrier plan whose carrier is {carrier!r} '
+                        f'(expected {want}).')
+            elif not (self.video_min_tubes <= kept
+                      <= self.video_cap_units[s.name]):
                 raise RuntimeError(
                     f'ConstantBudgetApportioner: invariant violated — visual '
                     f'stream {s.name!r} keeps {kept} tube(s), outside '
@@ -426,6 +542,22 @@ class ConstantBudgetApportioner:
             return self.p_virtual_sensing
         return self.virtual_sensing_warmup_p
 
+    def p_s_at(self, epoch: Optional[int]) -> float:
+        """Single-carrier probability at ``epoch`` (ADR-006 §2.7, 0-based).
+
+        ``p_{s,warm}`` strictly below the boundary, ``p_{s,target}`` from
+        ``E_warm`` onwards. ``epoch=None`` resolves to ``p_{s,target}``, the
+        same convention as :meth:`p_at` (and therefore 0.0 for every
+        configuration that does not mention the new keys).
+
+        :param epoch: 0-based training-epoch index, or ``None``.
+        """
+        if epoch is None:
+            return self.p_single_modality
+        if int(epoch) >= self.virtual_sensing_warmup_epochs:
+            return self.p_single_modality
+        return self.single_modality_warmup_p
+
     def sample_step(self, generator: Optional[torch.Generator] = None,
                     epoch: Optional[int] = None) -> BudgetPlan:
         """Draw the step's mode and per-stream counts.
@@ -439,11 +571,30 @@ class ConstantBudgetApportioner:
         g = generator if generator is not None else self.generator
         u = float(torch.rand(1, dtype=_F64, generator=g).item())
         if u < self.p_at(epoch):
-            return self._mode1(g)
+            return self._mode1(g, epoch)
         return self._mode2(g)
 
-    def _mode1(self, g) -> BudgetPlan:
-        """Pure virtual sensing: no physiological token, whole budget visual."""
+    def _mode1(self, g, epoch: Optional[int] = None) -> BudgetPlan:
+        """Pure virtual sensing: no physiological token, whole budget visual.
+
+        ADR-006: a share ``p_s(e)`` of these steps is SINGLE-modality, i.e. the
+        whole budget goes to exactly one visual stream. The ``p_s > 0`` guard is
+        evaluated BEFORE any draw, so with ``p_single_modality = 0`` (the
+        default) this method consumes exactly the RNG it always did and the
+        pre-ADR-006 mask sequence is bit-identical.
+
+        :param g: RNG for this step's draws.
+        :param epoch: 0-based epoch index; ``None`` uses the steady state.
+            Keep the default: ``tests/test_curriculum_schedule.py`` calls this
+            helper with one positional argument.
+        """
+        p_s = self.p_s_at(epoch)
+        if p_s > 0.0:
+            if float(torch.rand(1, dtype=_F64, generator=g).item()) < p_s:
+                first = float(torch.rand(1, dtype=_F64,
+                                         generator=g).item())
+                carrier = self.visual[0] if first < 0.5 else self.visual[1]
+                return self._single_carrier(carrier.name)
         total = self.n_budget // self.tokens_per_unit
         s1, s2 = self._split_tubes(total, g)
         first, second = self.visual[0], self.visual[1]
@@ -453,7 +604,25 @@ class ConstantBudgetApportioner:
         for s in self.signal:
             units[s.name] = 0
             tokens[s.name] = 0
-        return self._plan(MODE_VIRTUAL_SENSING, units, tokens)
+        return self._plan(MODE_VIRTUAL_SENSING, units, tokens, REGIME_BI_VISUAL)
+
+    def _single_carrier(self, carrier: str) -> BudgetPlan:
+        """ADR-006 Regime 3: one visual stream takes the whole budget.
+
+        Built directly: ``_split_tubes`` clamps to ``[m, M]`` and would return
+        9/5 rather than ``S_v``/0, so it must not be used here.
+        """
+        spec = next((s for s in self.visual if s.name == carrier), None)
+        if spec is None:
+            raise RuntimeError(
+                f'ConstantBudgetApportioner: carrier {carrier!r} is not a '
+                f'declared visual stream {[s.name for s in self.visual]}.')
+        units = {s.name: 0 for s in self.streams}
+        tokens = {s.name: 0 for s in self.streams}
+        units[carrier] = self.single_carrier_tubes
+        tokens[carrier] = self.single_carrier_tubes * int(spec.tokens_per_unit)
+        return self._plan(MODE_VIRTUAL_SENSING, units, tokens, REGIME_SINGLE,
+                          carrier)
 
     def _mode2(self, g) -> BudgetPlan:
         """Waveform inpainting: physiological draws, tube-aligned residual."""
@@ -495,7 +664,7 @@ class ConstantBudgetApportioner:
         for s in self.signal:
             units[s.name] = raw[s.name]
             tokens[s.name] = raw[s.name]
-        return self._plan(MODE_INPAINTING, units, tokens)
+        return self._plan(MODE_INPAINTING, units, tokens, REGIME_INPAINTING)
 
     def plan_from_counts(self, kept_tokens: Mapping[str, int]) -> BudgetPlan:
         """Validate an EXPLICIT allocation (evaluation pins, tests).
@@ -544,8 +713,23 @@ class ConstantBudgetApportioner:
         mode = (MODE_VIRTUAL_SENSING
                 if all(tokens[s.name] == 0 for s in self.signal)
                 else MODE_INPAINTING)
+        regime, carrier = self._infer_regime(tokens)
         try:
-            return self._plan(mode, units, tokens)
+            return self._plan(mode, units, tokens, regime, carrier)
         except RuntimeError as exc:      # normalise to the caller-facing type
             raise ValueError(
                 f'ConstantBudgetApportioner.plan_from_counts: {exc}') from exc
+
+    def _infer_regime(self, tokens: Mapping[str, int]
+                      ) -> Tuple[str, Optional[str]]:
+        """Resolve the ADR-006 regime from an EXPLICIT allocation.
+
+        Only :meth:`plan_from_counts` needs this: the sampler knows the regime
+        it drew, while a pinned allocation must be labelled from its counts.
+        """
+        if any(int(tokens[s.name]) for s in self.signal):
+            return REGIME_INPAINTING, None
+        carriers = [s.name for s in self.visual if int(tokens[s.name]) > 0]
+        if len(carriers) == 1:
+            return REGIME_SINGLE, carriers[0]
+        return REGIME_BI_VISUAL, None
