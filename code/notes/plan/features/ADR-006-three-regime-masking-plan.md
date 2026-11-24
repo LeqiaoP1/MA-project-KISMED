@@ -86,26 +86,47 @@ that selects it, (iii) an invariant exemption for the zeroed stream, (iv) three 
   - `single_modality_warmup_p: float = 0.0` — `p_{s,warm}`.
 - `_validate` additions:
   - `0 ≤ p_s_target ≤ 1`, `0 ≤ p_s_warm ≤ 1`;
-  - `p_s_warm ≤ p_s_target` **only when `E_warm > 0`** — identical conditional reasoning to ADR-005's
-    `p_warm` check: with `E_warm = 0` the warm-up value is never read, and rejecting it would break
-    neutrality for an ADR-005 config that keeps the default;
-  - `single_carrier_tubes ∈ {0} ∪ {N // T}`, and the resolved $S_v = N/T$ must satisfy
-    `1 ≤ S_v ≤ min(n_units)` over the visual streams (ADR-006 §2.6 rules 4–5; 14 ≤ 36 ✓);
+  - `p_s_warm ≤ p_s_target` **unconditionally** — ADR-006 §2.7 and §2.9 admit
+    `[0, p_single_modality]` with no exemption. There is no `E_warm = 0` carve-out here, because none
+    is needed: `p_warm`'s exemption exists only because its 0.10 default would otherwise make a legal
+    `p_target = 0.0` run unbuildable, while this value defaults to 0.00;
+  - `single_carrier_tubes ∈ {0} ∪ {N // T}`, where `0` is the **raw sentinel** meaning "derive" and
+    the **resolved policy value** is `S_v = N // T` (= 14 at this geometry) — the number ADR-006
+    §2.9 names as the default. The resolved value must satisfy `1 ≤ S_v ≤ min(n_units)` (ADR-006
+    §2.6 rule 4); rule 5 then holds **by construction**, because the sole-carrier cap *is*
+    `S_v / units_v` (14/36 = 38.9 %), so the kept fraction cannot exceed it;
   - `p_s_target > 0` requires exactly two visual streams (already enforced, asserted separately so
     the failure names the *single-modality* tuple rather than the general stream-set rule).
 - New `p_s_at(epoch: Optional[int]) -> float` — mirrors `p_at` exactly: `p_s_target` when
   `epoch is None` or `epoch >= E_warm`, else `p_s_warm`.
-- `sample_step(generator=None, epoch=None)`: signature and draw order unchanged, then
+- `sample_step(generator=None, epoch=None)`: signature unchanged, and `epoch` now reaches **both**
+  branches, exactly as ADR-006 §2.5 specifies:
 
   ```
-  if u < self.p_at(epoch):     return self._mode1(g, epoch)   # epoch newly passed in
-  return self._mode2(g)
+  if u < self.p_at(epoch):     return self._mode1(g, epoch)
+  return self._mode2(g, epoch)
   ```
 
-  `_mode1(g, epoch)` keeps its current body and prepends the **`epoch` defaulted to `None`**:
-  `_mode1(g, epoch: Optional[int] = None)`. `code/tests/test_curriculum_schedule.py::_pre_change_draw`
-  calls `app._mode1(gen)` with one positional argument and that suite must stay unmodified (DoD 9), so
-  a required second parameter turns the compatibility proof into a `TypeError`.
+  **Both branches must reach the same single-carrier decision.** ADR-006 §2.3 contract 4 makes a
+  Mode-2 draw whose aligned `K_resp` is zero a *sensor-absent* step, and §2.5 routes it through the
+  same `p_s(e)` test as a sampled Mode-1 step. Implemented as one shared
+  `_sensor_absent(g, epoch, mode)` helper: `_mode1` delegates to it, and `_mode2` calls it with
+  `mode = MODE_INPAINTING` when `sum(aligned K_resp) == 0`, **before** it splits the visual budget.
+  Consequences to preserve:
+
+  - the sampled `mode` stays `MODE_INPAINTING` on that path (ADR-005 contract 4); only the resolved
+    `mode_by_counts` and `regime` change;
+  - the `_plan` invariant for `REGIME_SINGLE` must therefore check **`mode_by_counts`**, not the
+    sampled `mode`;
+  - the extra `p_s` draw happens *after* the `K_tilde` draw, so the RNG order is the ADR's;
+  - with `p_s = 0` the helper consumes no draw at all, so this path is bit-identical to the
+    pre-ADR-006 engine.
+
+  `_mode1` and `_mode2` both default `epoch` to `None`:
+  `_mode1(g, epoch: Optional[int] = None)`, `_mode2(g, epoch: Optional[int] = None)`.
+  `code/tests/test_curriculum_schedule.py::_pre_change_draw` calls `app._mode1(gen)` **and**
+  `app._mode2(gen)` with one positional argument, and that suite must stay unmodified (DoD 9), so a
+  required second parameter turns the compatibility proof into a `TypeError`.
 
   ```
   p_s = self.p_s_at(epoch)
@@ -148,9 +169,13 @@ construction in existing tests keeps working:
 - `carrier` is the name of the sole carrier on a `single` plan and `None` otherwise.
 
 **4.2 `code/core/multimae.py`** — `make_masks` and `forward` already forward `epoch` to
-`sample_step`, so no signature changes are needed. Two additions:
-- `forward`'s returned dict gains `'regime': plan.regime` and `'carrier': plan.carrier` next to
-  `mode_resolved`; `[mask]` provenance print gains the resolved `(p_s_warm, p_s_target)`.
+`sample_step`, so no signature changes are needed. Additions:
+- `forward`'s returned dict gains, **for every step**, `'regime': plan.regime` and
+  `'carrier': plan.carrier` (`None` outside Regime 3), plus `'p_single':
+  float(self.apportioner.p_s_at(epoch))` — the active `p_s(e)` that ADR-006 §2.8 requires per step,
+  alongside the existing `'p_virtual'`. The raw `regime`/`carrier` labels are the per-step record;
+  the numeric indicators of §4.3 are **additional aggregates, not replacements**.
+- `[mask]` provenance print gains the resolved `(p_s_warm, p_s_target)` and `S_v`.
 - `plan_from_counts` needs nothing beyond §3.2.
 
 **4.3 `code/engines/pretrain.py`** — inside the existing `if isinstance(out, dict):` block, add the
@@ -217,7 +242,7 @@ Existing suites are **not modified** (DoD 9). New: `code/tests/test_regime_singl
 | **G1** | Neutrality: with the three new keys absent, and separately with `p_single_modality = 0` but the other two set, the kept-count sequence over 50 000 draws at a fixed `(mask_base, epoch, step)` equals the pre-change fixture — captured once and committed. Also asserts the *generator state* advances identically (a consumed-then-ignored draw would pass a counts-only test only by luck, so advance the generator twice and compare the third). |
 | **G2** | `p_s_at(e) == p_s_target` for `e ≥ E_warm` and for `None`; `== p_s_warm` below; non-decreasing in `e`. |
 | **G3** | Construction rejects `p_s_warm > p_s_target` while `E_warm > 0`, `single_carrier_tubes ∉ {0, N//T}`, and `p_s_target > 0` with a stream set that is not two-visual; `E_warm = 0` accepts any `p_s_warm`. |
-| **G4** | Over 10⁴ draws at `p_s_target = 0.20`, `E_warm = 50`, `p_virtual_sensing = 0.50`: the Phase-I single-carrier share is exactly 0; the Phase-II `is_single` fraction is `0.10 ± 0.012` (joint probability `0.5 × 0.2`, 4σ from the binomial), the 3A:3B split is `500 ± 63` of the ≈1000 single steps, and the regime mix reproduces `50 / 40 / 5 / 5`. |
+| **G4** | Over 10⁴ draws at `p_s_target = 0.20`, `E_warm = 50`, `p_virtual_sensing = 0.50`: the Phase-I single-carrier share is exactly 0; in Phase II the sensor-absent mass is `p + (1-p)/126 = 0.50397` (not `0.50`, because a zero-count Mode-2 draw is sensor-absent), so `is_single` is `0.10079 ± 0.012`, the 3A:3B split is `504 ± 63` of the ≈1008 single steps, and the regime shares are `0.4960 / 0.4032 / 0.1008` — the rounded `50 / 40 / 5+5` target, tested against those exact probabilities (4σ binomial), never as the literal `0.50 / 0.40 / 0.05 / 0.05`. |
 | **G5** | Allocation exactness: every `single` plan has `carrier ∈ {tir, rgb2d}`, `kept_units[carrier] == 14`, all other streams 0, and `total_tokens == 350`; `_split_tubes` is not called (assert the two streams are never both non-zero). |
 | **G6** | Label compatibility: on a 3A step `mode_by_counts == MODE_VIRTUAL_SENSING` (unchanged meaning) **and** `regime == 'single'` **and** `carrier == 'rgb2d'`; on a Regime-2 step `regime == 'bi_visual'`, `carrier is None`. Existing `mode`/`mode_by_counts` assertions in `test_budget_masking.py` are untouched and green. |
 | **G7** | Gradient path: on a Regime-3 step, `∂L_m/∂z ≠ 0` for the zeroed visual stream and for `resp` (ADR-006 §3.1 clause 6), and the encoder input is `[B, 350, D]`. |
@@ -233,13 +258,24 @@ python -m pytest tests/test_budget_masking.py tests/test_mask_placement.py \
                  tests/test_curriculum_schedule.py tests/test_regime_single_carrier.py \
                  tests/test_config_loading.py -q
 
-# G9/G10 — smoke the new arm with the curriculum disabled and both regimes forced.
+# G9/G10 — smoke the new arm with the curriculum disabled, regime class FORCED ON.
 python -u runners/run_pretrain.py \
     -c configs/pretrain/stage2_budget_3regime_single_modality.yaml \
     --exp_root /tmp/adr006_smoke --fold 0 --dev_smoke --epochs 1 --warmup_epochs 0 \
     --virtual_sensing_warmup_epochs 0 --p_virtual_sensing 1.0 --p_single_modality 1.0 \
     --max_entries 16 --batch_size 8 --num_workers 0 \
     --output_dir /tmp/adr006_smoke/out \
+    --roi_cache <ROI_CACHE> --rgb2d_cache <RGB2D_CACHE> --resp_cache <RESP_CACHE> \
+    --min_signal_spread 0 --rail_touch_v 0
+
+# G9/ADR-006 §3.3 — the SAME arm with the class FORCED OFF: zero Regime-3 steps,
+# is_single = 0, and the encoder input still [B, 350, D].
+python -u runners/run_pretrain.py \
+    -c configs/pretrain/stage2_budget_3regime_single_modality.yaml \
+    --exp_root /tmp/adr006_smoke_off --fold 0 --dev_smoke --epochs 1 --warmup_epochs 0 \
+    --virtual_sensing_warmup_epochs 0 --p_virtual_sensing 1.0 --p_single_modality 0.0 \
+    --max_entries 16 --batch_size 8 --num_workers 0 \
+    --output_dir /tmp/adr006_smoke_off/out \
     --roi_cache <ROI_CACHE> --rgb2d_cache <RGB2D_CACHE> --resp_cache <RESP_CACHE> \
     --min_signal_spread 0 --rail_touch_v 0
 
@@ -350,15 +386,20 @@ Environment: repo venv (`.env`), one local Tesla T4; caches `$WORK_SCRATCH/tir_r
   the full arm tuple) and four epoch contexts (`None`, `0`, `E_warm`, `149`), the 500-step plan
   sequence equals the pre-ADR-006 selection path plan-for-plan, **and the generator's next raw draw
   is bit-identical** — the check that a consumed-then-ignored sample would fail.
-- **§3.3 smoke — passed** (2 steps, 3.50 s/it, 5.74 GB allocated / 6.49 GB reserved, precision
-  `none`), with `--p_virtual_sensing 1.0 --p_single_modality 1.0` to force the class:
-  `[mask] … p_single=1 S_v=14`. Step 0 realised **3A** (`kept_rgb2d 350 = 14 tubes`, `tir 0`,
-  `resp 0`, `is_single_rgb2d 1`), step 1 realised **3B** (`tir 350`, running means 175/175,
-  `is_single_tir 0.5`), `n_batch = 350` on both, `mode`/`mode_resolved = 1` (ADR-005 meanings
-  intact). All three `mse_*` terms are present on both steps **including the zeroed streams**
-  (`mse_tir 1.99` on the step where `tir` held 0 tokens) — contract 7 on real data, not just on a
-  synthetic batch. `masking.json`, `metrics.jsonl` and `selection.json` written; validation ran
-  (5.143007 over 16 samples).
+- **§3.3 smoke, both directions — passed.** (2 steps each, ~3.4 s/it, precision `none`.)
+  (a) **Class forced on** (`--p_virtual_sensing 1.0 --p_single_modality 1.0`): `[mask] … p_single=1
+  S_v=14`. Step 0 realised **3A** (`kept_rgb2d 350 = 14 tubes`, `tir 0`, `resp 0`,
+  `is_single_rgb2d 1`), step 1 realised **3B** (`tir 350`, `is_single_tir 1`), `n_batch = 350` on
+  both, `mode`/`mode_resolved = 1` (ADR-005 meanings intact). All three `mse_*` terms are present on
+  both steps **including the zeroed streams** (`mse_tir 1.99` on the step where `tir` held 0 tokens)
+  — contract 7 on real data, not just on a synthetic batch. `masking.json`, `metrics.jsonl` and
+  `selection.json` written; validation ran (5.143007 over 16 samples). Resource: 5.74 GB allocated /
+  6.49 GB reserved at batch 8.
+  (b) **Class forced off** (`--p_virtual_sensing 1.0 --p_single_modality 0.0`): every step is
+  bi-visual (`tir 225 / rgb2d 125` and `tir 150 / rgb2d 200`), **zero** Regime-3 steps,
+  `is_single = 0`, `p_single = 0`, `n_batch = 350`. Resource: 5.75 GB allocated / 6.84 GB reserved.
+  An independent draw of 2 000 plans at `p_s = 0` and 500 at `p_s = 1` gave `regimes =
+  {bi_visual}` and `{single}` respectively with `total_tokens = {350}` in both.
 - **End-to-end neutrality A/B, same binary and same caps.** `stage2_budget_3stream_curriculum`
   (the ADR-005 arm) vs `stage2_budget_3regime_single_modality` with `--p_single_modality 0.0`,
   both at `--virtual_sensing_warmup_epochs 0`: **identical** epoch loss `5.482074737548828`,

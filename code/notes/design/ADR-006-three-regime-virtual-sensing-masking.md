@@ -141,7 +141,7 @@ Validated when the configuration is resolved; an infeasible tuple is rejected **
 2. $2m \le N/T \le 2M$ — Regime 2 must be splittable inside floor and cap. ($350/25 = 14 \in [4, 18]$ ✓)
 3. $N - C \ge 2mT$ — physiological saturation must leave both visual floors. ($225 \ge 100$ ✓)
 4. $S_{\text{single}} = N/T$ and $S_{\text{single}} \le \text{units}_v$ — the carrier must be able to hold the whole budget in its own tube grid. ($14 \le 36$ ✓)
-5. $S_{\text{single}} \le \text{units}_v$ with the carrier's kept fraction $S_{\text{single}}/\text{units}_v \le$ the single-carrier cap of contract 2 ($14/36 = 38.9\%$ ✓).
+5. The carrier's kept fraction $S_{\text{single}}/\text{units}_v$ must not exceed the single-carrier cap of contract 2 ($14/36 = 38.9\%$ ✓). Since that cap is *defined* as $S_{\text{single}}/\text{units}_v$, rule 5 cannot be violated independently of rules 1 and 4: it is the statement that the kept fraction stays causal, and it is retained so that a configuration in which the two are separated is a detectable error rather than a silent one.
 6. The declared set has exactly two visual streams — Regime 3 needs one to carry the whole budget and one to be zeroed, and the budget arithmetic of §2.1 leaves no other closed form.
 7. The tubelet equals the pre-trained kernel (I1, §2.10).
 
@@ -153,12 +153,14 @@ $$p(e) = \begin{cases} p_{\text{warm}} & e < E_{\text{warm}}\\ p_{\text{target}}
 
 with $p_{\text{warm}} = 0.10$, $p_{\text{target}} = 0.50$, $p_{s,\text{warm}} = 0.00$, $p_{s,\text{target}} = 0.20$, $E_{\text{warm}} = 50$.
 
+**A Mode-2 draw that resolves to $K_{\text{resp}} = 0$ is sensor-absent, and takes the $p_s$ decision too.** In §2.5 the `p_s` test sits after both draws, so that class comprises the Mode-1 draws *and* the $1/126$ of Mode-2 draws whose aligned respiration count is zero (contract 4). The single-carrier probability is therefore a share of the **resolved** sensor-absent mass $p + (1-p)/126 = 0.50397$, not of $p$ alone; §3.2 and the plan's expected regime shares use that value.
+
 | phase | epochs | $p$ | $p_s$ | step mix | objective |
 | :--- | :--- | ---: | ---: | :--- | :--- |
 | I — grounding | $e < 50$ | 0.10 | 0.00 | 90 % R1, 10 % R2, 0 % R3 | surviving respiration tokens anchor the visual latents |
 | II — tri-target | $e \ge 50$ | 0.50 | 0.20 | 50 % R1, 40 % R2, 5 % 3A, 5 % 3B | complete respiratory dynamics from bimodal, thermal-only and visible-only input |
 
-Normative properties: both probabilities are parameters of the policy, evaluated once per epoch, validated on $[0,1]$; a resolved tuple with $p_{\text{warm}} > p_{\text{target}}$ or $p_{s,\text{warm}} > p_{s,\text{target}}$ is a configuration error. Validation masks follow the phase's own probabilities from a fixed seed sequence, so the validation curve is a *within-phase* observable and must not be pooled or plotted across $e = E_{\text{warm}}$. $E_{\text{warm}}$ is expressed relative to the run's epoch budget, not as an absolute epoch number; this ADR fixes the split, not the total.
+Normative properties: both probabilities are parameters of the policy, evaluated once per epoch, validated on $[0,1]$; a resolved tuple with $p_{\text{warm}} > p_{\text{target}}$ or $p_{s,\text{warm}} > p_{s,\text{target}}$ is a configuration error. The $p_{s,\text{warm}}$ ordering is checked **unconditionally**; the $p_{\text{warm}}$ ordering is checked only while Phase I exists ($E_{\text{warm}} > 0$), because its $0.10$ default would otherwise make a legal $p_{\text{target}} = 0.0$ configuration unbuildable — an exemption the single-carrier pair does not need, since $p_{s,\text{warm}}$ defaults to $0.00$. Validation masks follow the phase's own probabilities from a fixed seed sequence, so the validation curve is a *within-phase* observable and must not be pooled or plotted across $e = E_{\text{warm}}$. $E_{\text{warm}}$ is expressed relative to the run's epoch budget, not as an absolute epoch number; this ADR fixes the split, not the total.
 
 ### 2.8 Observability
 
@@ -178,7 +180,7 @@ A run whose records cannot answer §3.1 has not executed this decision, however 
 | `video_cap_ratio` | $c_v$ | float | 0.25 | $M = \lfloor c_v\cdot 36\rfloor \ge m$ | multi-carrier kept cap |
 | `physio_cap_ratio` | $c_p$ | float | 0.50 | $(0,1]$ | respiration kept cap |
 | `video_min_tubes` | $m$ | int | 2 | $[1, M]$ | carrier/multi-carrier floor |
-| `single_carrier_tubes` | $S_v$ | int | 14 | $= N/T$, $\le 36$ | allocation to the sole carrier |
+| `single_carrier_tubes` | $S_v$ | int | `0` → resolves to 14 | `0` (derive) or exactly $N/T$ | allocation to the sole carrier; `0` is a derivation sentinel, and the resolved policy value is $N/T$ |
 | `p_virtual_sensing` | $p_{\text{target}}$ | float | 0.50 | $[0,1]$ | sensor-absent probability, Phase II |
 | `virtual_sensing_warmup_p` | $p_{\text{warm}}$ | float | 0.10 | $[0, p_{\text{target}}]$ | sensor-absent probability, Phase I |
 | `p_single_modality` | $p_{s,\text{target}}$ | float | 0.20 | $[0,1]$ | single-carrier probability *within* the sensor-absent class, Phase II |
