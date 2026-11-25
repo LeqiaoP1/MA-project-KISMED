@@ -268,17 +268,6 @@ python -u runners/run_pretrain.py \
     --roi_cache <ROI_CACHE> --rgb2d_cache <RGB2D_CACHE> --resp_cache <RESP_CACHE> \
     --min_signal_spread 0 --rail_touch_v 0
 
-# G9/ADR-006 §3.3 — the SAME arm with the class FORCED OFF: zero Regime-3 steps,
-# is_single = 0, and the encoder input still [B, 350, D].
-python -u runners/run_pretrain.py \
-    -c configs/pretrain/stage2_budget_3regime_single_modality.yaml \
-    --exp_root /tmp/adr006_smoke_off --fold 0 --dev_smoke --epochs 1 --warmup_epochs 0 \
-    --virtual_sensing_warmup_epochs 0 --p_virtual_sensing 1.0 --p_single_modality 0.0 \
-    --max_entries 16 --batch_size 8 --num_workers 0 \
-    --output_dir /tmp/adr006_smoke_off/out \
-    --roi_cache <ROI_CACHE> --rgb2d_cache <RGB2D_CACHE> --resp_cache <RESP_CACHE> \
-    --min_signal_spread 0 --rail_touch_v 0
-
 # G8 — single-carrier eval pin on the existing ADR-005 checkpoint (no floor clamp).
 python -u runners/run_eval_recon.py --ckpt <ADR005_CKPT> --split test \
     --resp_probe hidden --pin_single_carrier tir --repeats 5
@@ -392,20 +381,15 @@ Environment: repo venv (`.env`), one local Tesla T4; caches `$WORK_SCRATCH/tir_r
   the full arm tuple) and four epoch contexts (`None`, `0`, `E_warm`, `149`), the 500-step plan
   sequence equals the pre-ADR-006 selection path plan-for-plan, **and the generator's next raw draw
   is bit-identical** — the check that a consumed-then-ignored sample would fail.
-- **§3.3 smoke, both directions — passed.** (2 steps each, ~3.4 s/it, precision `none`.)
-  (a) **Class forced on** (`--p_virtual_sensing 1.0 --p_single_modality 1.0`): `[mask] … p_single=1
-  S_v=14`. Step 0 realised **3A** (`kept_rgb2d 350 = 14 tubes`, `tir 0`, `resp 0`,
-  `is_single_rgb2d 1`), step 1 realised **3B** (`tir 350`, `is_single_tir 1`), `n_batch = 350` on
-  both, `mode`/`mode_resolved = 1` (ADR-005 meanings intact). All three `mse_*` terms are present on
-  both steps **including the zeroed streams** (`mse_tir 1.99` on the step where `tir` held 0 tokens)
-  — contract 7 on real data, not just on a synthetic batch. `masking.json`, `metrics.jsonl` and
-  `selection.json` written; validation ran (5.143007 over 16 samples). Resource: 5.74 GB allocated /
-  6.49 GB reserved at batch 8.
-  (b) **Class forced off** (`--p_virtual_sensing 1.0 --p_single_modality 0.0`): every step is
-  bi-visual (`tir 225 / rgb2d 125` and `tir 150 / rgb2d 200`), **zero** Regime-3 steps,
-  `is_single = 0`, `p_single = 0`, `n_batch = 350`. Resource: 5.75 GB allocated / 6.84 GB reserved.
-  An independent draw of 2 000 plans at `p_s = 0` and 500 at `p_s = 1` gave `regimes =
-  {bi_visual}` and `{single}` respectively with `total_tokens = {350}` in both.
+- **§3.3 smoke — passed** (2 steps, 3.50 s/it, 5.74 GB allocated / 6.49 GB reserved, precision
+  `none`), with `--p_virtual_sensing 1.0 --p_single_modality 1.0` to force the class:
+  `[mask] … p_single=1 S_v=14`. Step 0 realised **3A** (`kept_rgb2d 350 = 14 tubes`, `tir 0`,
+  `resp 0`, `is_single_rgb2d 1`), step 1 realised **3B** (`tir 350`, running means 175/175,
+  `is_single_tir 0.5`), `n_batch = 350` on both, `mode`/`mode_resolved = 1` (ADR-005 meanings
+  intact). All three `mse_*` terms are present on both steps **including the zeroed streams**
+  (`mse_tir 1.99` on the step where `tir` held 0 tokens) — contract 7 on real data, not just on a
+  synthetic batch. `masking.json`, `metrics.jsonl` and `selection.json` written; validation ran
+  (5.143007 over 16 samples).
 - **End-to-end neutrality A/B, same binary and same caps.** `stage2_budget_3stream_curriculum`
   (the ADR-005 arm) vs `stage2_budget_3regime_single_modality` with `--p_single_modality 0.0`,
   both at `--virtual_sensing_warmup_epochs 0`: **identical** epoch loss `5.482074737548828`,
