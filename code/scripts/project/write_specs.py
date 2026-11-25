@@ -599,6 +599,7 @@ x: [B, C, H, W]
 | `enc_blocks` | `nn.ModuleList` | `enc_depth` x `Block` |
 | `enc_norm` | `nn.LayerNorm` | Post-encoder norm |
 | `dec_blocks` | `nn.ModuleList` | `dec_depth=2` x `Block` |
+| `align_proj` | `nn.ModuleDict` | ADR-008 ONLY (`--align_weight > 0`): one 2-layer `768->768->d_proj` MLP per side of the alignment. `None` when neutral. Its `align_proj.*` keys are OUTSIDE the Stage-3 transfer whitelist (`enc_blocks.` / `enc_norm.` / `adapters.` / `positions.`), so encoder transfer ignores them by construction |
 | `dec_norm` | `nn.LayerNorm` | Post-decoder norm |
 | `heads` | `nn.ModuleDict` | Per-stream Linear head: `D -> patch_dim` |
 
@@ -975,7 +976,39 @@ L_total = sum(loss_weights.get(s, signal_weight if s in signals else 1.0)
 ```
 
 Default: visual streams = 1.0, physiological streams = 0.5 (`signal_weight`).
-No spectral term: the optional Stage-2 MR-STFT loss was removed 2026-11-09.
+No spectral term on the VISUAL streams: the optional Stage-2 MR-STFT loss was
+removed 2026-11-09.
+
+### Stage-2 composite respiration objective — ADR-008 (`core/resp_composite.py`)
+
+When any of `alpha, beta, gamma` is non-neutral the physiological stream's loss
+is the three-term composite instead of the plain MSE; the neutral default
+executes the SAME `MaskedMSELoss` statements as before (bit-identical, decision
+D1), so `mse_resp` stays comparable across arms.
+
+```python
+L_resp = alpha * L_MSE + beta * L_Pearson + gamma * L_spectral
+L_pretrain = L_tir + signal_weight * L_resp
+           + align_weight * I(K_resp > 0 and K_tir > 0) * L_align
+```
+
+| Term | Definition | Masking rule |
+|------|------------|--------------|
+| `L_MSE` | the unchanged `MaskedMSELoss(pred, target, mask)` on the full `[B, N_s, k]` tensors | masked only |
+| `L_Pearson` | `1 - r` over the gathered masked tokens `[B, n_masked*k]`, `eps` inside each square root, `var_floor` guard | MASKED ONLY — a zero-filled Mode-2 prediction would corrupt the variance |
+| `L_spectral` | band-limited PSD L1: DC removal -> Hann -> `rfft(n=N_fft)` -> unit-sum power in `[f_min, f_max]` -> `sum abs(P_hat - P_y)` | DETACHED ground truth spliced into the visible (`mask == 0`) tokens, so the DFT sees a continuous full clip |
+| `L_align` | symmetric InfoNCE on `align_proj`-projected, anatomy-weighted pooled encoder latents (`tau`, `d_proj`) | active only when `K_resp > 0 and K_tir > 0`; cross-rank gather gated on `model.training` |
+
+All three terms are computed in FP32 regardless of autocast. Degenerate
+(zero-variance / zero-energy) targets are EXCLUDED, not scored, and a disabled
+term (`weight == 0`) is neither evaluated nor constructed.
+
+**Gradient-balance diagnostic** (`--grad_balance_freq`): every `freq` GLOBAL
+steps, `||d(losses[visual])/dz||_2` and `||d(losses[signal])/dz||_2` are taken
+with a non-destructive `torch.autograd.grad(term, z, retain_graph=True)` and
+sliced to the visual rows; the ratio is emitted as `grad_ratio_resp_to_tir`.
+Differentiating w.r.t. a slice of `z` raises, so the FULL `z` is differentiated
+and the GRADIENT is sliced.
 
 **`target_s` is masked-only for VISUAL streams** (`MultiModalMAE._targets(x,
 stream, mask)`, `design/Video_input_Preprocessing.md`): a masked cube is
@@ -1208,7 +1241,11 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `n_budget` / `video_cap_ratio` / `physio_cap_ratio` | int / float / float | ADR-002 constant-budget masking: visible tokens per step and per-stream caps |
 | `video_min_tubes` / `p_virtual_sensing` / `physio_placement` / `physio_span_tokens` | int / float / str / int | ADR-002 floor, Mode-1 probability, 1-D placement and span length |
 | `spatial_patches` / `physio_tokens` | int | Tokenizer-derived unit counts; passed only to ASSERT identity |
-| `signal_weight` | float | Loss weight for every physio stream (visual streams stay 1.0) |
+| `signal_weight` | float | Loss weight for every physio stream (visual streams stay 1.0). This knob IS ADR-008's `lambda_resp` (arm value `5.0`) |
+| `resp_loss_mse_weight` / `resp_loss_pearson_weight` / `resp_loss_spectral_weight` | float | ADR-008 `alpha` / `beta` / `gamma` of the composite respiration objective; neutral defaults `1.0` / `0.0` / `0.0` build NO extra module |
+| `spectral_f_min` / `spectral_f_max` / `spectral_n_fft` | float / int | ADR-008 respiratory passband (Hz) and rFFT length (`0` = auto, `4*2**ceil(log2 L)`); required `0 < f_min < f_max <= fs/2` and a non-empty bin set |
+| `align_weight` / `align_proj_dim` / `align_temperature` / `align_core_weight` / `align_gather_ddp` | float / int / float / float / bool | ADR-008 symmetric InfoNCE: weight (`0.0` = no heads), projection width (>= 16), cosine temperature, `A_core` pooling weight, cross-rank negative gather (training only) |
+| `grad_balance_freq` | int | ADR-008 §2.7 diagnostic cadence for `grad_ratio_resp_to_tir` (`0` = OFF, zero extra autograd). A LOGGING cadence, recorded under `run` in `masking.json`, not part of the resume-guarded objective block |
 | `target_norm` | str | `token` (per-token z-score), `clip` (per-clip z-score) or `none` (IDENTITY). **NON-ROI paths only**: the ROI lineages (`tir_roi`, `rgb_roi`, `tir_roi_resp_rgb2d`, `tir_roi_resp_rgb2d_bp`) are pinned to `none` because the dataset owns the z-score |
 | `physio_norm` (Stage 2) | str | `clip` (= `zscore`) per-clip z-score for every ROI lineage, including the four-stream arm. `none` / `ac` / `session` are refused |
 | `pretrained_encoder` | str | `videomae:k400` / `videomae:ssv2` / `videomae` / `base` / a local `.pth`; the blank aliases `none` / `random` / `scratch` / `c0` are the explicit random-init path (required for `project_multimae_small`) |

@@ -181,6 +181,7 @@ x: [B, C, H, W]
 | `enc_blocks` | `nn.ModuleList` | `enc_depth` x `Block` |
 | `enc_norm` | `nn.LayerNorm` | Post-encoder norm |
 | `dec_blocks` | `nn.ModuleList` | `dec_depth=2` x `Block` |
+| `align_proj` | `nn.ModuleDict` | ADR-008 ONLY (`--align_weight > 0`): one 2-layer `768->768->d_proj` MLP per side of the alignment. `None` when neutral. Its `align_proj.*` keys are OUTSIDE the Stage-3 transfer whitelist (`enc_blocks.` / `enc_norm.` / `adapters.` / `positions.`), so encoder transfer ignores them by construction |
 | `dec_norm` | `nn.LayerNorm` | Post-decoder norm |
 | `heads` | `nn.ModuleDict` | Per-stream Linear head: `D -> patch_dim` |
 

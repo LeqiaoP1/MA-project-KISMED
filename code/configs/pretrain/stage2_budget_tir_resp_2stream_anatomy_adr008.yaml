@@ -1,0 +1,195 @@
+# Stage 2 -- ADR-008 arm: the ADR-007 TWO-STREAM policy (tir,resp / 200-token
+#   budget / anatomy-aware stratified tubes) trained with the COMPOSITE
+#   respiration objective and the Mode-2-gated cross-modal InfoNCE regularizer.
+#
+# Design of record: code/notes/design/ADR-008-composite-objective-and-cross-modal-alignment.md
+# Plan:            code/notes/plan/features/ADR-008-composite-objective-and-cross-modal-alignment-plan.md
+# Comparator:      configs/pretrain/stage2_budget_tir_resp_2stream_anatomy.yaml (pure MSE)
+#
+# DELTA vs the ADR-007 arm -- the ONLY differences, everything else identical:
+#   signal_weight                     0.5 -> 5.0     (lambda_resp, §2.1)
+#   resp_loss_mse_weight              --- -> 1.0     (alpha,    §2.2.1)
+#   resp_loss_pearson_weight          --- -> 2.0     (beta,     §2.2.2)
+#   resp_loss_spectral_weight         --- -> 1.0     (gamma,    §2.2.3)
+#   spectral_f_min / spectral_f_max   --- -> 0.10 / 0.60   (Hz, protocol §4)
+#   spectral_n_fft                    --- -> 0       (auto = 32768 at L = 8000)
+#   align_weight                      --- -> 0.5     (lambda_align, §2.3)
+#   align_proj_dim                    --- -> 128     (d_proj)
+#   align_temperature                 --- -> 0.07    (tau)
+#   align_core_weight                 --- -> 1.0     (w_core)
+#   align_gather_ddp                  --- -> true
+#   grad_balance_freq                 --- -> 50      (LOGGING cadence, §2.7)
+#
+# GEOMETRY (inherited verbatim from ADR-007 §2.2, not redefined here):
+#   96 px ROI -> 6x6 = 36 tubes; tubelet (2,16,16) over 50 frames = 25 tokens
+#   per tube; fs 1000 Hz with sig_kernel 32 -> N_s = 250 tokens, L = 8000
+#   samples, k = 32. Mode 1 keeps (200, 0), Mode 2 keeps (200 - K_resp, K_resp)
+#   with K_resp in {25, 50, 75, 100}.
+#
+# OBJECTIVE ARITHMETIC at that geometry (ADR-008 §2.2):
+#   n_masked = 250 - K_resp  =>  M_pts = n_masked * 32 is 8000 in Mode 1 and
+#   {7200, 6400, 5600, 4800} in Mode 2.
+#   L_resp = 1.0*L_MSE + 2.0*L_Pearson + 1.0*L_spectral, weighted 5.0 against
+#   the visual weight 1.0.
+#   L_Pearson uses the MASKED tokens only; L_spectral splices DETACHED ground
+#   truth into the visible tokens so it sees a continuous full clip (§2.4
+#   contracts 2 and 3) -- a zero-filled Mode-2 prediction would corrupt both.
+#
+# ALIGNMENT (§2.3): symmetric InfoNCE on the pooled encoder latents, tau 0.07,
+#   two 768->768->128 heads (1,378,048 extra parameters, ~1.3 % of ViT-B),
+#   gated to steps with K_resp > 0 AND K_tir > 0 -- 90 % of Phase-I and 50 % of
+#   Phase-II steps under E_warm = 20.
+#
+# REPORTING (ADR-008 §4): the total validation loss is NOT comparable across
+#   objectives. Compare against the pure-MSE comparator on raw `mse_resp`, the
+#   §3.2 pretext diagnostics (variance retention, spectral-peak error, zero-shot
+#   masked r, gradient ratio) and the §3.3 five-fold subject-level
+#   band-limited Pearson.
+#
+# Run from code/ (ALWAYS with `-u`, else stdout is block-buffered through tee):
+#     python -u runners/run_pretrain.py \
+#         -c configs/pretrain/stage2_budget_tir_resp_2stream_anatomy_adr008.yaml \
+#         --exp_root <exp_root> --fold 0 \
+#         --roi_cache <TIR_ROI_CACHE> --resp_cache <RESP_CACHE> \
+#         2>&1 | tee ../output/pretrain/stage2_budget_tir_resp_2stream_adr008_fold0/train.log
+# Smoke first (`--warmup_epochs 0` because epochs < warmup trips the cosine
+# scheduler; `--grad_balance_freq 2` so a ~12-step epoch exercises several
+# probe steps instead of at most one -- plan gate G12):
+#     python -u runners/run_pretrain.py \
+#         -c configs/pretrain/stage2_budget_tir_resp_2stream_anatomy_adr008.yaml \
+#         --exp_root /tmp/adr008_probe --fold 0 --dev_smoke \
+#         --epochs 1 --warmup_epochs 0 --virtual_sensing_warmup_epochs 0 \
+#         --max_entries 100 --batch_size 8 --num_workers 0 \
+#         --grad_balance_freq 2 --output_dir /tmp/adr008_probe/out
+
+# ---------------------------------------------------------------- data source
+data_set: tir_roi                  # raw-tree thermal ROI + Resp_Volts.txt
+subjects: ''                       # '' = every discoverable subject
+# ---- ADR-001 roles (train / val / test) -- MUST mirror the Stage-3 sibling ---
+# TRAIN + VAL come from <exp_root>/fold<k>/partition.json; TEST is never loaded.
+split_seed: 42
+split_stratify: sex
+# Validation replays a FIXED-SEED mask sequence (ADR-007 §2.7): the draw is
+# unchanged, only the threshold p(e) follows the phase, so the curve is a
+# WITHIN-PHASE observable and must not be pooled across e = E_warm.
+eval_freq: 5
+val_select: fixed_epoch
+val_criterion: joint_loss
+tasks: ''
+# ---- task GROUPS ("distortion levels") --------------------------------------
+task_groups:
+  low: [T2, T3, T5]                # passive viewing + short yes/no answers
+  moderate: [T1, T4]               # laughter / facial expression + startle
+  high: [T6, T7, T8, T9, T10]      # singing, threat, pain, anger, disgust
+task_set: ''
+
+# ------------------------------------------------------- model / initialisation
+model: project_multimae_base       # 768-d / 12-layer -- MUST match pretrained_encoder
+pretrained_encoder: videomae:k400  # pre-fetch ONCE on a login node
+                                   #   (scripts/hpc/download_weights.sh).
+patch_stream: tir                  # I1/I2: `tir` is the SOLE visual stream, so
+                                   #   the Conv3d (2,16,16) tubelet receives the
+                                   #   pretrained kernel verbatim and NO visual
+                                   #   adapter starts from random init -- the
+                                   #   zero-auxiliary-tokenizer-debt condition.
+
+# ---- streams & tokenizer geometry (ADR-007 §2.2) ----
+streams: tir,resp                  # EXACTLY one visual + one physiological
+tir_channels: 3                    # thermal is a false-colour render, not gray
+tubelet: 2,16,16                   # I1: VERBATIM VideoMAE kernel (2 frame)
+fs: 1000.0                         # 8 s x 1000 Hz = 8000 samples
+fps: 25.0
+clip_duration: 8.0                 # 200 source frames -> 50 after decimation
+clip_stride: 4.0                   # window hop (s); NOT a cache key. Kept equal
+                                   #   to the ADR-005/006 comparator so the clip
+                                   #   inventory is identical (plan D6).
+temporal_stride: 4                 # 6.25 fps effective; one tubelet = 320 ms
+seq_len: 0                         # 0 => round(kept_seconds * fs) = 8000 samples
+sig_kernel: 32                     # 32 ms signal token; 250 tokens -> R = 10
+input_size: 96                     # 96/16 -> a 6x6 grid = 36 spatial tubes
+pos_init: sincos3d
+roi_padding: 0.10                  # frozen CACHE KEY
+crop_rule: square                  # frozen CACHE KEY; one isotropic rescale
+max_sway_px: 40                    # TIR motion gate (source px; 0 = off)
+roi_landmarks: ''                  # '' = the TIR 12-point nose+mouth set
+
+# ---- 1-D label validity: the RESPIRATION-CACHE lineage -----------------------
+# A non-zero legacy filter is REFUSED when --resp_cache is attached (the cache
+# already decides validity per sample; filtering twice would change the corpus).
+# Without the cache the raw path needs 0.1 / 9.900 instead -- pick ONE and keep
+# it identical in Stage 3.
+min_signal_spread: 0.0             # OFF: validity comes from the resp cache
+rail_touch_v: 0.0                  # OFF: idem
+
+# ---- MASKING: the ADR-007 two-stream policy (the whole surface) ------------
+n_budget: 200                      # visible encoder tokens on EVERY step
+video_cap_ratio: 0.25              # CEILING only: S_max/36 = 8/36 = 22.2 %.
+                                   #   The cap in tubes is N/T = 8 (ADR-007 D2),
+                                   #   NOT floor(0.25*36) = 9.
+physio_cap_ratio: 0.40             # C_p = 100 of 250 tokens
+video_min_tubes: 4                 # = (200 - 100)/25 = S_tir_min; an assertion
+                                   #   of the derivation, not a free knob
+p_virtual_sensing: 0.50            # p_target: Mode-1 probability from E_warm
+virtual_sensing_warmup_p: 0.10     # p_warm: Mode-1 probability below E_warm
+virtual_sensing_warmup_epochs: 20  # E_warm: Phase I = epochs 0..19, Phase II
+                                   #   from epoch 20 (ADR-007 §2.7; plan D7)
+# ---- ADR-007 §2.3 anatomy-aware stratified spatial sampling -----------------
+spatial_sampling: anatomy_aware    # 'uniform' = the matched Tier-1 comparator
+core_row_bounds: 2,3               # A_core rows on the 6x6 grid
+core_col_bounds: 2,3               # A_core columns -> tubes {14,15,20,21}
+core_tubes_min: 1                  # S_core^min: P(core hit) = 1 by construction
+core_tubes_max: 2                  # S_core^max: the other 2-3 stay masked
+periph_min_tubes: 1                # m_periph (§2.6 rule 5)
+physio_draw_min: 1                 # ADR-007 §2.5: K_tilde in {1..C_p}, so no
+                                   #   Mode-2 step can leak into Mode 1
+spatial_patches: 36                # tokenizer-derived; asserted at build
+physio_tokens: 250                 # tokenizer-derived; asserted at build
+# placement of the kept 1-D tokens (a RUN setting, recorded with the run)
+physio_placement: scattered        # 'scattered' | 'span'
+physio_span_tokens: 0              # required only when physio_placement: span
+
+# ---- loss: the ADR-008 COMPOSITE respiration objective (§2.2) ---------------
+# L_resp = alpha * L_MSE + beta * L_Pearson + gamma * L_spectral, weighted into
+# the total by `signal_weight` (lambda_resp) against the visual weight 1.0.
+signal_weight: 5.0                 # ADR-008 §2.1/§2.8: was 0.5 in the ADR-007
+                                   #   arm -- raised to counter the visual
+                                   #   gradient dilution measured at ~1e6 vs
+                                   #   1e4 scalar outputs per step
+resp_loss_mse_weight: 1.0          # alpha: anchors DC amplitude and keeps
+                                   #   `mse_resp` comparable across arms (D1)
+resp_loss_pearson_weight: 2.0      # beta: the collapse-resistant term; a flat
+                                   #   prediction costs 1.0 with a repelling
+                                   #   gradient (§1.2.1)
+resp_loss_spectral_weight: 1.0     # gamma: band-limited PSD L1, a flat
+                                   #   prediction costs 1.0 (§2.2.3)
+spectral_f_min: 0.10               # 6 bpm -- the evaluation passband edge
+spectral_f_max: 0.60               # 36 bpm
+spectral_n_fft: 0                  # 0 = auto, 4*2**ceil(log2 8000) = 32768
+                                   #   -> df = 0.0305 Hz, 16 bins (k = 4..19)
+# ---- cross-modal alignment (§2.3): Mode-2 gated symmetric InfoNCE ----------
+align_weight: 0.5                  # lambda_align; needs EXACTLY one visual and
+                                   #   one physiological stream (§2.4(8))
+align_proj_dim: 128                # 2 x (768->768->128) = 1,378,048 params
+align_temperature: 0.07            # tau
+align_core_weight: 1.0             # w_core: 1.0 = unweighted mean pooling over
+                                   #   the visible tir tokens (A_core emphasis
+                                   #   is the deferred w_core = 2.0 ablation)
+align_gather_ddp: true             # global negatives across ranks (TRAINING
+                                   #   only; the validation pass never gathers)
+# ---- diagnostic (§2.7): a LOGGING cadence, not an objective parameter ------
+grad_balance_freq: 50              # ||grad_tir|| vs ||grad_resp|| every 50
+                                   #   global steps; 0 disables (zero cost)
+# THE label normalisation (the ONLY one in the pipeline): the DATASET z-scores
+# each respiration target with its OWN mean/std; the model never touches it
+# (run_pretrain.py pins target_norm='none' for every ROI lineage).
+physio_norm: zscore
+
+# ---- training (full corpus: derive the LR from blr, do NOT set an absolute lr) ----
+epochs: 150                        # Phase I = 20, Phase II = the remaining 130
+batch_size: 16                     # per GPU; lr = blr * batch * world / 256
+save_ckpt_freq: 10
+opt: adamw
+blr: 1.5e-4
+min_lr: 0.0
+warmup_epochs: 10                  # MUST be < epochs (LR warm-up, independent
+                                   # of the masking curriculum's E_warm=20)

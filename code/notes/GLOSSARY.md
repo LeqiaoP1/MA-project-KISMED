@@ -167,23 +167,46 @@ the ADR-002 arm).
 the predicted token): `MaskedMSELoss`, plus `MaskedL1Loss` /
 `MaskedCrossEntropyLoss` (`code/core/criterion.py`).
 - `signal_weight` (`--signal_weight`, default `0.5`): the weight for **every**
-  physiological stream; visual streams stay `1.0`.
+  physiological stream; visual streams stay `1.0`. In ADR-008 terms this knob
+  **is** $\lambda_\text{resp}$ (the arm sets it to `5.0`).
 - `loss_weights` (`--loss_weights`, CSV, one value per stream in `--streams`
   order): per-stream override of the whole policy.
 
-**Stage 3** — `WaveformJointLoss` (`code/core/waveform_losses.py`):
+**Stage 2 — ADR-008 composite respiration objective**
+(`code/core/resp_composite.py`, `code/core/align_infonce.py`):
 
-$$L_\text{joint} = \alpha L_\text{time} + \beta L_\text{Pearson} + \gamma L_\text{MR-STFT}$$
+$$L_\text{resp} = \alpha L_\text{MSE} + \beta L_\text{Pearson} + \gamma L_\text{spectral},\qquad
+L_\text{pretrain} = L_\text{tir} + \lambda_\text{resp} L_\text{resp}
++ \lambda_\text{align}\mathbb{I}(K_\text{resp} > 0 \land K_\text{tir} > 0)L_\text{align}$$
 
-- `L_time`: `SmoothL1Loss` (Huber) on `pred - target`; `huber_beta` is the
-  transition point in target-std units (default `1.0`). The only
-  polarity- and scale-sensitive term.
-- `L_Pearson`: `1 - r`; scale- and shift-invariant.
-- `L_MR-STFT`: multi-resolution spectral error, `fft_sizes = (64, 128, 256)`,
-  spectral convergence + log-magnitude L1. Samples whose target has
-  (near-)zero energy are excluded via `target_norm_floor` (default `1e-6`).
-- Flags: `--alpha`, `--beta`, `--gamma`, `--huber_beta`, `--fft_sizes`.
-- There is **no spectral term in Stage 2** (removed 2026-11-09).
+- **Namespace warning.** These $\alpha, \beta, \gamma$ are **Stage-2** and mean
+  MSE / masked Pearson / band-limited spectral. The **Stage-3**
+  $\alpha, \beta, \gamma$ of §5 mean time / Pearson / MR-STFT. Never mix them
+  in one sentence or one table row.
+- `L_MSE`: the unchanged `MaskedMSELoss` on the full `[B, N_s, k]` tensors
+  (bit-identical to the pure-MSE arm, so `mse_resp` stays comparable).
+- `L_Pearson`: `1 - r` over the **masked tokens only**, `eps` inside each
+  square root, degenerate-variance targets excluded (`var_floor`).
+- `L_spectral`: band-limited ($[f_{\min}, f_{\max}]$ Hz) PSD L1 between
+  unit-sum power distributions of the full clip, with **detached** ground
+  truth spliced into the visible tokens.
+- Flags: `--resp_loss_mse_weight` ($\alpha$, `1.0`), `--resp_loss_pearson_weight`
+  ($\beta$, `0.0`), `--resp_loss_spectral_weight` ($\gamma$, `0.0`),
+  `--spectral_f_min` / `--spectral_f_max` (`0.10` / `0.60` Hz),
+  `--spectral_n_fft` (`0` = auto, $4\cdot 2^{\lceil\log_2 L\rceil}$).
+- `L_align`: symmetric InfoNCE (`--align_weight` $\lambda_\text{align}$, `0.0`;
+  `--align_proj_dim` $d_\text{proj}$, `--align_temperature` $\tau$,
+  `--align_core_weight` $w_\text{core}$, `--align_gather_ddp`) on
+  anatomy-weighted pooled encoder latents, **only** on steps with
+  $K_\text{resp} > 0$. The two `align_proj.*` heads are Stage-2 only and are
+  excluded from the Stage-3 transfer by construction.
+- `--grad_balance_freq` (`0`): per-`freq`-step diagnostic
+  $\lVert\nabla_z(\lambda_\text{resp}L_\text{resp})\rVert_2 /
+  \lVert\nabla_z L_\text{tir}\rVert_2$; a **logging cadence**, not an objective
+  parameter.
+- There is **no spectral term on the VISUAL streams in Stage 2**: the
+  2026-11-09 removal still holds for `tir` / `rgb2d`; ADR-008 reintroduced a
+  band-limited spectral term for the **physiological** stream only.
 
 ---
 
@@ -219,7 +242,16 @@ $$L_\text{joint} = \alpha L_\text{time} + \beta L_\text{Pearson} + \gamma L_\tex
 | Embedding dimension | $D$ | `x.shape[-1]` | Shared transformer token width. |
 | Space-time alignment | — | `n_signal == Gt` | One 1-D token is one video tubelet in time. |
 | Stage-2 loss weight | $\lambda_m$ | `--signal_weight`, `--loss_weights` | $\lambda_m = 1$ for visual streams, $\lambda_m =$ `signal_weight` for physio streams. |
-| Stage-3 loss weights | $\alpha, \beta, \gamma$ | `--alpha`, `--beta`, `--gamma` | Time / Pearson / MR-STFT. |
+| Stage-2 composite weights | $\alpha, \beta, \gamma$ (Stage 2) | `--resp_loss_mse_weight`, `--resp_loss_pearson_weight`, `--resp_loss_spectral_weight` | MSE / masked Pearson / band-limited spectral (ADR-008 §2.2). Neutral $(1, 0, 0)$. |
+| Stage-2 physiological weight | $\lambda_\text{resp}$ | `--signal_weight` | Weight of $L_\text{resp}$ against the visual weight `1.0`; ADR-008 arm value `5.0`. |
+| Stage-2 alignment weight | $\lambda_\text{align}$ | `--align_weight` | Weight of the InfoNCE regularizer; `0.0` allocates no heads. |
+| Masked sample count | $M_\text{pts}$ | `n_masked * k` | Correlation length per sample: `8000` in Mode 1, `{4800, 5600, 6400, 7200}` in Mode 2. |
+| Respiratory bin set | $\mathcal{K}_\text{resp}$ | `BandLimitedSpectralLoss.band_bins` | FFT bins inside $[f_{\min}, f_{\max}]$; `16` bins at `L = 8000`, `fs = 1000 Hz`. |
+| FFT length | $N_\text{fft}$ | `--spectral_n_fft` | `0` = auto, $4\cdot 2^{\lceil\log_2 L\rceil}$ (`32768` at `L = 8000`). |
+| Alignment projection | $d_\text{proj}$ | `--align_proj_dim` | InfoNCE projection width (`128`); adds `1,378,048` parameters at $D = 768$. |
+| InfoNCE temperature | $\tau$ | `--align_temperature` | Cosine logit scale (`0.07`). |
+| Core pooling weight | $w_\text{core}$ | `--align_core_weight` | Weight of $A_\text{core}$ tokens in the thermal pool (`1.0` = plain mean). |
+| Stage-3 loss weights | $\alpha, \beta, \gamma$ (Stage 3) | `--alpha`, `--beta`, `--gamma` | Time / Pearson / MR-STFT. |
 
 ---
 

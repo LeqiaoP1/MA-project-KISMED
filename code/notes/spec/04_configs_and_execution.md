@@ -94,7 +94,11 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `n_budget` / `video_cap_ratio` / `physio_cap_ratio` | int / float / float | ADR-002 constant-budget masking: visible tokens per step and per-stream caps |
 | `video_min_tubes` / `p_virtual_sensing` / `physio_placement` / `physio_span_tokens` | int / float / str / int | ADR-002 floor, Mode-1 probability, 1-D placement and span length |
 | `spatial_patches` / `physio_tokens` | int | Tokenizer-derived unit counts; passed only to ASSERT identity |
-| `signal_weight` | float | Loss weight for every physio stream (visual streams stay 1.0) |
+| `signal_weight` | float | Loss weight for every physio stream (visual streams stay 1.0). This knob IS ADR-008's `lambda_resp` (arm value `5.0`) |
+| `resp_loss_mse_weight` / `resp_loss_pearson_weight` / `resp_loss_spectral_weight` | float | ADR-008 `alpha` / `beta` / `gamma` of the composite respiration objective; neutral defaults `1.0` / `0.0` / `0.0` build NO extra module |
+| `spectral_f_min` / `spectral_f_max` / `spectral_n_fft` | float / int | ADR-008 respiratory passband (Hz) and rFFT length (`0` = auto, `4*2**ceil(log2 L)`); required `0 < f_min < f_max <= fs/2` and a non-empty bin set |
+| `align_weight` / `align_proj_dim` / `align_temperature` / `align_core_weight` / `align_gather_ddp` | float / int / float / float / bool | ADR-008 symmetric InfoNCE: weight (`0.0` = no heads), projection width (>= 16), cosine temperature, `A_core` pooling weight, cross-rank negative gather (training only) |
+| `grad_balance_freq` | int | ADR-008 §2.7 diagnostic cadence for `grad_ratio_resp_to_tir` (`0` = OFF, zero extra autograd). A LOGGING cadence, recorded under `run` in `masking.json`, not part of the resume-guarded objective block |
 | `target_norm` | str | `token` (per-token z-score), `clip` (per-clip z-score) or `none` (IDENTITY). **NON-ROI paths only**: the ROI lineages (`tir_roi`, `rgb_roi`, `tir_roi_resp_rgb2d`, `tir_roi_resp_rgb2d_bp`) are pinned to `none` because the dataset owns the z-score |
 | `physio_norm` (Stage 2) | str | `clip` (= `zscore`) per-clip z-score for every ROI lineage, including the four-stream arm. `none` / `ac` / `session` are refused |
 | `pretrained_encoder` | str | `videomae:k400` / `videomae:ssv2` / `videomae` / `base` / a local `.pth`; the blank aliases `none` / `random` / `scratch` / `c0` are the explicit random-init path (required for `project_multimae_small`) |

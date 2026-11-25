@@ -164,7 +164,39 @@ L_total = sum(loss_weights.get(s, signal_weight if s in signals else 1.0)
 ```
 
 Default: visual streams = 1.0, physiological streams = 0.5 (`signal_weight`).
-No spectral term: the optional Stage-2 MR-STFT loss was removed 2026-11-09.
+No spectral term on the VISUAL streams: the optional Stage-2 MR-STFT loss was
+removed 2026-11-09.
+
+### Stage-2 composite respiration objective — ADR-008 (`core/resp_composite.py`)
+
+When any of `alpha, beta, gamma` is non-neutral the physiological stream's loss
+is the three-term composite instead of the plain MSE; the neutral default
+executes the SAME `MaskedMSELoss` statements as before (bit-identical, decision
+D1), so `mse_resp` stays comparable across arms.
+
+```python
+L_resp = alpha * L_MSE + beta * L_Pearson + gamma * L_spectral
+L_pretrain = L_tir + signal_weight * L_resp
+           + align_weight * I(K_resp > 0 and K_tir > 0) * L_align
+```
+
+| Term | Definition | Masking rule |
+|------|------------|--------------|
+| `L_MSE` | the unchanged `MaskedMSELoss(pred, target, mask)` on the full `[B, N_s, k]` tensors | masked only |
+| `L_Pearson` | `1 - r` over the gathered masked tokens `[B, n_masked*k]`, `eps` inside each square root, `var_floor` guard | MASKED ONLY — a zero-filled Mode-2 prediction would corrupt the variance |
+| `L_spectral` | band-limited PSD L1: DC removal -> Hann -> `rfft(n=N_fft)` -> unit-sum power in `[f_min, f_max]` -> `sum abs(P_hat - P_y)` | DETACHED ground truth spliced into the visible (`mask == 0`) tokens, so the DFT sees a continuous full clip |
+| `L_align` | symmetric InfoNCE on `align_proj`-projected, anatomy-weighted pooled encoder latents (`tau`, `d_proj`) | active only when `K_resp > 0 and K_tir > 0`; cross-rank gather gated on `model.training` |
+
+All three terms are computed in FP32 regardless of autocast. Degenerate
+(zero-variance / zero-energy) targets are EXCLUDED, not scored, and a disabled
+term (`weight == 0`) is neither evaluated nor constructed.
+
+**Gradient-balance diagnostic** (`--grad_balance_freq`): every `freq` GLOBAL
+steps, `||d(losses[visual])/dz||_2` and `||d(losses[signal])/dz||_2` are taken
+with a non-destructive `torch.autograd.grad(term, z, retain_graph=True)` and
+sliced to the visual rows; the ratio is emitted as `grad_ratio_resp_to_tir`.
+Differentiating w.r.t. a slice of `z` raises, so the FULL `z` is differentiated
+and the GRADIENT is sliced.
 
 **`target_s` is masked-only for VISUAL streams** (`MultiModalMAE._targets(x,
 stream, mask)`, `design/Video_input_Preprocessing.md`): a masked cube is

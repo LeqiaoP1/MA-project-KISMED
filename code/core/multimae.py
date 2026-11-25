@@ -83,8 +83,11 @@ from .budget_masking import SIGNAL as _SIGNAL_KIND
 from .budget_masking import VISUAL as _VISUAL_KIND
 from .budget_masking import BudgetPlan, ConstantBudgetApportioner, StreamSpec
 from .criterion import MaskedMSELoss
+from .align_infonce import (AlignProjection, anatomy_weighted_pool,
+                            symmetric_infonce)
 from .input_adapters import zscore_clip
 from .registry import register_model
+from .resp_composite import CompositeRespLoss
 from . import mask_placement as placement
 
 __all__ = ['TubeletEmbed', 'MultiModalMAE', 'build_pretraining_model',
@@ -225,6 +228,18 @@ class MultiModalMAE(nn.Module):
                  core_tubes_max: int = 2,
                  periph_min_tubes: int = 1,
                  physio_draw_min: int = 0,
+                 resp_loss_mse_weight: float = 1.0,
+                 resp_loss_pearson_weight: float = 0.0,
+                 resp_loss_spectral_weight: float = 0.0,
+                 spectral_f_min: float = 0.10,
+                 spectral_f_max: float = 0.60,
+                 spectral_n_fft: int = 0,
+                 align_weight: float = 0.0,
+                 align_proj_dim: int = 128,
+                 align_temperature: float = 0.07,
+                 align_core_weight: float = 1.0,
+                 align_gather_ddp: bool = True,
+                 grad_balance_freq: int = 0,
                  spatial_patches: Optional[int] = None,
                  physio_tokens: Optional[int] = None,
                  signal_weight: float = 0.5,
@@ -323,6 +338,26 @@ class MultiModalMAE(nn.Module):
                 f"MultiModalMAE: target_norm must be 'token', 'clip' or "
                 f"'none'; got {target_norm!r}")
         self.target_norm = target_norm
+
+        # ---- ADR-008 objective parameter surface (§2.8) -------------------- #
+        # Twelve logical parameters, EVERY default neutral: with
+        # (alpha, beta, gamma, lambda_align) = (1, 0, 0, 0), grad_balance_freq 0
+        # and align_gather_ddp true-at-rest, no module is built and the forward
+        # executes the pre-ADR-008 statements unchanged (R5 / decision D1).
+        # `signal_weight` (§2.8 lambda_resp) is reused, not re-added.
+        self.resp_loss_mse_weight = float(resp_loss_mse_weight)
+        self.resp_loss_pearson_weight = float(resp_loss_pearson_weight)
+        self.resp_loss_spectral_weight = float(resp_loss_spectral_weight)
+        self.spectral_f_min = float(spectral_f_min)
+        self.spectral_f_max = float(spectral_f_max)
+        self.spectral_n_fft = int(spectral_n_fft)
+        self.align_weight = float(align_weight)
+        self.align_proj_dim = int(align_proj_dim)
+        self.align_temperature = float(align_temperature)
+        self.align_core_weight = float(align_core_weight)
+        self.align_gather_ddp = bool(align_gather_ddp)
+        self.grad_balance_freq = int(grad_balance_freq)
+        self._validate_objective()
 
         # ---- masking policy: ONE constant-budget apportioner (ADR-005) ----- #
         # There is exactly one policy. Each step samples a mode and one
@@ -502,6 +537,41 @@ class MultiModalMAE(nn.Module):
             self._flat[s] = f
             self.heads[s] = nn.Linear(embed_dim, f)
 
+        # ---- ADR-008: composite objective + alignment heads ---------------- #
+        # Constructed BEFORE `self.apply(self._init_weights)` below, so the two
+        # AlignProjection MLPs take the house xavier / zero-bias init. A
+        # neutral run allocates NOTHING here (R5): no parameter, no state key.
+        #
+        # `alpha != 1.0` is part of the predicate: alpha = 0.5 with beta = gamma
+        # = 0 is NOT neutral (the MSE term is rescaled), so the composite module
+        # must exist even though both other terms are off.
+        self.composite_active = bool(self.resp_loss_mse_weight != 1.0
+                                     or self.resp_loss_pearson_weight > 0.0
+                                     or self.resp_loss_spectral_weight > 0.0)
+        if self.composite_active:
+            self.resp_loss = CompositeRespLoss(
+                fs=self.fs, sig_kernel=self.sig_kernel,
+                n_signal=self.n_signal,
+                mse_weight=self.resp_loss_mse_weight,
+                pearson_weight=self.resp_loss_pearson_weight,
+                spectral_weight=self.resp_loss_spectral_weight,
+                spectral_n_fft=self.spectral_n_fft,
+                spectral_f_min=self.spectral_f_min,
+                spectral_f_max=self.spectral_f_max)
+        else:
+            self.resp_loss = None
+
+        if self.align_weight > 0.0:
+            self.align_proj = nn.ModuleDict({
+                s: AlignProjection(embed_dim, self.align_proj_dim)
+                for s in (self.visual[0], self.signal[0])})
+        else:
+            self.align_proj = None
+        #: the objective keys of ADR-008 §2.7 are emitted iff this is True (a
+        #: CONFIG property, never a property of the sampled mode)
+        self.objective_active = bool(self.composite_active
+                                     or self.align_weight > 0.0)
+
         self.apply(self._init_weights)
         if self.pos_init == 'sincos3d':
             self._init_pos_embeds()
@@ -514,6 +584,123 @@ class MultiModalMAE(nn.Module):
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
+
+    # ------------------------------------------------------------------ #
+    # ADR-008 objective feasibility (design §2.6)
+    # ------------------------------------------------------------------ #
+    def _validate_objective(self):
+        """Reject an infeasible ADR-008 objective tuple at construction (§2.6).
+
+        Called from ``__init__`` BEFORE any parameter is allocated, so an
+        invalid tuple cannot leave a half-built model (or a partially trained
+        run) behind. The order is normative: a tuple that violates several
+        rules always reports the FIRST one, which keeps the message
+        deterministic.
+
+        Rules 1-5 are the ADR's. Rule 6 is plan-level (**D3**), mirrored into
+        ADR-008 §2.6 rule 6: the spliced full-clip waveform of §2.2.3 is only a
+        waveform if the target is coherent over the clip, and the per-step
+        objective observables are singular per stream.
+        """
+        alpha = self.resp_loss_mse_weight
+        beta = self.resp_loss_pearson_weight
+        gamma = self.resp_loss_spectral_weight
+        lam = self.align_weight
+        seq_len = int(self.n_signal) * int(self.sig_kernel)
+
+        # 1 -- non-negative, non-degenerate composite weights
+        for name, value in (('resp_loss_mse_weight', alpha),
+                            ('resp_loss_pearson_weight', beta),
+                            ('resp_loss_spectral_weight', gamma),
+                            ('align_weight', lam)):
+            if value < 0.0:
+                raise ValueError(
+                    f'MultiModalMAE: {name} must be >= 0 (ADR-008 §2.6 rule '
+                    f'1); got {value}.')
+        if alpha + beta + gamma <= 0.0:
+            raise ValueError(
+                'MultiModalMAE: the composite respiration objective needs '
+                'alpha + beta + gamma > 0 (ADR-008 §2.6 rule 1); got '
+                f'{alpha} + {beta} + {gamma}.')
+
+        # 2/3 -- passband + FFT length + a non-empty band (spectral term only)
+        if gamma > 0.0:
+            if not (0.0 < self.spectral_f_min < self.spectral_f_max
+                    <= self.fs / 2.0):
+                raise ValueError(
+                    'MultiModalMAE: the respiratory passband must satisfy '
+                    '0 < spectral_f_min < spectral_f_max <= fs/2 (ADR-008 '
+                    f'§2.6 rule 2); got f_min={self.spectral_f_min}, '
+                    f'f_max={self.spectral_f_max}, fs={self.fs} '
+                    f'(fs/2 = {self.fs / 2.0}).')
+            if self.spectral_n_fft < 0:
+                raise ValueError(
+                    'MultiModalMAE: spectral_n_fft must be 0 (auto) or >= '
+                    f'seq_len (ADR-008 §2.6 rule 3); got '
+                    f'{self.spectral_n_fft}.')
+            if 0 < self.spectral_n_fft < seq_len:
+                raise ValueError(
+                    f'MultiModalMAE: spectral_n_fft={self.spectral_n_fft} is '
+                    f'shorter than the clip (seq_len={seq_len}), so the rFFT '
+                    'would wrap samples instead of resolving them (ADR-008 '
+                    '§2.6 rule 3).')
+            n_fft = int(self.spectral_n_fft) or 4 * (
+                2 ** int(math.ceil(math.log2(max(seq_len, 2)))))
+            df = self.fs / float(n_fft)
+            lo = int(math.ceil(self.spectral_f_min / df))
+            hi = int(math.floor(self.spectral_f_max / df))
+            n_bins = max(0, hi - lo + 1)
+            if n_bins < 1:
+                raise ValueError(
+                    f'MultiModalMAE: no FFT bin lies inside '
+                    f'[{self.spectral_f_min}, {self.spectral_f_max}] Hz with '
+                    f'n_fft={n_fft} at fs={self.fs} (df={df:.6f} Hz) -- '
+                    'ADR-008 §2.6 rule 3 requires |K_resp| >= 1.')
+
+        # 4 -- InfoNCE parameters + the exact two-stream cardinality
+        if lam > 0.0:
+            if self.align_temperature <= 0.0:
+                raise ValueError(
+                    'MultiModalMAE: align_temperature must be > 0 (ADR-008 '
+                    f'§2.6 rule 4); got {self.align_temperature}.')
+            if self.align_proj_dim < 16:
+                raise ValueError(
+                    'MultiModalMAE: align_proj_dim must be >= 16 (ADR-008 '
+                    f'§2.6 rule 4); got {self.align_proj_dim}.')
+            if self.align_core_weight <= 0.0:
+                raise ValueError(
+                    'MultiModalMAE: align_core_weight must be > 0 (ADR-008 '
+                    f'§2.6 rule 4); got {self.align_core_weight}.')
+            if len(self.visual) != 1 or len(self.signal) != 1:
+                raise ValueError(
+                    'MultiModalMAE: align_weight > 0 needs EXACTLY one visual '
+                    'and one physiological stream (ADR-008 §2.4(8) / §2.6 rule '
+                    f'4); got visual={self.visual}, signal={self.signal}. '
+                    'Aligning an arbitrary pair of a multi-stream run is not '
+                    'the ADR objective.')
+
+        # 5 -- gradient-balance cadence
+        if self.grad_balance_freq < 0:
+            raise ValueError(
+                'MultiModalMAE: grad_balance_freq must be >= 0 (ADR-008 §2.6 '
+                f'rule 5); got {self.grad_balance_freq}.')
+
+        # 6 -- coherent composite target + a single physiological stream (D3)
+        if beta > 0.0 or gamma > 0.0:
+            if self.target_norm not in ('none', 'clip'):
+                raise ValueError(
+                    'MultiModalMAE: a composite respiration term needs a '
+                    'coherent full-clip target (ADR-008 §2.6 rule 6); '
+                    f'target_norm={self.target_norm!r} z-scores every token '
+                    'window separately, which puts a step at every token '
+                    "boundary. Use 'none' (the ROI lineage, already z-scored "
+                    "per clip) or 'clip'.")
+            if len(self.signal) != 1:
+                raise ValueError(
+                    'MultiModalMAE: a composite respiration term supports '
+                    'exactly ONE physiological stream (ADR-008 §2.6 rule 6): '
+                    'the per-step objective observables are singular '
+                    f'(resp_*); got signal={self.signal}.')
 
     # ------------------------------------------------------------------ #
     # space-time alignment contract
@@ -798,7 +985,8 @@ class MultiModalMAE(nn.Module):
         return x[:, :, :n]
 
     def forward(self, x, counts_generator=None, placement_generator=None,
-                plan=None, epoch: Optional[int] = None):
+                plan=None, epoch: Optional[int] = None,
+                step: Optional[int] = None):
         """Masked multimodal forward.
 
         :param counts_generator: RNG of the step's PLAN (mode + counts). ``None``
@@ -810,6 +998,10 @@ class MultiModalMAE(nn.Module):
             given, no count is drawn.
         :param epoch: 0-based epoch index selecting ``p(e)`` (ADR-005 §2.7).
             ``None`` uses ``p_target`` and reproduces the pre-curriculum draw.
+        :param step: GLOBAL optimizer step. Only the ADR-008 §2.7
+            gradient-balance diagnostic consumes it (``grad_balance_freq > 0``
+            probes ``step % freq == 0``); ``None`` never probes, which is what
+            keeps the deterministic validation pass probe-free.
         """
         B = next(iter(x.values())).shape[0]
         device = next(iter(x.values())).device
@@ -873,6 +1065,16 @@ class MultiModalMAE(nn.Module):
             f'the constant budget requires {(B, self.n_budget, self.embed_dim)} '
             f'(plan {plan.kept_tokens}, mode {plan.mode}).')
 
+        # per-stream ROW OFFSETS inside `z` (the concatenation order). ADR-008
+        # needs them twice: to slice the two pools for the InfoNCE term, and to
+        # restrict the gradient-balance probe to the visual rows.
+        offsets: Dict[str, int] = {}
+        _cursor = 0
+        for s in self.streams:
+            offsets[s] = _cursor
+            if tokens[s] is not None:
+                _cursor += int(ids_keep[s].shape[1])
+
         # --- shared encoder -------------------------------------------------
         for blk in self.enc_blocks:
             z = blk(z)
@@ -887,6 +1089,10 @@ class MultiModalMAE(nn.Module):
         losses = {}          # per-modality weighted masked-MSE sum
         losses_mse = {}      # per-modality raw masked MSE (before weighting)
         preds = {}
+        # ADR-008 §2.7: the composite terms of the (single) physiological
+        # stream, accumulated here and published as `out['objective']` at the
+        # end. None until that stream is visited.
+        resp_terms = None
         for s in self.streams:
             mask_s = masks[s]                            # [B, N] 1 = masked
             n = self.n_visual if s in self.visual else self.n_signal
@@ -907,6 +1113,9 @@ class MultiModalMAE(nn.Module):
                 losses_mse[s] = zero
                 losses[s] = zero * self.loss_weights[s]
                 preds[s] = torch.zeros(B, n, self._flat[s], device=device)
+                if s in self.signal:
+                    resp_terms = {'mse': zero, 'pearson': zero,
+                                  'spectral': zero}
                 continue
 
             # masked positions are drawn per SAMPLE, so their indices differ
@@ -924,16 +1133,96 @@ class MultiModalMAE(nn.Module):
             for blk in self.dec_blocks:
                 dec = blk(dec)
             pred_masked = self.heads[s](dec[:, z.shape[1]:])
-            pred = torch.zeros(B, n, self._flat[s], device=device)
+            # `dtype=pred_masked.dtype`: under autocast the head returns fp16 /
+            # bf16, and a float32 buffer would reject the scatter (G6). In FP32
+            # this is exactly `torch.zeros(...)`, so the neutral path is
+            # unchanged bit-for-bit.
+            pred = torch.zeros(B, n, self._flat[s], device=device,
+                               dtype=pred_masked.dtype)
             pred.scatter_(1, ids_masked.unsqueeze(-1).expand(
                 B, n_masked, self._flat[s]), pred_masked)
-            losses_mse[s] = self.loss_fn(pred, tgt, mask_s)
-            losses[s] = self.loss_weights[s] * losses_mse[s]
+            # D1: the MSE term is THIS call, on the FULL tensors, unchanged --
+            # that is what keeps `mse_resp` bit-identical to the pure-MSE arm.
+            mse_term = self.loss_fn(pred, tgt, mask_s)
+            losses_mse[s] = mse_term
+            if self.resp_loss is not None and s in self.signal:
+                # §2.2: masked-only gather for the correlation, and a
+                # detached-target splice for the spectrum (contracts 2 and 3).
+                tgt_masked = tgt.gather(
+                    1, ids_masked.unsqueeze(-1).expand(B, n_masked,
+                                                       self._flat[s]))
+                mask_col = mask_s.unsqueeze(-1).to(pred.dtype)
+                pred_full = (mask_col * pred
+                             + (1.0 - mask_col) * tgt.detach()).reshape(B, -1)
+                r_out = self.resp_loss(mse_term, pred_masked, tgt_masked,
+                                       pred_full, tgt.reshape(B, -1), n_masked)
+                losses[s] = self.loss_weights[s] * r_out['total']
+                resp_terms = {'mse': r_out['mse'],
+                              'pearson': r_out['pearson'],
+                              'spectral': r_out['spectral']}
+            else:
+                losses[s] = self.loss_weights[s] * mse_term
+                if s in self.signal:
+                    resp_terms = {'mse': mse_term,
+                                  'pearson': mse_term.new_zeros(()),
+                                  'spectral': mse_term.new_zeros(())}
             preds[s] = pred
 
         total = torch.stack(list(losses.values())).sum()
-        return {'loss': total, 'losses': losses, 'losses_mse': losses_mse,
-                'masks': masks, 'preds': preds,
+
+        # --- ADR-008 §2.3: cross-modal InfoNCE on the pooled encoder latents - #
+        # Gated strictly to steps that carry BOTH a visual and a physiological
+        # latent: on a Mode-1 step (K_resp = 0) there is nothing to align.
+        l_align = None
+        align_active = 0
+        if self.align_proj is not None:
+            _vis, _sig = self.visual[0], self.signal[0]
+            k_tir = int(plan.kept_tokens[_vis])
+            k_resp = int(plan.kept_tokens[_sig])
+            if k_tir > 0 and k_resp > 0:
+                o_tir, o_resp = offsets[_vis], offsets[_sig]
+                z_tir = z[:, o_tir:o_tir + k_tir]
+                z_resp = z[:, o_resp:o_resp + k_resp]
+                u_tir = anatomy_weighted_pool(
+                    z_tir, ids_keep[_vis], self.core_indices,
+                    self.spatial_patches, self.align_core_weight)
+                u_resp = z_resp.mean(dim=1)
+                l_align = symmetric_infonce(
+                    self.align_proj[_vis](u_tir),
+                    self.align_proj[_sig](u_resp),
+                    temperature=self.align_temperature,
+                    # §2.3.3 scopes the cross-rank gather to TRAINING: the
+                    # validation loader is unpadded (drop_last=False), so a
+                    # ragged final batch would deadlock all_gather.
+                    gather=bool(self.align_gather_ddp and self.training))
+                total = total + self.align_weight * l_align
+                align_active = 1
+            if self.training and (l_align is None or not l_align.requires_grad):
+                # §2.4(6): keep the projection parameters inside the autograd
+                # graph with an EXACT zero gradient, so a distributed
+                # all-reduce can never hang on an unused parameter (and a
+                # single-row batch, whose InfoNCE is a constant 0.0, is covered
+                # too). `find_unused_parameters` is a default, not a contract.
+                total = total + sum(p.sum() * 0.0
+                                    for p in self.align_proj.parameters())
+
+        # --- ADR-008 §2.7: gradient-balance diagnostic (opt-in) ------------- #
+        # Non-destructive: `autograd.grad` never touches a parameter `.grad`.
+        diagnostics = None
+        if (self.training and torch.is_grad_enabled()
+                and self.grad_balance_freq > 0 and step is not None
+                and int(step) % self.grad_balance_freq == 0):
+            _vis = self.visual[0]
+            n_tir = self._dz_norm(losses[_vis], z, offsets[_vis],
+                                  int(plan.kept_tokens[_vis]))
+            n_resp = self._dz_norm(losses[self.signal[0]], z, offsets[_vis],
+                                   int(plan.kept_tokens[_vis]))
+            diagnostics = {'grad_norm_tir': n_tir,
+                           'grad_norm_resp': n_resp}
+            if n_tir is not None and n_resp is not None and n_tir > 0.0:
+                diagnostics['grad_ratio_resp_to_tir'] = n_resp / n_tir
+        out = {'loss': total, 'losses': losses, 'losses_mse': losses_mse,
+               'masks': masks, 'preds': preds,
                 # STEP diagnostics (counts are batch-uniform, so they are a
                 # property of the draw, not of the sample). The key set is a
                 # function of the CONFIG: every declared stream has an entry on
@@ -967,6 +1256,54 @@ class MultiModalMAE(nn.Module):
                                 if plan.periph_units else {}),
                 'spatial_sampling': str(self.spatial_sampling),
                 'n_batch': int(z.shape[1])}
+
+        # ADR-008 §2.7: the objective block is emitted iff the CONFIG enables an
+        # objective term -- never conditionally on the sampled mode, so the key
+        # set a distributed run logs is identical on every rank and every step.
+        if self.objective_active:
+            zero = total.new_zeros(())
+            terms = resp_terms or {'mse': zero, 'pearson': zero,
+                                   'spectral': zero}
+
+            def _val(x):
+                # detach before float(): `float(tensor_with_grad)` warns, and
+                # the objective values are logging/reporting only.
+                return float(x.detach()) if torch.is_tensor(x) else float(x)
+
+            out['objective'] = {
+                'resp_mse': _val(terms['mse']),
+                'resp_pearson': _val(terms['pearson']),
+                'resp_spectral': _val(terms['spectral']),
+                'loss_align': (_val(l_align) if l_align is not None
+                               else _val(zero)),
+                'align_active': int(align_active),
+            }
+        if diagnostics is not None:
+            out['diagnostics'] = diagnostics
+        return out
+
+    @staticmethod
+    def _dz_norm(term, z, offset: int, count: int):
+        """``|| d(term)/dz ||_2`` over ONE stream's rows, or ``None``.
+
+        ADR-008 §2.7's gradient-balance probe. It differentiates w.r.t. the
+        WHOLE ``z`` and then slices the **gradient**: ``z[:, o:o+k]`` is a fresh
+        slice node that no loss consumed, so
+        ``autograd.grad(term, z[:, o:o+k])`` raises ``RuntimeError: One of the
+        differentiated Tensors appears to not have been used in the graph``.
+
+        ``retain_graph=True`` + ``create_graph=False`` keeps the probe
+        non-destructive (no ``.backward()``, no parameter ``.grad`` is touched),
+        and ``allow_unused=True`` plus the ``None`` guards keep it quiet instead
+        of fatal when a term is detached (e.g. a 0-kept stream).
+        """
+        if term is None or not term.requires_grad:
+            return None
+        grad = torch.autograd.grad(term, z, retain_graph=True,
+                                   create_graph=False, allow_unused=True)[0]
+        if grad is None:
+            return None
+        return float(grad[:, offset:offset + count].detach().float().norm(2))
 
 
 # --------------------------------------------------------------------------- #
@@ -1104,6 +1441,25 @@ def build_pretraining_model(args):
         core_tubes_max=int(getattr(args, 'core_tubes_max', 2)),
         periph_min_tubes=int(getattr(args, 'periph_min_tubes', 1)),
         physio_draw_min=int(getattr(args, 'physio_draw_min', 0) or 0),
+        # ADR-008 §2.8. All twelve defaults are NEUTRAL (no module built, the
+        # forward keeps the pre-ADR-008 statements), so every existing config
+        # reproduces its loss and mask sequence exactly; the arm's tuple lives
+        # in its YAML. `signal_weight` above is the ADR's lambda_resp.
+        resp_loss_mse_weight=float(
+            getattr(args, 'resp_loss_mse_weight', 1.0)),
+        resp_loss_pearson_weight=float(
+            getattr(args, 'resp_loss_pearson_weight', 0.0) or 0.0),
+        resp_loss_spectral_weight=float(
+            getattr(args, 'resp_loss_spectral_weight', 0.0) or 0.0),
+        spectral_f_min=float(getattr(args, 'spectral_f_min', 0.10)),
+        spectral_f_max=float(getattr(args, 'spectral_f_max', 0.60)),
+        spectral_n_fft=int(getattr(args, 'spectral_n_fft', 0) or 0),
+        align_weight=float(getattr(args, 'align_weight', 0.0) or 0.0),
+        align_proj_dim=int(getattr(args, 'align_proj_dim', 128)),
+        align_temperature=float(getattr(args, 'align_temperature', 0.07)),
+        align_core_weight=float(getattr(args, 'align_core_weight', 1.0)),
+        align_gather_ddp=bool(getattr(args, 'align_gather_ddp', True)),
+        grad_balance_freq=int(getattr(args, 'grad_balance_freq', 0) or 0),
         spatial_patches=getattr(args, 'spatial_patches', None) or None,
         physio_tokens=getattr(args, 'physio_tokens', None) or None,
         signal_weight=signal_weight,
@@ -1146,6 +1502,39 @@ def build_pretraining_model(args):
               f'physio_draw_min={model.physio_draw_min}. The ADR-007 arm needs '
               "spatial_sampling='anatomy_aware' AND physio_draw_min=1; this run "
               'is a comparator/ablation and must not be reported as ADR-007.')
+    # ADR-008 §2.8 provenance: the resolved objective tuple, and a loud banner
+    # whenever the run is NOT the full three-term objective plus the regularizer
+    # (the ADR-007 D10 pattern: a bare CLI invocation that skips the YAML must
+    # not look like the arm). Note the banner is NOT `not composite_active`: a
+    # beta-only run is composite_active yet has no spectral term.
+    _n_fft = (model.resp_loss.spectral.n_fft_resolved
+              if model.resp_loss is not None and model.resp_loss.spectral
+              else model.spectral_n_fft)
+    _bins = (len(model.resp_loss.spectral.band_bin_list)
+             if model.resp_loss is not None and model.resp_loss.spectral
+             else 0)
+    print(f'[objective] alpha={model.resp_loss_mse_weight:g} '
+          f'beta={model.resp_loss_pearson_weight:g} '
+          f'gamma={model.resp_loss_spectral_weight:g}  '
+          f'lambda_resp={model.loss_weights[model.signal[0]]:g}  '
+          f'passband=[{model.spectral_f_min:g},{model.spectral_f_max:g}] Hz  '
+          f'n_fft={_n_fft} ({_bins} bins)  '
+          f'lambda_align={model.align_weight:g}  tau={model.align_temperature:g}  '
+          f'd_proj={model.align_proj_dim}  w_core={model.align_core_weight:g}  '
+          f'gather={model.align_gather_ddp}  '
+          f'grad_balance_freq={model.grad_balance_freq}  '
+          f'target_norm={model.target_norm}')
+    if (model.resp_loss_mse_weight == 0.0
+            or model.resp_loss_pearson_weight == 0.0
+            or model.resp_loss_spectral_weight == 0.0
+            or model.align_weight == 0.0):
+        print('[objective] OFF-ADR-008: the composite objective needs '
+              'alpha > 0, beta > 0, gamma > 0 AND align_weight > 0. This run '
+              f'has alpha={model.resp_loss_mse_weight:g}, '
+              f'beta={model.resp_loss_pearson_weight:g}, '
+              f'gamma={model.resp_loss_spectral_weight:g}, '
+              f'align_weight={model.align_weight:g} -- it is a comparator or '
+              'an ablation and must not be reported as the ADR-008 arm.')
     return model
 
 

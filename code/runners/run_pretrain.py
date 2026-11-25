@@ -395,6 +395,65 @@ def get_args():
                              'ADR-002..006 draw INCLUDING its 0 fall-through; '
                              '1 forbids that fall-through, so no Mode-2 step '
                              'can leak into Mode 1 (the ADR-007 arm).')
+    # ---- ADR-008 objective: the twelve logical parameters of §2.8 --------- #
+    # EVERY default below is NEUTRAL (no module is built, the forward keeps the
+    # pre-ADR-008 statements), so a config that omits them is byte-identical to
+    # the pure-MSE run. The arm's tuple lives in its YAML.
+    parser.add_argument('--resp_loss_mse_weight', default=1.0, type=float,
+                        help='ADR-008 alpha: weight of the masked time-domain '
+                             'MSE inside the composite respiration objective '
+                             '(default 1.0 = neutral).')
+    parser.add_argument('--resp_loss_pearson_weight', default=0.0, type=float,
+                        help='ADR-008 beta: weight of the masked negative '
+                             'Pearson term (0.0 = disabled, no code path). '
+                             'The collapse-resistant term: it repels a flat '
+                             'zero-variance prediction.')
+    parser.add_argument('--resp_loss_spectral_weight', default=0.0, type=float,
+                        help='ADR-008 gamma: weight of the band-limited '
+                             'spectral power term (0.0 = disabled, no FFT is '
+                             'ever built).')
+    parser.add_argument('--spectral_f_min', default=0.10, type=float,
+                        help='ADR-008 lower respiratory passband edge (Hz); '
+                             'must equal the evaluation passband '
+                             '(0.10 Hz = 6 bpm).')
+    parser.add_argument('--spectral_f_max', default=0.60, type=float,
+                        help='ADR-008 upper respiratory passband edge (Hz) '
+                             '(0.60 Hz = 36 bpm); must be <= fs/2.')
+    parser.add_argument('--spectral_n_fft', default=0, type=int,
+                        help='ADR-008 rFFT length for the spectral term. 0 '
+                             '(default) = auto, 4 * 2**ceil(log2 L) = 32768 at '
+                             'L = 8000 (df 0.0305 Hz, 16 in-band bins); any '
+                             'explicit value must be >= L.')
+    parser.add_argument('--align_weight', default=0.0, type=float,
+                        help='ADR-008 lambda_align: weight of the symmetric '
+                             'cross-modal InfoNCE term (0.0 = disabled, and NO '
+                             'projection head is created). Needs exactly one '
+                             'visual and one physiological stream.')
+    parser.add_argument('--align_proj_dim', default=128, type=int,
+                        help='ADR-008 d_proj: output width of the InfoNCE '
+                             'projection MLPs (>= 16).')
+    parser.add_argument('--align_temperature', default=0.07, type=float,
+                        help='ADR-008 tau: InfoNCE cosine temperature (> 0).')
+    parser.add_argument('--align_core_weight', default=1.0, type=float,
+                        help='ADR-008 w_core: pooling weight on the anatomical '
+                             'core tubes (A_core) for the thermal side of the '
+                             'alignment. 1.0 (default) = unweighted mean '
+                             'pooling; 2.0 emphasises the nostril-plume core. '
+                             'Inert under spatial_sampling=uniform (A_core '
+                             'is empty).')
+    parser.add_argument('--align_gather_ddp', default=True, type=str2bool,
+                        nargs='?', const=True,
+                        help='ADR-008: gather the InfoNCE embeddings across '
+                             'ranks (global negatives) during TRAINING. '
+                             'Default true; the validation pass never '
+                             'gathers, because its loader is unpadded.')
+    parser.add_argument('--grad_balance_freq', default=0, type=int,
+                        help='ADR-008 §2.7: step interval of the '
+                             '||grad_tir|| / ||grad_resp|| diagnostic '
+                             '(0 = disabled, zero extra autograd cost). This '
+                             'is a logging cadence, NOT an objective '
+                             'parameter, so it is recorded under `run` in '
+                             'masking.json and never blocks a resume.')
     parser.add_argument('--physio_tokens', default=0, type=int,
                         help='tokenizer-derived (default 0 = derive from '
                              'seq_len/sig_kernel); pass it only to ASSERT the '
@@ -612,6 +671,18 @@ def init_stage1_encoder(model, args):
     return {'path': ckpt, 'loaded': int(stats['loaded']), 'random': False}
 
 
+def _objective_non_neutral(model) -> bool:
+    """True when an ADR-008 objective term is active for this model.
+
+    The SINGLE predicate shared by the manifest writer and the model: it is
+    ``composite_active or align_weight > 0``, never ``beta/gamma`` alone, so
+    ``alpha != 1.0`` (which rescales the MSE term even with both other terms
+    off) is recorded too.
+    """
+    return bool(getattr(model, 'composite_active', False)
+                or float(getattr(model, 'align_weight', 0.0) or 0.0) > 0.0)
+
+
 def write_masking_manifest(args, model, *, plan, mask_base: int,
                            stage1: dict) -> dict:
     """Write the ADR-005 §2.8/§2.9 masking record into ``output_dir``.
@@ -638,6 +709,13 @@ def write_masking_manifest(args, model, *, plan, mask_base: int,
             'policy': rec.get('policy'),
             'conditioning': rec.get('conditioning'),
             'kernel': rec.get('kernel'),
+            # ADR-008 §2.7: the objective tuple is part of the reproducibility
+            # record, so resuming with different objective weights must fail
+            # loudly. It is compared only when EITHER side carries it (plan
+            # decision D4): an unconditional key would make every in-flight
+            # pre-ADR-008 run un-resumable, exactly the trap the ADR-007 plan
+            # hit with the single-carrier keys.
+            'objective': rec.get('objective'),
             'mask_base': (rec.get('run') or {}).get('mask_base'),
         }
 
@@ -701,6 +779,14 @@ def write_masking_manifest(args, model, *, plan, mask_base: int,
             'role_digest': str(getattr(plan, 'digest', '')),
         },
     }
+    # ADR-008 §2.7: `grad_balance_freq` is a READ-ONLY logging cadence, not an
+    # objective parameter. It is recorded under `run` (next to `epochs`), which
+    # `_stable()` does not compare, so changing it can never block resuming a
+    # preempted HPC run. Written only when armed, so a neutral record stays
+    # byte-identical to the pre-ADR-008 file.
+    _gb_freq = int(getattr(model, 'grad_balance_freq', 0) or 0)
+    if _gb_freq != 0:
+        record['run']['grad_balance_freq'] = _gb_freq
     # ADR-006 §2.4/§2.7: the single-carrier keys are written ONLY when they are
     # non-neutral. The resume guard below compares the NEW record's keys against
     # the stored file, so an unconditional write would make an in-flight
@@ -756,6 +842,32 @@ def write_masking_manifest(args, model, *, plan, mask_base: int,
             's_tir_max': (None if app.s_tir_max is None
                           else int(app.s_tir_max)),
         })
+    # ADR-008 §2.7: the resolved objective tuple. Written ONLY for a run whose
+    # objective is not the neutral pure-MSE one, so a legacy manifest stays
+    # byte-identical (decision D4) while any objective run is fully
+    # reproducible and its resume is guarded (see `_stable`).
+    if _objective_non_neutral(model):
+        _spec = getattr(getattr(model, 'resp_loss', None), 'spectral', None)
+        record['objective'] = {
+            'adr': 'ADR-008',
+            'resp_loss_mse_weight': float(model.resp_loss_mse_weight),
+            'resp_loss_pearson_weight': float(model.resp_loss_pearson_weight),
+            'resp_loss_spectral_weight': float(model.resp_loss_spectral_weight),
+            'spectral_f_min': float(model.spectral_f_min),
+            'spectral_f_max': float(model.spectral_f_max),
+            # the RESOLVED FFT length and the band bin set, so a reader never
+            # has to re-derive them from (L, fs, f_min, f_max)
+            'spectral_n_fft': (int(_spec.n_fft_resolved) if _spec is not None
+                               else int(model.spectral_n_fft)),
+            'spectral_band_bins': (_spec.band_bin_list if _spec is not None
+                                   else []),
+            'signal_weight': float(model.loss_weights[model.signal[0]]),
+            'align_weight': float(model.align_weight),
+            'align_proj_dim': int(model.align_proj_dim),
+            'align_temperature': float(model.align_temperature),
+            'align_core_weight': float(model.align_core_weight),
+            'align_gather_ddp': bool(model.align_gather_ddp),
+        }
     os.makedirs(args.output_dir, exist_ok=True)
     path = os.path.join(args.output_dir, 'masking.json')
     if os.path.exists(path):
@@ -766,7 +878,10 @@ def write_masking_manifest(args, model, *, plan, mask_base: int,
             previous = None
         if isinstance(previous, dict):
             mine, theirs = _stable(record), _stable(previous)
-            changed = [k for k in mine if mine[k] != theirs.get(k)]
+            changed = [k for k in mine
+                       if not (k == 'objective' and mine[k] is None
+                               and theirs.get(k) is None)
+                       and mine[k] != theirs.get(k)]
             if changed:
                 raise SystemExit(
                     f'{path} already records a different masking policy '
@@ -1024,6 +1139,17 @@ def main(args):
             wandb_logger.log({f'val/{k}': v
                               for k, v in val['components'].items()},
                              step=wb_step)
+            # ADR-008 §2.7: the objective summary block, a SIBLING of
+            # `components` (which stays the MSE component set). Empty for a
+            # run whose config enables no objective term.
+            _objective = val.get('objective') or {}
+            if _objective:
+                wandb_logger.log({f'val/{k}': v
+                                  for k, v in _objective.items()},
+                                 step=wb_step)
+                print('[val]   objective  '
+                      + '  '.join(f'{k}={v:.4f}' for k, v
+                                  in sorted(_objective.items())))
             # ADR-007 §2.9: the stratified observables live in their OWN dict,
             # never in ``components`` (that is the MSE component set and is
             # asserted as such by test_stage2_protocol). Logged on the same

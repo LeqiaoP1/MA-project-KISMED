@@ -23,6 +23,29 @@ from utils import (MetricLogger, SmoothedValue, autocast_context,
                    scaler_enabled)
 
 
+def _accepts_kw(fn, name: str) -> bool:
+    """True when ``fn`` accepts the keyword ``name`` (real model vs stub).
+
+    ADR-008 adds an optional ``step`` keyword for the gradient-balance probe;
+    several contract tests pass small duck-typed models whose ``forward``
+    predates it. Introspecting the signature keeps both call shapes working
+    without wrapping the forward in a ``try/except TypeError``, which would also
+    swallow real argument errors.
+
+    A ``**kwargs`` signature (e.g. ``DistributedDataParallel.forward``) is
+    accepted, and an un-introspectable callable is assumed to support the
+    documented signature.
+    """
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return True
+    if name in params:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD
+               for p in params.values())
+
+
 def _accepts_epoch(fn) -> bool:
     """True when ``fn`` takes an ``epoch`` keyword (real model vs stub).
 
@@ -79,6 +102,8 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable,
     use_scaler = scaler_enabled(amp_config)   # False for --amp_dtype none/bf16
     # Computed once: the epoch only reaches models that declare it.
     epoch_kwarg = _accepts_epoch(model.forward)
+    # ADR-008 §2.7: the global step feeds the opt-in gradient-balance probe.
+    step_kwarg = _accepts_kw(model.forward, 'step')
 
     optimizer.zero_grad()
     for data_iter_step, batch in enumerate(
@@ -121,7 +146,8 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable,
                         mask_base, epoch, global_step),
                     placement_generator=placement_generator(
                         mask_base, epoch, global_step, rank=rank),
-                    **({'epoch': epoch} if epoch_kwarg else {}))
+                    **({'epoch': epoch} if epoch_kwarg else {}),
+                    **({'step': global_step} if step_kwarg else {}))
                 loss = out['loss'] / update_freq
             else:
                 samples = batch[0].to(device, non_blocking=True)
@@ -210,6 +236,19 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable,
                 metric_logger.update(p_single=out['p_single'])
             if 'n_batch' in out:
                 metric_logger.update(n_batch=out['n_batch'])
+            # ADR-008 §2.7: the composite objective terms and the InfoNCE
+            # labels. Present iff the CONFIG enables an objective term, so the
+            # key set never depends on the sampled mode or the rank.
+            objective = out.get('objective') or {}
+            if objective:
+                metric_logger.update(
+                    **{k: float(v) for k, v in objective.items()})
+            # ... and the opt-in gradient-balance probe, which exists only on
+            # `global_step % grad_balance_freq == 0`. `step` is global, so
+            # every rank adds the same keys on the same steps.
+            for key, value in (out.get('diagnostics') or {}).items():
+                if value is not None:
+                    metric_logger.update(**{key: float(value)})
 
         # Per-step loss series for the optional writer (W&B / TensorBoard).
         # The step axis is the GLOBAL optimizer step, the same axis the runner
@@ -274,6 +313,10 @@ def evaluate_pretrain(model: torch.nn.Module, data_loader: Iterable,
         {'kept_<stream>': …}, 'mode': {'mode1': …, 'mode2': …},
         'resolved': {'mode1': …, 'mode2': …}, 'single': …, 'stratification':
         {'core_tubes_<stream>': …, 'periph_tubes_<stream>': …},
+        'objective': {'resp_mse', 'resp_pearson', 'resp_spectral',
+        'loss_align', 'align_active'} — ADR-008 §2.7, EMPTY unless the config
+        enables an objective term; a sibling of ``components``, which stays the
+        MSE component set,
         'n_samples', 'n_batches', 'mask_base', 'pinned'}`` — ``mode`` counts
         the DRAWN modes, ``resolved`` the contract-4 modes, so their Mode-1
         shares differ by the ``K_tilde = 0`` draws (ADR-005 §2.8).
@@ -297,6 +340,7 @@ def evaluate_pretrain(model: torch.nn.Module, data_loader: Iterable,
     resolved_totals: dict = {}
     single_totals: dict = {}
     strat_totals: dict = {}
+    objective_totals: dict = {}
 
     for batch_idx, batch in enumerate(data_loader):
         seed = int(val_mask_seed(mask_base, batch_idx))
@@ -333,6 +377,14 @@ def evaluate_pretrain(model: torch.nn.Module, data_loader: Iterable,
         for name, value in (out.get('kept_periph') or {}).items():
             strat_totals.setdefault(f'periph_tubes_{name}', 0.0)
             strat_totals[f'periph_tubes_{name}'] += float(value) * batch_n
+        # ADR-008 §2.7: the objective summary block. A SIBLING of `components`
+        # (which stays the MSE component set -- ``test_stage2_protocol`` pins
+        # that), sample-weighted like everything else here. Empty for a run
+        # whose config enables no objective term, so a neutral validation pass
+        # returns exactly the pre-ADR-008 dict.
+        for name, value in (out.get('objective') or {}).items():
+            objective_totals.setdefault(name, 0.0)
+            objective_totals[name] += float(value) * batch_n
         if 'mode' in out:
             mode_totals.setdefault(f'mode{int(out["mode"])}', 0.0)
             mode_totals[f'mode{int(out["mode"])}'] += batch_n
@@ -365,6 +417,7 @@ def evaluate_pretrain(model: torch.nn.Module, data_loader: Iterable,
         'kept': kept_totals, 'mode': mode_totals,
         'resolved': resolved_totals,
         'single': single_totals, 'stratification': strat_totals,
+        'objective': objective_totals,
     }
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         gathered = [None] * torch.distributed.get_world_size()
@@ -381,6 +434,8 @@ def evaluate_pretrain(model: torch.nn.Module, data_loader: Iterable,
                                      for g in gathered])
         strat_totals = _merge_sums([g.get('stratification') or {}
                                    for g in gathered])
+        objective_totals = _merge_sums([g.get('objective') or {}
+                                       for g in gathered])
         if n_samples == 0:
             raise SystemExit(
                 '[val] the gathered validation pass contains no sample across '
@@ -394,6 +449,7 @@ def evaluate_pretrain(model: torch.nn.Module, data_loader: Iterable,
         'resolved': {k: v / n_samples for k, v in resolved_totals.items()},
         'single': {k: v / n_samples for k, v in single_totals.items()},
         'stratification': {k: v / n_samples for k, v in strat_totals.items()},
+        'objective': {k: v / n_samples for k, v in objective_totals.items()},
         'n_samples': n_samples,
         'n_batches': n_batches,
         'mask_base': int(mask_base),
