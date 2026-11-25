@@ -1,0 +1,58 @@
+{
+  "format": "ADR-007 neutrality fixture v1",
+  "purpose": "bit-identical 2-visual mask sequences before/after the ADR-007 one-visual extension (plan DoD 8 / gate G8)",
+  "engine": {
+    "core/budget_masking.py": "9f337affefd08f283f7a22818c4a0ddb7eff53d6a67a0fad12fb086af563cf83",
+    "core/mask_placement.py": "b44742b70881fb2a7ecb4a84e9e6ede2fd1becc10a14c22506f9441f9028a9ca"
+  },
+  "tuple": {
+    "streams": [
+      "tir:visual:36x25",
+      "rgb2d:visual:36x25",
+      "resp:signal:250x1"
+    ],
+    "n_budget": 350,
+    "tokens_per_unit": 25,
+    "video_cap_ratio": 0.25,
+    "physio_cap_ratio": 0.5,
+    "video_min_tubes": 2,
+    "p_virtual_sensing": 0.5,
+    "virtual_sensing_warmup_p": 0.1,
+    "virtual_sensing_warmup_epochs": 50,
+    "p_single_modality": 0.2,
+    "single_modality_warmup_p": 0.0,
+    "single_carrier_tubes": 14
+  },
+  "mask_base": 1234,
+  "steps_per_context": 50000,
+  "epoch_contexts": {
+    "None": {
+      "digest": "1d928a117b86516162a73b20ecdb5e8699c6d55be4269f822cda047c30dae98c",
+      "next_draw": 0.8090642110713704,
+      "n_steps": 50000,
+      "first_plan": "1/1/bi_visual/None|resp=0,rgb2d=225,tir=125|resp=0,rgb2d=9,tir=5",
+      "trailing_plan": "1/1/bi_visual/None|resp=0,rgb2d=175,tir=175|resp=0,rgb2d=7,tir=7"
+    },
+    "0": {
+      "digest": "406409d79c579a69645b364b1cb0f315f4b87a01e6a0ca2a545e833139740048",
+      "next_draw": 0.3074530362638328,
+      "n_steps": 50000,
+      "first_plan": "2/2/inpainting/None|resp=125,rgb2d=100,tir=125|resp=125,rgb2d=4,tir=5",
+      "trailing_plan": "2/2/inpainting/None|resp=75,rgb2d=100,tir=175|resp=75,rgb2d=4,tir=7"
+    },
+    "50": {
+      "digest": "54fd08ee8e6b484d220285f68cef5fed9d7f01d68c02baf2b94ca7fee542cb3a",
+      "next_draw": 0.7230372670087908,
+      "n_steps": 50000,
+      "first_plan": "1/1/bi_visual/None|resp=0,rgb2d=225,tir=125|resp=0,rgb2d=9,tir=5",
+      "trailing_plan": "2/2/inpainting/None|resp=100,rgb2d=75,tir=175|resp=100,rgb2d=3,tir=7"
+    },
+    "149": {
+      "digest": "8914dc4bc591bdc99ec62b571d01a7979aed1dbf9291ab71ffd2f47e966da815",
+      "next_draw": 0.5752069018221547,
+      "n_steps": 50000,
+      "first_plan": "2/2/inpainting/None|resp=125,rgb2d=50,tir=175|resp=125,rgb2d=2,tir=7",
+      "trailing_plan": "2/2/inpainting/None|resp=50,rgb2d=125,tir=175|resp=50,rgb2d=5,tir=7"
+    }
+  }
+}

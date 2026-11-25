@@ -360,6 +360,41 @@ def get_args():
                         help='tokenizer-derived (default 0 = derive from '
                              'input_size/tubelet); pass it only to ASSERT the '
                              'identity, the run fails on a mismatch.')
+    # ---- ADR-007 anatomy-aware stratified placement (all NEUTRAL) -------- #
+    # Every default reproduces the pre-ADR-007 mask sequence, so a config that
+    # omits all seven keys stays bit-identical. The arm's tuple lives in its
+    # YAML; see code/notes/design/ADR-007-*.md §2.3/§2.5/§2.6.
+    parser.add_argument('--spatial_sampling', default='uniform', type=str,
+                        choices=['uniform', 'anatomy_aware'],
+                        help="how the kept spatial TUBES are drawn: 'uniform' "
+                             '(default, pre-ADR-007) or '
+                             "'anatomy_aware' (ADR-007 §2.3: stratified "
+                             'anatomical core + periphery, ONE visual stream '
+                             'only, every sample keeps >= 1 core tube).')
+    parser.add_argument('--core_row_bounds', default='2,3', type=str,
+                        help='ADR-007 §2.3 inclusive (lo, hi) ROW span of '
+                             'A_core on the patch grid. Ignored under '
+                             '--spatial_sampling uniform.')
+    parser.add_argument('--core_col_bounds', default='2,3', type=str,
+                        help='ADR-007 §2.3 inclusive (lo, hi) COLUMN span of '
+                             'A_core. Ignored under uniform sampling.')
+    parser.add_argument('--core_tubes_min', default=1, type=int,
+                        help='ADR-007 §2.3 S_core^min: kept core tubes per '
+                             'step (>= 1, which is what makes the core hit '
+                             'certain rather than probable).')
+    parser.add_argument('--core_tubes_max', default=2, type=int,
+                        help='ADR-007 §2.3 S_core^max: kept core tubes per '
+                             'step; the rest of the budget is peripheral.')
+    parser.add_argument('--periph_min_tubes', default=1, type=int,
+                        help='ADR-007 §2.6(5) m_periph: floor on the '
+                             'PERIPHERAL tubes, so a step always keeps spatial '
+                             'context around the core.')
+    parser.add_argument('--physio_draw_min', default=0, type=int,
+                        help='ADR-007 §2.5: lower bound of the Mode-2 '
+                             'physiological draw. 0 (default) keeps the '
+                             'ADR-002..006 draw INCLUDING its 0 fall-through; '
+                             '1 forbids that fall-through, so no Mode-2 step '
+                             'can leak into Mode 1 (the ADR-007 arm).')
     parser.add_argument('--physio_tokens', default=0, type=int,
                         help='tokenizer-derived (default 0 = derive from '
                              'seq_len/sig_kernel); pass it only to ASSERT the '
@@ -681,6 +716,46 @@ def write_masking_manifest(args, model, *, plan, mask_base: int,
             'single_modality_warmup_p': float(app.single_modality_warmup_p),
             'single_carrier_tubes': int(app.single_carrier_tubes),
         })
+    # ADR-007 §2.9: the stratified policy is recorded for EVERY one-visual run
+    # (including the ``uniform`` ablation, whose record must still say which
+    # policy produced it), while a 2-visual ADR-005/006 manifest stays
+    # byte-identical -- the resume guard compares key SETS, so an unconditional
+    # write would make an in-flight run un-resumable.
+    _spatial = str(getattr(model, 'spatial_sampling', 'uniform') or 'uniform')
+    _draw_min = int(getattr(model, 'physio_draw_min', 0) or 0)
+    if len(model.visual) == 1 or _spatial != 'uniform' or _draw_min != 0:
+        _aware = bool(getattr(model, 'anatomy_aware', False))
+        record['policy'].update({
+            # 'ADR-007' only when the run IS the ADR's arm; anything else with
+            # one visual stream is a comparator/ablation and says so.
+            'adr': ('ADR-007' if (_aware and _draw_min == 1) else 'off-adr-007'),
+            'spatial_sampling': _spatial,
+            'physio_draw_min': _draw_min,
+            # The bounds describe A_core, so under ``uniform`` (where no core
+            # exists) they are nulled rather than serialized as the ignored
+            # defaults; the tube-count knobs stay, because they document what
+            # the run would have used.
+            'core_row_bounds': ([int(x) for x in app.core_row_bounds]
+                                if _aware else None),
+            'core_col_bounds': ([int(x) for x in app.core_col_bounds]
+                                if _aware else None),
+            # Both forms: the 2-D coordinate SET that §2.9 names, and the flat
+            # tube indices the placement consumes. Under ``uniform`` the
+            # ignored defaults are NOT serialized, so no reader can mistake
+            # (2, 3) for a realized A_core.
+            'core_coords': ([[int(r), int(c)] for r, c in app.core_coords]
+                            if _aware else None),
+            'core_indices': ([int(i) for i in app.core_indices]
+                             if _aware else []),
+            'periph_tubes': (len(app.periph_indices) if _aware else None),
+            'core_tubes_min': int(app.core_tubes_min),
+            'core_tubes_max': int(app.core_tubes_max),
+            'periph_min_tubes': int(app.periph_min_tubes),
+            's_tir_min': (None if app.s_tir_min is None
+                          else int(app.s_tir_min)),
+            's_tir_max': (None if app.s_tir_max is None
+                          else int(app.s_tir_max)),
+        })
     os.makedirs(args.output_dir, exist_ok=True)
     path = os.path.join(args.output_dir, 'masking.json')
     if os.path.exists(path):
@@ -887,7 +962,10 @@ def main(args):
               f'E_warm={_masking["policy"]["virtual_sensing_warmup_epochs"]}, '
               f'p_single={_masking["policy"].get("p_single_modality", 0.0):g}, '
               f'S_v={_masking["policy"].get("single_carrier_tubes", "derive")}, '
-              f'patch_stream={_masking["kernel"]["recipient"] or "(random)"})')
+              f'patch_stream={_masking["kernel"]["recipient"] or "(random)"}, '
+              f'spatial_sampling={_masking["policy"].get("spatial_sampling", "uniform")}, '
+              f'A_core={_masking["policy"].get("core_coords")}, '
+              f'physio_draw_min={_masking["policy"].get("physio_draw_min", 0)})')
     # Mask RNG of the training loop (ADR-005 §2.3 contract 8). The COUNTS
     # generator is seeded from a rank-independent key, so every rank derives
     # the same plan without a collective; the PLACEMENT generator includes the
@@ -946,6 +1024,17 @@ def main(args):
             wandb_logger.log({f'val/{k}': v
                               for k, v in val['components'].items()},
                              step=wb_step)
+            # ADR-007 §2.9: the stratified observables live in their OWN dict,
+            # never in ``components`` (that is the MSE component set and is
+            # asserted as such by test_stage2_protocol). Logged on the same
+            # step as the losses so a stratified curve is readable offline.
+            _strat = val.get('stratification') or {}
+            if _strat:
+                wandb_logger.log({f'val/{k}': v for k, v in _strat.items()},
+                                 step=wb_step)
+                print('[val]   kept tubes  '
+                      + '  '.join(f'{k.replace("tubes_", "")}={v:.2f}'
+                                  for k, v in sorted(_strat.items())))
             wandb_logger.log({'val/loss': val['val_loss']}, step=wb_step)
             if improved and tracker.writes_best_checkpoint and is_main_process():
                 os.makedirs(args.output_dir, exist_ok=True)

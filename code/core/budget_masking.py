@@ -65,6 +65,9 @@ import torch
 
 __all__ = ['VISUAL', 'SIGNAL', 'KINDS', 'MODES', 'REGIMES',
            'REGIME_INPAINTING', 'REGIME_BI_VISUAL', 'REGIME_SINGLE',
+           'REGIME_SINGLE_VISUAL', 'SPATIAL_UNIFORM', 'SPATIAL_ANATOMY_AWARE',
+           'SPATIAL_SAMPLING', 'SPATIAL_POLICY_SINGLE_VISUAL',
+           'SPATIAL_POLICY_DUAL_VISUAL',
            'StreamSpec', 'BudgetPlan', 'ConstantBudgetApportioner']
 
 #: stream-kind tags. The visual/signal taxonomy itself is owned by
@@ -83,11 +86,32 @@ MODES: Tuple[int, int] = (MODE_VIRTUAL_SENSING, MODE_INPAINTING)
 #: them: a single-carrier step is still ``MODE_VIRTUAL_SENSING`` (no
 #: physiological token reaches the encoder), so ``mode`` and ``mode_by_counts``
 #: keep their ADR-005 meaning and every existing assertion stays valid.
-REGIME_INPAINTING = 'inpainting'      # K_resp > 0; both visuals carry tokens
+REGIME_INPAINTING = 'inpainting'      # K_resp > 0; the visual(s) carry the rest
 REGIME_BI_VISUAL = 'bi_visual'        # K_resp = 0; both visuals carry tokens
 REGIME_SINGLE = 'single'              # K_resp = 0; ONE visual carries all of N
-REGIMES: Tuple[str, str, str] = (REGIME_INPAINTING, REGIME_BI_VISUAL,
-                                 REGIME_SINGLE)
+#: ADR-007 (one-visual) step class. Neither existing sensor-absent label names a
+#: run with exactly ONE visual stream: ``REGIME_BI_VISUAL`` is "BOTH visuals
+#: carry tokens" and ``REGIME_SINGLE`` is "one of SEVERAL carries everything".
+#: A one-visual step is therefore :data:`REGIME_SINGLE_VISUAL` when no
+#: physiological token survives, and :data:`REGIME_INPAINTING` when some do —
+#: which keeps "regime == inpainting iff a signal stream keeps > 0 tokens" true
+#: in BOTH stream topologies.
+REGIME_SINGLE_VISUAL = 'single_visual'
+REGIMES: Tuple[str, ...] = (REGIME_INPAINTING, REGIME_BI_VISUAL,
+                            REGIME_SINGLE, REGIME_SINGLE_VISUAL)
+
+#: ADR-007 §2.3/§2.10: how the kept spatial TUBES of a visual stream are drawn.
+#: ``uniform`` is the pre-ADR-007 behaviour (uniform without replacement over the
+#: whole ``Gh*Gw`` grid) and stays the default, so no existing run moves.
+SPATIAL_UNIFORM = 'uniform'
+SPATIAL_ANATOMY_AWARE = 'anatomy_aware'   # stratified A_core + A_periph draw
+SPATIAL_SAMPLING: Tuple[str, str] = (SPATIAL_UNIFORM, SPATIAL_ANATOMY_AWARE)
+
+#: Which feasibility block a tuple is validated against, RESOLVED from the
+#: declared stream set (ADR-007 decision D1) — never passed in, so a caller
+#: cannot select a policy its stream set does not support. Recorded in logs.
+SPATIAL_POLICY_DUAL_VISUAL = 'dual_visual'      # two visuals (ADR-002..ADR-006)
+SPATIAL_POLICY_SINGLE_VISUAL = 'single_visual'  # one visual (ADR-007)
 
 _F64 = torch.float64
 
@@ -104,12 +128,18 @@ class StreamSpec:
     :param tokens_per_unit: how many encoder tokens one masking unit carries.
         A visual unit is a full temporal column, so this is the tubelet count
         ``Gt``; a physiological unit IS one token, so it is 1.
+    :param spatial_grid: the 2-D patch grid ``(G_h, G_w)`` of a VISUAL stream.
+        ``None`` on a signal stream, and optional on a visual one because only
+        the anatomy-aware policy (ADR-007 §2.3) needs the row/column layout:
+        ``n_units`` alone cannot resolve ``[0, G_h-1] x [0, G_w-1]``. When
+        given it must satisfy ``G_h * G_w == n_units``.
     """
 
     name: str
     kind: str
     n_units: int
     tokens_per_unit: int = 1
+    spatial_grid: Optional[Tuple[int, int]] = None
 
     def __post_init__(self):
         if self.kind not in KINDS:
@@ -124,6 +154,20 @@ class StreamSpec:
             raise ValueError(
                 f'StreamSpec({self.name!r}): tokens_per_unit must be >= 1; '
                 f'got {self.tokens_per_unit!r}.')
+        if self.spatial_grid is not None:
+            if len(tuple(self.spatial_grid)) != 2:
+                raise ValueError(
+                    f'StreamSpec({self.name!r}): spatial_grid must be a '
+                    f'(G_h, G_w) pair; got {self.spatial_grid!r}.')
+            gh, gw = (int(x) for x in self.spatial_grid)
+            if gh < 1 or gw < 1:
+                raise ValueError(
+                    f'StreamSpec({self.name!r}): spatial_grid entries must be '
+                    f'>= 1; got {self.spatial_grid!r}.')
+            if gh * gw != int(self.n_units):
+                raise ValueError(
+                    f'StreamSpec({self.name!r}): spatial_grid {gh}x{gw} = '
+                    f'{gh * gw} does not match n_units {int(self.n_units)}.')
 
     @property
     def n_tokens(self) -> int:
@@ -133,7 +177,7 @@ class StreamSpec:
 
 @dataclass(frozen=True)
 class BudgetPlan:
-    """Counts for one training step (identical for every sample of a batch).
+    r"""Counts for one training step (identical for every sample of a batch).
 
     :param mode: :data:`MODE_VIRTUAL_SENSING` or :data:`MODE_INPAINTING` —
         the mode the policy DREW (with ``p(e)``). Kept for compatibility and
@@ -150,6 +194,12 @@ class BudgetPlan:
         ``mode_by_counts`` and changes no existing field.
     :param carrier: the sole visual stream of a :data:`REGIME_SINGLE` plan;
         ``None`` on every other regime.
+    :param core_units: ADR-007 anatomy-aware ONLY — per declared stream, how
+        many of the kept visual tubes were drawn from the anatomical core
+        :math:`\mathcal{A}_{core}`. ``None`` under the ``uniform`` policy, so a
+        plan that never stratified cannot claim a core count.
+    :param periph_units: the same allocation in :math:`\mathcal{A}_{periph}`;
+        invariant ``core_units[s] + periph_units[s] == kept_units[s]``.
     """
 
     mode: int
@@ -158,6 +208,8 @@ class BudgetPlan:
     mode_by_counts: int
     regime: str = REGIME_BI_VISUAL
     carrier: Optional[str] = None
+    core_units: Optional[Dict[str, int]] = None
+    periph_units: Optional[Dict[str, int]] = None
 
     def __post_init__(self):
         if int(self.mode) not in MODES:
@@ -180,6 +232,43 @@ class BudgetPlan:
                 f'BudgetPlan: carrier is only meaningful on a '
                 f'{REGIME_SINGLE!r} plan; got regime {self.regime!r} with '
                 f'carrier {self.carrier!r}.')
+        # ADR-007 §2.4(5): the stratified split is all-or-nothing. A plan that
+        # carries ONE of the two halves would let a caller report a core count
+        # without a periphery (or vice versa) and silently break the
+        # placement contract.
+        if (self.core_units is None) != (self.periph_units is None):
+            raise ValueError(
+                f'BudgetPlan: core_units and periph_units must be given '
+                f'together (got core={self.core_units!r}, '
+                f'periph={self.periph_units!r}).')
+        if self.core_units is not None:
+            # Symmetry FIRST: the per-stream loop below reads the other dict with
+            # ``.get(name, 0)``, so an asymmetric pair would be reported as a sum
+            # mismatch rather than as the missing key it really is.
+            if set(self.periph_units) != set(self.core_units):
+                raise ValueError(
+                    f'BudgetPlan: core_units and periph_units must name the '
+                    f'same streams; got {sorted(self.core_units)} vs '
+                    f'{sorted(self.periph_units)}.')
+            # Only the STRATIFIED streams carry a split (the visual one(s)); a
+            # signal stream has no spatial grid and is absent from both dicts.
+            for name, core in self.core_units.items():
+                if name not in self.kept_units:
+                    raise ValueError(
+                        f'BudgetPlan: core_units names undeclared stream '
+                        f'{name!r}; declared {sorted(self.kept_units)}.')
+                core = int(core)
+                periph = int(self.periph_units.get(name, 0))
+                if core < 0 or periph < 0:
+                    raise ValueError(
+                        f'BudgetPlan: stream {name!r} has a negative '
+                        f'stratified count (core={core}, periph={periph}).')
+                if core + periph != int(self.kept_units[name]):
+                    raise ValueError(
+                        f'BudgetPlan: stream {name!r} keeps '
+                        f'{int(self.kept_units[name])} unit(s) but the '
+                        f'stratified split is {core} core + {periph} '
+                        f'periphery.')
 
     @property
     def total_tokens(self) -> int:
@@ -192,7 +281,7 @@ class BudgetPlan:
 
 
 class ConstantBudgetApportioner:
-    """Draw one kept-token count per declared stream per step (ADR-002 §2).
+    r"""Draw one kept-token count per declared stream per step (ADR-002 §2).
 
     :param streams: one :class:`StreamSpec` per declared stream, in DECLARED
         order. The order defines the alignment priority of the physiological
@@ -212,6 +301,20 @@ class ConstantBudgetApportioner:
     :param virtual_sensing_warmup_epochs: number of leading epochs at
         ``p_warm`` (``E_warm``). ``0`` disables the curriculum and is the
         compatibility default — the shipped arm's ``50`` lives in its config.
+    :param spatial_sampling: ADR-007 §2.3 — ``'uniform'`` (the pre-ADR-007 draw,
+        and the neutral default) or ``'anatomy_aware'`` (stratified
+        :math:`\mathcal{A}_{core}` + :math:`\mathcal{A}_{periph}` placement, only
+        with exactly ONE visual stream).
+    :param core_row_bounds: inclusive row span of :math:`\mathcal{A}_{core}` on
+        the visual patch grid.
+    :param core_col_bounds: inclusive column span of :math:`\mathcal{A}_{core}`.
+    :param core_tubes_min: ``S_core^min``, kept core tubes per step.
+    :param core_tubes_max: ``S_core^max``, kept core tubes per step.
+    :param periph_min_tubes: ``m_periph`` — the peripheral floor of §2.6(5).
+    :param physio_draw_min: lower bound of the Mode-2 physiological draw. ``0``
+        keeps the ADR-002..006 draw (and its ``K_tilde = 0`` fall-through) and
+        is the neutral default; ``1`` implements ADR-007 §2.5
+        (``Uniform{1..C_p}``, so no Mode-2 step can leak into Mode 1).
     :param generator: optional default RNG for :meth:`sample_step`.
     """
 
@@ -225,6 +328,13 @@ class ConstantBudgetApportioner:
                  single_carrier_tubes: int = 0,
                  p_single_modality: float = 0.0,
                  single_modality_warmup_p: float = 0.0,
+                 spatial_sampling: str = SPATIAL_UNIFORM,
+                 core_row_bounds: Sequence[int] = (2, 3),
+                 core_col_bounds: Sequence[int] = (2, 3),
+                 core_tubes_min: int = 1,
+                 core_tubes_max: int = 2,
+                 periph_min_tubes: int = 1,
+                 physio_draw_min: int = 0,
                  generator: Optional[torch.Generator] = None):
         self.streams: Tuple[StreamSpec, ...] = tuple(streams)
         self.n_budget = int(n_budget)
@@ -238,12 +348,31 @@ class ConstantBudgetApportioner:
         # class, and its warm-up value (Phase I has no single-carrier step).
         self.p_single_modality = float(p_single_modality)
         self.single_modality_warmup_p = float(single_modality_warmup_p)
+        # ADR-007 §2.3/§2.5: stratified spatial placement and the Mode-2 draw
+        # floor. Both default to the pre-ADR-007 behaviour.
+        self.spatial_sampling = str(
+            spatial_sampling or SPATIAL_UNIFORM).strip().lower()
+        self.core_row_bounds: Tuple[int, ...] = tuple(
+            int(x) for x in core_row_bounds)
+        self.core_col_bounds: Tuple[int, ...] = tuple(
+            int(x) for x in core_col_bounds)
+        self.core_tubes_min = int(core_tubes_min)
+        self.core_tubes_max = int(core_tubes_max)
+        self.periph_min_tubes = int(periph_min_tubes)
+        self.physio_draw_min = int(physio_draw_min)
         self.generator = generator
 
         self.visual: Tuple[StreamSpec, ...] = tuple(
             s for s in self.streams if s.kind == VISUAL)
         self.signal: Tuple[StreamSpec, ...] = tuple(
             s for s in self.streams if s.kind == SIGNAL)
+        self.n_visual = len(self.visual)
+        #: ADR-007 D1: the policy is RESOLVED from the stream set, never passed
+        #: in, so a caller cannot ask for a policy its streams do not support.
+        self.policy: str = (SPATIAL_POLICY_SINGLE_VISUAL
+                            if self.n_visual == 1
+                            else SPATIAL_POLICY_DUAL_VISUAL)
+        self.anatomy_aware: bool = self.spatial_sampling == SPATIAL_ANATOMY_AWARE
 
         #: tokens per visual tube (the ADR's ``T``), shared by both visual
         #: streams -- one patch grid means one tube layout.
@@ -258,13 +387,42 @@ class ConstantBudgetApportioner:
             or (self.n_budget // self.tokens_per_unit
                 if self.tokens_per_unit else 0))
         #: per-stream cap in TUBES (``M_v``) for visual streams.
-        self.video_cap_units: Dict[str, int] = {
-            s.name: int(math.floor(self.video_cap_ratio * int(s.n_units)))
-            for s in self.visual}
+        #: DUAL visual streams: the kept-ratio ceiling of ADR-002,
+        #: ``floor(video_cap_ratio * n_units)``.
+        #: SINGLE visual stream (ADR-007 D2): the allocation is fixed by the
+        #: budget, so the cap IS the Mode-1 allocation ``S_max = N / T`` and
+        #: ``video_cap_ratio`` becomes the *ceiling* on the kept fraction,
+        #: checked in :meth:`_validate`. Reusing the floored ratio here would
+        #: admit 9 tubes (floor(0.25*36)) and break the §2.5 {7,6,5,4} set.
+        self.video_cap_units: Dict[str, int] = {}
+        if self.n_visual == 1 and self.tokens_per_unit:
+            self.video_cap_units = {
+                self.visual[0].name: self.n_budget // self.tokens_per_unit}
+        elif self.n_visual > 1:
+            self.video_cap_units = {
+                s.name: int(math.floor(self.video_cap_ratio * int(s.n_units)))
+                for s in self.visual}
         #: per-stream cap in TOKENS (``C_p``) for physiological streams.
         self.physio_cap_tokens: Dict[str, int] = {
             s.name: int(math.floor(self.physio_cap_ratio * int(s.n_units)))
             for s in self.signal}
+
+        # ADR-007 §2.4(2)(3): the two bounds of the visual allocation, published
+        # for the manifest. ``None`` under the dual-visual policy, where the
+        # allocation is a split rather than a single count.
+        self.s_tir_min: Optional[int] = None
+        self.s_tir_max: Optional[int] = None
+        if self.n_visual == 1 and self.tokens_per_unit and self.signal:
+            physio_total = sum(self.physio_cap_tokens.values())
+            self.s_tir_max = self.n_budget // self.tokens_per_unit
+            self.s_tir_min = (self.n_budget - physio_total) // self.tokens_per_unit
+
+        # ADR-007 §2.3: the anatomical core/periphery partition, resolved from
+        # the 2-D patch grid (``StreamSpec.spatial_grid``). Populated only under
+        # ``anatomy_aware``; the placement code consumes ``core_indices``.
+        self.core_coords: Tuple[Tuple[int, int], ...] = ()
+        self.core_indices: Tuple[int, ...] = ()
+        self.periph_indices: Tuple[int, ...] = ()
 
         self._validate()
 
@@ -279,25 +437,36 @@ class ConstantBudgetApportioner:
             raise ValueError(
                 f'ConstantBudgetApportioner: duplicate stream name(s) {dupes}.')
         n_visual, n_signal = len(self.visual), len(self.signal)
-        if n_visual != 2:
+        # ADR-007 D1: the stream set SELECTS the policy. ONE visual stream is
+        # the ADR-007 two-stream policy (a sole visual must carry the whole
+        # Mode-1 budget out of its own grid); TWO is every ADR-002..ADR-006 arm.
+        if n_visual not in (1, 2):
             raise ValueError(
-                f'ConstantBudgetApportioner: the declared set needs exactly '
-                f'TWO visual streams (ADR-002 contract 5); got {n_visual} '
-                f'{[s.name for s in self.visual]} of {names}. A single visual '
-                f'stream cannot supply the Mode-1 budget and three cannot '
-                f'survive physiological saturation.')
+                f'ConstantBudgetApportioner: the declared set needs one or two '
+                f'visual streams (ADR-002 contract 5 / ADR-007 §2.1); got '
+                f'{n_visual} {[s.name for s in self.visual]} of {names}. Zero '
+                f'visual streams cannot supply the Mode-1 budget and three '
+                f'cannot survive physiological saturation.')
         if not 1 <= n_signal <= 2:
             raise ValueError(
                 f'ConstantBudgetApportioner: the declared set needs one or two '
                 f'physiological streams (ADR-002 contract 5); got {n_signal} '
                 f'{[s.name for s in self.signal]} of {names}.')
+        if n_visual == 1 and n_signal != 1:
+            raise ValueError(
+                f'ConstantBudgetApportioner: the ADR-007 one-visual policy '
+                f'declares exactly ONE physiological stream (its canonical set '
+                f'is {{tir, resp}}, ADR-007 §2.1); got {n_signal} '
+                f'{[s.name for s in self.signal]}. The Mode-2 apportionment of '
+                f'§2.5 and the C_p of §2.4(2) are defined for a single '
+                f'physiological stream.')
 
         tpu = {s.tokens_per_unit for s in self.visual}
         if len(tpu) != 1:
             per_stream = ', '.join(f'{s.name!r}: {s.tokens_per_unit}'
                                    for s in self.visual)
             raise ValueError(
-                f'ConstantBudgetApportioner: both visual streams must share '
+                f'ConstantBudgetApportioner: all visual streams must share '
                 f'one tube layout (tokens_per_unit); got {{{per_stream}}}.')
         if not 0.0 < self.video_cap_ratio <= 1.0:
             raise ValueError(
@@ -361,9 +530,62 @@ class ConstantBudgetApportioner:
                 f'ConstantBudgetApportioner: n_budget must be >= 1; got '
                 f'{self.n_budget!r}.')
 
+        # ---- ADR-007 §2.3/§2.5 parameter guards (all resolved-time) -------- #
+        if self.spatial_sampling not in SPATIAL_SAMPLING:
+            raise ValueError(
+                f'ConstantBudgetApportioner: spatial_sampling must be one of '
+                f'{SPATIAL_SAMPLING}; got {self.spatial_sampling!r}.')
+        if self.anatomy_aware and n_visual != 1:
+            raise ValueError(
+                f'ConstantBudgetApportioner: spatial_sampling='
+                f'{SPATIAL_ANATOMY_AWARE!r} needs exactly ONE visual stream -- '
+                f'the core subgrid indexes a single ROI patch grid; got '
+                f'{[s.name for s in self.visual]}. Use {SPATIAL_UNIFORM!r} for '
+                f'a multi-visual arm.')
+        if self.p_single_modality > 0.0 and n_visual == 1:
+            raise ValueError(
+                f'ConstantBudgetApportioner: p_single_modality='
+                f'{self.p_single_modality!r} > 0 needs TWO visual streams (one '
+                f'to carry, one to zero), but the declared set has a sole '
+                f'visual stream {[s.name for s in self.visual]}. Keep it at '
+                f'0.0 on an ADR-007 arm.')
+        if self.physio_draw_min < 0:
+            raise ValueError(
+                f'ConstantBudgetApportioner: physio_draw_min must be >= 0 '
+                f'(0 = the ADR-002..006 draw); got {self.physio_draw_min!r}.')
+        if self.physio_cap_tokens and self.physio_draw_min > min(
+                self.physio_cap_tokens.values()):
+            raise ValueError(
+                f'ConstantBudgetApportioner: physio_draw_min '
+                f'{self.physio_draw_min} exceeds the physiological cap '
+                f'{self.physio_cap_tokens} (the draw must stay inside C_p, '
+                f'ADR-007 §2.6 rule 2).')
+        if (self.physio_draw_min > 0 and n_visual > 1
+                and self.physio_cap_tokens
+                and min(self.physio_cap_tokens.values()) < self.tokens_per_unit):
+            # ADR-007 §2.5: with the non-zero floor the whole-tube alignment
+            # must be able to land on a real draw, which needs C_p >= T. On the
+            # TWO-visual topology the alignment is on the SUM of the signals and
+            # cannot be repaired by clamping one stream, so the tuple is
+            # rejected here. The one-visual policy reports the same condition
+            # as rule 2 inside :meth:`_validate_single_visual`, which keeps the
+            # documented 1 -> 2 -> 3 ... order intact.
+            raise ValueError(
+                f'ConstantBudgetApportioner: physio_draw_min='
+                f'{self.physio_draw_min} > 0 needs every physiological cap to '
+                f'reach T={self.tokens_per_unit} tokens, so the whole-tube '
+                f'alignment has a legal target; got C_p='
+                f'{self.physio_cap_tokens} (ADR-007 §2.5/§2.6 rule 2).')
+
         t = self.tokens_per_unit
         m = self.video_min_tubes
         caps = self.video_cap_units
+        if n_visual == 1:
+            # ADR-007 §2.6: the one-visual policy has its own feasibility block,
+            # evaluated in TABLE ORDER (1 -> 2 -> 3 -> 4 -> 5 -> 5b -> 6) so a
+            # multi-violating tuple always reports the first condition.
+            self._validate_single_visual(t, m)
+            return
         m_lo = min(caps.values())          # tightest visual cap, in tubes
         if m < 1:
             raise ValueError(
@@ -433,6 +655,165 @@ class ConstantBudgetApportioner:
                 f'{m}-tube floors need {need}. Lower physio_cap_ratio, lower '
                 f'video_min_tubes or raise n_budget.')
 
+    def _resolve_core_grid(self, spec: StreamSpec) -> None:
+        """Resolve :math:`\\mathcal{A}_{core}` / :math:`\\mathcal{A}_{periph}`.
+
+        ADR-007 §2.3 partitions the ``G_h x G_w`` patch grid into the anatomical
+        core subgrid ``core_row_bounds x core_col_bounds`` and its complement.
+        Tube indices use the conv/tubelet flatten order ``h * G_w + w`` -- the
+        same order ``core.mask_placement.place_video`` expands to encoder
+        indices -- so a resolved core is directly consumable by the placement.
+        """
+        grid = spec.spatial_grid
+        if grid is None:
+            raise ValueError(
+                f'ConstantBudgetApportioner: spatial_sampling='
+                f'{SPATIAL_ANATOMY_AWARE!r} needs StreamSpec.spatial_grid on '
+                f'the visual stream {spec.name!r} -- the anatomical core is a '
+                f'(row, column) subgrid, and n_units={int(spec.n_units)} alone '
+                f'cannot resolve it. Pass spatial_grid=(G_h, G_w) from the '
+                f'tokenizer geometry.')
+        gh, gw = (int(x) for x in grid)
+        rows = tuple(int(x) for x in self.core_row_bounds)
+        cols = tuple(int(x) for x in self.core_col_bounds)
+        if len(rows) != 2 or len(cols) != 2:
+            raise ValueError(
+                f'ConstantBudgetApportioner: core_row_bounds / '
+                f'core_col_bounds must be (lo, hi) pairs; got {rows}, {cols}.')
+        r0, r1 = rows
+        c0, c1 = cols
+        if not 0 <= r0 <= r1 <= gh - 1:
+            raise ValueError(
+                f'ConstantBudgetApportioner: core_row_bounds {rows} must lie '
+                f'in [0, G_h-1] = [0, {gh - 1}] with lo <= hi (ADR-007 §2.3).')
+        if not 0 <= c0 <= c1 <= gw - 1:
+            raise ValueError(
+                f'ConstantBudgetApportioner: core_col_bounds {cols} must lie '
+                f'in [0, G_w-1] = [0, {gw - 1}] with lo <= hi (ADR-007 §2.3).')
+        coords = tuple((r, c) for r in range(r0, r1 + 1)
+                       for c in range(c0, c1 + 1))
+        indices = tuple(r * gw + c for r, c in coords)
+        core_set = set(indices)
+        periph = tuple(i for i in range(int(spec.n_units))
+                       if i not in core_set)
+        # §2.6 rule 6: disjoint partition covering the whole grid.
+        if core_set & set(periph) or \
+                len(core_set) + len(periph) != int(spec.n_units):
+            raise ValueError(
+                f'ConstantBudgetApportioner: feasibility condition 6 failed -- '
+                f'A_core {sorted(core_set)} and A_periph are not a disjoint '
+                f'partition of the {int(spec.n_units)} spatial tubes.')
+        self.core_coords = coords
+        self.core_indices = indices
+        self.periph_indices = periph
+
+    def _validate_single_visual(self, t: int, m: int) -> None:
+        """ADR-007 §2.6 feasibility for the ONE-visual policy.
+
+        Evaluated in TABLE ORDER (1 -> 2 -> 3 -> 4 -> 5 -> 5b -> 6) so a tuple
+        that violates several conditions always reports the first one. Rule 6
+        is enforced while the partition is resolved (:meth:`_resolve_core_grid`);
+        rules 5b and 6 apply only under ``anatomy_aware``.
+        """
+        spec = self.visual[0]
+        units_v = int(spec.n_units)
+        c_p = int(sum(self.physio_cap_tokens.values()))
+
+        # 1. exact budget divisibility
+        if not t or self.n_budget % t:
+            raise ValueError(
+                f'ConstantBudgetApportioner: feasibility condition 1 failed -- '
+                f'n_budget {self.n_budget} is not a multiple of tokens_per_unit '
+                f'T={t} (remainder {self.n_budget % t if t else "n/a"}), so '
+                f'Mode 1 cannot map the whole budget onto whole visual tubes '
+                f'(ADR-007 §2.6 rule 1).')
+        s_max = self.n_budget // t
+
+        # 2. non-trivial inpainting cap
+        if not t <= c_p < self.n_budget:
+            raise ValueError(
+                f'ConstantBudgetApportioner: feasibility condition 2 failed -- '
+                f'the physiological cap C_p={c_p} must satisfy '
+                f'T={t} <= C_p < n_budget={self.n_budget} (ADR-007 §2.6 '
+                f'rule 2); adjust physio_cap_ratio '
+                f'({self.physio_cap_ratio!r}) or n_budget.')
+        if self.physio_draw_min >= 1 and c_p < t:
+            raise ValueError(
+                f'ConstantBudgetApportioner: feasibility condition 2 failed -- '
+                f'physio_draw_min={self.physio_draw_min} needs C_p={c_p} >= '
+                f'T={t} so a whole-tube inpainting draw exists.')
+
+        # 3. visual grid capacity
+        if s_max > units_v:
+            raise ValueError(
+                f'ConstantBudgetApportioner: feasibility condition 3 failed -- '
+                f'Mode 1 needs S_max = n_budget/T = {self.n_budget}/{t} = '
+                f'{s_max} tube(s) but the visual stream {spec.name!r} has only '
+                f'{units_v} (ADR-007 §2.6 rule 3).')
+
+        # 4. high-masking ceiling
+        kept_fraction = s_max / units_v
+        if kept_fraction > self.video_cap_ratio:
+            raise ValueError(
+                f'ConstantBudgetApportioner: feasibility condition 4 failed -- '
+                f'S_max/units_v = {s_max}/{units_v} = '
+                f'{kept_fraction:.4f} exceeds the high-masking ceiling '
+                f'video_cap_ratio={self.video_cap_ratio!r} (ADR-007 §2.6 '
+                f'rule 4). A 1-visual arm must mask at least '
+                f'{(1.0 - self.video_cap_ratio) * 100:.1f} % of its tubes.')
+
+        # 5. stratified feasibility at the minimum visual allocation
+        s_min = (self.n_budget - c_p) // t
+        if s_min < 1:
+            raise ValueError(
+                f'ConstantBudgetApportioner: feasibility condition 5 failed -- '
+                f'physiological saturation leaves S_min = (n_budget - C_p)/T = '
+                f'({self.n_budget} - {c_p})//{t} = {s_min} visual tube(s), so '
+                f'the encoder would receive no visual evidence (ADR-007 §2.6 '
+                f'rule 5). Lower physio_cap_ratio or raise n_budget.')
+        if m != s_min:
+            raise ValueError(
+                f'ConstantBudgetApportioner: feasibility condition 5 failed -- '
+                f'video_min_tubes={m} must equal the derived floor '
+                f'S_tir_min = (n_budget - C_p)//T = ({self.n_budget} - '
+                f'{c_p})//{t} = {s_min} (ADR-007 §2.6 rule 5; it is an '
+                f'assertion, not a knob).')
+
+        # 5b. stratified core/periphery feasibility (anatomy-aware only).
+        # The core subgrid is resolved HERE so that rules 1-5 report before a
+        # malformed ``core_*_bounds`` does (plan §1.2: the order is normative).
+        if self.anatomy_aware:
+            self._resolve_core_grid(spec)
+            n_core = len(self.core_indices)
+            n_periph = len(self.periph_indices)
+            if not 1 <= self.core_tubes_min <= self.core_tubes_max <= n_core:
+                raise ValueError(
+                    f'ConstantBudgetApportioner: feasibility condition 5b '
+                    f'failed -- need 1 <= core_tubes_min '
+                    f'({self.core_tubes_min}) <= core_tubes_max '
+                    f'({self.core_tubes_max}) <= |A_core| = {n_core} '
+                    f'(ADR-007 §2.6 rule 5).')
+            if self.periph_min_tubes < 1:
+                raise ValueError(
+                    f'ConstantBudgetApportioner: feasibility condition 5b '
+                    f'failed -- periph_min_tubes={self.periph_min_tubes} must '
+                    f'be >= 1 (the peripheral context floor, ADR-007 §2.6 '
+                    f'rule 5).')
+            if s_min < self.core_tubes_max + self.periph_min_tubes:
+                raise ValueError(
+                    f'ConstantBudgetApportioner: feasibility condition 5b '
+                    f'failed -- S_tir_min={s_min} must be at least '
+                    f'core_tubes_max + periph_min_tubes = '
+                    f'{self.core_tubes_max} + {self.periph_min_tubes} = '
+                    f'{self.core_tubes_max + self.periph_min_tubes} '
+                    f'(ADR-007 §2.6 rule 5).')
+            if n_periph < s_max - self.core_tubes_min:
+                raise ValueError(
+                    f'ConstantBudgetApportioner: feasibility condition 5b '
+                    f'failed -- |A_periph|={n_periph} must be at least '
+                    f'S_tir_max - core_tubes_min = {s_max} - '
+                    f'{self.core_tubes_min} (ADR-007 §2.6 rule 5).')
+
     # ------------------------------------------------------------------ #
     # helpers
     # ------------------------------------------------------------------ #
@@ -459,7 +840,9 @@ class ConstantBudgetApportioner:
 
     def _plan(self, mode: int, units: Dict[str, int],
               tokens: Dict[str, int], regime: str,
-              carrier: Optional[str] = None) -> BudgetPlan:
+              carrier: Optional[str] = None,
+              core: Optional[Dict[str, int]] = None,
+              periph: Optional[Dict[str, int]] = None) -> BudgetPlan:
         # ADR-005 contract 4: the RESOLVED mode is a function of the counts,
         # not of the draw. Computed here because this is the single
         # construction site of a plan and only the policy knows the signal set.
@@ -468,7 +851,9 @@ class ConstantBudgetApportioner:
                      else MODE_INPAINTING)
         plan = BudgetPlan(mode=int(mode), kept_tokens=dict(tokens),
                           kept_units=dict(units), mode_by_counts=by_counts,
-                          regime=regime, carrier=carrier)
+                          regime=regime, carrier=carrier,
+                          core_units=(None if core is None else dict(core)),
+                          periph_units=(None if periph is None else dict(periph)))
         # exact sum, caps, floors and the tube multiple, re-checked
         if plan.total_tokens != self.n_budget:
             raise RuntimeError(
@@ -515,6 +900,29 @@ class ConstantBudgetApportioner:
                     f'ConstantBudgetApportioner: invariant violated — visual '
                     f'stream {s.name!r} keeps {plan.kept_tokens[s.name]} '
                     f'token(s) for {kept} tube(s) of {s.tokens_per_unit}.')
+        # ADR-007 §2.4(5): a stratifying policy must carry its split, and the
+        # split must stay inside the sampled bounds.
+        if self.anatomy_aware:
+            if plan.core_units is None:
+                raise RuntimeError(
+                    'ConstantBudgetApportioner: invariant violated — an '
+                    'anatomy_aware plan must carry the stratified split; got '
+                    f'core={plan.core_units!r}.')
+            for s in self.visual:
+                core = int(plan.core_units.get(s.name, 0))
+                periph = int(plan.periph_units.get(s.name, 0))
+                if not self.core_tubes_min <= core <= self.core_tubes_max:
+                    raise RuntimeError(
+                        f'ConstantBudgetApportioner: invariant violated — '
+                        f'visual stream {s.name!r} keeps {core} core tube(s), '
+                        f'outside [{self.core_tubes_min}, '
+                        f'{self.core_tubes_max}].')
+                if periph < self.periph_min_tubes:
+                    raise RuntimeError(
+                        f'ConstantBudgetApportioner: invariant violated — '
+                        f'visual stream {s.name!r} keeps {periph} peripheral '
+                        f'tube(s), below periph_min_tubes '
+                        f'{self.periph_min_tubes}.')
         for s in self.signal:
             kept = plan.kept_tokens[s.name]
             if not 0 <= kept <= self.physio_cap_tokens[s.name]:
@@ -609,6 +1017,15 @@ class ConstantBudgetApportioner:
             draw that falls through here keeps ``MODE_INPAINTING`` while its
             counts resolve to Mode 1.
         """
+        if self.n_visual == 1:
+            # ADR-007 §2.4(4): with a sole visual the sensor-absent class is a
+            # single step shape (S_tir = S_max, K_resp = 0). The ADR-006
+            # single-carrier sub-decision does not apply and cannot: a second
+            # carrier stream would be needed to zero, and ``p_single_modality
+            # > 0`` is rejected at construction. NO p_s draw is taken, so this
+            # branch consumes exactly one random number per step (the mode
+            # draw in ``sample_step``).
+            return self._sole_visual(g, mode, k_resp=0)
         p_s = self.p_s_at(epoch)
         if p_s > 0.0:
             if float(torch.rand(1, dtype=_F64, generator=g).item()) < p_s:
@@ -645,6 +1062,48 @@ class ConstantBudgetApportioner:
         tokens[carrier] = self.single_carrier_tubes * int(spec.tokens_per_unit)
         return self._plan(mode, units, tokens, REGIME_SINGLE, carrier)
 
+    def _sole_visual(self, g, mode: int, k_resp: int) -> BudgetPlan:
+        """ADR-007 §2.4/§2.5: the allocation of the ONE-visual policy.
+
+        Mode 1 (``k_resp = 0``) keeps the whole budget on the sole visual
+        (``S_tir = N/T``); Mode 2 keeps ``(N - k_resp)/T`` tubes. ADR-007 D3
+        labels the step :data:`REGIME_SINGLE_VISUAL` when no physiological
+        token survives and :data:`REGIME_INPAINTING` when some do, so
+        "regime == inpainting iff a signal stream keeps > 0 tokens" holds in
+        this topology too.
+
+        ``S_core`` is drawn HERE, once per step and AFTER the count/alignment
+        draws (ADR-007 §2.4(6) + §2.5 order), and shared by the whole batch;
+        only the tube INDICES vary per sample.
+        """
+        spec = self.visual[0]
+        s_tir = (self.n_budget - int(k_resp)) // self.tokens_per_unit
+        units = {s.name: 0 for s in self.streams}
+        tokens = {s.name: 0 for s in self.streams}
+        units[spec.name] = s_tir
+        tokens[spec.name] = s_tir * int(spec.tokens_per_unit)
+        for s in self.signal:
+            units[s.name] = int(k_resp)
+            tokens[s.name] = int(k_resp)
+        core, periph = self._draw_stratification(g, spec.name, s_tir)
+        regime = (REGIME_SINGLE_VISUAL if int(k_resp) == 0
+                  else REGIME_INPAINTING)
+        return self._plan(mode, units, tokens, regime,
+                          core=core, periph=periph)
+
+    def _draw_stratification(self, g, name: str, s_tir: int):
+        """``(core_units, periph_units)`` for this step (ADR-007 §2.3).
+
+        One draw per STEP, shared by the whole mini-batch (§2.4(6)); WHICH tubes
+        are kept is decided per sample by the placement. Under ``uniform`` the
+        literal is tested BEFORE any draw, so the pre-ADR-007 RNG stream is not
+        disturbed -- a draw-then-ignore would shift every later count.
+        """
+        if not self.anatomy_aware:
+            return None, None
+        s_core = self._randint(self.core_tubes_min, self.core_tubes_max, g)
+        return {name: int(s_core)}, {name: int(s_tir) - int(s_core)}
+
     def _mode2(self, g, epoch: Optional[int] = None) -> BudgetPlan:
         """Waveform inpainting: physiological draws, tube-aligned residual.
 
@@ -656,7 +1115,8 @@ class ConstantBudgetApportioner:
         """
         t = self.tokens_per_unit
         raw: Dict[str, int] = {
-            s.name: self._randint(0, self.physio_cap_tokens[s.name], g)
+            s.name: self._randint(self.physio_draw_min,
+                                  self.physio_cap_tokens[s.name], g)
             for s in self.signal}
 
         # alignment: charge the modulo remainder to the first declared
@@ -669,6 +1129,13 @@ class ConstantBudgetApportioner:
                     remainder = 0
                     break
         if remainder:
+            # ADR-007 §2.5: the downward branch ``K_tilde - (T - r)``. Its count
+            # is NEVER clamped here: mutating it would break the modulo
+            # alignment the next block asserts. With the ADR-007 draw floor
+            # (``physio_draw_min >= 1``) a result below T is impossible for a
+            # single signal — the floor is >= 1, ``C_p >= T`` is validated, and
+            # the upward branch is preferred whenever it fits — so the check
+            # below is an assertion, not a correction.
             first = self.signal[0].name
             raw[first] -= t - remainder
             if raw[first] < 0:
@@ -677,12 +1144,21 @@ class ConstantBudgetApportioner:
                     f'{remainder} cannot be absorbed — {first!r} would fall to '
                     f'{raw[first]}. Feasibility condition 3 should have '
                     f'rejected this tuple.')
+            if (self.physio_draw_min >= 1 and len(self.signal) == 1
+                    and raw[first] < t):
+                raise RuntimeError(
+                    f'ConstantBudgetApportioner: the ADR-007 draw floor cannot '
+                    f'land below T={t} on a sole physiological stream, yet '
+                    f'{first!r} aligned to {raw[first]}. ``_validate`` '
+                    f'enforces C_p >= T for physio_draw_min > 0, so this is a '
+                    f'bug in the alignment, not a configuration error.')
 
         # ADR-006 §2.3 contract 4 / §2.5: an aligned total of zero is a
         # SENSOR-ABSENT step, not an inpainting one — it falls through to the
-        # same Regime-3/Regime-2 decision as a sampled Mode-1 step. (Only the
-        # K_tilde = 0 draw can reach this: 350 - 0 is already a multiple of T,
-        # so the alignment cannot raise it.)
+        # same Regime-3/Regime-2 decision as a sampled Mode-1 step. (With
+        # physio_draw_min >= 1 this is unreachable: the draw itself is >= 1 and
+        # the alignment only rounds UP or down to a hole tube count >= T, so no
+        # Mode-2 step can leak into Mode 1 — ADR-007 §2.5.)
         if sum(raw.values()) == 0:
             return self._sensor_absent(g, epoch, MODE_INPAINTING)
 
@@ -692,6 +1168,10 @@ class ConstantBudgetApportioner:
                 f'ConstantBudgetApportioner: aligned physiological total '
                 f'{sum(raw.values())} leaves {remaining} visual token(s), not a '
                 f'multiple of T={t}.')
+        if self.n_visual == 1:
+            # ADR-007 §2.5: S_tir = (N - K_resp)/T, no split.
+            return self._sole_visual(g, MODE_INPAINTING,
+                                     k_resp=sum(raw.values()))
         s1, s2 = self._split_tubes(remaining // t, g)
         first, second = self.visual[0], self.visual[1]
         units = {first.name: s1, second.name: s2}
@@ -702,7 +1182,8 @@ class ConstantBudgetApportioner:
             tokens[s.name] = raw[s.name]
         return self._plan(MODE_INPAINTING, units, tokens, REGIME_INPAINTING)
 
-    def plan_from_counts(self, kept_tokens: Mapping[str, int]) -> BudgetPlan:
+    def plan_from_counts(self, kept_tokens: Mapping[str, int],
+                         kept_core: Optional[int] = None) -> BudgetPlan:
         """Validate an EXPLICIT allocation (evaluation pins, tests).
 
         The masking policy owns the draws; this entry point exists so a caller
@@ -750,22 +1231,54 @@ class ConstantBudgetApportioner:
                 if all(tokens[s.name] == 0 for s in self.signal)
                 else MODE_INPAINTING)
         regime, carrier = self._infer_regime(tokens)
+        core, periph = self._pin_stratification(units, kept_core)
         try:
-            return self._plan(mode, units, tokens, regime, carrier)
+            return self._plan(mode, units, tokens, regime, carrier,
+                              core=core, periph=periph)
         except RuntimeError as exc:      # normalise to the caller-facing type
             raise ValueError(
                 f'ConstantBudgetApportioner.plan_from_counts: {exc}') from exc
 
+    def _pin_stratification(self, units: Mapping[str, int],
+                            kept_core: Optional[int]
+                            ) -> Tuple[Optional[Dict[str, int]],
+                                       Optional[Dict[str, int]]]:
+        """Turn an explicit ``kept_core`` into a stratified split.
+
+        Only a STRATIFIED policy can consume one. Defaulting on a ``uniform``
+        checkpoint (an ADR-006 arm, or the ADR-007 ``uniform`` comparator) would
+        report a fabricated ``S_core`` in a figure caption, so an explicit
+        ``kept_core`` there is an error rather than a no-op.
+        """
+        if not self.anatomy_aware:
+            if kept_core is not None:
+                raise ValueError(
+                    f'ConstantBudgetApportioner.plan_from_counts: kept_core='
+                    f'{kept_core} was given for a {SPATIAL_UNIFORM!r} policy. '
+                    f'A uniform checkpoint has no anatomical core, so its '
+                    f'core count would be fabricated; drop kept_core or run '
+                    f'with spatial_sampling={SPATIAL_ANATOMY_AWARE!r}.')
+            return None, None
+        spec = self.visual[0]
+        s_tir = int(units[spec.name])
+        core_n = self.core_tubes_min if kept_core is None else int(kept_core)
+        return {spec.name: core_n}, {spec.name: s_tir - core_n}
+
     def _infer_regime(self, tokens: Mapping[str, int]
                       ) -> Tuple[str, Optional[str]]:
-        """Resolve the ADR-006 regime from an EXPLICIT allocation.
+        """Resolve the step class from an EXPLICIT allocation.
 
-        Only :meth:`plan_from_counts` needs this: the sampler knows the regime
-        it drew, while a pinned allocation must be labelled from its counts.
+        Only :meth:`plan_from_counts` needs this: the sampler knows the class it
+        drew, while a pinned allocation must be labelled from its counts. The
+        rule is the sampler's (ADR-007 D3): ``inpainting`` iff a signal stream
+        keeps > 0 tokens; otherwise ``single_visual`` for a one-visual set and
+        ``single``/``bi_visual`` (by carrier count) for a two-visual set.
         """
         if any(int(tokens[s.name]) for s in self.signal):
             return REGIME_INPAINTING, None
         carriers = [s.name for s in self.visual if int(tokens[s.name]) > 0]
+        if len(self.visual) == 1:
+            return REGIME_SINGLE_VISUAL, None
         if len(carriers) == 1:
             return REGIME_SINGLE, carriers[0]
         return REGIME_BI_VISUAL, None

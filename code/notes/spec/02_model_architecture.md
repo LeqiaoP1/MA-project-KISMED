@@ -193,9 +193,11 @@ Step 1 — Visual input preprocessing + tokenise:
   for visual s: x[s] = zscore_clip(x[s])                   # per-ch z over (T,H,W), per sample
   tokens_s = adapters[s](x[s]) + positions[s].pos_embed   # [B, N_s, D]
 
-Step 2 — Constant-budget masking (ADR-002, core/budget_masking.py):
-  plan = apportioner.sample_step(counts_generator)   # mode + per-stream counts
+Step 2 — Constant-budget masking (ADR-005, core/budget_masking.py):
+  plan = apportioner.sample_step(counts_generator, epoch)  # mode + counts, p(e)
   sum(plan.kept_tokens.values()) == n_budget          # 350, contract 1
+  plan.mode_by_counts == MODE_VIRTUAL_SENSING iff all(signal counts == 0)
+                                                      # contract 4 label
   ids_keep[s] = place_video/place_signal(plan.kept_tokens[s],
                      placement_generator)           # [B, k_s], per-sample
   mask_s = 1 - scatter(ids_keep[s])                   # [B, N_s], 1 = masked

@@ -172,6 +172,18 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable,
             if kept_units:
                 metric_logger.update(**{f'kept_units_{name}': value
                                         for name, value in kept_units.items()})
+            # ADR-007 §2.9: the stratified split, in TUBES. Keyed per declared
+            # stream and emitted on every step (0 for a signal stream and for
+            # the whole run under the ``uniform`` ablation), so the epoch mean
+            # of `kept_core_<s>` IS the advertised S_core.
+            kept_core = out.get('kept_core') or {}
+            if kept_core:
+                metric_logger.update(**{f'kept_core_{name}': value
+                                        for name, value in kept_core.items()})
+            kept_periph = out.get('kept_periph') or {}
+            if kept_periph:
+                metric_logger.update(**{f'kept_periph_{name}': value
+                                        for name, value in kept_periph.items()})
             if 'mode' in out:
                 metric_logger.update(mode=out['mode'])
             if 'mode_resolved' in out:
@@ -260,10 +272,14 @@ def evaluate_pretrain(model: torch.nn.Module, data_loader: Iterable,
 
     :returns: ``{'val_loss', 'components': {'mse_<stream>': …}, 'kept':
         {'kept_<stream>': …}, 'mode': {'mode1': …, 'mode2': …},
-        'resolved': {'mode1': …, 'mode2': …}, 'n_samples', 'n_batches',
-        'mask_base', 'pinned'}`` — ``mode`` counts the DRAWN modes, ``resolved``
-        the contract-4 modes, so their Mode-1 shares differ by the
-        ``K_tilde = 0`` draws (ADR-005 §2.8).
+        'resolved': {'mode1': …, 'mode2': …}, 'single': …, 'stratification':
+        {'core_tubes_<stream>': …, 'periph_tubes_<stream>': …},
+        'n_samples', 'n_batches', 'mask_base', 'pinned'}`` — ``mode`` counts
+        the DRAWN modes, ``resolved`` the contract-4 modes, so their Mode-1
+        shares differ by the ``K_tilde = 0`` draws (ADR-005 §2.8).
+        ``stratification`` holds the ADR-007 tube counts in TUBES (mean
+        ``S_core`` / ``S_periph``); it is a SIBLING of ``components``, which
+        stays the MSE component set.
     """
     from core.budget_masking import REGIME_SINGLE
     from core.mask_placement import counts_generator, placement_generator
@@ -280,6 +296,7 @@ def evaluate_pretrain(model: torch.nn.Module, data_loader: Iterable,
     mode_totals: dict = {}
     resolved_totals: dict = {}
     single_totals: dict = {}
+    strat_totals: dict = {}
 
     for batch_idx, batch in enumerate(data_loader):
         seed = int(val_mask_seed(mask_base, batch_idx))
@@ -307,6 +324,15 @@ def evaluate_pretrain(model: torch.nn.Module, data_loader: Iterable,
         for name, value in (out.get('kept') or {}).items():
             kept_totals.setdefault(f'kept_{name}', 0.0)
             kept_totals[f'kept_{name}'] += float(value) * batch_n
+        # ADR-007 §2.9: tube counts, kept OUT of ``components`` (which is the
+        # MSE component set — ``test_stage2_protocol`` pins that) and out of
+        # ``kept`` (which is in TOKENS), so the units of each dict stay honest.
+        for name, value in (out.get('kept_core') or {}).items():
+            strat_totals.setdefault(f'core_tubes_{name}', 0.0)
+            strat_totals[f'core_tubes_{name}'] += float(value) * batch_n
+        for name, value in (out.get('kept_periph') or {}).items():
+            strat_totals.setdefault(f'periph_tubes_{name}', 0.0)
+            strat_totals[f'periph_tubes_{name}'] += float(value) * batch_n
         if 'mode' in out:
             mode_totals.setdefault(f'mode{int(out["mode"])}', 0.0)
             mode_totals[f'mode{int(out["mode"])}'] += batch_n
@@ -338,7 +364,7 @@ def evaluate_pretrain(model: torch.nn.Module, data_loader: Iterable,
         'n_batches': n_batches, 'components': components,
         'kept': kept_totals, 'mode': mode_totals,
         'resolved': resolved_totals,
-        'single': single_totals,
+        'single': single_totals, 'stratification': strat_totals,
     }
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         gathered = [None] * torch.distributed.get_world_size()
@@ -353,6 +379,8 @@ def evaluate_pretrain(model: torch.nn.Module, data_loader: Iterable,
                                        for g in gathered])
         single_totals = _merge_sums([g.get('single') or {}
                                      for g in gathered])
+        strat_totals = _merge_sums([g.get('stratification') or {}
+                                   for g in gathered])
         if n_samples == 0:
             raise SystemExit(
                 '[val] the gathered validation pass contains no sample across '
@@ -365,6 +393,7 @@ def evaluate_pretrain(model: torch.nn.Module, data_loader: Iterable,
         'mode': {k: v / n_samples for k, v in mode_totals.items()},
         'resolved': {k: v / n_samples for k, v in resolved_totals.items()},
         'single': {k: v / n_samples for k, v in single_totals.items()},
+        'stratification': {k: v / n_samples for k, v in strat_totals.items()},
         'n_samples': n_samples,
         'n_batches': n_batches,
         'mask_base': int(mask_base),

@@ -100,12 +100,39 @@ the ADR-002 arm).
   its temporal positions, so a visual count is a multiple of `Gt`); a
   physiological unit is one **temporal token**.
 - **Caps / floors** (`video_cap_ratio` 0.25, `physio_cap_ratio` 0.50,
-  `video_min_tubes` 2): every visual stream keeps 2..9 tubes (50..225 tokens),
-  every physiological stream at most 125 of 250 tokens.
+  `video_min_tubes` 2): under the **two-visual** policy (ADR-002..006) every
+  visual stream keeps 2..9 tubes (50..225 tokens), every physiological stream at
+  most 125 of 250 tokens. Under the **one-visual** policy (ADR-007) the same
+  `video_cap_ratio` is a *ceiling* on the kept fraction (8/36 = 22.2 %) and the
+  cap in tubes IS the Mode-1 allocation `n_budget / T`; see below.
 - **Placement** (`core/mask_placement.py`): which units survive, drawn per
-  SAMPLE — `scattered` (uniform without replacement, default) or `span`
-  (contiguous blocks of `physio_span_tokens`). Counts are batch-uniform,
-  placements are not.
+  SAMPLE — `scattered` (uniform without replacement, default), `span`
+  (contiguous blocks of `physio_span_tokens`), or — under ADR-007 —
+  `anatomy_aware` (`place_video_stratified`, stratified core + periphery).
+  Counts are batch-uniform, placements are not.
+- **ADR-007 one-visual policy** (`streams: tir,resp`, `n_budget = 200`,
+  `spatial_sampling: anatomy_aware`): the Phase-1 single-camera thermal →
+  respiration arm. Terms:
+  - **$\mathcal{A}_{core}$ / `A_core`** — the anatomical core *subgrid* of the
+    `6 × 6` patch grid that carries the convective airflow plume
+    (`core_row_bounds × core_col_bounds`, default rows 2-3 × cols 2-3 → tubes
+    `{14, 15, 20, 21}`; index = `row * G_w + col`).
+  - **$\mathcal{A}_{periph}$ / `A_periph`** — the remaining 32 tubes (nasal
+    bridge, cheeks, upper lip, chin).
+  - **$S_{core}$ / `core_tubes_min..max`** — kept core tubes per step (`{1, 2}`
+    for the arm). `S_core ≥ 1` is what makes the core hit **certain** instead of
+    a probability. **$S_{periph}$** — the remaining kept tubes, floored by
+    `periph_min_tubes` ($m_{periph}$).
+  - **$S_{tir}^{min}$ / `video_min_tubes`** — the visual floor at physiological
+    saturation, `(n_budget − C_p) // T` (4 for the arm). It is an *assertion* of
+    the derivation, not a free knob.
+  - **`physio_draw_min`** — lower bound of the Mode-2 physiological draw. `0`
+    keeps the ADR-002..006 draw (with its `K_tilde = 0` fall-through); `1` is
+    ADR-007 §2.5 (`Uniform{1..C_p}`), so **no Mode-2 step can leak into Mode 1**.
+  - **`REGIME_SINGLE_VISUAL`** (`'single_visual'`) — the ADR-007 step class:
+    `regime == 'inpainting'` iff some signal stream keeps > 0 tokens, else
+    `single_visual` on a one-visual run (`single`/`bi_visual` stay the
+    two-visual labels).
 - **`n_budget` / `spatial_patches` / `physio_tokens`**: the constant visible
   budget and the two tokenizer-derived unit counts (the latter two are asserted
   against the tokenizer at build, never tuned).

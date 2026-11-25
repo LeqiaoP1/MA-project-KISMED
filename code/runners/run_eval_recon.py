@@ -112,7 +112,17 @@ def get_args(argv=None):
                         'the 2-tube floor and the 25 % cap (which would '
                         'otherwise realise 225/125 and make the TIR-only / '
                         'RGB2D-only probe inexpressible). none (default) = '
-                        'the clamped split of the --kept_* fractions.')
+                        'the clamped split of the --kept_* fractions. On a '
+                        'ONE-visual checkpoint it is only meaningful as that '
+                        'sole stream, where it is exactly Mode 1.')
+    p.add_argument('--pin_core_tubes', default=-1, type=int,
+                   help='ADR-007 §2.3: how many of the pinned kept tubes come '
+                        'from the anatomical core A_core. -1 (default) = unset, '
+                        'which lets an anatomy_aware checkpoint use its own '
+                        'core_tubes_min and keeps a uniform checkpoint '
+                        'core-free; >= 0 is forwarded explicitly and RAISES on a '
+                        'uniform checkpoint (its core count would be '
+                        'fabricated).')
     p.add_argument('--kept_bp', default=1.0, type=float,
                    help='fraction of the 250 bp tokens kept. 1.0 (default) '
                         'reproduces the legacy rule (a declared stream with no '
@@ -293,7 +303,9 @@ def pin_masking(model, a):
             f'{model.n_budget}: {residual:+d} token(s) left after filling every '
             f'visual stream to its cap/floor ({counts}). Adjust --kept_* or '
             f'evaluate a checkpoint with another --n_budget.')
-    plan = model.plan_from_counts(counts)
+    plan = model.plan_from_counts(
+        counts, kept_core=(None if int(getattr(a, 'pin_core_tubes', -1)) < 0
+                           else int(a.pin_core_tubes)))
 
     # 1-D placement: contiguous spans remove the interpolate-from-neighbours
     # shortcut, which is the informative probe; the span length is a RUN setting
@@ -313,6 +325,14 @@ def pin_masking(model, a):
         caption += f' (span {model.physio_span_tokens} tokens)'
     if getattr(plan, 'regime', None) == 'single':
         caption += f'  regime=single carrier={plan.carrier}'
+    # ADR-007 §2.9: name the spatial policy and the realized split, so a figure
+    # caption cannot leave the reader guessing whether the probe was stratified.
+    _spatial = str(getattr(model, 'spatial_sampling', 'uniform') or 'uniform')
+    caption += f'  spatial_sampling={_spatial}'
+    if getattr(model, 'anatomy_aware', False) and plan.core_units:
+        _name = model.visual[0]
+        caption += (f"  regime={plan.regime} S_core={int(plan.core_units[_name])}"
+                    f' S_periph={int(plan.periph_units[_name])}')
     return plan, caption
 
 

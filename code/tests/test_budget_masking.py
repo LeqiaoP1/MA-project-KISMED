@@ -237,10 +237,18 @@ def test_same_seed_replays_and_a_different_seed_does_not():
 # G9 — construction rejects an infeasible tuple
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize('streams,kw,needle', [
-    ([visual('tir'), signal('resp')], {},
-     'exactly TWO visual streams'),
+    # ADR-007 (2026-11-25) widened the stream-count rule from "exactly TWO
+    # visual streams" to "one or two": a 1-visual set is now a POLICY (the
+    # ADR-007 two-stream arm), not a rejection, so this row must assert the
+    # failure of the ONE-visual feasibility block instead. At the ADR-002
+    # numbers it violates rule 4 (high-masking ceiling): S_max/T = 350/25 = 14
+    # of 36 tubes is 38.9 %, above video_cap_ratio 0.25. This is the single
+    # documented amendment of plan gate G8 / decision D11 -- the sampling,
+    # cap/floor, alignment and replay rows below are untouched.
+    ([visual('tir'), signal('resp')], {}, 'condition 4'),
+    ([signal('resp')], {}, 'one or two visual streams'),
     ([visual('tir'), visual('rgb'), visual('rgb2d'), signal('resp')], {},
-     'exactly TWO visual streams'),
+     'one or two visual streams'),
     ([visual('tir'), visual('rgb2d')], {},
      'one or two physiological streams'),
     ([visual('tir'), visual('rgb2d'), signal('bp'), signal('resp'),

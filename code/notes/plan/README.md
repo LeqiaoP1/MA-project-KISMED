@@ -38,6 +38,8 @@ Rules of thumb:
 | [`features/ADR-003-resp-session-cache-plan.md`](features/ADR-003-resp-session-cache-plan.md) | `design/ADR-003-resp-session-cache-artefact.md` |
 | [`features/ADR-004-bp-session-cache-plan.md`](features/ADR-004-bp-session-cache-plan.md) | `design/ADR-004-bp-session-cache-artefact.md` |
 | [`features/ADR-005-asymmetric-multimodal-masking-3streams-plan.md`](features/ADR-005-asymmetric-multimodal-masking-3streams-plan.md) | `design/ADR-005-asymmetric-multimodal-masking-3streams.md` |
+| [`features/ADR-006-three-regime-masking-plan.md`](features/ADR-006-three-regime-masking-plan.md) | `design/ADR-006-three-regime-virtual-sensing-masking.md` |
+| [`features/ADR-007-two-stream-anatomy-aware-masking-plan.md`](features/ADR-007-two-stream-anatomy-aware-masking-plan.md) | `design/ADR-007-two-stream-anatomy-aware-constant-budget-masking.md` |
 | [`features/2DTexture_ROI_cache_implementation_plan.md`](features/2DTexture_ROI_cache_implementation_plan.md) | `design/2DTexture_ROI_cache_preprocessing.md` |
 | [`features/ROI_crop_implementation_plan.md`](features/ROI_crop_implementation_plan.md) | `design/ROI_crop_and_rescaling.md` |
 | [`features/video_input_preprocessing_implementation_plan.md`](features/video_input_preprocessing_implementation_plan.md) | `design/Video_input_Preprocessing.md` |

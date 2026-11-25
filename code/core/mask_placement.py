@@ -15,6 +15,9 @@ Two placements exist, matching the two kinds of masking unit:
   indices are either ``'scattered'`` (uniform without replacement) or
   ``'span'`` (contiguous blocks). The choice is a run setting and is recorded
   with the run.
+* :func:`place_video_stratified` — ADR-007 §2.3: the same tube placement, but
+  drawn from TWO strata (an anatomical core subgrid and its periphery) so at
+  least one core tube survives in every sample.
 
 Counts are identical for every sample of a step (ADR-002 contract 6), so both
 functions produce a rectangular ``[B, k]`` index tensor; a per-sample count that
@@ -42,8 +45,8 @@ from typing import Optional, Sequence, Tuple, Union
 import torch
 
 __all__ = ['SCATTERED', 'SPAN', 'PLACEMENT_MODES', 'place_video',
-           'place_signal', 'counts_generator', 'placement_generator',
-           'step_generators']
+           'place_video_stratified', 'place_signal', 'counts_generator',
+           'placement_generator', 'step_generators']
 
 #: scattered placement: uniform without replacement over the token axis.
 SCATTERED = 'scattered'
@@ -179,6 +182,108 @@ def place_video(counts, n_units: int, tokens_per_unit: int,
     offsets = (torch.arange(tpu, dtype=torch.long).view(1, tpu, 1) * n_units)
     idx = spatial.view(b, 1, k) + offsets              # [B, tpu, k]
     return idx.reshape(b, tpu * k).sort(dim=1).values.to(device)
+
+
+def place_video_stratified(counts_core, counts_periph, n_units: int,
+                           tokens_per_unit: int, core_indices: Sequence[int],
+                           generator: Optional[torch.Generator] = None,
+                           batch_size: Optional[int] = None,
+                           device: Union[str, torch.device] = 'cpu'
+                           ) -> torch.Tensor:
+    """Kept VENETIAN-BLIND columns drawn from two spatial strata (ADR-007 §2.3).
+
+    The policy splits a step's kept-tube budget into ``S_core`` tubes drawn from
+    the anatomical core :math:`\\mathcal{A}_{core}` and ``S_periph = S_tir -
+    S_core`` drawn from its complement. Drawing them as ONE uniform set would
+    miss a 4-tube core on 35-61 % of samples (ADR-007 §1.2 pressure 2), so the
+    two strata are sampled independently and, within each, without replacement.
+
+    Both counts are per-STEP scalars shared by the batch (ADR-002 contract 6);
+    only the chosen indices vary per sample. ``counts_core >= 1`` is required,
+    which is what makes ``P(core hit) = 1`` rather than a probability.
+
+    RNG order is fixed and documented: the core draw comes first, then the
+    periphery draw, and NEITHER consumes a sample when its count is 0 — so a
+    caller can reason about the generator stream from the counts alone.
+
+    :param counts_core: kept tubes from ``A_core`` (one scalar, or a per-sample
+        sequence of identical values). Must be >= 1.
+    :param counts_periph: kept tubes from ``A_periph``.
+    :param n_units: spatial patches ``Gh*Gw``.
+    :param tokens_per_unit: tokens per tube, i.e. the tubelet count ``Gt``.
+    :param core_indices: the ``A_core`` tube indices on the ``Gh*Gw`` grid, in
+        conv flatten order (``h*G_w + w``), as resolved by
+        :class:`core.budget_masking.ConstantBudgetApportioner`.
+    :param generator: optional seeded RNG (placement only).
+    :param batch_size: number of samples when a count is a scalar.
+    :param device: device of the returned index tensor.
+    :return: ``[B, (k_core + k_periph) * tokens_per_unit]`` long tensor of kept
+        encoder indices, ascending per row.
+    """
+    n_units = int(n_units)
+    tpu = int(tokens_per_unit)
+    if n_units < 1 or tpu < 1:
+        raise ValueError(
+            f'place_video_stratified: n_units and tokens_per_unit must be '
+            f'>= 1; got {n_units}, {tpu}.')
+    core = tuple(int(i) for i in core_indices)
+    if not core:
+        raise ValueError(
+            'place_video_stratified: core_indices is empty; the anatomical '
+            'core must contain at least one tube (ADR-007 §2.6 rule 5b).')
+    if len(set(core)) != len(core):
+        raise ValueError(
+            f'place_video_stratified: core_indices has duplicates: {core}.')
+    if min(core) < 0 or max(core) >= n_units:
+        raise ValueError(
+            f'place_video_stratified: core_indices must lie in '
+            f'[0, {n_units - 1}]; got {sorted(core)}.')
+    core_set = set(core)
+    periph = tuple(i for i in range(n_units) if i not in core_set)
+    if not periph:
+        raise ValueError(
+            f'place_video_stratified: A_periph is empty (A_core covers all '
+            f'{n_units} tubes), so no peripheral context could be kept.')
+
+    k_core, b = _uniform_counts(counts_core, len(core), batch_size,
+                                'place_video_stratified(counts_core)')
+    if k_core < 1:
+        raise ValueError(
+            'place_video_stratified: counts_core must be >= 1 — a stratified '
+            'step always keeps at least one core tube (ADR-007 §2.3); got 0.')
+    k_periph, _ = _uniform_counts(counts_periph, len(periph), b,
+                                  'place_video_stratified(counts_periph)')
+
+    core_t = torch.as_tensor(core, dtype=torch.long)
+    periph_t = torch.as_tensor(periph, dtype=torch.long)
+    perm_core = torch.rand(b, len(core), generator=generator).argsort(dim=1)
+    spatial_core = core_t[perm_core[:, :k_core]]            # [B, k_core]
+    if k_periph:
+        perm_periph = torch.rand(b, len(periph),
+                                 generator=generator).argsort(dim=1)
+        spatial_periph = periph_t[perm_periph[:, :k_periph]]  # [B, k_periph]
+        spatial = torch.cat([spatial_core, spatial_periph], dim=1)
+    else:
+        spatial = spatial_core
+    k = k_core + k_periph
+
+    offsets = (torch.arange(tpu, dtype=torch.long).view(1, tpu, 1) * n_units)
+    idx = spatial.view(b, 1, k) + offsets                   # [B, tpu, k]
+    idx = idx.reshape(b, tpu * k).sort(dim=1).values
+    # Per-row contract: exactly k distinct columns, and exactly k_core*T of the
+    # kept ENCODER indices inside A_core (``idx % n_units`` recovers the spatial
+    # position, which is what makes "P(core hit) = 1" checkable, not assumed).
+    if idx.shape[1] and not bool(torch.all(idx[:, 1:] > idx[:, :-1])):
+        raise RuntimeError(
+            'place_video_stratified: a sample received a duplicate kept index '
+            '-- the two strata must be disjoint (ADR-007 §2.3).')
+    core_tokens = torch.isin(idx % n_units, core_t).sum(dim=1)
+    if not bool(torch.all(core_tokens == k_core * tpu)):
+        raise RuntimeError(
+            f'place_video_stratified: every sample must keep exactly '
+            f'{k_core} core tube(s) = {k_core * tpu} core token(s); got '
+            f'{core_tokens.tolist()}.')
+    return idx.to(device)
 
 
 def place_signal(counts, n_units: int,

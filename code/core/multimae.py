@@ -218,6 +218,13 @@ class MultiModalMAE(nn.Module):
                  single_carrier_tubes: int = 0,
                  p_single_modality: float = 0.0,
                  single_modality_warmup_p: float = 0.0,
+                 spatial_sampling: str = 'uniform',
+                 core_row_bounds: Sequence[int] = (2, 3),
+                 core_col_bounds: Sequence[int] = (2, 3),
+                 core_tubes_min: int = 1,
+                 core_tubes_max: int = 2,
+                 periph_min_tubes: int = 1,
+                 physio_draw_min: int = 0,
                  spatial_patches: Optional[int] = None,
                  physio_tokens: Optional[int] = None,
                  signal_weight: float = 0.5,
@@ -378,10 +385,14 @@ class MultiModalMAE(nn.Module):
                 f'{self.physio_span_tokens}.')
 
         # one StreamSpec per declared stream: the engine sees only unit counts
-        # and how many tokens a unit carries, never a modality name.
+        # and how many tokens a unit carries, never a modality name. The visual
+        # specs carry their 2-D patch grid, which is what lets the ADR-007
+        # anatomy-aware policy resolve its core subgrid (``Gh`` alone cannot
+        # say where row 2 sits).
         self.specs: Tuple[StreamSpec, ...] = tuple(
             StreamSpec(s, _VISUAL_KIND, self.spatial_patches,
-                       tokens_per_unit=self.grid_t)
+                       tokens_per_unit=self.grid_t,
+                       spatial_grid=(self.grid_h, self.grid_w))
             if s in self.visual else
             StreamSpec(s, _SIGNAL_KIND, self.physio_tokens, tokens_per_unit=1)
             for s in self.streams)
@@ -395,13 +406,35 @@ class MultiModalMAE(nn.Module):
             virtual_sensing_warmup_epochs=self.virtual_sensing_warmup_epochs,
             single_carrier_tubes=single_carrier_tubes,
             p_single_modality=p_single_modality,
-            single_modality_warmup_p=single_modality_warmup_p)
+            single_modality_warmup_p=single_modality_warmup_p,
+            spatial_sampling=spatial_sampling,
+            core_row_bounds=core_row_bounds,
+            core_col_bounds=core_col_bounds,
+            core_tubes_min=core_tubes_min,
+            core_tubes_max=core_tubes_max,
+            periph_min_tubes=periph_min_tubes,
+            physio_draw_min=physio_draw_min)
         # ``S_v`` is resolved (0 -> whole budget) by the apportioner; publish the
         # resolved value so the runner's record names what actually ran.
         self.single_carrier_tubes = int(self.apportioner.single_carrier_tubes)
         self.p_single_modality = float(self.apportioner.p_single_modality)
         self.single_modality_warmup_p = float(
             self.apportioner.single_modality_warmup_p)
+        # ADR-007 §2.3/§2.10: the spatial policy and its RESOLVED partition,
+        # published so the manifest names what actually ran (``core_coords`` is
+        # the coordinate set §2.9 records, ``core_indices`` what placement uses).
+        self.spatial_sampling = str(self.apportioner.spatial_sampling)
+        self.anatomy_aware = bool(self.apportioner.anatomy_aware)
+        self.core_coords: Tuple[Tuple[int, int], ...] = tuple(
+            self.apportioner.core_coords)
+        self.core_indices: Tuple[int, ...] = tuple(
+            self.apportioner.core_indices)
+        self.core_tubes_min = int(self.apportioner.core_tubes_min)
+        self.core_tubes_max = int(self.apportioner.core_tubes_max)
+        self.periph_min_tubes = int(self.apportioner.periph_min_tubes)
+        self.physio_draw_min = int(self.apportioner.physio_draw_min)
+        self.s_tir_min = self.apportioner.s_tir_min
+        self.s_tir_max = self.apportioner.s_tir_max
         self._last_plan: Optional[BudgetPlan] = None
 
         # per-modality weights of the final weighted masked-MSE sum.
@@ -615,14 +648,18 @@ class MultiModalMAE(nn.Module):
     # ------------------------------------------------------------------ #
     # masking (masks == 1 => masked / to reconstruct)
     # ------------------------------------------------------------------ #
-    def plan_from_counts(self, kept_tokens: Dict[str, int]) -> BudgetPlan:
+    def plan_from_counts(self, kept_tokens: Dict[str, int],
+                         kept_core: Optional[int] = None) -> BudgetPlan:
         """Validate an EXPLICIT allocation (evaluation pins, reconstructions).
 
         The policy owns the training draws; this entry point lets a caller that
         must reproduce ONE specific masking state the counts and have the same
-        invariants enforced (exact budget, caps, floors, whole tubes).
+        invariants enforced (exact budget, caps, floors, whole tubes, and — on
+        an ``anatomy_aware`` checkpoint — the stratified split, whose
+        ``kept_core`` cannot be recovered from a pinned allocation).
         """
-        return self.apportioner.plan_from_counts(kept_tokens)
+        return self.apportioner.plan_from_counts(kept_tokens,
+                                                 kept_core=kept_core)
 
     def make_masks(self, B: int, device,
                    counts_generator: Optional[torch.Generator] = None,
@@ -657,10 +694,21 @@ class MultiModalMAE(nn.Module):
         for spec in self.specs:
             kept = int(plan.kept_tokens[spec.name])
             if spec.kind == _VISUAL_KIND:
-                idx = placement.place_video(
-                    kept // int(spec.tokens_per_unit), spec.n_units,
-                    spec.tokens_per_unit, generator=placement_generator,
-                    batch_size=B, device=device)
+                if self.anatomy_aware:
+                    # ADR-007 §2.3: stratified core + periphery placement. The
+                    # counts come from the step's plan, the INDICES are drawn
+                    # per sample from the placement generator.
+                    idx = placement.place_video_stratified(
+                        int(plan.core_units[spec.name]),
+                        int(plan.periph_units[spec.name]),
+                        spec.n_units, spec.tokens_per_unit, self.core_indices,
+                        generator=placement_generator, batch_size=B,
+                        device=device)
+                else:
+                    idx = placement.place_video(
+                        kept // int(spec.tokens_per_unit), spec.n_units,
+                        spec.tokens_per_unit, generator=placement_generator,
+                        batch_size=B, device=device)
             else:
                 idx = placement.place_signal(
                     kept, spec.n_units, generator=placement_generator,
@@ -905,14 +953,42 @@ class MultiModalMAE(nn.Module):
                 'kept': {s: int(plan.kept_tokens[s]) for s in self.streams},
                 'kept_units': {s: int(plan.kept_units[s])
                                for s in self.streams},
+                # ADR-007 §2.9: the stratified split, keyed over the streams
+                # that ACTUALLY carry one (the visual one(s)). Emitting 0 for a
+                # 1-D stream -- or for every stream under the ``uniform``
+                # ablation -- would put bogus ``core_tubes_resp`` metrics into
+                # the logs; the key set stays a function of the CONFIG, because
+                # a stratifying policy stratifies on every step.
+                'kept_core': ({s: int(plan.core_units[s])
+                               for s in plan.core_units}
+                              if plan.core_units else {}),
+                'kept_periph': ({s: int(plan.periph_units[s])
+                                 for s in plan.periph_units}
+                                if plan.periph_units else {}),
+                'spatial_sampling': str(self.spatial_sampling),
                 'n_batch': int(z.shape[1])}
 
 
 # --------------------------------------------------------------------------- #
 # builder (mirrors run_pretrain argparse/YAML defaults)
 # --------------------------------------------------------------------------- #
-def _parse_int_csv(v, dtype=int):
-    return tuple(dtype(x) for x in str(v).split(','))
+def _parse_int_csv(v, dtype=int, flag: str = ''):
+    """Parse a ``'2,3'`` CSV or an already-parsed ``[2, 3]`` sequence.
+
+    A YAML mapping may legitimately express ``core_row_bounds`` as a SEQUENCE
+    (``[2, 3]``), and ``str([2, 3])`` is ``'[2, 3]'`` -- which would fail with an
+    opaque ``invalid literal for int()``. Sequences are therefore accepted
+    directly, and a failure names the flag that carried the bad value.
+    """
+    try:
+        if isinstance(v, (list, tuple)):
+            return tuple(dtype(x) for x in v)
+        return tuple(dtype(x) for x in str(v).split(','))
+    except (TypeError, ValueError) as exc:
+        prefix = f'{flag}: ' if flag else ''
+        raise ValueError(
+            f'{prefix}invalid integer list {v!r}; expected e.g. "2,3" or a '
+            f'(lo, hi) sequence.') from exc
 
 
 def build_pretraining_model(args):
@@ -1015,6 +1091,19 @@ def build_pretraining_model(args):
         p_single_modality=float(getattr(args, 'p_single_modality', 0.0) or 0.0),
         single_modality_warmup_p=float(
             getattr(args, 'single_modality_warmup_p', 0.0) or 0.0),
+        # ADR-007 §2.3/§2.5. All seven defaults are NEUTRAL (uniform sampling,
+        # draw floor 0), so every pre-ADR-007 config reproduces its mask
+        # sequence exactly; the arm's tuple lives in its YAML.
+        spatial_sampling=str(getattr(args, 'spatial_sampling', 'uniform')
+                             or 'uniform'),
+        core_row_bounds=_parse_int_csv(
+            getattr(args, 'core_row_bounds', '2,3'), flag='core_row_bounds'),
+        core_col_bounds=_parse_int_csv(
+            getattr(args, 'core_col_bounds', '2,3'), flag='core_col_bounds'),
+        core_tubes_min=int(getattr(args, 'core_tubes_min', 1)),
+        core_tubes_max=int(getattr(args, 'core_tubes_max', 2)),
+        periph_min_tubes=int(getattr(args, 'periph_min_tubes', 1)),
+        physio_draw_min=int(getattr(args, 'physio_draw_min', 0) or 0),
         spatial_patches=getattr(args, 'spatial_patches', None) or None,
         physio_tokens=getattr(args, 'physio_tokens', None) or None,
         signal_weight=signal_weight,
@@ -1038,8 +1127,25 @@ def build_pretraining_model(args):
           f'p_single={model.p_single_modality:g}  '
           f'p_s_warm={model.single_modality_warmup_p:g}  '
           f'S_v={model.single_carrier_tubes}  '
+          f'spatial_sampling={model.spatial_sampling}  '
+          f'A_core={list(model.core_coords) or None}  '
+          f'S_core=[{model.core_tubes_min},{model.core_tubes_max}]  '
+          f'periph_min={model.periph_min_tubes}  '
+          f'S_tir={model.s_tir_min}..{model.s_tir_max}  '
+          f'physio_draw_min={model.physio_draw_min}  '
           f'units={[(s.name, s.n_units, s.tokens_per_unit) for s in model.specs]}'
           f'  physio_placement={model.physio_placement}')
+    if len(model.visual) == 1 and (model.spatial_sampling == 'uniform'
+                                   or model.physio_draw_min == 0):
+        # ADR-007 D10: a bare ``--streams tir,resp --n_budget 200`` invocation
+        # skips the arm YAML and runs a policy that is NOT the ADR's (uniform
+        # sampling and/or the Uniform{0..C_p} draw, i.e. Mode-2 -> Mode-1
+        # leakage). Say so loudly: every other line of the log looks the same.
+        print('[mask] OFF-ADR-007: one visual stream with '
+              f'spatial_sampling={model.spatial_sampling!r} and '
+              f'physio_draw_min={model.physio_draw_min}. The ADR-007 arm needs '
+              "spatial_sampling='anatomy_aware' AND physio_draw_min=1; this run "
+              'is a comparator/ablation and must not be reported as ADR-007.')
     return model
 
 

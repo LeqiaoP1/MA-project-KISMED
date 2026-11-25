@@ -90,6 +90,21 @@ def parse_logs(paths: Sequence[str]) -> Dict[int, Dict]:
 
 
 # --------------------------------------------------------------------------- #
+def expected_zero_draw_share(app) -> float:
+    """Share of Mode-2 draws whose ALIGNED ``K_resp`` is 0.
+
+    With the ADR-002..006 draw (``physio_draw_min = 0``) exactly one value out
+    of ``C_p + 1`` is zero, and that draw falls through to the sensor-absent
+    class. With ADR-007's ``Uniform{1..C_p}`` (``physio_draw_min = 1``) the zero
+    draw does not EXIST -- which is what "zero Mode-2 -> Mode-1 leakage" means
+    operationally (ADR-007 §2.5), so the expectation is 0.0, not 1/(C_p+1).
+    """
+    if int(getattr(app, 'physio_draw_min', 0) or 0) >= 1:
+        return 0.0
+    caps = [int(v) for v in app.physio_cap_tokens.values()]
+    return 1.0 / (min(caps) + 1) if caps else 0.0
+
+
 def wilson(k: int, n: int, z: float = 1.959963984540054) -> Dict[str, float]:
     """Wilson score interval for a binomial fraction (closed form)."""
     if n <= 0:
@@ -141,6 +156,7 @@ def main(argv=None):
     mask_base = int(getattr(cargs, 'val_seed', None)
                     or getattr(cargs, 'split_seed', 42))
     streams = list(model.streams)
+    visual_names = list(model.visual)
     totals = {s.name: int(s.n_units) * int(s.tokens_per_unit)
               for s in model.specs}
 
@@ -151,6 +167,8 @@ def main(argv=None):
     counts: Dict[str, List[int]] = {s: [] for s in streams}
     epoch_means: Dict[str, List[float]] = {s: [] for s in streams}
     epoch_virtual: List[float] = []
+    core_counts: List[int] = []
+    periph_counts: List[int] = []
     for e in range(epochs):
         acc = {s: 0 for s in streams}
         virt = 0
@@ -161,6 +179,12 @@ def main(argv=None):
                 k = int(plan.kept_tokens[s])
                 counts[s].append(k)
                 acc[s] += k
+            # ADR-007 §2.9: the stratified split, replayed without a GPU.
+            cu = plan.core_units or {}
+            pu = plan.periph_units or {}
+            for name in visual_names:
+                core_counts.append(int(cu.get(name, 0)))
+                periph_counts.append(int(pu.get(name, 0)))
             draw_mode.append(int(plan.mode))
             resolved_mode.append(int(plan.mode_by_counts))
             phase.append(0 if e < app.virtual_sensing_warmup_epochs else 1)
@@ -174,6 +198,27 @@ def main(argv=None):
     dm = np.asarray(draw_mode, dtype=np.int64)
     rm = np.asarray(resolved_mode, dtype=np.int64)
     ph = np.asarray(phase, dtype=np.int64)
+
+    # ADR-007 §2.9: the replayed stratified split (None on a uniform policy).
+    stratification = None
+    if getattr(app, 'anatomy_aware', False) and core_counts:
+        core_arr = np.asarray(core_counts, dtype=np.int64)
+        periph_arr = np.asarray(periph_counts, dtype=np.int64)
+        stratification = {
+            'spatial_sampling': str(app.spatial_sampling),
+            'core_coords': [list(c) for c in app.core_coords],
+            'core_indices': [int(i) for i in app.core_indices],
+            'S_core': {'min': int(core_arr.min()),
+                       'max': int(core_arr.max()),
+                       'mean': float(core_arr.mean()),
+                       'share_min': float(
+                           (core_arr == int(app.core_tubes_min)).mean())},
+            'S_periph': {'min': int(periph_arr.min()),
+                         'max': int(periph_arr.max()),
+                         'mean': float(periph_arr.mean())},
+            'core_hit_share': float((core_arr >= 1).mean()),
+            'expected_core_hit_share': 1.0,
+        }
 
     # ---- ADR-005 §3.1 Criterion 1 ----------------------------------------
     t = int(app.tokens_per_unit)
@@ -210,7 +255,7 @@ def main(argv=None):
         'mode2_k_tilde_zero_share': {
             'observed': float(((dm == 2) & (rm == 1)).sum()
                               / max(1, (dm == 2).sum())),
-            'expected': 1.0 / (int(app.physio_cap_tokens[signal[0]]) + 1),
+            'expected': expected_zero_draw_share(app),
         },
     }
 
@@ -235,10 +280,10 @@ def main(argv=None):
                          int((ph == 1).sum())) if e_warm > 0 else None,
         'expected_phase1': (app.virtual_sensing_warmup_p
                             + (1 - app.virtual_sensing_warmup_p)
-                            / (int(app.physio_cap_tokens[signal[0]]) + 1)),
+                            * expected_zero_draw_share(app)),
         'expected_phase2': (app.p_virtual_sensing
                             + (1 - app.p_virtual_sensing)
-                            / (int(app.physio_cap_tokens[signal[0]]) + 1)),
+                            * expected_zero_draw_share(app)),
     }
 
     # ---- per-stream statistics -------------------------------------------
@@ -309,12 +354,21 @@ def main(argv=None):
             'p_virtual_sensing': float(app.p_virtual_sensing),
             'virtual_sensing_warmup_p': float(app.virtual_sensing_warmup_p),
             'virtual_sensing_warmup_epochs': e_warm,
+            # ADR-007 §2.3/§2.5: what the replay policy actually was.
+            'spatial_sampling': str(getattr(app, 'spatial_sampling', 'uniform')),
+            'physio_draw_min': int(getattr(app, 'physio_draw_min', 0) or 0),
+            'core_coords': [list(c) for c in getattr(app, 'core_coords', ())],
+            'core_indices': [int(i) for i in getattr(app, 'core_indices', ())],
+            'core_tubes_min': int(getattr(app, 'core_tubes_min', 0) or 0),
+            'core_tubes_max': int(getattr(app, 'core_tubes_max', 0) or 0),
+            'periph_min_tubes': int(getattr(app, 'periph_min_tubes', 0) or 0),
         },
         'per_stream': stats,
         'mode_split': mode_split,
         'mode_conditional': mode_conditional,
         'curriculum': curriculum,
         'criterion_1': checks,
+        'stratification': stratification,
         'replay_vs_logs': fidelity,
     }
     out_json = os.path.join(out_dir, f'{tag}policy_replay.json')
