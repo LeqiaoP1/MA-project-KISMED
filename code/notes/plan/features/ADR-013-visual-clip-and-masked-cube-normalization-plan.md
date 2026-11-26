@@ -1,7 +1,7 @@
-# Video Input Preprocessing — Implementation Plan
+# ADR-013 — Visual Clip & Masked-Cube Normalization: Implementation Plan
 
 Status: **LANDED (2026-11-01)** — all phases implemented; see §12 for the
-as-built record. Contract of record: `code/notes/design/Video_input_Preprocessing.md`.
+as-built record. Contract of record: `code/notes/design/ADR-013-visual-clip-and-masked-cube-normalization.md`.
 **On any conflict the design wins**; §2 lists the conflicts found in the shipped
 code.
 
@@ -188,7 +188,7 @@ model now receives.
 
 ### Phase 6 — docs
 
-**Step 9** `code/notes/design/Video_input_Preprocessing.md` — append an
+**Step 9** `code/notes/design/ADR-013-visual-clip-and-masked-cube-normalization.md` — append an
 "Implementation" section mapping each clause to symbol (this document stays the
 authority; the design gains the decisions D1/D4/D5 and the leakage note).
 
@@ -197,7 +197,7 @@ authority; the design gains the decisions D1/D4/D5 and the leakage note).
 `_targets` documented as masked-only. Mirror the same text in
 `code/scripts/project/write_specs.py` (never run it blind — see its header).
 
-**Step 11** `code/README.md` and `code/notes/design/ROI_crop_and_rescaling.md`
+**Step 11** `code/README.md` and `code/notes/design/ADR-011-landmark-roi-geometry-and-tir-cache.md`
 §"tensor contents": state that `[0, 1]` is the **dataset** contract and the MODEL
 z-scores before patching — otherwise `[0,1]` reads as "the network input".
 
@@ -277,10 +277,10 @@ their own trees), so gates G1–G5 are CPU-only and fast.
 
 | document | change |
 |---|---|
-| `design/Video_input_Preprocessing.md` | add "Implementation" + decisions D1/D4/D5 + the leakage note (contract stays authoritative) |
+| `design/ADR-013-visual-clip-and-masked-cube-normalization.md` | add "Implementation" + decisions D1/D4/D5 + the leakage note (contract stays authoritative) |
 | `spec/02_model_architecture.md` + `scripts/project/write_specs.py` | forward order with `zscore_clip`; `_targets` masked-only |
 | `spec/03_engine_and_loss.md` | loss section: targets are per-cube z for MASKED cubes only |
-| `README.md`, `design/ROI_crop_and_rescaling.md` | `[0,1]` is the dataset contract, not the network input |
+| `README.md`, `design/ADR-011-landmark-roi-geometry-and-tir-cache.md` | `[0,1]` is the dataset contract, not the network input |
 | `plan/experiments/TirROI_Resp_plan.md`, `plan/experiments/RGB_BP_plan.md` | one line pointing at this plan for the input contract |
 
 ---
@@ -324,7 +324,7 @@ their own trees), so gates G1–G5 are CPU-only and fast.
 | P3 Stage 2 | `_fit_time -> zscore_clip (visual) -> adapters` in `MultiModalMAE.forward` |
 | P4 Stage 3 | same two lines in `MultiModalWaveformRegressor.forward` (every stream validated visual) |
 | P5 tests | `code/tests/test_video_input_norm.py` (8 tests, gates G1-G5); `tests/test_physio_norm.py::test_target_norm_none_leaves_visual_streams_normalised` now passes an explicit all-ones mask |
-| P6 docs | this plan, `design/Video_input_Preprocessing.md` (Implementation + D1/D4/D5 + leakage note), `spec/02_model_architecture.md` (§7.4 step 1, new `_targets` note, §8.3, §10), `spec/03_engine_and_loss.md` §6, `scripts/project/write_specs.py` (same three edits), `README.md`, `design/ROI_crop_and_rescaling.md` §4.4, `plan/experiments/TirROI_Resp_plan.md` §4, `plan/experiments/RGB_BP_plan.md` §4 |
+| P6 docs | this plan, `design/ADR-013-visual-clip-and-masked-cube-normalization.md` (Implementation + D1/D4/D5 + leakage note), `spec/02_model_architecture.md` (§7.4 step 1, new `_targets` note, §8.3, §10), `spec/03_engine_and_loss.md` §6, `scripts/project/write_specs.py` (same three edits), `README.md`, `design/ADR-011-landmark-roi-geometry-and-tir-cache.md` §4.4, `plan/experiments/TirROI_Resp_plan.md` §4, `plan/experiments/RGB_BP_plan.md` §4 |
 
 Verification actually performed:
 

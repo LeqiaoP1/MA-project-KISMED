@@ -201,7 +201,7 @@ only LOOCV R² **+0.095**, and **+0.025** on top of the subject trait.
    the T3 ranking is already decided by who the subject is; a subject's other
    tasks predict their T3 result better than anything measurable in the T3
    session itself. This is the quantitative justification for the
-   subject-as-unit protocol already in `Evaluation_RespWaveform_protocol.md`.
+   subject-as-unit protocol already in `ADR-009-resp-waveform-evaluation-protocol.md`.
 2. The remaining ~55 % is mostly **model + noise**: 5 folds, 5 different Stage-2
    encoders, and no measured session property that explains it. Improving the T3
    *mean* therefore means improving the encoder, not filtering sessions.

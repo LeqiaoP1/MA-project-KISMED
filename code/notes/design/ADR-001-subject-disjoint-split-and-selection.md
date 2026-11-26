@@ -1,9 +1,9 @@
 # ADR-001: Subject-Disjoint 5-Fold Split with 70/10/20 Roles
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-11-18
 - **Author**: Ne95ocyg
-- **Related**: `N/A`
+- **Related Spec/Plan**: `code/notes/plan/features/ADR-001-subject-kfold-plan.md`, `code/notes/design/ADR-009-resp-waveform-evaluation-protocol.md`
 - **Supersedes**: `N/A`
 
 ## 1. Context and Problem Statement

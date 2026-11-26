@@ -13,8 +13,8 @@ Two invariants that used to be comments only:
   none would vanish from the tally (``breakdown_by_label`` skips an empty
   label list).
 
-Rationale of record: ``code/notes/design/TIR_ROI_RESP_TasksDistortion.md``.
-The plan: ``code/notes/plan/features/task_tiers_regroup_plan.md``.
+Rationale of record: ``code/notes/design/ADR-010-bp4d-task-distortion-tiers.md``.
+The plan: ``code/notes/plan/features/ADR-010-bp4d-task-distortion-tiers-plan.md``.
 
 Run from ``code/``:  ``python -m pytest tests/test_task_group_configs.py -q``
 """

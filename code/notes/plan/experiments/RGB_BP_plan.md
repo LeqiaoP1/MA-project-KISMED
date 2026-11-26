@@ -22,7 +22,7 @@ Two cells share one encoder:
 
 Stage 3 simulates **complete contact-sensor failure**: only the visual stream is
 fed and the model must generate the waveform that is physically absent
-(`design/SolutionC_EarlyTokenMixing_stage3.md`). Per-clip training plus offline
+(`design/ADR-015-stage3-waveform-regression-and-joint-loss.md`). Per-clip training plus offline
 session assembly is the deployment shape, not a training stage.
 
 **EDA is out of scope.** It is not observed by any camera (it is the electrical
@@ -88,7 +88,7 @@ The RAW path accepts extracted directories **and** per-subject ZIPs through the
 
 ### 3.3 ROI doctrine
 
-The contract of record is `design/ROI_crop_and_rescaling.md`: envelope → padding →
+The contract of record is `design/ADR-011-landmark-roi-geometry-and-tir-cache.md`: envelope → padding →
 **square** → one isotropic scale → resize, with a clip-level **motion gate**
 (`max_sway_px`) instead of absorbing head travel into a larger crop.
 
@@ -100,7 +100,7 @@ The contract of record is `design/ROI_crop_and_rescaling.md`: envelope → paddi
   the full doctrine (square span -> native square hull -> one isotropic rescale
   at load, landmark-driven motion gate, dataset-level validity gate) in
   `data/rgb2d_cache.py` + `data/trimodal_dataset.py`. See
-  `plan/features/2DTexture_ROI_cache_implementation_plan.md`. This **satisfies W4 for the
+  `plan/features/ADR-012-rgb2d-native-memmap-roi-cache-plan.md`. This **satisfies W4 for the
   cached 2D path only**; `data/rgb_roi_dataset.py` (the 224 px `rgb` + BP arm) is
   untouched and still legacy, so W4 stays open for that module.
 
@@ -110,10 +110,10 @@ The contract of record is `design/ROI_crop_and_rescaling.md`: envelope → paddi
 
 | stage | what it does | design | code | config / entry |
 |---|---|---|---|---|
-| **1 — init** | VideoMAE-B (K400) → encoder blocks, `enc_norm`, tubelet `Conv3d` copied **verbatim** (no boxcar), `positions`/physio adapters random | `design/SolutionC_EarlyTokenMixing_stage2.md` | `core/multimae.py::load_pretrained_encoder`, `fit_visual_patch_embed`, `canonicalise_vit_state_dict` | `pretrained_encoder: videomae:k400`; `--inflate_rgb_patch` |
-| **2 — SSL** | joint tubelet + signal tokens in one ViT; 0.90 **tube** mask on video, 0.50 scattered (or `physio_mask: span`) on 1-D; per-stream linear heads; masked MSE, `λ_visual 1.0`, `λ_physio = signal_weight 0.5`; MR-STFT **off** | `design/SolutionC_EarlyTokenMixing_stage2.md`, `design/SpanMask_PhysioSignals.md` | `core/multimae.py::MultiModalMAE` | `runners/run_pretrain.py` |
-| **3 — waveform** | encoder duplicated per target; `streams` = visual only; spatial mean-pool per time step; `Linear(D, sig_kernel)`; joint loss α·Huber + β·Pearson + γ·MR-STFT; no masking | `design/SolutionC_EarlyTokenMixing_stage3.md` | `core/waveform_model.py`, `core/waveform_losses.py` | `runners/run_waveform.py`, `configs/finetune/{bp,resp,bp_rgb_roi_local}.yaml` |
-| **eval** | per-clip Tier 1/2; session assembly (Hann OLA) then Tier 1/2/3; one number per subject | `design/Evaluation_RespWaveform_protocol.md` | `evaluation/{metrics,clinical,assemble}.py`, `runners/run_evaluate_session.py`, `run_evaluate_subject.py`, `run_evaluate_kfold.py` | — |
+| **1 — init** | VideoMAE-B (K400) → encoder blocks, `enc_norm`, tubelet `Conv3d` copied **verbatim** (no boxcar), `positions`/physio adapters random | `design/ADR-014-stage2-multimae-early-token-mixing-architecture.md` | `core/multimae.py::load_pretrained_encoder`, `fit_visual_patch_embed`, `canonicalise_vit_state_dict` | `pretrained_encoder: videomae:k400`; `--inflate_rgb_patch` |
+| **2 — SSL** | joint tubelet + signal tokens in one ViT; 0.90 **tube** mask on video, 0.50 scattered (or `physio_mask: span`) on 1-D; per-stream linear heads; masked MSE, `λ_visual 1.0`, `λ_physio = signal_weight 0.5`; MR-STFT **off** | `design/ADR-014-stage2-multimae-early-token-mixing-architecture.md`, `design/archive/SpanMask_PhysioSignals.md` | `core/multimae.py::MultiModalMAE` | `runners/run_pretrain.py` |
+| **3 — waveform** | encoder duplicated per target; `streams` = visual only; spatial mean-pool per time step; `Linear(D, sig_kernel)`; joint loss α·Huber + β·Pearson + γ·MR-STFT; no masking | `design/ADR-015-stage3-waveform-regression-and-joint-loss.md` | `core/waveform_model.py`, `core/waveform_losses.py` | `runners/run_waveform.py`, `configs/finetune/{bp,resp,bp_rgb_roi_local}.yaml` |
+| **eval** | per-clip Tier 1/2; session assembly (Hann OLA) then Tier 1/2/3; one number per subject | `design/ADR-009-resp-waveform-evaluation-protocol.md` | `evaluation/{metrics,clinical,assemble}.py`, `runners/run_evaluate_session.py`, `run_evaluate_subject.py`, `run_evaluate_kfold.py` | — |
 
 **Transfer at Stage 3** (`core/waveform_model.py::load_stage2_encoder`): copies
 `adapters.* / positions.* / enc_blocks.* / enc_norm.*`, maps
@@ -123,8 +123,8 @@ ROI contract keys recorded in the checkpoint (`roi_landmarks`, `roi_padding`,
 `input_size`, …), because those change the pixels without changing any tensor
 shape.
 
-**Visual input contract** (`plan/features/video_input_preprocessing_implementation_plan.md`,
-`design/Video_input_Preprocessing.md`): the dataset still returns `[0, 1]`, but
+**Visual input contract** (`plan/features/ADR-013-visual-clip-and-masked-cube-normalization-plan.md`,
+`design/ADR-013-visual-clip-and-masked-cube-normalization.md`): the dataset still returns `[0, 1]`, but
 both stages z-score each clip per channel *before* patch division
 (`core/input_adapters.py::zscore_clip`). A checkpoint therefore belongs to ONE
 input contract — Stage-2 and Stage-3 weights are only interchangeable within it.
@@ -149,7 +149,7 @@ target has (near-)zero norm — a clipped or railed window otherwise divides by 
 | metric suite: time, band-limited Pearson, single-tone template, amplitude, rate, bootstrap CI | `evaluation/metrics.py` (`_self_test`) |
 | session assembly + affine calibration | `evaluation/assemble.py`, `tests/test_assemble_session.py` |
 | subject/k-fold evaluation | `runners/run_evaluate_{subject,kfold}.py`, `tests/test_kfold_splits.py` |
-| AMP (`--amp_dtype {none,fp16,bf16}`) | `design/hpc_AMP.md`, `tests/test_amp.py` |
+| AMP (`--amp_dtype {none,fp16,bf16}`) | `design/ADR-016-mixed-precision-and-ddp-accumulation.md`, `tests/test_amp.py` |
 
 **Measured, not implemented**
 
@@ -170,7 +170,7 @@ target has (near-)zero norm — a clipped or railed window otherwise divides by 
 ## 6. Acceptance gates (a run is only reportable if it clears these)
 
 Evaluated on the **subject-disjoint** set, per subject after session assembly
-(`design/Evaluation_RespWaveform_protocol.md` §4–§6):
+(`design/ADR-009-resp-waveform-evaluation-protocol.md` §4–§6):
 
 | # | gate | baseline to beat | notes |
 |---|---|---|---|
@@ -232,8 +232,8 @@ Ordered; each item states where it lands and what closes it.
 | **W1** | **RGB decode precomputation.** Extend the ROI cache (or a sibling store) to `rgb_roi`: key on the crop contract, resume-safe, parity-tested against a live decode. Decode is the epoch bottleneck; the TIR cache measured **11.7×** at equal batch. | `data/roi_cache.py`, `runners/run_build_roi_cache.py`, `tests/test_roi_cache.py` | a parity probe reproduces decoded tensors bit-exactly, and epoch time drops by the measured factor |
 | **W2** | **Stage-2, `rgb_roi` + `bp`.** Smoke first (1 epoch, 2 clips, `--warmup_epochs 0`), then the HPC scale-up. | `configs/pretrain/stage2_local_rgb_roi_bp.yaml` | `mse_rgb` clearly below the 1.0 constant-predictor floor; `loss` equals the printed decomposition exactly; encoder-feature variation across clips is non-zero |
 | **W3** | **Stage-3, `bp`.** Mirror the W2 geometry exactly (input size, clip, stride, `sig_kernel`, ROI keys), transfer `heads.bp`, then assemble sessions and score. | `configs/finetune/bp_rgb_roi_local.yaml` → an HPC twin | G1–G6 evaluated and reported per subject; artefacts (`preds.npy`, `targets.npy`, `entries.json`) written |
-| **W4** | **ROI doctrine port to RGB.** Same square-box algebra, same isotropic rescale, same `max_sway_px` gate, same cache-hull rule — one doctrine, no per-modality exception. Threshold is modality-specific (`40 × 1392/726 ≈ 77 px`). **Partially delivered 2026-11-10**: the new `rgb2d` cached stream implements the doctrine in `data/rgb2d_cache.py` (`plan/features/2DTexture_ROI_cache_implementation_plan.md`); `data/rgb_roi_dataset.py` (the 224 px `rgb` + BP arm) is still legacy, so the W4 acceptance below applies to the cached path only. | `data/rgb_roi_dataset.py`, `data/rgb_features.py`; extend `tests/test_roi_square_rule.py`, `test_roi_motion_gate.py` | the RGB dataset satisfies every invariant in `design/ROI_crop_and_rescaling.md` §5 |
-| **W5** | **BP evaluation depth.** Morphology-sensitive score (pulse-shape correlation on aligned beats) plus the Tier-3 guards; declare in the protocol what "morphology" means before the first score is reported. | `evaluation/metrics.py`, `evaluation/clinical.py`, `design/Evaluation_RespWaveform_protocol.md` | a metric exists that ranks a deliberately distorted-but-in-phase waveform below a faithful one |
+| **W4** | **ROI doctrine port to RGB.** Same square-box algebra, same isotropic rescale, same `max_sway_px` gate, same cache-hull rule — one doctrine, no per-modality exception. Threshold is modality-specific (`40 × 1392/726 ≈ 77 px`). **Partially delivered 2026-11-10**: the new `rgb2d` cached stream implements the doctrine in `data/rgb2d_cache.py` (`plan/features/ADR-012-rgb2d-native-memmap-roi-cache-plan.md`); `data/rgb_roi_dataset.py` (the 224 px `rgb` + BP arm) is still legacy, so the W4 acceptance below applies to the cached path only. | `data/rgb_roi_dataset.py`, `data/rgb_features.py`; extend `tests/test_roi_square_rule.py`, `test_roi_motion_gate.py` | the RGB dataset satisfies every invariant in `design/ADR-011-landmark-roi-geometry-and-tir-cache.md` §5 |
+| **W5** | **BP evaluation depth.** Morphology-sensitive score (pulse-shape correlation on aligned beats) plus the Tier-3 guards; declare in the protocol what "morphology" means before the first score is reported. | `evaluation/metrics.py`, `evaluation/clinical.py`, `design/ADR-009-resp-waveform-evaluation-protocol.md` | a metric exists that ranks a deliberately distorted-but-in-phase waveform below a faithful one |
 | **W6** | **RESP branch** on the W2 encoder (`Resp_Volts`), same protocol. | `configs/finetune/resp_local.yaml` + ROI twin | same gates; report against the TIR respiratory result, not against BP |
 | **W7** | **Aliasing A/B**, only if G4/G5 show unexplained high-frequency energy: `tubelet_t 4` with `temporal_stride 1` (same 160 ms token, anti-aliased) at the cost of the verbatim VideoMAE patch-embed transfer. | `configs/pretrain/*` | a measured spectral difference, decided on subject metrics, not on reconstruction loss |
 
@@ -292,11 +292,11 @@ names the decision, so the gap is visible instead of implicit.
 | this plan | `code/notes/plan/experiments/RGB_BP_plan.md` |
 | local 64 px two-branch setup (commands, checkpoint, lineage lock) | `code/notes/plan/experiments/local_downstream_plan.md` |
 | k-fold rollout | `code/notes/plan/features/ADR-001-subject-kfold-plan.md` |
-| AMP rollout | `code/notes/plan/features/hpc_AMP_implementation.md` |
-| Stage-2 / Stage-3 architecture | `design/SolutionC_EarlyTokenMixing_stage2.md`, `design/SolutionC_EarlyTokenMixing_stage3.md` |
-| span masking for 1-D streams | `design/SpanMask_PhysioSignals.md` |
-| ROI + rescale contract (RGB port pending, W4 — satisfied for the `rgb2d` cache path 2026-11-10) | `design/ROI_crop_and_rescaling.md` |
-| evaluation protocol | `design/Evaluation_RespWaveform_protocol.md` |
+| AMP rollout | `code/notes/plan/features/ADR-016-mixed-precision-and-ddp-accumulation-plan.md` |
+| Stage-2 / Stage-3 architecture | `design/ADR-014-stage2-multimae-early-token-mixing-architecture.md`, `design/ADR-015-stage3-waveform-regression-and-joint-loss.md` |
+| span masking for 1-D streams | `design/archive/SpanMask_PhysioSignals.md` |
+| ROI + rescale contract (RGB port pending, W4 — satisfied for the `rgb2d` cache path 2026-11-10) | `design/ADR-011-landmark-roi-geometry-and-tir-cache.md` |
+| evaluation protocol | `design/ADR-009-resp-waveform-evaluation-protocol.md` |
 | folds | `design/ADR-001-subject-disjoint-split-and-selection.md` |
 | rPPG evidence | `code/notes/eval/rgb_bp/FINDINGS.md` |
 | throughput | `code/notes/eval/batch_size_sweep.md` |

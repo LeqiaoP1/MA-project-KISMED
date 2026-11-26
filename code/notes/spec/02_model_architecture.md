@@ -227,7 +227,7 @@ Step 8 — Norm-pix targets (per-token or per-clip z-score based on target_norm)
           the clip-normalised values (`_targets(x, stream, mask)`).
           Datasets still return [0, 1]; the MODEL z-scores before patching
           (`core/input_adapters.zscore_clip`). Contract:
-          `design/Video_input_Preprocessing.md`.
+          `design/ADR-013-visual-clip-and-masked-cube-normalization.md`.
 
 Step 9 — Weighted masked MSE loss
 

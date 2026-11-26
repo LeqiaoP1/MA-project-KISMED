@@ -1,10 +1,10 @@
 # ADR-006: Three-Regime Constant-Budget Masking with Single-Modality Virtual Sensing (`tir`, `rgb2d`, `resp`)
 
-- **Status**: Proposed
+- **Status**: Deferred (Phase-2 multi-camera fusion; implemented & verified 2026-11-24; Phase-1 single-camera foundation governed by `ADR-007`)
 - **Date**: 2026-11-24
 - **Author**: KISMED MA research team
-- **Related Spec/Plan**: `code/notes/design/Evaluation_RespWaveform_protocol.md` — normative for the headline metric of §3.2 and not redefined here. Build order and gates: `code/notes/plan/features/ADR-006-three-regime-masking-plan.md` (written 2026-11-24; describes how this decision is built, never what it is).
-- **Supersedes**: `code/notes/design/ADR-005-asymmetric-multimodal-masking-3streams.md`. The stream set, the tokenizer geometry, the constant budget, the caps and floors, the alignment arithmetic, the batch-determinism rules, the loss-key rules and the initialisation contract I1–I4 are **inherited verbatim** from ADR-005 and are restated here only where this decision changes them. Where this document is silent, ADR-005 governs.
+- **Related Spec/Plan**: `code/notes/design/ADR-009-resp-waveform-evaluation-protocol.md` — normative for the headline metric of §3.2 and not redefined here. Build order and gates: `code/notes/plan/features/ADR-006-three-regime-masking-plan.md` (written 2026-11-24; describes how this decision is built, never what it is).
+- **Supersedes**: `code/notes/design/archive/ADR-005-asymmetric-multimodal-masking-3streams.md`. The stream set, the tokenizer geometry, the constant budget, the caps and floors, the alignment arithmetic, the batch-determinism rules, the loss-key rules and the initialisation contract I1–I4 are **inherited verbatim** from ADR-005 and are restated here only where this decision changes them. Where this document is silent, ADR-005 governs.
 
 **Normative status.** This ADR is the authority for the masking policy it defines. The policy, its units, its arithmetic, its feasibility conditions, its schedule, its parameter surface, its observability requirements and its acceptance criteria are all specified here, so the decision survives any change to the software that implements it. No statement in §§1–5 depends on a particular source file, configuration file, checkpoint or run, and none depends on another design document. Appendix A is the only place that maps the specification onto the present toolchain and is informative; Appendix B lists the formal corrections applied to the earlier (now withdrawn) draft of this decision.
 
@@ -250,7 +250,7 @@ kernel to `rgb2d`, and that is a separate decision.
 
 ### 3.2 Criterion 2 — scientific claim
 
-- **Headline metric.** Band-limited Pearson (0.1–0.6 Hz) per `Evaluation_RespWaveform_protocol.md`; per session → median per subject → median with bootstrap 95 % CI over subjects; subject-disjoint test roles. Amplitude metrics are excluded from comparisons by protocol §4.1.
+- **Headline metric.** Band-limited Pearson (0.1–0.6 Hz) per `ADR-009-resp-waveform-evaluation-protocol.md`; per session → median per subject → median with bootstrap 95 % CI over subjects; subject-disjoint test roles. Amplitude metrics are excluded from comparisons by protocol §4.1.
 - **Tier 1 — go/no-go, relative.** Each arm is compared against the **ADR-005 arm fine-tuned with the identical Stage-3 recipe** on the same folds, and must exceed it by **≥ +0.02** with the CI reported. This is the gate: it decides whether the policy is adopted.
 - **Tier 2 — thesis targets, absolute.** Reported per target, not gating: Target A $r \ge +0.45$ and MAE $\le 1.8$ BPM; Target B $r \ge +0.40$ and MAE $\le 2.0$ BPM; Target C $r \ge +0.30$ and MAE $\le 2.5$ BPM. These are the numbers the draft pre-registered; they are recorded here as targets whose attainment is reported per target.
 - **Reference point on record.** The only measured sensor-free values on fold 0 are masked-position correlations from frozen Stage-2 decoders: subject median **+0.1129** [+0.0775, +0.1363] for the TIR-heavy allocation and **+0.0919** [+0.0705, +0.1085] for the RGB2D-heavy allocation, against +0.9959 for the same probe with respiration visible (`code/notes/eval/baselines/tir_rgb2d_resp/`). They are not the headline metric and must not be reported as one, but they are what the Tier-2 targets will be read against.

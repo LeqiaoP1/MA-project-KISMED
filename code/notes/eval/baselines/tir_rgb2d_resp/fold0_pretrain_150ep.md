@@ -1,7 +1,7 @@
 # Fold-0 three-stream Stage-2 pre-training — 150 epochs complete (2026-11-24)
 
-- **Design of record**: `code/notes/design/ADR-005-asymmetric-multimodal-masking-3streams.md`
-- **Build plan**: `code/notes/plan/features/ADR-005-asymmetric-multimodal-masking-3streams-plan.md`
+- **Design of record**: `code/notes/design/archive/ADR-005-asymmetric-multimodal-masking-3streams.md`
+- **Build plan**: `code/notes/plan/features/archive/ADR-005-asymmetric-multimodal-masking-3streams-plan.md`
 - **Config**: `configs/pretrain/stage2_budget_3stream_curriculum.yaml`
 - **EXP_ROOT**: `/work/scratch/ne95ocyg/pretrain/adr005_3stream_fold0` (fold 0 only)
 - **Code**: git `1a47e7e`

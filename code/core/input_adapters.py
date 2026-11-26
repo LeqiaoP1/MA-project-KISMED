@@ -28,7 +28,7 @@ def zscore_clip(x: Tensor, eps: float = EPS) -> Tensor:
     planes of the false-colour TIR rendering are equalised.
 
     This is the *design contract* of
-    ``code/notes/design/Video_input_Preprocessing.md``: it runs on the raw clip
+    ``code/notes/design/ADR-013-visual-clip-and-masked-cube-normalization.md``: it runs on the raw clip
     BEFORE patch division (i.e. before ``TubeletEmbed`` /
     ``PatchedInputAdapter``), so the network never sees the dataset's ``[0, 1]``
     pixel scale. It is **not configurable** -- no

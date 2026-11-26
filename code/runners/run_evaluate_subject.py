@@ -20,7 +20,7 @@ PROTOCOL: k-fold subject-disjoint cross-validation is IMPLEMENTED
 (``--n_folds``/``--fold`` + ``runners/run_evaluate_kfold.py``); a fold is NOT
 just a different ``--test_subjects`` list, so ``--test_subjects`` is only a
 manual override on a legacy single-split run (see
-``code/notes/design/Evaluation_RespWaveform_protocol.md`` sec. 3.1-3.3).
+``code/notes/design/ADR-009-resp-waveform-evaluation-protocol.md`` sec. 3.1-3.3).
 
 Usage (from ``code/``)::
 

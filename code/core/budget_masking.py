@@ -6,9 +6,9 @@ no modality data and no token grids — the caller passes one :class:`StreamSpec
 per declared stream and receives a :class:`BudgetPlan`. Mask *placement*
 (counts -> per-sample indices) is :mod:`core.mask_placement`.
 
-Design of record: ``code/notes/design/ADR-005-asymmetric-multimodal-masking-3streams.md``
+Design of record: ``code/notes/design/archive/ADR-005-asymmetric-multimodal-masking-3streams.md``
 (it supersedes ADR-002 and restates the arithmetic normatively).
-Plan and gate ids: ``code/notes/plan/features/ADR-005-asymmetric-multimodal-masking-3streams-plan.md``.
+Plan and gate ids: ``code/notes/plan/features/archive/ADR-005-asymmetric-multimodal-masking-3streams-plan.md``.
 
 The policy in one paragraph
 ---------------------------

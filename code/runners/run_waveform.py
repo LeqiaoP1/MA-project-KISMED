@@ -1,6 +1,6 @@
 """Stage-3 downstream waveform fine-tuning (BP or RESP branch).
 
-Implements the Stage-3 design (``code/notes/design/SolutionC_EarlyTokenMixing_stage3.md``;
+Implements the Stage-3 design (``code/notes/design/ADR-015-stage3-waveform-regression-and-joint-loss.md``;
 plan entry ``code/notes/plan/experiments/RGB_BP_plan.md`` §4): simulated full sensor failure
 (no contact 1D streams are fed) -- only visual streams drive the prediction.
 Two independent task-specialised runs share the Stage-2 encoder checkpoint

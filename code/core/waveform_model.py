@@ -1,6 +1,6 @@
 """Stage-3 downstream model: waveform regression on top of the Stage-2 encoder.
 
-``code/notes/design/SolutionC_EarlyTokenMixing_stage3.md`` and
+``code/notes/design/ADR-015-stage3-waveform-regression-and-joint-loss.md`` and
 ``code/notes/plan/experiments/RGB_BP_plan.md`` §1: Stage 3 simulates a COMPLETE 1-D sensor failure:
 no BP/RESP is fed, only the visual stream(s) drive the prediction. This
 module therefore
@@ -289,7 +289,7 @@ class MultiModalWaveformRegressor(nn.Module):
             # see the input space it was pre-trained on: z-score the whole
             # clip per channel BEFORE patch division
             # (``core.input_adapters.zscore_clip``; design
-            # ``Video_input_Preprocessing.md``). Every stream of this model is
+            # ``ADR-013-visual-clip-and-masked-cube-normalization.md``). Every stream of this model is
             # validated visual, so no branch is needed.
             xt = zscore_clip(xt)
             tok = self.adapters[s](xt)                     # [B, n_visual, D]

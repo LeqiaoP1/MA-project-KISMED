@@ -3,7 +3,7 @@
 - **Status**: Accepted
 - **Date**: 2026-11-20
 - **Author**: Ne95ocyg
-- **Related Spec/Plan**: `N/A`
+- **Related Spec/Plan**: `code/notes/plan/features/ADR-003-resp-session-cache-plan.md`
 - **Supersedes**: `N/A`
 
 **Scope.** This ADR makes one decision: **whether to clean respiration once, offline, into a cached per-session artefact, or to clean it repeatedly when each consumer loads a clip.** The rail and flatline thresholds, per-run offset removal, resampling, and output grid are fixed inputs to this decision; they are not reopened here. **One deviation is recorded: the raw source rate remains the nominal 1000 Hz instead of being measured** (§2.3). Missing values are marked `[TODO: verify]` rather than guessed.

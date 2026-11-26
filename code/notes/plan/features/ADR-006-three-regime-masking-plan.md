@@ -414,7 +414,7 @@ Environment: repo venv (`.env`), one local Tesla T4; caches `$WORK_SCRATCH/tir_r
 
 The fold protocol, the fold orchestration and the Tier-1 comparison against the ADR-005 arm belong to
 `code/notes/plan/experiments/`. Measured numbers land in `code/notes/eval/`. Metric definitions are
-fixed by `code/notes/design/Evaluation_RespWaveform_protocol.md`. The ADR-005 comparator is the arm
+fixed by `code/notes/design/ADR-009-resp-waveform-evaluation-protocol.md`. The ADR-005 comparator is the arm
 already measured at `code/notes/eval/baselines/tir_rgb2d_resp/`, whose Stage-3 fine-tune does not yet
 exist and must be launched with the identical recipe before the Tier-1 gate can be read.
 

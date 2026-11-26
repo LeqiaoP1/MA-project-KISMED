@@ -128,7 +128,7 @@ data/processed/bp4d_canonical/
 | Seeding is performed in `runners/_common.py::init_env` (`torch.manual_seed`, `np.random.seed`, `random.seed` with `args.seed + get_rank()`). No standalone `set_seed()` helper. | Convention. |
 | YAML configs supply argparse **defaults** only; explicit CLI flags always override. | `parse_args_with_config` in `runners/_common.py`. |
 | Stage-2 and Stage-3 encoder geometry (tubelet / input_size / num_frames) must match exactly. Mismatches raise `ValueError` at load time. | `load_stage2_encoder` in `core/waveform_model.py`. |
-| `torch.amp.autocast` is **not** used. AMP is handled by `NativeScalerWithGradNormCount` in `utils/native_scaler.py`. | Code review. |
+| Opt-in CUDA AMP (`--amp_dtype {none,fp16,bf16}`, default `none`) is centralized in `utils/native_scaler.py` (`ADR-016`: `autocast_context`, FP16-only `GradScaler`, FP32 waveform loss). | `tests/test_amp.py`. |
 | Metric logging uses `utils/logger.py::MetricLogger` (MultiMAE style). `stdlib.logging` and ad-hoc `print()` are not used for trainer metrics. | Convention; some `print()` calls remain in non-metric paths. |
 
 ---
@@ -268,7 +268,7 @@ Per-frame AU occurrence labels; subject-disjoint split. Used exclusively by the 
 
 ### 3.5 2D-Texture ROI stream (`rgb2d`) — cached (2026-11-10, SHIPPED)
 
-A THIRD cached stream so Stage 2 can run `tir` + `rgb2d` + `resp` on ONE clip window. Contract: `design/2DTexture_ROI_cache_preprocessing.md` (v2). Build order: `plan/features/2DTexture_ROI_cache_implementation_plan.md`. Nothing in the existing TIR/RESP artefact changes value.
+A THIRD cached stream so Stage 2 can run `tir` + `rgb2d` + `resp` on ONE clip window. Contract: `design/ADR-012-rgb2d-native-memmap-roi-cache.md` (v2). Build order: `plan/features/ADR-012-rgb2d-native-memmap-roi-cache-plan.md`. Nothing in the existing TIR/RESP artefact changes value.
 
 | Piece | Name |
 |---|---|
@@ -645,7 +645,7 @@ Step 8 — Norm-pix targets (per-token or per-clip z-score based on target_norm)
           the clip-normalised values (`_targets(x, stream, mask)`).
           Datasets still return [0, 1]; the MODEL z-scores before patching
           (`core/input_adapters.zscore_clip`). Contract:
-          `design/Video_input_Preprocessing.md`.
+          `design/ADR-013-visual-clip-and-masked-cube-normalization.md`.
 
 Step 9 — Weighted masked MSE loss
 
@@ -1011,7 +1011,7 @@ Differentiating w.r.t. a slice of `z` raises, so the FULL `z` is differentiated
 and the GRADIENT is sliced.
 
 **`target_s` is masked-only for VISUAL streams** (`MultiModalMAE._targets(x,
-stream, mask)`, `design/Video_input_Preprocessing.md`): a masked cube is
+stream, mask)`, `design/ADR-013-visual-clip-and-masked-cube-normalization.md`): a masked cube is
 z-scored with its own per-cube mean/var, an unmasked cube carries the
 clip-normalised values. `MaskedMSELoss` keeps only `mask == 1`. The 1-D targets
 are decided by `target_norm` and ignore the mask.
@@ -1056,7 +1056,7 @@ def __call__(self, loss, optimizer, clip_grad=None, ...):
 
 > **Critical fix (2026-09-23)**: Before this fix, `clip_grad=0.0` (the default in many configs) entered the `clip_grad_norm_` branch with `max_norm=0.0`, which scales every gradient to zero (`clip_coef = 0 / (norm + eps)`). Learning was silently disabled. The guard `clip_grad > 0` now routes 0.0 to the no-clip path.
 
-> **No `torch.amp.autocast`** anywhere in the codebase. Forward passes run in full precision; only the backward is scaled.
+> **Opt-in CUDA AMP (`ADR-016`, landed 2026-10-13)**: `--amp_dtype {none,fp16,bf16}` (default `none`) enables `torch.autocast` via `utils/native_scaler.py::autocast_context`, with `GradScaler` active only for `fp16` and waveform losses evaluated in FP32 (`loss_in_fp32=True`). See `code/notes/design/ADR-016-mixed-precision-and-ddp-accumulation.md`.
 
 ---
 
@@ -1338,7 +1338,7 @@ Available Slurm batch files (`code/scripts/hpc/`): `submit_sweep.sbatch` (the AD
 
 Stage 3 predicts ONE fixed-length window per clip, so a session-level score
 requires rebuilding the whole recording first (training-free post-processing; the
-protocol of record is `design/Evaluation_RespWaveform_protocol.md` §2/§4):
+protocol of record is `design/ADR-009-resp-waveform-evaluation-protocol.md` §2/§4):
 
 - `clip_offsets` / `group_entries` — offset `round(t_start * fs)` per clip, NOT
   `t_start * fs / temporal_stride` (only the VIDEO is decimated; the 1-D target

@@ -102,7 +102,7 @@ Per-frame AU occurrence labels; subject-disjoint split. Used exclusively by the 
 
 ### 3.5 2D-Texture ROI stream (`rgb2d`) — cached (2026-11-10, SHIPPED)
 
-A THIRD cached stream so Stage 2 can run `tir` + `rgb2d` + `resp` on ONE clip window. Contract: `design/2DTexture_ROI_cache_preprocessing.md` (v2). Build order: `plan/features/2DTexture_ROI_cache_implementation_plan.md`. Nothing in the existing TIR/RESP artefact changes value.
+A THIRD cached stream so Stage 2 can run `tir` + `rgb2d` + `resp` on ONE clip window. Contract: `design/ADR-012-rgb2d-native-memmap-roi-cache.md` (v2). Build order: `plan/features/ADR-012-rgb2d-native-memmap-roi-cache-plan.md`. Nothing in the existing TIR/RESP artefact changes value.
 
 | Piece | Name |
 |---|---|

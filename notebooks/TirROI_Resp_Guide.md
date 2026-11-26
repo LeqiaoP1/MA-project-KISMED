@@ -48,7 +48,7 @@ This document serves as an exhaustive engineering and architecture specification
 * **Group B — Moderate Distortion (facial expression, transient startle)**: Task 1 (Listen to Joke), Task 4 (Burst of Sound).
 * **Group C — High Distortion (active singing, severe motion, pain, grimacing)**: Task 6 (Silly Song), Task 7 (Physical Threat), Task 8 (Cold Pressor), Task 9 (Performance Complaint), Task 10 (Smelly Odor).
 
-*Canonical form: `code/data/task_groups.py::SHIPPED_TASK_GROUPS` (a partition of `T1`..`T10`); rationale in `code/notes/design/TIR_ROI_RESP_TasksDistortion.md`.*
+*Canonical form: `code/data/task_groups.py::SHIPPED_TASK_GROUPS` (a partition of `T1`..`T10`); rationale in `code/notes/design/ADR-010-bp4d-task-distortion-tiers.md`.*
 
 ---
 

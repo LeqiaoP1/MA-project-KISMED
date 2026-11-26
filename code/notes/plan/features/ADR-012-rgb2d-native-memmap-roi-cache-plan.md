@@ -1,4 +1,4 @@
-# 2D Texture ROI Cache Implementation Plan — `rgb2d` Shards and Trimodal Stage 2
+# ADR-012 — 2D Texture (`rgb2d`) Native Memmap ROI Cache & Trimodal Stage 2: Implementation Plan
 
 Status: **IMPLEMENTED 2026-11-10** (Phases 0–6; suite 592 passed). Deviations
 from the plan as first written are listed under "As built" below.
@@ -7,7 +7,7 @@ Scope: a NEW cache (`data/rgb2d_cache.py`), a NEW builder
 (`data/trimodal_dataset.py`), the `rgb2d` stream registration, one new HPC
 config. **No existing shard, config or dataset changes value.**
 
-Contract of record: `code/notes/design/2DTexture_ROI_cache_preprocessing.md`
+Contract of record: `code/notes/design/ADR-012-rgb2d-native-memmap-roi-cache.md`
 (**v2, updated 2026-11-10** — native task-level artefacts and load-time
 `input_size`; the v1 prerendered-clip text is superseded). Limitations of that
 contract, and why: §2 below.
@@ -119,7 +119,7 @@ reader will ask why the doc no longer matches its own first version.
 3. **Frame boxes become a hull box.** Design §3 derives a box per frame. The
    artefact is ONE square hull over the stride-1 clip windows, which contains
    every clip box (invariant I2) and keeps the crop spatially static across a
-   task, as `code/notes/design/ROI_crop_and_rescaling.md` requires.
+   task, as `code/notes/design/ADR-011-landmark-roi-geometry-and-tir-cache.md` requires.
 
 This plan also delivers, for the new cache path, the geometry half of the
 *Deferred: the RGB port* (W4 in `code/notes/plan/experiments/RGB_BP_plan.md`): square box,
@@ -755,7 +755,7 @@ glob change is the failure mode they exist to catch.
 ## Phase 6 — documentation
 
 **Step 6.1 — DONE (2026-11-10).**
-`code/notes/design/2DTexture_ROI_cache_preprocessing.md` is now **v2** and no
+`code/notes/design/ADR-012-rgb2d-native-memmap-roi-cache.md` is now **v2** and no
 longer contradicts this plan: it records the task-level **native** artefact, the
 two-resolution contract (`store_resolution='native'` + a load-time
 `input_size`), dataset-level gates with their counters, the raw `.dat` +

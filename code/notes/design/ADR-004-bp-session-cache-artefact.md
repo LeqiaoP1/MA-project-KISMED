@@ -3,7 +3,7 @@
 - **Status**: Accepted
 - **Date**: 2026-11-20
 - **Author**: Ne95ocyg
-- **Related Spec/Plan**: `N/A` (implementation-defined; no runtime dependency)
+- **Related Spec/Plan**: `code/notes/plan/features/ADR-004-bp-session-cache-plan.md`
 - **Supersedes**: `N/A`
 
 **Decision.** Clean the blood-pressure trace **once, offline**, into one cached

@@ -1,9 +1,9 @@
 """ADR-005 virtual-sensing curriculum and contract-4 mode label (gates G1-G7).
 
 Design of record:
-``code/notes/design/ADR-005-asymmetric-multimodal-masking-3streams.md``.
+``code/notes/design/archive/ADR-005-asymmetric-multimodal-masking-3streams.md``.
 Plan and gate ids:
-``code/notes/plan/features/ADR-005-asymmetric-multimodal-masking-3streams-plan.md``
+``code/notes/plan/features/archive/ADR-005-asymmetric-multimodal-masking-3streams-plan.md``
 (§6, G1-G7).
 
 The apportioner cases are pure CPU arithmetic; the last three cases build the

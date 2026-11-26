@@ -1,10 +1,10 @@
-"""BDD acceptance criteria for the AMP switch (notes/design/hpc_AMP.md).
+"""BDD acceptance criteria for the AMP switch (notes/design/ADR-016-mixed-precision-and-ddp-accumulation.md).
 
 CPU-only: no CUDA is required. Cases that need a CUDA *decision* monkeypatch
 ``torch.cuda.is_available`` and pass a ``cuda`` device, so only the POLICY is
 asserted (autocast/scaler on or off), never a real kernel.
 
-Scenario map (see the "BDD Acceptance Criteria" section of hpc_AMP.md):
+Scenario map (see the "BDD Acceptance Criteria" section of ADR-016-mixed-precision-and-ddp-accumulation.md):
   1. Default (--amp_dtype none) preserves FP32 execution.
   2. fp16 enables autocast AND loss scaling.
   3. bf16 enables autocast WITHOUT loss scaling.

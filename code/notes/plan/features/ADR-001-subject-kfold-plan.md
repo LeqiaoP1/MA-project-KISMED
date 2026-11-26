@@ -5,7 +5,7 @@
 > overwritten**; no compatibility path survives on the reporting pipeline.
 > Runbook:
 > `code/notes/plan/experiments/kfold_run_checklist.md`. Metric definitions:
-> `code/notes/design/Evaluation_RespWaveform_protocol.md`.
+> `code/notes/design/ADR-009-resp-waveform-evaluation-protocol.md`.
 
 ## 1. Decisions
 

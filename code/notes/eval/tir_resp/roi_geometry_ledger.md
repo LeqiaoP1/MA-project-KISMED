@@ -3,7 +3,7 @@
 Contract of record: `roi_padding 0.10` + `input_size 96` + `max_sway_px 40`
 (decided 2026-10-30; the retired pair was `0.20 / 112`).
 Probe: `roi_geometry_ledger.py`. Verdict: **PASS, 0 mismatches** — every geometry
-figure in `notes/design/ROI_crop_and_rescaling.md` reproduces from the raw tracks.
+figure in `notes/design/ADR-011-landmark-roi-geometry-and-tir-cache.md` reproduces from the raw tracks.
 
 ```bash
 # from code/

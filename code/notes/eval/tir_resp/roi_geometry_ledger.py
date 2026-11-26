@@ -1,7 +1,7 @@
 """Geometry ledger for the ROI crop contract -- the numbers the design quotes.
 
 Reproduces, from the RAW ``IRFeatures`` tracks and the EMITTED clip list, every
-geometry figure in ``notes/design/ROI_crop_and_rescaling.md``:
+geometry figure in ``notes/design/ADR-011-landmark-roi-geometry-and-tir-cache.md``:
 
 * the SQUARE crop side before and after the motion gate (median / p95 / max);
 * the isotropicity ledger: ``sigma = s / side``, and the share of clips that are

@@ -35,7 +35,7 @@ By distortion group the model tracks the expected difficulty ordering:
 
 **Grouping v2 (2026-10-24, re-aggregated -- NOT a new run).** The shipped tiers
 changed (T5 high->low, T1 high->moderate, T10 moderate->high; see
-`code/notes/design/TIR_ROI_RESP_TasksDistortion.md`). The table above is the v1
+`code/notes/design/ADR-010-bp4d-task-distortion-tiers.md`). The table above is the v1
 split and is kept as measured. Re-aggregating the **same** `preds.npy` dump
 (`runners/run_evaluate_subject.py --task_groups '...' --no_figures --out
 subject_metrics_regrouped.json`) gives:
@@ -65,7 +65,7 @@ T10 leaves. On the session-level read of the same dump the ordering stays
 
 ## Caveats (must qualify any claim)
 
-1. **Selection leakage.** `best.pth` was chosen by val Pearson (+0.499) on the *same* subject-disjoint split that is reported here as "test" — per `Evaluation_RespWaveform_protocol.md` §3.1 this must not be the headline; only the LOSO (`--val_subject`) sweep would be clean.
+1. **Selection leakage.** `best.pth` was chosen by val Pearson (+0.499) on the *same* subject-disjoint split that is reported here as "test" — per `ADR-009-resp-waveform-evaluation-protocol.md` §3.1 this must not be the headline; only the LOSO (`--val_subject`) sweep would be clean.
 2. **Barely above the rate-only baseline** — 0.569 vs 0.535, beating it in 54 % of subjects.
 3. **Rate accuracy** (46 % within 10 %) is below what a reportable vital-sign claim needs.
 4. Amplitudes need a true scale (oracle) to be meaningful.

@@ -1,4 +1,4 @@
-# ROI Crop Implementation Plan — Square Box, Isotropic Rescale, Motion Gate, Cache Hull
+# ADR-011 — Landmark ROI Crop, Motion Gate & Native TIR Cache: Implementation Plan
 
 Status: **IMPLEMENTED** (all six phases landed; kept as the build order of record).
 Scope: the TIR lineage — `data/tir_resp_dataset.py` and `data/roi_cache.py`.
@@ -6,7 +6,7 @@ The RGB lineage keeps the legacy geometry in this change but is bound to the sam
 contract when it is ported (*Deferred: the RGB port* — tracked as W4 in
 `code/notes/plan/experiments/RGB_BP_plan.md`).
 
-Contract of record: `code/notes/design/ROI_crop_and_rescaling.md`.
+Contract of record: `code/notes/design/ADR-011-landmark-roi-geometry-and-tir-cache.md`.
 Upstream spec: `code/notes/spec/01_data_pipeline.md` §3.3.
 Measured behaviour: `code/notes/eval/tir_resp/`.
 
@@ -407,7 +407,7 @@ directly.
 
 | doc | change |
 |---|---|
-| `code/notes/design/ROI_crop_and_rescaling.md` | status header -> implemented (dated); add one line that the RGB lineage is bound to this contract |
+| `code/notes/design/ADR-011-landmark-roi-geometry-and-tir-cache.md` | status header -> implemented (dated); add one line that the RGB lineage is bound to this contract |
 | `code/scripts/project/write_specs.py:244,256` | embedded ROI text gains the square rule + motion gate; then regenerate |
 | `code/notes/spec/01_data_pipeline.md` §3.2–3.3 | hand-applied, NOT regenerated: `write_specs.py` is stale for the split policy, `physio_norm`, the RGB zip source and `rail_touch_v`, so running it reverts four hand edits (verified by diff on 2026-10-29). Its ROI paragraph WAS updated, so a future regeneration keeps the new text. |
 | `code/notes/eval/tir_resp/hpc_precomputation.md` §9 | the hull contract, the three key fields, the rebuild cost |
@@ -499,7 +499,7 @@ decision**: `0.10` at `s = 112` would upsample 82.3 % of clips (σ 1.18), while
 | `scripts/hpc/gate_native.sbatch`, `gate_model_input.sbatch` | probe defaults follow the new contract and write a NEW output file, so the recorded 112 px results stay intact |
 | `notes/eval/tir_resp/roi_geometry_ledger.py` | `EXPECT` re-baselined (side 95/131/353 pre-gate, 95/125/174 at 40 px); the "production" column now keys off `trd.DEFAULT_ROI_PADDING` instead of `max(paddings)` |
 | `notes/eval/tir_resp/cache_parity_probe.py` | `_GEOM['padding']` -> `trd.DEFAULT_ROI_PADDING` |
-| `notes/design/ROI_crop_and_rescaling.md` | §1 token counts, §3.2 P1 + side table, §4.1 pairing table and conclusion (replacing "Therefore `s=112, p=0.2`"), §4.2, §4.5 lineage table + pos-embed rationale, §7 A9, §8 defaults, §9 item 1, §10 ledger row |
+| `notes/design/ADR-011-landmark-roi-geometry-and-tir-cache.md` | §1 token counts, §3.2 P1 + side table, §4.1 pairing table and conclusion (replacing "Therefore `s=112, p=0.2`"), §4.2, §4.5 lineage table + pos-embed rationale, §7 A9, §8 defaults, §9 item 1, §10 ledger row |
 | `notes/eval/tir_resp/hpc_precomputation.md` | supersession note; Stage-2/3 key table |
 
 Verified: `pytest` **413 pass**, `compileall` clean, ledger **PASS 0 mismatches**.

@@ -44,7 +44,7 @@ pos_init: sincos3d
 # input_size 224). Raise to 224 or drop to 0.75 for the local 64 px debug.
 
 # ---- MASKING: ADR-002 constant-budget policy (the whole surface) -----------
-# See code/notes/design/ADR-002-asymmetric-multimodal-masking.md. Two visual
+# See code/notes/design/archive/ADR-002-asymmetric-multimodal-masking.md. Two visual
 # streams are REQUIRED (contract 5), hence streams: rgb,tir,bp above.
 # 4x4 grid / 100 frames / tubelet_t 2 => T = 50 tokens per tube, M = 4 tubes,
 # n_signal = 400/8 = 50 tokens. NOTE the 0.5 cap is below one tubelet on this

@@ -6,7 +6,7 @@
 > pooled with, compared against, or quoted as an ADR-001 result
 > (`code/notes/plan/features/ADR-001-subject-kfold-plan.md`).
 >
-> Measured 2026-10-23 · protocol `code/notes/design/Evaluation_RespWaveform_protocol.md` §3.2
+> Measured 2026-10-23 · protocol `code/notes/design/ADR-009-resp-waveform-evaluation-protocol.md` §3.2
 > Run dirs `output/finetune/resp_tir_roi_hpc_fold{0..4}` · artifact
 > `output/eval/resp_kfold/kfold_resp_tir_roi_hpc.json`
 >
@@ -123,7 +123,7 @@ Groups: **low** +0.447 / 0.577 / 2.36 BPM (n=258) > **high** +0.323 / 0.668 /
 The shipped tiers changed: `low=[T2,T3,T5]`, `moderate=[T1,T4]`,
 `high=[T6,T7,T8,T9,T10]` (T5 high->low, T1 high->moderate, T10
 moderate->high; `data/task_groups.SHIPPED_TASK_GROUPS`, rationale in
-`code/notes/design/TIR_ROI_RESP_TasksDistortion.md`). The table above is the
+`code/notes/design/ADR-010-bp4d-task-distortion-tiers.md`). The table above is the
 v1 split and is kept as measured. Re-aggregating the **same** five fold dumps
 with `runners/run_evaluate_kfold.py --task_groups '...'` (no re-training; output
 `output/eval/resp_kfold/kfold_resp_tir_roi_hpc_regrouped.json`, which records

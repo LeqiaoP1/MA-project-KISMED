@@ -1,4 +1,6 @@
-# Task Distortion-Tier Regrouping v2 (TIR ROI RESP)
+# ADR-010 — Task Distortion-Tier Regrouping v2 (TIR ROI RESP): Implementation Plan
+
+> **Authority.** `code/notes/design/ADR-010-bp4d-task-distortion-tiers.md` is the contract.
 
 Status: **IMPLEMENTED** 2026-10-24. Date: 2026-10-24.
 
@@ -50,7 +52,7 @@ the grouping; (b) `presentation/build_deck.py` was NOT run because
 (c) `notebooks/TirROI_Resp_Pipeline.ipynb` stored outputs are left untouched as
 an execution log.
 
-Rationale of record: `code/notes/design/TIR_ROI_RESP_TasksDistortion.md`.
+Rationale of record: `code/notes/design/ADR-010-bp4d-task-distortion-tiers.md`.
 
 Replaces the shipped tiers
 
@@ -229,7 +231,7 @@ The new mapping partitions T1..T10 (3 / 2 / 5) with every task in exactly one ti
 - `code/runners/run_survey_tir_resp.py` - `DEFAULT_TASK_GROUPS`.
 - `code/evaluation/metrics.py::breakdown_by_label` - skips unmapped sessions
   (the reason the phase-2 warning matters).
-- `code/notes/design/TIR_ROI_RESP_TasksDistortion.md` - the rationale of record.
+- `code/notes/design/ADR-010-bp4d-task-distortion-tiers.md` - the rationale of record.
 - `code/notes/eval/tir_resp/{resp_5fold_cv.md, finetuned1_subjectReport.md,
   resp_data_quality.md}` - v2 sections and the convention sentence.
 

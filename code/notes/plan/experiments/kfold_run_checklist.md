@@ -4,7 +4,7 @@
 > `Stage-2 -> Stage-3 -> test -> pooled k-fold` run. It defines no intent.
 > Authority: `code/notes/spec/` (what it must be) ->
 > `code/notes/design/ADR-001-subject-disjoint-split-and-selection.md` and
-> `code/notes/design/Evaluation_RespWaveform_protocol.md` (intent) ->
+> `code/notes/design/ADR-009-resp-waveform-evaluation-protocol.md` (intent) ->
 > `code/notes/plan/experiments/TirROI_Resp_plan.md` (code placement) ->
 > `code/notes/eval/tir_resp/resp_5fold_cv.md` (measured facts).
 > Where this file disagrees with any of them, they win.

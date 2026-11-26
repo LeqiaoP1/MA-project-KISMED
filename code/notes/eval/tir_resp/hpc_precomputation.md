@@ -19,7 +19,7 @@ sections 0, 1.2, 1.4, 2.3-2.6, 3.2, 3.3, 4.2, 5.1, 6, 7, 8, 9, 10.
 
 > **Superseded in part, 2026-10-30.** The ROI contract moved to
 > `roi_padding 0.10` + `input_size 96` (rationale:
-> `notes/design/ROI_crop_and_rescaling.md` §4.1; measurements:
+> `notes/design/ADR-011-landmark-roi-geometry-and-tir-cache.md` §4.1; measurements:
 > `notes/eval/tir_resp/roi_geometry_ledger.md`). The `pad0.20` / 112 px numbers
 > and the shard/GB figures quoted here are therefore historical: both `pad0.20`
 > artifacts (v2 85 GB, v3 97 GiB) were **deleted 2026-10-30**, once the `pad0.10`
@@ -630,8 +630,8 @@ above exactly (q=0.05 -> x0.835, q=0.10 -> x0.713, q=0.20 -> x0.536).
 > **3**. Everything else below (key philosophy, what stays OUT of the key, chunked
 > decode, shard schema, `--check` gate) still holds, and the measured numbers are
 > the v2 record. Contract of record:
-> `code/notes/design/ROI_crop_and_rescaling.md` §3.5; build order:
-> `code/notes/plan/features/ROI_crop_implementation_plan.md`.
+> `code/notes/design/ADR-011-landmark-roi-geometry-and-tir-cache.md` §3.5; build order:
+> `code/notes/plan/features/ADR-011-landmark-roi-geometry-and-tir-cache-plan.md`.
 
 Everything needed to write the cache without re-deciding anything. Sections
 2.3-2.5 are the rationale; this is the specification.

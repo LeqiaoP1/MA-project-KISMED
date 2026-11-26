@@ -190,7 +190,7 @@ decision, for two measured reasons: as a masked-reconstruction term it is
 satisfied by within-modality interpolation (a linear interpolator of the
 visible resp beats the trained model on the very spectral metric), and it was
 the spike trigger on zero-variance railed targets (`spec_resp 4.3e10`). See
-`code/notes/design/SpanMask_PhysioSignals.md` §1–§3.
+`code/notes/design/archive/SpanMask_PhysioSignals.md` §1–§3.
 
 The MR-STFT / periodicity prior now exists **only** in Stage-3 finetuning
 (`core/waveform_losses.WaveformJointLoss`, `gamma = 1.0`, `--fft_sizes`), where
@@ -216,7 +216,7 @@ one/two physiological ones) is a YAML-only change. **Masking** is the
 constant-budget policy (`core/budget_masking.py`): every step samples a mode and
 one kept-token count per stream so the encoder input is always `n_budget` (350)
 tokens long — see `notes/spec/02_model_architecture.md` §7.5 and
-`notes/design/ADR-002-asymmetric-multimodal-masking.md`.
+`notes/design/archive/ADR-002-asymmetric-multimodal-masking.md`.
 
 **Choosing the visible stream (`rgb` vs `rgb2d`).** `rgb` is **not deprecated**
 — it is the only visible stream served by `PairedSessionDataset` (`data_set:
@@ -250,7 +250,7 @@ path whose visual stream is the landmark-derived mouth/nose crop. The first
 such run is `configs/pretrain/stage2_local_tir_roi_resp.yaml` (`streams: tir,resp`);
 its procedure of record is `code/notes/plan/experiments/TirROI_Resp_plan.md`. A measured diagnosis of
 *why* the physio stream collapses under scattered masking, and the span-masking
-design that replaces it, is in `code/notes/design/SpanMask_PhysioSignals.md` (with the STFT
+design that replaces it, is in `code/notes/design/archive/SpanMask_PhysioSignals.md` (with the STFT
 term's role re-derived under spans).
 
 **Task groups / "distortion levels" (`--task_set`, `task_groups:`).** A run can
@@ -519,7 +519,7 @@ scattered (`scattered`, the default) or contiguous blocks (`span`, length via
 `--physio_span_tokens`, exact count preserved). Span placement removes the
 "interpolate the gap from its visible neighbours" shortcut that makes a
 scattered mask on an oversampled band-limited stream solvable with zero video
-information (`code/notes/design/SpanMask_PhysioSignals.md` §1-§2). The resolved
+information (`code/notes/design/archive/SpanMask_PhysioSignals.md` §1-§2). The resolved
 decision is printed at model build together with the policy parameters, and
 `python -m core.multimae` self-tests the invariants (constant encoder length,
 batch-uniform counts, and the Mode-1 gradient path to the encoder).
@@ -824,7 +824,7 @@ It reads the **raw** tree (no `prepare_bp4d.py` copy needed):
   **`[0, 1]` is the DATASET contract, not the network input**: the model
   z-scores the whole visual clip per channel before patch division
   (`core/input_adapters.py::zscore_clip`, in both stages) —
-  `notes/design/Video_input_Preprocessing.md`.
+  `notes/design/ADR-013-visual-clip-and-masked-cube-normalization.md`.
 * **Clips are non-overlapping by default** (`clip_stride=None`); pass
   `clip_stride` in SECONDS for a hop. **No split is applied here** -- this
   dataset exposes one stream per session, and the subject-disjoint split is the

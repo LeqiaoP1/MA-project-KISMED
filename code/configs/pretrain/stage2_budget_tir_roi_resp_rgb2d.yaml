@@ -7,8 +7,8 @@
 #   virtual_sensing_warmup_* keys, so p(e) = p_target = 0.50 from the first
 #   step. Diffing it against stage2_budget_3stream_curriculum.yaml isolates R6.
 #
-# Design of record: code/notes/design/ADR-002-asymmetric-multimodal-masking.md
-# Plan:            code/notes/plan/features/ADR-002-constant-budget-masking-plan.md
+# Design of record: code/notes/design/archive/ADR-002-asymmetric-multimodal-masking.md
+# Plan:            code/notes/plan/features/archive/ADR-002-constant-budget-masking-plan.md
 #
 # ONE masking policy. Each step draws a mode and one kept-token count per
 # stream; the counts of all streams sum to `n_budget`, so the encoder input has

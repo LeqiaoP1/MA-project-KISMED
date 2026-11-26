@@ -1,7 +1,7 @@
 """Contract tests for the constant-budget apportionment engine (ADR-002).
 
-Design: ``code/notes/design/ADR-002-asymmetric-multimodal-masking.md``.
-Plan + gate ids: ``code/notes/plan/features/ADR-002-constant-budget-masking-plan.md``
+Design: ``code/notes/design/archive/ADR-002-asymmetric-multimodal-masking.md``.
+Plan + gate ids: ``code/notes/plan/features/archive/ADR-002-constant-budget-masking-plan.md``
 (Phase 1, §8).
 
 The module is pure and CPU-only: no dataset, no model, no GPU. The ADR's own

@@ -39,7 +39,7 @@ SPACE-TIME ATTENTION AND ALIGNMENT (checked, not assumed)
   re-warp the time axis); only a trailing trim (which keeps the time origin)
   is allowed.
 * VISUAL INPUT PREPROCESSING (design
-  ``code/notes/design/Video_input_Preprocessing.md``): after ``_fit_time`` and
+  ``code/notes/design/ADR-013-visual-clip-and-masked-cube-normalization.md``): after ``_fit_time`` and
   BEFORE patch division, every visual clip is
   z-scored per channel over ``(T, H, W)`` per sample
   (``core.input_adapters.zscore_clip``). The datasets keep returning ``[0, 1]``
@@ -364,7 +364,7 @@ class MultiModalMAE(nn.Module):
         # kept-token count per stream such that the visible tokens of all
         # streams sum to ``n_budget``; ``core.mask_placement`` then draws which
         # tubes / which temporal tokens per sample. Design of record:
-        # ``code/notes/design/ADR-005-asymmetric-multimodal-masking-3streams.md``.
+        # ``code/notes/design/archive/ADR-005-asymmetric-multimodal-masking-3streams.md``.
         #
         # ``virtual_sensing_warmup_p`` / ``virtual_sensing_warmup_epochs`` are
         # the ADR-005 §2.7 curriculum (R6). ``E_warm = 0`` is the neutral
@@ -915,7 +915,7 @@ class MultiModalMAE(nn.Module):
     def _targets(self, x, stream: str, mask: Optional[Tensor] = None):
         """Reconstruction targets ``[B, N, flat]`` -- masked cubes only.
 
-        VISUAL streams (design ``Video_input_Preprocessing.md``):
+        VISUAL streams (design ``ADR-013-visual-clip-and-masked-cube-normalization.md``):
 
         * a MASKED cube (``mask == 1``) is standardised with that cube's OWN
           mean/var over its ``C*t*ph*pw`` values -- the classic VideoMAE
@@ -1010,7 +1010,7 @@ class MultiModalMAE(nn.Module):
         # from the END, which keeps the shared time origin and therefore the
         # tubelet <-> signal token alignment; a too-short stream raises.
         #
-        # VISUAL INPUT PREPROCESSING (design ``Video_input_Preprocessing.md``):
+        # VISUAL INPUT PREPROCESSING (design ``ADR-013-visual-clip-and-masked-cube-normalization.md``):
         # after the trim (so the statistics describe the exact clip the
         # adapters see) and BEFORE patch division, the whole clip is z-scored
         # per channel. ``_targets`` below reads ``xin`` too, which is what makes

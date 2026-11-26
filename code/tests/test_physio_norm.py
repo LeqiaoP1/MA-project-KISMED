@@ -291,7 +291,7 @@ def test_target_norm_none_leaves_visual_streams_normalised():
     visual view).
 
     The mask is explicit here: only MASKED cubes are locally standardised
-    (``Video_input_Preprocessing.md``); an unmasked cube keeps the
+    (``ADR-013-visual-clip-and-masked-cube-normalization.md``); an unmasked cube keeps the
     clip-normalised values.
     """
     m = _tiny_model(target_norm='none')

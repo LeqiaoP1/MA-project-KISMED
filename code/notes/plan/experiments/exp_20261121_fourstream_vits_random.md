@@ -3,7 +3,7 @@
 - **Experiment ID**: `EXP-20261121-01`
 - **Author**: LeqiaoP1
 - **Status**: **Ready (P0 cleared)**. The local fold-0 dev smoke passed on 2026-11-21; see `code/notes/eval/baselines/tir_rgb2d_bp_resp/stage2_smoke.md`. The first target-hardware run is the one-fold HPC smoke.
-- **Associated ADR**: `code/notes/design/ADR-002-asymmetric-multimodal-masking.md` (masking); `code/notes/design/2DTexture_ROI_cache_preprocessing.md` (rgb2d contract)
+- **Associated ADR**: `code/notes/design/archive/ADR-002-asymmetric-multimodal-masking.md` (masking); `code/notes/design/ADR-012-rgb2d-native-memmap-roi-cache.md` (rgb2d contract)
 - **Target Thesis Section**: Chapter 4, Stage-2 modality ablation / four-stream representation study
 
 ---

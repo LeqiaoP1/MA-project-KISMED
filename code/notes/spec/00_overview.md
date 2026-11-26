@@ -108,7 +108,7 @@ data/processed/bp4d_canonical/
 | Seeding is performed in `runners/_common.py::init_env` (`torch.manual_seed`, `np.random.seed`, `random.seed` with `args.seed + get_rank()`). No standalone `set_seed()` helper. | Convention. |
 | YAML configs supply argparse **defaults** only; explicit CLI flags always override. | `parse_args_with_config` in `runners/_common.py`. |
 | Stage-2 and Stage-3 encoder geometry (tubelet / input_size / num_frames) must match exactly. Mismatches raise `ValueError` at load time. | `load_stage2_encoder` in `core/waveform_model.py`. |
-| `torch.amp.autocast` is **not** used. AMP is handled by `NativeScalerWithGradNormCount` in `utils/native_scaler.py`. | Code review. |
+| Opt-in CUDA AMP (`--amp_dtype {none,fp16,bf16}`, default `none`) is centralized in `utils/native_scaler.py` (`ADR-016`: `autocast_context`, FP16-only `GradScaler`, FP32 waveform loss). | `tests/test_amp.py`. |
 | Metric logging uses `utils/logger.py::MetricLogger` (MultiMAE style). `stdlib.logging` and ad-hoc `print()` are not used for trainer metrics. | Convention; some `print()` calls remain in non-metric paths. |
 
 ---

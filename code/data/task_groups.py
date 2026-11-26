@@ -19,7 +19,7 @@ The one definition this module KNOWS about is :data:`SHIPPED_TASK_GROUPS`, the
 tiers the ``tir_roi*`` configs ship (a partition of ``T1``..``T10``). It exists
 only as a default/test anchor -- resolution is still driven by whatever the
 config passes in, and a config may legitimately define a different split. The
-rationale of record is ``code/notes/design/TIR_ROI_RESP_TasksDistortion.md``.
+rationale of record is ``code/notes/design/ADR-010-bp4d-task-distortion-tiers.md``.
 
 The SELECTION is resolved to explicit task labels ONCE at dataset-build time::
 
@@ -58,7 +58,7 @@ from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 #: anger, disgust. A PARTITION of ``T1``..``T10`` (3 / 2 / 5):
 #: :func:`runners.run_survey_tir_resp._aggregate` and
 #: ``notes/eval/tir_resp/gate_model_input.group_of`` assume one group per task.
-#: Rationale: ``code/notes/design/TIR_ROI_RESP_TasksDistortion.md``.
+#: Rationale: ``code/notes/design/ADR-010-bp4d-task-distortion-tiers.md``.
 SHIPPED_TASK_GROUPS = 'low=T2|T3|T5;moderate=T1|T4;high=T6|T7|T8|T9|T10'
 
 __all__ = ['TASK_LABEL_RE', 'normalise_task', 'normalise_group',

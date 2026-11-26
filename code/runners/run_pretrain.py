@@ -302,7 +302,7 @@ def get_args():
     # These seven keys are the ONLY policy parameters. Each step draws a mode
     # and one kept-token count per stream; the counts of all streams sum to
     # n_budget. YAML keys mirror the flag names. See
-    # code/notes/design/ADR-002-asymmetric-multimodal-masking.md §2.
+    # code/notes/design/archive/ADR-002-asymmetric-multimodal-masking.md §2.
     parser.add_argument('--n_budget', default=350, type=int,
                         help='constant number of visible encoder tokens per '
                              'step (ADR-002 contract 1). Every step feeds '

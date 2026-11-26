@@ -1,7 +1,7 @@
 """The ONE visual input preprocessing -- clip-level z-score before patch division.
 
-Contract: ``code/notes/design/Video_input_Preprocessing.md``.
-Implementation: ``code/notes/plan/features/video_input_preprocessing_implementation_plan.md``.
+Contract: ``code/notes/design/ADR-013-visual-clip-and-masked-cube-normalization.md``.
+Implementation: ``code/notes/plan/features/ADR-013-visual-clip-and-masked-cube-normalization-plan.md``.
 
 Two rules, both model-side (the datasets keep returning ``[0, 1]``):
 

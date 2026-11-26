@@ -1,7 +1,7 @@
-# AMP Implementation — the `--amp_dtype` switch
+# ADR-016 — Mixed Precision (`--amp_dtype`) & DDP Accumulation: Implementation Plan
 
 **Status:** implemented and verified (CPU test suite) on 2026-10-13.
-**Companion doc:** [`hpc_AMP.md`](../../design/hpc_AMP.md) — the pre-implementation audit and
+**Companion doc:** [`ADR-016-mixed-precision-and-ddp-accumulation.md`](../../design/ADR-016-mixed-precision-and-ddp-accumulation.md) — the pre-implementation audit and
 rationale. Speed/memory figures in that note remain **estimates** until the
 one-GPU comparison below is run.
 **Scope:** `code/` training runners, engines, the AMP scaler module, checkpointing.
@@ -174,7 +174,7 @@ with contextlib.ExitStack() as stack:
 
 ## 8. Testing
 
-`code/tests/test_amp.py` encodes the BDD scenarios from `hpc_AMP.md`:
+`code/tests/test_amp.py` encodes the BDD scenarios from `ADR-016-mixed-precision-and-ddp-accumulation.md`:
 
 | # | Scenario | Test |
 |---|---|---|
@@ -210,7 +210,7 @@ cd code
    (no CUDA in the development session). Run the `none`/`bf16`/`fp16` smoke
    comparison on the cluster and record **peak memory, step throughput, loss
    finiteness and validation metrics** before quoting any speed-up.
-2. **Perf numbers are unmeasured.** `hpc_AMP.md`'s 1.2–2× throughput /
+2. **Perf numbers are unmeasured.** `ADR-016-mixed-precision-and-ddp-accumulation.md`'s 1.2–2× throughput /
    25–50 % memory figures are planning estimates.
 3. **BF16 needs Ampere-or-newer for speed.** The usable HPC pool (a100, h100,
    rtx6000→Blackwell) qualifies; older (e.g. V100) devices would not benefit.

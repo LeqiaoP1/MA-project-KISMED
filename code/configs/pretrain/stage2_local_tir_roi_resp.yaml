@@ -58,7 +58,7 @@ tasks: ''                          # explicit task labels, '' = all;
 # code/data/task_groups.py; the selected level of every clip is recorded in
 # `entry['task_level']` and in the dataset stats.
 # v2 (2026-10-24): T5 high->low, T1 high->moderate, T10 moderate->high.
-# Rationale: code/notes/design/TIR_ROI_RESP_TasksDistortion.md.
+# Rationale: code/notes/design/ADR-010-bp4d-task-distortion-tiers.md.
 task_groups:
   low: [T2, T3, T5]                # passive viewing + short yes/no answers
   moderate: [T1, T4]               # laughter / facial expression + startle

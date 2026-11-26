@@ -191,7 +191,7 @@ Available Slurm batch files (`code/scripts/hpc/`): `submit_sweep.sbatch` (the AD
 
 Stage 3 predicts ONE fixed-length window per clip, so a session-level score
 requires rebuilding the whole recording first (training-free post-processing; the
-protocol of record is `design/Evaluation_RespWaveform_protocol.md` §2/§4):
+protocol of record is `design/ADR-009-resp-waveform-evaluation-protocol.md` §2/§4):
 
 - `clip_offsets` / `group_entries` — offset `round(t_start * fs)` per clip, NOT
   `t_start * fs / temporal_stride` (only the VIDEO is decimated; the 1-D target

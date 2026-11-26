@@ -1,7 +1,7 @@
 """Build the offline 2D-texture face-ROI pixel cache (``rgb2d``).
 
-Spec: ``notes/design/2DTexture_ROI_cache_preprocessing.md`` (v2).
-Build order: ``notes/plan/features/2DTexture_ROI_cache_implementation_plan.md`` (Phase 2).
+Spec: ``notes/design/ADR-012-rgb2d-native-memmap-roi-cache.md`` (v2).
+Build order: ``notes/plan/features/ADR-012-rgb2d-native-memmap-roi-cache-plan.md`` (Phase 2).
 
 Modes (mutually exclusive; ``--build`` is the fall-through):
 

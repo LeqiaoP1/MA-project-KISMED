@@ -20,7 +20,7 @@ thermal face ROI alone?
 "Performance" is the **subject-level** reconstruction quality: clips are assembled
 into continuous per-session waveforms and compared with the raw `Resp_Volts`
 reference, one number per held-out subject
-(`design/Evaluation_RespWaveform_protocol.md` §1–§2). Stages 1/2 are judged only
+(`design/ADR-009-resp-waveform-evaluation-protocol.md` §1–§2). Stages 1/2 are judged only
 by whether they move that number.
 
 ---
@@ -29,21 +29,21 @@ by whether they move that number.
 
 | item | value | owning design |
 |---|---|---|
-| clip / fps / stride | 8.0 s, source 25 fps, `temporal_stride 2` (12.5 fps effective) | `design/ROI_crop_and_rescaling.md` §5 |
+| clip / fps / stride | 8.0 s, source 25 fps, `temporal_stride 2` (12.5 fps effective) | `design/ADR-011-landmark-roi-geometry-and-tir-cache.md` §5 |
 | tubelet / grid | `(2,16,16)`; `num_frames 100` → `G_t = 50` | `spec/02_model_architecture.md` §3 |
-| 1-D grid | `fs 100`, `sig_kernel 16`, `seq_len 800` → `n_signal 50`; **160 ms per token** | `design/SpanMask_PhysioSignals.md` §1 |
+| 1-D grid | `fs 100`, `sig_kernel 16`, `seq_len 800` → `n_signal 50`; **160 ms per token** | `design/archive/SpanMask_PhysioSignals.md` §1 |
 | alignment | `tubelet_t·stride/fps == sig_kernel/fs` (hard `ValueError` in `MultiModalMAE`) | `spec/02_model_architecture.md` §7.2 |
-| ROI landmarks | 12-point nose+mouth (`9,10,11,12,13,20,21,22,23,24,25,26`) | `design/ROI_crop_and_rescaling.md` §3.1 |
-| ROI box | `roi_padding 0.10`, `crop_rule='square'` (square **before** the single isotropic rescale), `max_sway_px 40` (drop, not absorb) | `design/ROI_crop_and_rescaling.md` §3.2/§3.4 |
-| patch | `input_size 96` on HPC (6×6 grid), `64` local (4×4); patch 16 | `design/ROI_crop_and_rescaling.md` §4.5 |
-| clip validity | any `(0,0)` landmark line inside the window drops the clip; `min_signal_spread 0.1 V`; `rail_touch_v 9.9 V` | `design/ROI_crop_and_rescaling.md` §3.4 |
+| ROI landmarks | 12-point nose+mouth (`9,10,11,12,13,20,21,22,23,24,25,26`) | `design/ADR-011-landmark-roi-geometry-and-tir-cache.md` §3.1 |
+| ROI box | `roi_padding 0.10`, `crop_rule='square'` (square **before** the single isotropic rescale), `max_sway_px 40` (drop, not absorb) | `design/ADR-011-landmark-roi-geometry-and-tir-cache.md` §3.2/§3.4 |
+| patch | `input_size 96` on HPC (6×6 grid), `64` local (4×4); patch 16 | `design/ADR-011-landmark-roi-geometry-and-tir-cache.md` §4.5 |
+| clip validity | any `(0,0)` landmark line inside the window drops the clip; `min_signal_spread 0.1 V`; `rail_touch_v 9.9 V` | `design/ADR-011-landmark-roi-geometry-and-tir-cache.md` §3.4 |
 | target space | **dataset-side** per-clip z-score (`physio_norm: zscore`, `data.tir_resp_dataset.TARGET_NORM`); the model is pinned to `target_norm: none` (`run_pretrain.pin_roi_target_norm`) | `design/ADR-003-resp-session-cache-artefact.md` §2, `spec/01_data_pipeline.md` |
-| visual mask | tube `0.90` | `design/SolutionC_EarlyTokenMixing_stage2.md` |
-| 1-D mask | `0.50` **scattered** in every shipped config; `physio_mask: span` + `mask_span_s {resp: 4.0}` is the designed alternative (W1) | `design/SpanMask_PhysioSignals.md` §4 |
-| Stage-2 loss | per-stream masked MSE, `λ_tir 1.0`, `λ_resp = signal_weight 0.5`; **MR-STFT 0.0** (it belongs to Stage 3) | `design/SpanMask_PhysioSignals.md` §5, §7 |
-| Stage-3 | `streams: tir`, `head_hidden 0`, `alpha/beta/gamma = 1.0`, `fft_sizes 128,256,512`, `eval_band 0.1–0.6`, the recorded `val_select` rule (`fixed_epoch` default), `clip_stride 2.0` | `design/Evaluation_RespWaveform_protocol.md` §3, `design/ADR-001-subject-disjoint-split-and-selection.md` |
+| visual mask | tube `0.90` | `design/ADR-014-stage2-multimae-early-token-mixing-architecture.md` |
+| 1-D mask | `0.50` **scattered** in every shipped config; `physio_mask: span` + `mask_span_s {resp: 4.0}` is the designed alternative (W1) | `design/archive/SpanMask_PhysioSignals.md` §4 |
+| Stage-2 loss | per-stream masked MSE, `λ_tir 1.0`, `λ_resp = signal_weight 0.5`; **MR-STFT 0.0** (it belongs to Stage 3) | `design/archive/SpanMask_PhysioSignals.md` §5, §7 |
+| Stage-3 | `streams: tir`, `head_hidden 0`, `alpha/beta/gamma = 1.0`, `fft_sizes 128,256,512`, `eval_band 0.1–0.6`, the recorded `val_select` rule (`fixed_epoch` default), `clip_stride 2.0` | `design/ADR-009-resp-waveform-evaluation-protocol.md` §3, `design/ADR-001-subject-disjoint-split-and-selection.md` |
 | split | subject-disjoint, `n_folds 5`, `split_role train/val/test`; Stage 2 uses `pretrain_split: fold` so the test fold is excluded | `design/ADR-001-subject-disjoint-split-and-selection.md` §2 |
-| evaluation | Hann overlap-add assembly → per-subject median → median + bootstrap 95 % CI over subjects | `design/Evaluation_RespWaveform_protocol.md` §4–§6 |
+| evaluation | Hann overlap-add assembly → per-subject median → median + bootstrap 95 % CI over subjects | `design/ADR-009-resp-waveform-evaluation-protocol.md` §4–§6 |
 
 The two lineages (`96 px` HPC, `64 px` local) are **not checkpoint-compatible**:
 `positions.<stream>.pos_embed` has a different shape. Stage 3 must mirror its
@@ -57,9 +57,9 @@ checkpoint disagree.
 | stage | objective | design | code | config |
 |---|---|---|---|---|
 | **1 — init** | VideoMAE-B (K400) → `enc_blocks`, `enc_norm`; `Conv3d(3,D,(2,16,16))` copied **verbatim** into the resolved visual adapter (`adapters.tir` here) | `spec/02_model_architecture.md` §11 | `core/multimae.py::load_pretrained_encoder`, `fit_visual_patch_embed` | `pretrained_encoder: videomae:k400` |
-| **2 — SSL (shared-encoder)** | visible `tir + resp` tokens in one ViT; each stream reconstructed by the shared self-attention decoder over its **own** visible tokens + mask tokens | `design/SolutionC_EarlyTokenMixing_stage2.md` | `core/multimae.py::MultiModalMAE` | `stage2_hpc_tir_roi_resp.yaml` |
-| **3 — waveform** | encoder duplicated per target; mean-pool per time step; `Linear(D,16)`; α·Huber + β·Pearson + γ·MR-STFT; no masking | `design/SolutionC_EarlyTokenMixing_stage3.md` | `core/waveform_model.py`, `core/waveform_losses.py` | `resp_tir_roi_hpc.yaml` |
-| **eval** | per-clip → session assembly → subject medians → pooled k-fold | `design/Evaluation_RespWaveform_protocol.md` | `evaluation/{metrics,assemble}.py`, `runners/run_evaluate_{session,subject,kfold}.py` | — |
+| **2 — SSL (shared-encoder)** | visible `tir + resp` tokens in one ViT; each stream reconstructed by the shared self-attention decoder over its **own** visible tokens + mask tokens | `design/ADR-014-stage2-multimae-early-token-mixing-architecture.md` | `core/multimae.py::MultiModalMAE` | `stage2_hpc_tir_roi_resp.yaml` |
+| **3 — waveform** | encoder duplicated per target; mean-pool per time step; `Linear(D,16)`; α·Huber + β·Pearson + γ·MR-STFT; no masking | `design/ADR-015-stage3-waveform-regression-and-joint-loss.md` | `core/waveform_model.py`, `core/waveform_losses.py` | `resp_tir_roi_hpc.yaml` |
+| **eval** | per-clip → session assembly → subject medians → pooled k-fold | `design/ADR-009-resp-waveform-evaluation-protocol.md` | `evaluation/{metrics,assemble}.py`, `runners/run_evaluate_{session,subject,kfold}.py` | — |
 
 **Precomputation.** Decode is the wall clock. `data/roi_cache.py` stores the
 production ROI crop (square hull, `CACHE_FORMAT_VERSION` in the key) and measured
@@ -92,7 +92,7 @@ with a new run prefix.
 | cache (label) | `data/resp_preprocess.py` (validity mask, per-run DC, resample), `data/resp_cache.py` (`cache_key`, `find_cache`), `data/resp_window.py` (the window rule) — see `plan/features/ADR-003-resp-session-cache-plan.md` |
 | task rotation | `data/task_groups.py` (`SHIPPED_TASK_GROUPS`, `resolve_task_selection`) |
 | folds | `protocol/partition.py::split_universe` |
-| visual input contract | `core/input_adapters.py::zscore_clip` — the model z-scores each clip per channel before patching; the datasets keep `[0, 1]` (`design/Video_input_Preprocessing.md`, landed per `plan/features/video_input_preprocessing_implementation_plan.md`) |
+| visual input contract | `core/input_adapters.py::zscore_clip` — the model z-scores each clip per channel before patching; the datasets keep `[0, 1]` (`design/ADR-013-visual-clip-and-masked-cube-normalization.md`, landed per `plan/features/ADR-013-visual-clip-and-masked-cube-normalization-plan.md`) |
 | masking | `core/multimae.py::_tube_mask`, `_span_mask`, `make_masks` |
 | losses | `core/criterion.py::MaskedMSELoss`, `core/waveform_losses.py::WaveformJointLoss`, `MultiResolutionSTFTLoss` |
 | metrics | `evaluation/metrics.py` (band-limited Pearson, single-tone template, amplitude, rate, `hf_power_rel`, bootstrap CI) |
@@ -215,20 +215,20 @@ otherwise leaves no epoch lines).
 | topic | document |
 |---|---|
 | this plan | `code/notes/plan/experiments/TirROI_Resp_plan.md` |
-| ROI square box / rescale / motion gate — build order | `code/notes/plan/features/ROI_crop_implementation_plan.md` |
+| ROI square box / rescale / motion gate — build order | `code/notes/plan/features/ADR-011-landmark-roi-geometry-and-tir-cache-plan.md` |
 | respiration label contract (validity mask, per-run DC, grid) | `design/ADR-003-resp-session-cache-artefact.md` |
 | respiration label build order | `code/notes/plan/features/ADR-003-resp-session-cache-plan.md` |
 | respiration label artefact — build accounting + source-rate evidence | `eval/resp/resp_artefact_build.md` |
 | respiration label artefact — TIR clip accounting + accounting delta (earlier lineage) | `eval/tir_resp/resp_preprocess_impact.md` |
-| task-tier regrouping | `code/notes/plan/features/task_tiers_regroup_plan.md` |
+| task-tier regrouping | `code/notes/plan/features/ADR-010-bp4d-task-distortion-tiers-plan.md` |
 | k-fold rollout | `code/notes/plan/features/ADR-001-subject-kfold-plan.md` |
-| AMP rollout | `code/notes/plan/features/hpc_AMP_implementation.md` |
-| ROI + rescale contract | `design/ROI_crop_and_rescaling.md` |
-| span masking design + experiment ladder | `design/SpanMask_PhysioSignals.md` |
-| shared-encoder MAE (historical name "Solution C"; `SolutionC_*` filenames retained for link stability) | `design/SolutionC_EarlyTokenMixing_stage2.md`, `design/SolutionC_EarlyTokenMixing_stage3.md` |
-| evaluation protocol | `design/Evaluation_RespWaveform_protocol.md` |
+| AMP rollout | `code/notes/plan/features/ADR-016-mixed-precision-and-ddp-accumulation-plan.md` |
+| ROI + rescale contract | `design/ADR-011-landmark-roi-geometry-and-tir-cache.md` |
+| span masking design + experiment ladder | `design/archive/SpanMask_PhysioSignals.md` |
+| shared-encoder MAE (historical name "Solution C"; `SolutionC_*` filenames retained for link stability) | `design/ADR-014-stage2-multimae-early-token-mixing-architecture.md`, `design/ADR-015-stage3-waveform-regression-and-joint-loss.md` |
+| evaluation protocol | `design/ADR-009-resp-waveform-evaluation-protocol.md` |
 | folds | `design/ADR-001-subject-disjoint-split-and-selection.md` |
-| task tiers rationale | `design/TIR_ROI_RESP_TasksDistortion.md` |
+| task tiers rationale | `design/ADR-010-bp4d-task-distortion-tiers.md` |
 | headline numbers | `eval/tir_resp/resp_5fold_cv.md` |
 | physical gate / verdict | `eval/tir_resp/FINDINGS.md` |
 | data quality, rail rule, geometry ledger, motion confound | `eval/tir_resp/resp_data_quality.md`, `eval/tir_resp/resp_rail_touch_filter_results.md`, `eval/tir_resp/roi_geometry_ledger.md`, `eval/tir_resp/resp_t3_spread_sources.md` |

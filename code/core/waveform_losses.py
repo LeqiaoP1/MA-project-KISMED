@@ -1,7 +1,7 @@
 """Stage-3 waveform supervision losses (Spatio-Temporal-Spectral joint loss).
 
 Implements the unified loss of the Stage-3 design
-(``code/notes/design/SolutionC_EarlyTokenMixing_stage3.md``; plan entry in
+(``code/notes/design/ADR-015-stage3-waveform-regression-and-joint-loss.md``; plan entry in
 ``code/notes/plan/experiments/RGB_BP_plan.md`` §4):
 
     L_joint = alpha * L_time + beta * L_Pearson + gamma * L_MR-STFT

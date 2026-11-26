@@ -16,7 +16,7 @@ per session:
    (Hann overlap-add, ``evaluation/assemble.py``);
 2. scores it against the respiration reference in the metric families asked for
    by the evaluation protocol
-   (``code/notes/design/Evaluation_RespWaveform_protocol.md`` sec. 4):
+   (``code/notes/design/ADR-009-resp-waveform-evaluation-protocol.md`` sec. 4):
 
    * **pearson** -- ``pearson_band`` (band-limited 0.1-0.6 Hz, the drift-robust
      headline) plus the plain ``pearson`` for contrast and the single-tone

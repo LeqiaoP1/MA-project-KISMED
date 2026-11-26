@@ -4,7 +4,7 @@
 - **Experiment ID**: `EXP-[YYYYMMDD-SEQ]`
 - **Author**: LeqiaoP1
 - **Status**: Draft
-- **Associated ADR**: `code/notes/design/ADR-XXX_<name>.md` or `None`
+- **Associated ADR**: `code/notes/design/ADR-XXX-<slug>.md` or `None`
 - **Target Thesis Section**: [Chapter/section and optional table reference]
 
 ---

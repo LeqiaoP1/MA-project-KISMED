@@ -199,7 +199,7 @@ Differentiating w.r.t. a slice of `z` raises, so the FULL `z` is differentiated
 and the GRADIENT is sliced.
 
 **`target_s` is masked-only for VISUAL streams** (`MultiModalMAE._targets(x,
-stream, mask)`, `design/Video_input_Preprocessing.md`): a masked cube is
+stream, mask)`, `design/ADR-013-visual-clip-and-masked-cube-normalization.md`): a masked cube is
 z-scored with its own per-cube mean/var, an unmasked cube carries the
 clip-normalised values. `MaskedMSELoss` keeps only `mask == 1`. The 1-D targets
 are decided by `target_norm` and ignore the mask.
@@ -244,7 +244,7 @@ def __call__(self, loss, optimizer, clip_grad=None, ...):
 
 > **Critical fix (2026-09-23)**: Before this fix, `clip_grad=0.0` (the default in many configs) entered the `clip_grad_norm_` branch with `max_norm=0.0`, which scales every gradient to zero (`clip_coef = 0 / (norm + eps)`). Learning was silently disabled. The guard `clip_grad > 0` now routes 0.0 to the no-clip path.
 
-> **No `torch.amp.autocast`** anywhere in the codebase. Forward passes run in full precision; only the backward is scaled.
+> **Opt-in CUDA AMP (`ADR-016`, landed 2026-10-13)**: `--amp_dtype {none,fp16,bf16}` (default `none`) enables `torch.autocast` via `utils/native_scaler.py::autocast_context`, with `GradScaler` active only for `fp16` and waveform losses evaluated in FP32 (`loss_in_fp32=True`). See `code/notes/design/ADR-016-mixed-precision-and-ddp-accumulation.md`.
 
 ---
 

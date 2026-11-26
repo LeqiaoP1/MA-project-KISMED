@@ -1,9 +1,9 @@
 # ADR-007: Two-Stream Constant-Budget Masking with Anatomy-Aware Tubelet Sampling (`tir`, `resp`)
 
-- **Status**: Proposed
+- **Status**: Implemented (Pending Eval)
 - **Date**: 2026-11-25
 - **Author**: KISMED MA research team
-- **Related Spec/Plan**: `code/notes/design/Evaluation_RespWaveform_protocol.md` (normative for the headline metric, frequency band, and subject-level aggregation used in §3), `code/notes/design/ADR-001-subject-disjoint-split-and-selection.md` (normative for subject-disjoint 5-fold partitioning and validation-only model selection), `code/notes/GLOSSARY.md` (canonical terminology). All masking, geometry, stratification, curriculum, and feasibility rules in this ADR are self-contained.
+- **Related Spec/Plan**: `code/notes/plan/features/ADR-007-two-stream-anatomy-aware-masking-plan.md` (build order and conformance gates), `code/notes/design/ADR-009-resp-waveform-evaluation-protocol.md` (normative for the headline metric, frequency band, and subject-level aggregation used in §3), `code/notes/design/ADR-001-subject-disjoint-split-and-selection.md` (normative for subject-disjoint 5-fold partitioning and validation-only model selection), `code/notes/GLOSSARY.md` (canonical terminology). All masking, geometry, stratification, curriculum, and feasibility rules in this ADR are self-contained.
 - **Supersedes**: `code/notes/design/ADR-006-three-regime-virtual-sensing-masking.md` for the dedicated Phase-1 two-stream (`tir`, `resp`) pre-training milestone. Where multi-camera bimodal or visible-only pre-training (`tir`, `rgb2d`, `resp`) is later reopened, ADR-006 remains the record for the three-regime fusion policy; for the single-camera thermal-infrared respiration foundation, this ADR is the sole design of record.
 
 **Normative status.** This ADR is the self-contained architectural specification for the two-stream constant-budget, anatomy-aware masking policy. Every contract, mathematical definition, feasibility precondition, curriculum rule, observability requirement, and acceptance criterion is stated independently of any software implementation, module layout, or configuration file, so the decision survives arbitrary rewrites of the training stack.
@@ -16,7 +16,7 @@
 
 The objective of Stage-2 multimodal masked pre-training under this decision is to establish a verifiable, high-signal cross-modal representation that reconstructs the continuous respiration waveform (`resp`) of an unseen subject from thermal-infrared facial video (`tir`) alone under complete contact-sensor absence ("virtual sensing"). This serves as the **Phase-1 foundation** before re-introducing auxiliary visible-light or secondary physiological modalities.
 
-The downstream scientific headline metric, its respiratory passband ($0.1\text{--}0.6\text{ Hz}$), its session-assembly and per-session $\to$ per-subject aggregation, and its bootstrap confidence interval are governed by `code/notes/design/Evaluation_RespWaveform_protocol.md` and are not redefined here.
+The downstream scientific headline metric, its respiratory passband ($0.1\text{--}0.6\text{ Hz}$), its session-assembly and per-session $\to$ per-subject aggregation, and its bootstrap confidence interval are governed by `code/notes/design/ADR-009-resp-waveform-evaluation-protocol.md` and are not redefined here.
 
 **In scope.** The declared two-stream modality set (`tir`, `resp`); the spatiotemporal masking units and token alignment contract; the constant 200-token visible encoder budget; the anatomy-aware stratified spatial tube sampling policy; the two operational step modes and their discrete apportionment rules; the two-phase virtual-sensing curriculum; the encoder initialization compatibility contract; observability requirements; and pre-registered falsifiable acceptance criteria.
 
@@ -278,7 +278,7 @@ All seven checks must pass before launching any full training run:
 
 ### 3.2 Criterion 2 — Scientific claim (respiration evaluation protocol)
 
-All scientific claims follow `code/notes/design/Evaluation_RespWaveform_protocol.md` and `code/notes/design/ADR-001-subject-disjoint-split-and-selection.md`:
+All scientific claims follow `code/notes/design/ADR-009-resp-waveform-evaluation-protocol.md` and `code/notes/design/ADR-001-subject-disjoint-split-and-selection.md`:
 
 - **Split & aggregation:** Subject-disjoint 5-fold cross-validation ($70\%$ train / $10\%$ val / $20\%$ test by subject per fold; model selection strictly on `val`, one-shot evaluation on `test`). Clip predictions are assembled into continuous per-session waveforms via Hann overlap-add and scored against the shared respiration-cache reference.
 - **Headline metric (gating):** Band-limited Pearson correlation ($0.1\text{--}0.6\text{ Hz}$), aggregated per session $\to$ median per subject $\to$ pooled median across held-out subjects with bootstrap $95\%$ CI. Secondary diagnostic metric: breath-rate MAE (`bpm`). Amplitude metrics are excluded from gating by protocol.
