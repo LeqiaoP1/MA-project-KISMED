@@ -6,7 +6,7 @@
 > `code/notes/design/ADR-001-subject-disjoint-split-and-selection.md` and
 > `code/notes/design/ADR-009-resp-waveform-evaluation-protocol.md` (intent) ->
 > `code/notes/plan/experiments/TirROI_Resp_plan.md` (code placement) ->
-> `code/notes/eval/tir_resp/resp_5fold_cv.md` (measured facts).
+> `code/notes/eval/archive/tir_resp/resp_5fold_cv.md` (measured facts).
 > Where this file disagrees with any of them, they win.
 >
 > Baseline: `configs/pretrain/stage2_hpc_tir_roi_resp.yaml` (96 px) +
@@ -45,7 +45,7 @@
       the SAME pair, otherwise fold k's encoder saw fold k's test subjects —
       the contract guard compares `fold`/`n_folds` only.
       **Scored set** (after clip drops) is smaller — 138 subjects / 1260 sessions
-      / 21 231 clips, which is why `code/notes/eval/tir_resp/resp_5fold_cv.md`
+      / 21 231 clips, which is why `code/notes/eval/archive/tir_resp/resp_5fold_cv.md`
       shows 27/28/28/28/27 per fold. That file measured the LEGACY contiguous
       partition (and the 112/0.2 geometry), so a stratified sweep is a different
       experiment: never mix folds across the two rules, and state which one a
@@ -156,7 +156,7 @@ must agree on:
       0.2`, no `crop_rule` (the old `minmax`) and `resp_cache None`, so they are
       a DIFFERENT lineage from the current 96 / 0.10 / square config: Stage 3
       aborts on the ROI contract. A fresh sweep is therefore also NOT comparable
-      to `code/notes/eval/tir_resp/resp_5fold_cv.md` (+0.307), which measured
+      to `code/notes/eval/archive/tir_resp/resp_5fold_cv.md` (+0.307), which measured
       that 112/0.2 lineage with NO respiration cache. Re-evaluating an old fold
       must pass `RESP_CACHE=''`, or the reference is read from a different
       preprocessing than the labels (design C8).
@@ -194,7 +194,7 @@ must agree on:
       `warmup_epochs >= epochs`. Pass `--warmup_epochs 0` for a 1-epoch bench.
 - [ ] Per-fold Stage-2 -> Stage-3 compatibility, CPU only:
 
-      PYTHONPATH=. python notes/eval/tir_resp/stage3_compat_probe.py \
+      PYTHONPATH=. python notes/eval/archive/tir_resp/stage3_compat_probe.py \
           --finetune "$WORK_SCRATCH/pretrain/stage2_hpc_tir_roi_resp_fold<k>/checkpoints/checkpoint-0149.pth"
 
       Exit 0 = the runner's own verdict. Exit 1 = at least one BLOCKER.

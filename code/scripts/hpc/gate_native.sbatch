@@ -3,7 +3,7 @@
 # resolution -- the decisive test for whether the TIR-ROI -> RESP line can work
 # at all.
 #
-# WHY. `code/notes/eval/tir_resp/FINDINGS.md` closed the TIR-ROI -> RESP waveform line:
+# WHY. `code/notes/eval/archive/tir_resp/FINDINGS.md` closed the TIR-ROI -> RESP waveform line:
 # the recorded gate (2026-09-26) found respiration undetectable in the thermal ROI
 # (0/8 sessions, observed best |r| BELOW the phase-scrambled null median) while
 # the SAME pipeline detects head motion 8/8 at p < 0.005. But that gate ran at
@@ -23,7 +23,7 @@
 # nperm 20, which is why it runs here on a compute node rather than on a login
 # node.
 #
-# The header of notes/eval/tir_resp/native_resolution_gate.py documents the
+# The header of notes/eval/archive/tir_resp/native_resolution_gate.py documents the
 # statistic, the reconstructed-palette caveat, and the synthetic `inject`
 # control that quantifies how much a localised signal loses in the resize.
 #
@@ -71,7 +71,7 @@ fi
 SESSIONS="${SESSIONS:-F001_T1,F001_T3,F002_T1,F003_T2,F004_T2,F004_T3,F004_T9,F004_T8}"
 SIZES="${SIZES:-native,96,64}"
 NPERM="${NPERM:-200}"
-OUT="${OUT:-notes/eval/tir_resp/gate_native_96.json}"
+OUT="${OUT:-notes/eval/archive/tir_resp/gate_native_96.json}"
 
 # Cap the thread pool: the permutation loop is BLAS-bound and would otherwise
 # claim every core on the node.
@@ -89,7 +89,7 @@ echo "[gate] out      : $OUT"
 echo
 
 set +e
-python -u notes/eval/tir_resp/native_resolution_gate.py \
+python -u notes/eval/archive/tir_resp/native_resolution_gate.py \
     --raw_root "$RAW_ROOT" \
     --sessions "$SESSIONS" \
     --sizes "$SIZES" \

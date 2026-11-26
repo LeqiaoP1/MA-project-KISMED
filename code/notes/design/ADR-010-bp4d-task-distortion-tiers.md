@@ -78,7 +78,7 @@ low=T2|T3|T5;moderate=T1|T4;high=T6|T7|T8|T9|T10
 - **Criterion 2 (Relabel provenance & conservation)**: Executing session/subject/k-fold evaluators with `--task_groups` re-aggregates `T5` under `low`, records `task_group_source: 'cli'` and `task_levels`, and conserves total scored sessions (`sum(n_per_group) == n_total`).
 - **Criterion 3 (Stage-2/3 contract guard)**: `check_stage2_roi_contract` prints a mismatch warning when `task_set` is active and differs between Stage 2 and Stage 3, and stays silent when both runs have `task_set == ''`.
 
-- **Acceptance Artifacts**: `code/tests/test_task_group_configs.py`, `code/tests/test_config_loading.py`, and regrouped eval reports under `code/notes/eval/tir_resp/`.
+- **Acceptance Artifacts**: `code/tests/test_task_group_configs.py`, `code/tests/test_config_loading.py`, and regrouped eval reports under `code/notes/eval/archive/tir_resp/`.
 
 ---
 
@@ -92,6 +92,6 @@ low=T2|T3|T5;moderate=T1|T4;high=T6|T7|T8|T9|T10
 ## 5. Reproducibility Record
 
 - **Run / Job IDs**: CPU post-hoc re-aggregation completed 2026-10-24 (no GPU retraining required).
-- **Evidence Artifacts**: Dated v2 sections in `code/notes/eval/tir_resp/resp_5fold_cv.md` and `code/notes/eval/tir_resp/finetuned1_subjectReport.md`; figures `resp_kfold_task_group_medians_v2.svg`, `resp_kfold_task_scatter_v2.svg`, `resp_T3_waveforms_v2.svg`.
+- **Evidence Artifacts**: Dated v2 sections in `code/notes/eval/archive/tir_resp/resp_5fold_cv.md` and `code/notes/eval/archive/tir_resp/finetuned1_subjectReport.md`; figures `resp_kfold_task_group_medians_v2.svg`, `resp_kfold_task_scatter_v2.svg`, `resp_T3_waveforms_v2.svg`.
 - **Tests / Smoke Checks**: `code/tests/test_task_group_configs.py` (26 tests), `code/tests/test_config_loading.py`.
 - **Rollback / Rejection Condition**: Pass the legacy v1 mapping string to `--task_groups` on any evaluator to reproduce v1 breakdowns exactly without altering code.

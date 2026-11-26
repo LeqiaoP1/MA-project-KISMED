@@ -327,7 +327,7 @@ Contract: `notes/design/ADR-003-resp-session-cache-artefact.md`; build order of
 record: `notes/plan/features/ADR-003-resp-session-cache-plan.md`; the artefact's own build
 accounting: `notes/eval/resp/resp_artefact_build.md` (the artefact is
 modality-independent, so its evidence is not filed under a visual lineage; the TIR
-dataset's clip accounting stays in `notes/eval/tir_resp/resp_preprocess_impact.md`).
+dataset's clip accounting stays in `notes/eval/archive/tir_resp/resp_preprocess_impact.md`).
 Two build-time constraints the artefact adds, both refused loudly at `--init`:
 `fs_out` must DIVIDE `fs_in` (an integral decimation factor is what lands each run
 on exact grid instants), and `--resample_taps_per_phase` must be `>= 10` (the pad
@@ -346,7 +346,7 @@ decides validity instead.
   `+/-10 V` (the negative end is the corpus' dead-channel floor), so the shipped
   `9.90` rejects every window whose label holds even ONE rail-valued reading.
   It is deliberately **strict and two-sided**, and that is the point: the rail
-  has two causes (see `notes/eval/tir_resp/resp_data_quality.md` §3.4 and
+  has two causes (see `notes/eval/archive/tir_resp/resp_data_quality.md` §3.4 and
   `rail_forensics.py`) -- a **sensor failure** (dead / disconnected belt, stuck
   DAQ -- the channel is pinned at the rail) and a **genuine extreme expiration**
   (the trough is driven into the clamp and sits there flat-topped until the
@@ -374,7 +374,7 @@ decides validity instead.
   `max - min` is a RANGE, so a single spike inflates it (a pinned channel with
   one 0.5 V glitch passes any threshold) and a loose belt that *swings* gives a
   LARGE artifact: neither is visible to this knob. See §5 of
-  `notes/eval/tir_resp/resp_rail_touch_filter_results.md` for the full curve.
+  `notes/eval/archive/tir_resp/resp_rail_touch_filter_results.md` for the full curve.
 * `--roi_landmarks`: see the measured preset table in
   `data/tir_resp_dataset.ROI_LANDMARK_PRESETS` — `nostrils` (2 points) is an
   unstable thin slab (100x81 px on a still session, 91x15 px on a moving one);
@@ -569,7 +569,7 @@ computed on the assembled waveform. Consumers: `run_evaluate_session.py` (per
 session + figures), `run_evaluate_subject.py` (one number per subject, median
 over sessions + bootstrap CI) and `run_evaluate_kfold.py` (pooled folds — this is
 what produced the 138-subject / 1260-session numbers in
-`notes/eval/tir_resp/resp_5fold_cv.md`). Samples no clip covers are `nan` with a
+`notes/eval/archive/tir_resp/resp_5fold_cv.md`). Samples no clip covers are `nan` with a
 `covered` mask, so callers must score `y[covered]`; and because each prediction
 is z-scored per clip, amplitude metrics need the (oracle)
 `affine_calibrate` step. What is still missing is **model-side sliding
@@ -639,7 +639,7 @@ reports `psd_skipped 4` and its `psd_mae` moved 0.3157 → 0.3103.
 for that second reason.**
 
 **The physical gate for the TIR-ROI → RESP waveform line is recorded in
-`code/notes/eval/tir_resp/FINDINGS.md`: the thermal face ROI does not carry
+`code/notes/eval/archive/tir_resp/FINDINGS.md`: the thermal face ROI does not carry
 respiration phase.** Four independent measurements: the pixel-level
 positive-control gate is 0/8 sessions while the same pipeline catches head motion
 8/8 at p<0.005 (so the negative is the data, not the test); the ridge probe is
@@ -652,7 +652,7 @@ sits BELOW its own anti-phase floor (0.365), while the belt is
 new input that first passes the gate).
 
 **The corpus-scale Stage-3 outcome (5-fold, 138 subjects) is in
-`code/notes/eval/tir_resp/resp_5fold_cv.md`:** per-subject band-limited Pearson
+`code/notes/eval/archive/tir_resp/resp_5fold_cv.md`:** per-subject band-limited Pearson
 **+0.307**, i.e. below the single-tone template (**+0.535**, beaten on only 18 %
 of subjects), amplitude ~3x under-scaled, rate MAE 4.6 BPM. The acceptance
 criteria and the stop rule derived from those numbers are in

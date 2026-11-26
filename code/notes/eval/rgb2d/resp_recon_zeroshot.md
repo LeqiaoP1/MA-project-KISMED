@@ -124,7 +124,7 @@ changes (the launcher resolves `pretrain/<STAGE2_RUN_NAME>_fold<k>/`):
 ```
 cd code
 # 1. CPU preflight against the real loader (exit 0 = COMPATIBLE; RAN 2026-11-16)
-PYTHONPATH=. python notes/eval/tir_resp/stage3_compat_probe.py \
+PYTHONPATH=. python notes/eval/archive/tir_resp/stage3_compat_probe.py \
     --finetune $WORK_SCRATCH/pretrain/stage2_hpc_tir_roi_resp_rgb2d_fold0/checkpoints/checkpoint-0149.pth
 # 2. the job, ONE fold, paired with its OWN Stage-2 run (never STAGE2_DIR here)
 STAGE2_RUN_NAME=stage2_hpc_tir_roi_resp_rgb2d RUN_NAME=resp_tir_roi_hpc_rgb2d \

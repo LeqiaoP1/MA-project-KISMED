@@ -118,6 +118,6 @@ $$\mathcal{L}_{\text{joint}} = \alpha\,\mathcal{L}_{\text{time}} + \beta\,\mathc
 ## 5. Reproducibility Record
 
 - **Run / Job IDs**: Shipped across all 5-fold Stage-3 sweeps (`resp_tir_roi_hpc.yaml`, `bp_rgb_roi_local.yaml`).
-- **Evidence Artifacts**: `code/notes/eval/tir_resp/resp_5fold_cv_96respgrid.md`, `code/notes/eval/tir_resp/resp_5fold_cv.md`.
+- **Evidence Artifacts**: `code/notes/eval/archive/tir_resp/resp_5fold_cv_96respgrid.md`, `code/notes/eval/archive/tir_resp/resp_5fold_cv.md`.
 - **Tests / Smoke Checks**: `code/tests/test_video_input_norm.py`, `code/tests/test_amp.py`, `code/tests/test_config_loading.py`, `code/tests/test_adr008_alignment.py` (transfer isolation gate).
 - **Rollback / Rejection Condition**: Core Stage-3 architecture of record; individual loss terms can be ablated cleanly by setting `alpha`, `beta`, or `gamma` to `0.0`.

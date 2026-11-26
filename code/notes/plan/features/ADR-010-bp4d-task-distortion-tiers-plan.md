@@ -34,14 +34,14 @@ All phases landed; `python -m pytest -q` -> **371 pass** (was 345; the new
   `slides_spec.yaml`, plus dated v2 sections in `resp_5fold_cv.md` and
   `finetuned1_subjectReport.md`.
 - **Figures**: `resp_kfold_task_group_medians_v2.svg` (new generator
-  `notes/eval/tir_resp/plot_task_group_medians.py`, reads the regrouped JSON;
+  `notes/eval/archive/tir_resp/plot_task_group_medians.py`, reads the regrouped JSON;
   task rows in T1..T10 order, the `low`-tier tasks in bold, no caption below the
   axes) and `resp_T3_waveforms_v2.svg` (same probe with `--no-footers`: no
   annotation and no caption, so the figure ends at the axis labels). The version
   lives in the FILENAME only -- `--note` defaults to empty, so no figure carries
   a tier annotation. The unsuffixed SVGs stay as the v1 record.
 - **Scatter**: `resp_kfold_task_scatter_v2.svg` from the new
-  `notes/eval/tir_resp/plot_task_scatter.py` (per-task Pearson vs rate MAE,
+  `notes/eval/archive/tir_resp/plot_task_scatter.py` (per-task Pearson vs rate MAE,
   colour = oracle amplitude error, dot ring = distortion tier + in-plot key,
   0-8 BPM and 0.40-0.80 colour domain). No caption below the axes.
 
@@ -86,7 +86,7 @@ The new mapping partitions T1..T10 (3 / 2 / 5) with every task in exactly one ti
   table from the same predictions with **no retraining and no GPU**.
 - **The mapping is enforced as a partition** even though `data/task_groups.py`
   supports many-to-many, because `runners/run_survey_tir_resp.py::_aggregate` and
-  `notes/eval/tir_resp/gate_model_input.py::group_of` assume one group per task
+  `notes/eval/archive/tir_resp/gate_model_input.py::group_of` assume one group per task
   (first match / no de-duplication).
 - **v1 result tables are preserved verbatim**; v2 numbers are appended as dated
   sections so the historical measurements stay traceable.
@@ -123,7 +123,7 @@ The new mapping partitions T1..T10 (3 / 2 / 5) with every task in exactly one ti
 3. **Sync the three hardcoded defaults.**
    - `runners/run_survey_tir_resp.py:47-48` -> `DEFAULT_TASK_GROUPS = tgrp.SHIPPED_TASK_GROUPS`
      (the module already imports `data.tir_resp_dataset`).
-   - `notes/eval/tir_resp/gate_model_input.py:192-195` -> same constant (the script
+   - `notes/eval/archive/tir_resp/gate_model_input.py:192-195` -> same constant (the script
      already bootstraps `sys.path` for `data.*` imports).
    - `scripts/hpc/gate_model_input.sbatch:58` keeps a literal
      (`low=T2,T3,T5;moderate=T1,T4;high=T6,T7,T8,T9,T10`) because bash cannot import
@@ -196,8 +196,8 @@ The new mapping partitions T1..T10 (3 / 2 / 5) with every task in exactly one ti
    Empty `--out` / `--fig_dir` would overwrite the originals -- always pass them.
 
 9. Record the v2 numbers: append a dated "grouping v2" section to
-   `code/notes/eval/tir_resp/resp_5fold_cv.md` and
-   `code/notes/eval/tir_resp/finetuned1_subjectReport.md` with the tier ->
+   `code/notes/eval/archive/tir_resp/resp_5fold_cv.md` and
+   `code/notes/eval/archive/tir_resp/finetuned1_subjectReport.md` with the tier ->
    `pearson_band` median, n and the delta versus v1, explicitly stating that the
    numbers are re-aggregations of the same dumps (no model change).
 
@@ -207,7 +207,7 @@ The new mapping partitions T1..T10 (3 / 2 / 5) with every task in exactly one ti
     - `code/scripts/project/write_specs.py:258` **and**
       `code/notes/spec/01_data_pipeline.md:96` -- both, otherwise the next spec
       regeneration silently reverts the .md.
-    - `code/notes/eval/tir_resp/resp_data_quality.md:44-45` -- the "convention:"
+    - `code/notes/eval/archive/tir_resp/resp_data_quality.md:44-45` -- the "convention:"
       sentence only.
     - `code/README.md` task-groups section -- add the tier definitions and the
       `TASK_SET=low` / `--task_set low,moderate` corpus-restriction path, with the
@@ -232,7 +232,7 @@ The new mapping partitions T1..T10 (3 / 2 / 5) with every task in exactly one ti
 - `code/evaluation/metrics.py::breakdown_by_label` - skips unmapped sessions
   (the reason the phase-2 warning matters).
 - `code/notes/design/ADR-010-bp4d-task-distortion-tiers.md` - the rationale of record.
-- `code/notes/eval/tir_resp/{resp_5fold_cv.md, finetuned1_subjectReport.md,
+- `code/notes/eval/archive/tir_resp/{resp_5fold_cv.md, finetuned1_subjectReport.md,
   resp_data_quality.md}` - v2 sections and the convention sentence.
 
 ## Verification

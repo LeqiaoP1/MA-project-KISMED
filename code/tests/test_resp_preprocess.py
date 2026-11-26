@@ -1,6 +1,6 @@
 """Phase 2 gates — per-run offset, resampling and the emitted grid (ADR-003).
 
-Measured quantities this file pins (recorded in ``code/notes/eval/tir_resp/``):
+Measured quantities this file pins (recorded in ``code/notes/eval/archive/tir_resp/``):
 
 * 130 Hz interior aliasing residual: RMS 1.3e-4 V, max 2.9e-4 V for a 1 V tone
   (the ADR's 2.4e-4 V is used here as the RMS bound).

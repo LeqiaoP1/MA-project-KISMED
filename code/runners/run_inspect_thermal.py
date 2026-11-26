@@ -34,7 +34,7 @@ and reports, per session:
   is NOT comparable to the documented range -- the report says so.
 * **luma / auto-range** -- per-frame luma statistics plus a scan for global
   auto-range STEP changes (the false-colour rendering caveat in
-  ``code/notes/eval/tir_resp/FINDINGS.md`` motivates this scan).
+  ``code/notes/eval/archive/tir_resp/FINDINGS.md`` motivates this scan).
   The test is deliberately conservative: a step must be a sustained shift of
   the per-frame luma percentiles over a ~1 s window, in the same direction at
   both ends, and larger than both a 4-code floor and 10x the MAD of the frame
@@ -836,7 +836,7 @@ def autorange_steps(p1, p99, fps: float, window_s: float = AUTORANGE_WINDOW_S,
 
     The camera's auto-range re-scales the palette, which shows up as a step in
     the global luma extremes rather than in the content (see the rendering
-    caveat in ``code/notes/eval/tir_resp/FINDINGS.md``).
+    caveat in ``code/notes/eval/archive/tir_resp/FINDINGS.md``).
 
     Deliberately conservative, because the naive version is useless: a
     per-frame threshold of ``max(2 codes, 8x median increment)`` fires on 79 of

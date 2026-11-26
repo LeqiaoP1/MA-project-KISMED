@@ -8,7 +8,7 @@ Two invariants that used to be comments only:
   Stage-3 agreement check compared ``task_set`` but never ``task_groups``.
 * the mapping is a PARTITION of ``T1``..``T10`` (each task in exactly one tier).
   ``runners/run_survey_tir_resp._aggregate`` and
-  ``notes/eval/tir_resp/gate_model_input.py::group_of`` assume single
+  ``notes/eval/archive/tir_resp/gate_model_input.py::group_of`` assume single
   membership, so a task in two groups would be double-counted and a task in
   none would vanish from the tally (``breakdown_by_label`` skips an empty
   label list).
@@ -67,8 +67,8 @@ def _args_for(rel, monkeypatch):
 
 
 def _gate_probe():
-    """Import ``notes/eval/tir_resp/gate_model_input.py`` by path (not a package)."""
-    path = os.path.join(CODE_DIR, 'notes/eval/tir_resp/gate_model_input.py')
+    """Import ``notes/eval/archive/tir_resp/gate_model_input.py`` by path (not a package)."""
+    path = os.path.join(CODE_DIR, 'notes/eval/archive/tir_resp/gate_model_input.py')
     spec = importlib.util.spec_from_file_location('_gate_model_input', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

@@ -8,7 +8,7 @@ contract when it is ported (*Deferred: the RGB port* — tracked as W4 in
 
 Contract of record: `code/notes/design/ADR-011-landmark-roi-geometry-and-tir-cache.md`.
 Upstream spec: `code/notes/spec/01_data_pipeline.md` §3.3.
-Measured behaviour: `code/notes/eval/tir_resp/`.
+Measured behaviour: `code/notes/eval/archive/tir_resp/`.
 
 Paths are relative to `code/` unless they start with `code/`.
 
@@ -227,7 +227,7 @@ artifact-level form of I2/I3.
 
 **Step 9 — probe callers.**
 
-`code/notes/eval/tir_resp/cache_parity_probe.py` (`_union_box` 71–90, used 157/244)
+`code/notes/eval/archive/tir_resp/cache_parity_probe.py` (`_union_box` 71–90, used 157/244)
 switches to `rc.hull_box` with the new parameters; every other `rc.union_box` caller
 goes in the same commit (`grep -rn "union_box" code/`).
 
@@ -360,7 +360,7 @@ Baseline is 345 tests; the two new modules add ~15–20. Run
 ## Phase 6 — measurement, rebuild, docs
 
 **Step 18 — geometry ledger (implemented 2026-10-30, PASS).**
-`notes/eval/tir_resp/roi_geometry_ledger.py` (+ `roi_geometry_ledger.md`) reads the
+`notes/eval/archive/tir_resp/roi_geometry_ledger.py` (+ `roi_geometry_ledger.md`) reads the
 five Stage-3 fold `entries.json` dumps for the clip population and the raw
 `IRFeatures` tracks for the geometry -- no decode, no cache, 31 s. It emits side
 percentiles (pre/post gate), the sigma ledger and per-task attrition, and exits
@@ -372,7 +372,7 @@ sessions, 138/138 subjects, T4 the worst task at 80.2 %; sigma 1.01 at
 `s=112, p=0.2` with 45.8 % downscaled.
 
 ```bash
-python notes/eval/tir_resp/roi_geometry_ledger.py --raw_root "$RAW_DATA_PATH" \
+python notes/eval/archive/tir_resp/roi_geometry_ledger.py --raw_root "$RAW_DATA_PATH" \
     --json ../output/eval/tir_resp/roi_geometry_ledger.json
 ```
 
@@ -399,7 +399,7 @@ UNTOUCHED beside it; the loader refuses it (`format_version`/`crop_rule` are in
 **Both this v3 artifact and the v2 one were deleted on 2026-10-30** — see Step 21.
 
 Note: `--check` and the parity probe must run on a compute node (`srun -p deflt
--n 1 -c 8`), not the login node. Both probes under `notes/eval/tir_resp/` needed
+-n 1 -c 8`), not the login node. Both probes under `notes/eval/archive/tir_resp/` needed
 their `sys.path` bootstrap fixed to four directory levels so they can be invoked
 directly.
 
@@ -410,7 +410,7 @@ directly.
 | `code/notes/design/ADR-011-landmark-roi-geometry-and-tir-cache.md` | status header -> implemented (dated); add one line that the RGB lineage is bound to this contract |
 | `code/scripts/project/write_specs.py:244,256` | embedded ROI text gains the square rule + motion gate; then regenerate |
 | `code/notes/spec/01_data_pipeline.md` §3.2–3.3 | hand-applied, NOT regenerated: `write_specs.py` is stale for the split policy, `physio_norm`, the RGB zip source and `rail_touch_v`, so running it reverts four hand edits (verified by diff on 2026-10-29). Its ROI paragraph WAS updated, so a future regeneration keeps the new text. |
-| `code/notes/eval/tir_resp/hpc_precomputation.md` §9 | the hull contract, the three key fields, the rebuild cost |
+| `code/notes/eval/archive/tir_resp/hpc_precomputation.md` §9 | the hull contract, the three key fields, the rebuild cost |
 | `code/data/rgb_features.py` | delete the dead `roi_box_2d` wrapper (214–240), drop it from `__all__` (60–62) and the `min_extent` mention at 89 |
 | `code/README.md` | one line if it lists the ROI knobs |
 
@@ -497,10 +497,10 @@ decision**: `0.10` at `s = 112` would upsample 82.3 % of clips (σ 1.18), while
 | `scripts/hpc/submit_roi_cache.sbatch` | `CACHE_ROI_PADDING` default documents the runner value; lineage 112 -> 96 |
 | `scripts/hpc/submit_inspect_tir_resp.sbatch` | `INSPECT_SIZE` 112 -> 96, `INSPECT_ROI_PADDING` 0.2 -> 0.1 |
 | `scripts/hpc/gate_native.sbatch`, `gate_model_input.sbatch` | probe defaults follow the new contract and write a NEW output file, so the recorded 112 px results stay intact |
-| `notes/eval/tir_resp/roi_geometry_ledger.py` | `EXPECT` re-baselined (side 95/131/353 pre-gate, 95/125/174 at 40 px); the "production" column now keys off `trd.DEFAULT_ROI_PADDING` instead of `max(paddings)` |
-| `notes/eval/tir_resp/cache_parity_probe.py` | `_GEOM['padding']` -> `trd.DEFAULT_ROI_PADDING` |
+| `notes/eval/archive/tir_resp/roi_geometry_ledger.py` | `EXPECT` re-baselined (side 95/131/353 pre-gate, 95/125/174 at 40 px); the "production" column now keys off `trd.DEFAULT_ROI_PADDING` instead of `max(paddings)` |
+| `notes/eval/archive/tir_resp/cache_parity_probe.py` | `_GEOM['padding']` -> `trd.DEFAULT_ROI_PADDING` |
 | `notes/design/ADR-011-landmark-roi-geometry-and-tir-cache.md` | §1 token counts, §3.2 P1 + side table, §4.1 pairing table and conclusion (replacing "Therefore `s=112, p=0.2`"), §4.2, §4.5 lineage table + pos-embed rationale, §7 A9, §8 defaults, §9 item 1, §10 ledger row |
-| `notes/eval/tir_resp/hpc_precomputation.md` | supersession note; Stage-2/3 key table |
+| `notes/eval/archive/tir_resp/hpc_precomputation.md` | supersession note; Stage-2/3 key table |
 
 Verified: `pytest` **413 pass**, `compileall` clean, ledger **PASS 0 mismatches**.
 Occupancy 30.3 % -> **41.1 %** of the patch (p50), clips below 20 % occupancy

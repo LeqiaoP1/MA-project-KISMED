@@ -18,7 +18,7 @@
 
 This file answers the **cardiac** half for the arterial pressure waveform. The
 respiratory half is negative from every visual input
-(`code/notes/eval/tir_resp/FINDINGS.md`).
+(`code/notes/eval/archive/tir_resp/FINDINGS.md`).
 
 ---
 
@@ -328,7 +328,7 @@ Environment: `.venv` at the repo root; `scipy`, `h5py`, `opencv`, `numpy 2`, `pa
 
 ## 12. Relationship to the wider project
 
-Read together with the respiratory record (`code/notes/eval/tir_resp/FINDINGS.md`):
+Read together with the respiratory record (`code/notes/eval/archive/tir_resp/FINDINGS.md`):
 
 * the **sensor and pipeline are sound** — demonstrated here by a validated cardiac
   positive, and for the thermal stream by a motion control passing 8/8 at

@@ -808,6 +808,35 @@ Feature: Manifest resume guard and Stage-3 transfer isolation
   the plan did not anticipate** — flagged here rather than folded into a phase.
 - **Still open:** the matched pure-MSE ADR-007 Fold-0 run (ADR-008 §3.2/§3.3 comparator), the Fold-0
   pretext evaluation, the five-fold Stage-3 sweep, and the §3.4 smoke with VRAM measurement.
+- **Fold-0 pre-training FINISHED (2026-11-26)** — `EXP_ROOT=/work/scratch/ne95ocyg/pretrain/adr008_2stream_fold0`,
+  13 `acc_short` links (8 + 5 chained `afterany`), 150/150 epochs, `checkpoint-0149.pth`, clean selection
+  (`fixed_epoch`, epoch 149, `joint_loss 6.6248`). Epoch-149 epoch means: `loss 3.529`, `mse_tir 0.769`,
+  `mse_resp 0.220`, `resp_pearson 0.127`, `resp_spectral 0.213`. `mse_resp` went `1.89 -> 0.18-0.22`
+  over training. The final link of the top-up reported `FAILED` — verified benign: its stderr is the
+  runner's `nothing to do: … already at epoch 150`.
+- **Criterion 2 (Fold-0 Mode-1 pretext) — MEASURED, evidence folder `code/notes/eval/baselines/tir_resp/`**
+  (`README.md` = run of record + headline table, `mode1_pretext_fold0.md` = the analysis,
+  `artifacts/` = figure + trimmed JSON, `figure_resp_reconstruction.py` = the figure script).
+  1742 clips / 213 sessions / 27 held-out subjects, 5 mask draws, `K_resp = 0`, `K_tir = 200`:
+  - **Zero-shot masked `r` = `+0.326 [+0.244, +0.406]`** (subject median) vs. the predecessors'
+    `+0.0062` (four-stream) and `+0.113` (three-stream) ⇒ **the conditional-mean collapse is gone**,
+    so ADR-008 §4's rollback trigger (`Var < 0.10` or `r < +0.10`) is **not** met. It sits just below
+    the `+0.35` success target.
+  - **Variance retention `Var(y_hat)` = `0.472 [0.457, 0.530]`** — 4.7x the failure threshold, below
+    the `0.60` target. `mse 0.963` median.
+  - **Spectral peak error = `4.92 bpm [4.01, 5.61]`** — **fails** the ADR's `> 3.0 bpm` rejection
+    threshold, and not by quantisation alone (≈2.7 bins of `1.83 bpm`): the waveform has the right
+    shape but the wrong rate.
+  - **Gradient balance median = `66.5`** over 130 Phase-II epochs (p25 44.9, p75 83.2) — clears the
+    `1e-3` failure threshold but is two orders of magnitude above the `[0.05, 0.50]` band. The
+    pure-MSE comparator measured `4.47` on the same quantity at step 12, i.e. the band's scale does
+    not match this implementation → **treated as an ADR §3.2 calibration issue, not a training
+    defect** (`mse_tir` never starved: 1.96 -> 0.78). Do not tune `lambda_resp` on it before the
+    comparator's converged value exists.
+  - Tooling added for this: `runners/run_eval_recon.py --pretext_metrics [--pretext_band f_min,f_max]`
+    (opt-in; defaults leave every pre-existing report byte-identical), scoring variance retention and
+    the band-limited spectral peak error in bpm, aggregated per-clip -> subject median -> pooled median
+    with a bootstrap CI (946 tests green).
 - **Code-review follow-up (2026-11-25).** Two plan-vs-code gaps, both closed:
   - **Phase 1.5** — `code/core/__init__.py` now re-exports `MaskedPearsonLoss`,
     `BandLimitedSpectralLoss`, `CompositeRespLoss`, `AlignProjection`, `anatomy_weighted_pool` and

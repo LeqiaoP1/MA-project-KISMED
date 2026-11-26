@@ -235,7 +235,7 @@ IR_SENTINEL = 0.0
 
 #: the corpus' ``Resp_Volts.txt`` DEAD-CHANNEL floor in volts, signed as
 #: stored: a saturated channel reads exactly ``-10.0``. This is the reference
-#: the RAIL DIAGNOSTICS measure against (``notes/eval/tir_resp/rail_forensics.py``
+#: the RAIL DIAGNOSTICS measure against (``notes/eval/archive/tir_resp/rail_forensics.py``
 #: and ``runners/run_survey_tir_resp.py``) -- it is NOT the clip filter. The
 #: filter is :paramref:`BP4DPlusTIRRespDataset.rail_touch_v`, a symmetric
 #: MAGNITUDE, because the rail is 2-sided (the recorder clamps at both ends).
@@ -515,7 +515,7 @@ def roi_box_from_landmarks(pts: np.ndarray, width: int, height: int,
     UPSTREAM rather than here -- a clip overlapping ANY missing or ``(0,0)``
     target landmark is dropped entirely (:func:`missing_frame_mask`), so no clip
     box can be stretched to the image corner. For what an outlier-robust rule
-    was meant to buy see ``notes/eval/tir_resp/roi_box_impact.py``.
+    was meant to buy see ``notes/eval/archive/tir_resp/roi_box_impact.py``.
 
     ``'square'`` grows the SHORT axis about the padded box centre instead of
     letting the caller stretch it: a near-collinear landmark set (``nostrils``,
@@ -680,8 +680,8 @@ class BP4DPlusTIRRespDataset(Dataset):
         is applied AFTER :paramref:`rail_touch_v`: the two rules are
         COMPLEMENTARY -- the rail test catches what touches a clamp, this one
         what is pinned near it without touching (see
-        ``notes/eval/tir_resp/resp_data_quality.md`` §3.4 and
-        ``notes/eval/tir_resp/resp_rail_touch_filter_results.md`` §5).
+        ``notes/eval/archive/tir_resp/resp_data_quality.md`` §3.4 and
+        ``notes/eval/archive/tir_resp/resp_rail_touch_filter_results.md`` §5).
     :param rail_touch_v: DROP a clip whose respiration window contains ANY
         sample that has TOUCHED THE RAIL, i.e. ``abs(sample) >= rail_touch_v``
         volts (``0.0`` = disabled, the default). **This is the cleaning knob for
@@ -691,8 +691,8 @@ class BP4DPlusTIRRespDataset(Dataset):
         within 0.1 V of either end of the range.
 
         Why a MAGNITUDE and why a TOUCH test -- the ``-10 V`` rail has two
-        different causes (see ``notes/eval/tir_resp/resp_data_quality.md`` §3.4
-        and ``notes/eval/tir_resp/rail_forensics.py``):
+        different causes (see ``notes/eval/archive/tir_resp/resp_data_quality.md`` §3.4
+        and ``notes/eval/archive/tir_resp/rail_forensics.py``):
 
         * a SENSOR FAILURE (dead / disconnected belt, a stuck DAQ, or a DC
           offset beyond the recorder's range) PINS the channel at the rail;

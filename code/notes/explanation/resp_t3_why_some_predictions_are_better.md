@@ -2,8 +2,8 @@
 
 *Plain-English summary of the 2026-10-25 investigation. The technical versions,
 with all numbers, tests and caveats, are
-`code/notes/eval/tir_resp/resp_motion_confound.md` and
-`code/notes/eval/tir_resp/resp_t3_spread_sources.md`. Everything here was
+`code/notes/eval/archive/tir_resp/resp_motion_confound.md` and
+`code/notes/eval/archive/tir_resp/resp_t3_spread_sources.md`. Everything here was
 measured on the existing five cross-validation runs — nothing was retrained.*
 
 ## The short version
@@ -50,12 +50,12 @@ whereas how well they are read at all is a property of the person.
 
 ### The numbers behind it
 
-Figure: `code/notes/eval/tir_resp/resp_t3_subject_effect.svg`
-(reproduce with `code/notes/eval/tir_resp/subject_effect_evidence.py`).
+Figure: `code/notes/eval/archive/tir_resp/resp_t3_subject_effect.svg`
+(reproduce with `code/notes/eval/archive/tir_resp/subject_effect_evidence.py`).
 
 Slide figure for the additive model itself: `presentation/figures/
 additive-model-slide.svg` (16:9-ish, 1500 x 760; regenerate with
-`code/notes/eval/tir_resp/additive_model_slide.py`). It draws the equation
+`code/notes/eval/archive/tir_resp/additive_model_slide.py`). It draws the equation
 `observed = overall level + person + task + everything else` as five 12-subject
 grids taken from the real fit, with a stacked bar underneath showing 36 % /
 8.6 % / 55 %.

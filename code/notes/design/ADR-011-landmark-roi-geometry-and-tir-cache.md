@@ -96,9 +96,9 @@ For a clip spanning source frames $[f_0, f_0 + T)$ (pre-decimation, **I9**) and 
 
 - **Criterion 1 (Geometry & motion-gate invariants I1–I11)**: Unit tests verify exact square output (`x1 - x0 == y1 - y0`), collinear expansion (`100 × 5 → 100 × 100`), safe boundary translation vs. `RoiBoxOutOfFrame` drop, sway threshold filtering with counter accounting, and Stage-2/Stage-3 `ROI_CONTRACT_KEYS` abort on mismatch.
 - **Criterion 2 (Cache containment & byte parity)**: `run_build_roi_cache.py --check --hops 1.0 2.0 --input_size 96 --crop_rule square` and `cache_parity_probe.py` confirm 100% hull containment (0 escapes) and byte-identical tensors between cached and live-decoded frames.
-- **Criterion 3 (Corpus geometry ledger)**: `code/notes/eval/tir_resp/roi_geometry_ledger.py` exits `0` with 0 mismatches against published figures (`p=0.10, s=96, max_sway=40`: median side 95 px, p95 125 px, max 174 px, median $\sigma = 1.01$, 96.83% clips kept, 138/138 subjects retained, 41.1% median face occupancy).
+- **Criterion 3 (Corpus geometry ledger)**: `code/notes/eval/archive/tir_resp/roi_geometry_ledger.py` exits `0` with 0 mismatches against published figures (`p=0.10, s=96, max_sway=40`: median side 95 px, p95 125 px, max 174 px, median $\sigma = 1.01$, 96.83% clips kept, 138/138 subjects retained, 41.1% median face occupancy).
 
-- **Acceptance Artifacts**: `tests/test_roi_square_rule.py`, `tests/test_roi_motion_gate.py`, `tests/test_roi_cache.py`, `tests/test_tir_resp_sentinel.py`, `code/notes/eval/tir_resp/roi_geometry_ledger.md`.
+- **Acceptance Artifacts**: `tests/test_roi_square_rule.py`, `tests/test_roi_motion_gate.py`, `tests/test_roi_cache.py`, `tests/test_tir_resp_sentinel.py`, `code/notes/eval/archive/tir_resp/roi_geometry_ledger.md`.
 
 ---
 
@@ -115,6 +115,6 @@ For a clip spanning source frames $[f_0, f_0 + T)$ (pre-decimation, **I9**) and 
 ## 5. Reproducibility Record
 
 - **Run / Job IDs**: HPC cache build Slurm array `55785296` (32/32 completed, 2026-10-30), key `tirroi_nose_mouth_pad0.10_square_window-hull_clip8s_src726x480_native_v3_fa9f91bdd5` (1,385 cached / 15 skipped / 0 missing, 78.4 GB).
-- **Evidence Artifacts**: `code/notes/eval/tir_resp/roi_geometry_ledger.md`, `code/notes/eval/tir_resp/hpc_precomputation.md`.
+- **Evidence Artifacts**: `code/notes/eval/archive/tir_resp/roi_geometry_ledger.md`, `code/notes/eval/archive/tir_resp/hpc_precomputation.md`.
 - **Tests / Smoke Checks**: `code/tests/test_roi_square_rule.py`, `code/tests/test_roi_motion_gate.py`, `code/tests/test_roi_cache.py`, `code/tests/test_tir_resp_sentinel.py`, `code/tests/test_config_loading.py`.
 - **Rollback / Rejection Condition**: Set `crop_rule: box` and `max_sway_px: 0` in YAML/CLI to reproduce the legacy unsquared, ungated pixel path without code rollback.

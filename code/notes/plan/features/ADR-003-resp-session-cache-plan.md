@@ -451,7 +451,7 @@ key field or a documented default, never a silent constant.
 | # | risk / open item | treatment |
 | :--- | :--- | :--- |
 | R1 | "both rates" is ambiguous (A1) | record `fs_in` nominal + `fs_out` only; confirm the reading before the first corpus build; `[TODO: verify]` otherwise |
-| R2 | the measured-rate tolerance stays undefined (Criterion 6) | measure and publish the corpus spread in `code/notes/eval/tir_resp/resp_preprocess_impact.md` (step 27a), do **not** put it in the key, do **not** invent a tolerance |
+| R2 | the measured-rate tolerance stays undefined (Criterion 6) | measure and publish the corpus spread in `code/notes/eval/archive/tir_resp/resp_preprocess_impact.md` (step 27a), do **not** put it in the key, do **not** invent a tolerance |
 | R3 | 0.3 V flatline is a policy, not a measurement | recorded as a key field; changing it is a new artefact and a retrain, never an in-place edit |
 | R4 | short valid tails are lost (8 s minimum run) | accepted by the ADR; G12a counts the loss on a synthetic so it is visible |
 | R5 | a wholly invalid session stays in the corpus | accepted (Criterion 7); every consumer must tolerate `valid_frac == 0` and report it |
@@ -508,7 +508,7 @@ cd code && ../.env/bin/python -m pytest -q tests/test_resp_*.py
 | `code/notes/GLOSSARY.md` §8 | canonical key fields; `resp_fs == fs_out` rule |
 | `code/notes/eval/resp/resp_artefact_build.md` | **the artefact's own record** (modality-neutral): build accounting, per-cause invalid share, measured-rate spread (A2) |
 | `code/notes/eval/resp/resp_rate_spread.csv` | **new**: per-session `N_src`, `duration_s`, `f_meas` from step 27a |
-| `code/notes/eval/tir_resp/resp_preprocess_impact.md` | unchanged in content — it holds the **TIR dataset's** clip accounting, which depends on that dataset's hop and geometry |
+| `code/notes/eval/archive/tir_resp/resp_preprocess_impact.md` | unchanged in content — it holds the **TIR dataset's** clip accounting, which depends on that dataset's hop and geometry |
 | `code/README.md` | data section: `--resp_cache`, clip-length bound, identity refusal |
 
 ---

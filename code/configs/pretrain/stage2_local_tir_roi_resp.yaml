@@ -139,7 +139,7 @@ rail_touch_v: 9.900                # VOLTS (magnitude): cleaning knob -- DROP a
                                    #   dead/pinned sensor and a clipped
                                    #   flat-topped trough are removed, so no
                                    #   rail-valued label survives. See
-                                   #   notes/eval/tir_resp/resp_data_quality.md
+                                   #   notes/eval/archive/tir_resp/resp_data_quality.md
                                    #   §3.4 + rail_forensics.py. Keep IDENTICAL
                                    #   in Stage 2/3.
                                    #   0.0 = off (the historical behaviour).

@@ -59,7 +59,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np                                      # noqa: E402
 import torch                                            # noqa: E402
-
 from core.multimae import build_pretraining_model        # noqa: E402
 from runners.run_visualize_pretrain import _held_out_subjects  # noqa: E402
 
@@ -177,6 +176,16 @@ def get_args(argv=None):
     p.add_argument('--ablate_shift', default=0, type=int,
                    help='frames to roll; 0 = max(1, T//3)')
     p.add_argument('--device', default='cpu', type=str)
+    p.add_argument('--pretext_metrics', action='store_true', default=False,
+                   help='ADR-008 §3.2 pretext diagnostics: also score VARIANCE '
+                        'RETENTION (Var(ŷ) over the masked samples of a clip, '
+                        'z² units) and the SPECTRAL PEAK ERROR of ŷ vs y inside '
+                        '--pretext_band (bpm). OFF by default, so every '
+                        'pre-existing report is byte-identical.')
+    p.add_argument('--pretext_band', default='0.10,0.60', type=str,
+                   help='--pretext_metrics passband in Hz as "f_min,f_max" '
+                        '(default 0.10,0.60 = the ADR-008 §2.2.3 respiratory '
+                        'band, 6..36 bpm).')
     return p.parse_args(argv)
 
 
@@ -376,7 +385,46 @@ def _pearson(x: np.ndarray, y: np.ndarray) -> float:
     return float((x * y).sum() / den) if den > 0 else float('nan')
 
 
-def score_batch(out: Dict, batch: Dict, sig_kernel: int) -> List[Dict]:
+def _band_peak_hz(x: np.ndarray, fs: float, f_min: float,
+                  f_max: float) -> float:
+    """Dominant frequency of one waveform inside ``[f_min, f_max]`` (Hz).
+
+    Same construction as ADR-008 §2.2.3: DC removal, Hann window, an rFFT
+    zero-padded to ``4 * 2**ceil(log2 n)``. ``nan`` when the band is empty.
+    """
+    x = np.asarray(x, dtype=np.float64).reshape(-1)
+    if x.size < 4 or not np.isfinite(x).all():
+        return float('nan')
+    x = x - x.mean()
+    n = 4 * int(2 ** int(np.ceil(np.log2(max(x.size, 2)))))
+    spec = np.abs(np.fft.rfft(x * np.hanning(x.size), n=n)) ** 2
+    freqs = np.fft.rfftfreq(n, d=1.0 / float(fs))
+    sel = (freqs >= float(f_min)) & (freqs <= float(f_max))
+    if not sel.any():
+        return float('nan')
+    return float(freqs[sel][int(np.argmax(spec[sel]))])
+
+
+def _pretext_fields(p_m: np.ndarray, t_m: np.ndarray, pretext: Dict) -> Dict:
+    """ADR-008 §3.2: variance retention and the spectral peak error.
+
+    ``var_hat`` is ``Var(y_hat)`` over the MASKED samples of the clip (in Mode 1
+    every sample is masked, so it is the whole predicted waveform). The ADR's
+    collapse threshold is ``< 0.10`` and its success target ``>= 0.60``, against
+    a target whose per-clip z-score gives ``Var(y) = 1``.
+    """
+    fs = float(pretext['fs'])
+    f_min, f_max = pretext['band']
+    f_hat = _band_peak_hz(p_m, fs, f_min, f_max)
+    f_y = _band_peak_hz(t_m, fs, f_min, f_max)
+    err = (float('nan') if not (np.isfinite(f_hat) and np.isfinite(f_y))
+           else 60.0 * abs(f_hat - f_y))
+    return {'var_hat': float(np.var(p_m)), 'var_y': float(np.var(t_m)),
+            'peak_hat_hz': f_hat, 'peak_y_hz': f_y, 'peak_err_bpm': err}
+
+
+def score_batch(out: Dict, batch: Dict, sig_kernel: int,
+                pretext: Optional[Dict] = None) -> List[Dict]:
     """Per-clip metrics for the resp stream of one batch."""
     pred = out['preds']['resp'].detach().float().cpu().numpy()
     target = (batch['resp'].detach().float().cpu()
@@ -402,6 +450,7 @@ def score_batch(out: Dict, batch: Dict, sig_kernel: int) -> List[Dict]:
             'rmse': float(np.sqrt((d * d).mean())),
             'r_masked': _pearson(p_m, t_m),
             'r_full': _pearson(assembled, target[b].reshape(-1)),
+            **(_pretext_fields(p_m, t_m, pretext) if pretext else {}),
         })
     return rows
 
@@ -444,8 +493,9 @@ def subject_aggregate(per_clip: List[Dict], seed: int,
         rs = by_subject[subj]
         sessions = sorted({str(r.get('session', '')) for r in rs})
         row = {'subject': subj, 'n_clips': len(rs), 'n_sessions': len(sessions)}
-        for k in ('r_masked', 'r_full', 'mse', 'mae', 'rmse'):
-            vals = np.asarray([r[k] for r in rs], dtype=np.float64)
+        for k in ('r_masked', 'r_full', 'mse', 'mae', 'rmse', 'var_hat',
+                  'peak_err_bpm'):
+            vals = np.asarray([r[k] for r in rs if k in r], dtype=np.float64)
             vals = vals[np.isfinite(vals)]
             row[f'median_{k}'] = float(np.median(vals)) if vals.size else float('nan')
         rows.append(row)
@@ -464,10 +514,16 @@ def subject_aggregate(per_clip: List[Dict], seed: int,
                 'hi': float(np.percentile(boot, 97.5)),
                 'n_subjects': int(vals.size), 'n_boot': int(n_boot)}
 
-    return {'per_subject': rows,
-            'r_masked_median': _boot('median_r_masked'),
-            'r_full_median': _boot('median_r_full'),
-            'mse_median': _boot('median_mse')}
+    out = {'per_subject': rows,
+           'r_masked_median': _boot('median_r_masked'),
+           'r_full_median': _boot('median_r_full'),
+           'mse_median': _boot('median_mse')}
+    # ADR-008 §3.2 (opt-in): the two collapse diagnostics, aggregated the same
+    # way (median per subject -> pooled median with a bootstrap CI).
+    if rows and 'median_var_hat' in rows[0]:
+        out['var_hat_median'] = _boot('median_var_hat')
+        out['peak_err_bpm_median'] = _boot('median_peak_err_bpm')
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -533,6 +589,17 @@ def main(argv=None):
         held = wanted
         print(f'[eval] subjects  : {len(wanted)} -> {", ".join(sorted(wanted))}')
     ds, idx = build_eval_dataset(data_cargs, a, held)
+    # ADR-008 §3.2 (opt-in): variance retention + spectral peak error.
+    pretext = None
+    if a.pretext_metrics:
+        band = tuple(float(x) for x in str(a.pretext_band).split(','))
+        if len(band) != 2 or not 0.0 < band[0] < band[1] <= model.fs / 2.0:
+            raise SystemExit(
+                f'[eval] --pretext_band {a.pretext_band!r} must be '
+                f'"f_min,f_max" with 0 < f_min < f_max <= fs/2 = {model.fs/2.0}')
+        pretext = {'fs': float(model.fs), 'band': band}
+        print(f'[eval] pretext   : variance retention + spectral peak error '
+              f'in [{band[0]:g}, {band[1]:g}] Hz (ADR-008 §3.2)')
     subjects = {str(ds.entries[i].get('subject', '')) for i in idx}
     sessions = {str(ds.entries[i].get('session', '')) for i in idx}
     print(f'[eval] clips     : {len(idx)} from {len(sessions)} session(s) / '
@@ -566,7 +633,7 @@ def main(argv=None):
             gen = torch.Generator().manual_seed(int(a.seed) + rep)
             with torch.inference_mode():
                 out = model(batch, plan=plan, placement_generator=gen)
-            rows = score_batch(out, batch, model.sig_kernel)
+            rows = score_batch(out, batch, model.sig_kernel, pretext=pretext)
             for row, i in zip(rows, chunk):
                 entry = ds.entries[i]
                 row['subject'] = str(entry.get('subject', ''))
@@ -580,6 +647,9 @@ def main(argv=None):
             for acc, r in zip(per_clip, rep_rows):
                 for k in ('mse', 'mae', 'rmse', 'r_masked', 'r_full'):
                     acc[k] = float(np.nanmean([acc[k], r[k]]))
+                for k in ('var_hat', 'peak_err_bpm'):
+                    if k in acc and k in r:
+                        acc[k] = float(np.nanmean([acc[k], r[k]]))
         print(f'[eval] rep {rep + 1}/{a.repeats}: '
               f'r_masked mean {np.nanmean([r["r_masked"] for r in rep_rows]):+.4f}'
               f'  mse {np.nanmean([r["mse"] for r in rep_rows]):.5f}')
@@ -587,6 +657,9 @@ def main(argv=None):
     # ---- aggregate --------------------------------------------------------
     summary = {k: mean_std([r[k] for r in per_clip])
                for k in ('mse', 'mae', 'rmse', 'r_masked', 'r_full')}
+    if pretext is not None:
+        for k in ('var_hat', 'peak_err_bpm'):
+            summary[k] = mean_std([r[k] for r in per_clip if k in r])
     by_subject = subject_aggregate(per_clip, a.seed)
     print()
     print('=' * 68)
@@ -603,6 +676,17 @@ def main(argv=None):
     print(f'  subject   median r_masked {subj_r["median"]:+.4f}  '
           f'[{subj_r["lo"]:+.4f}, {subj_r["hi"]:+.4f}] 95% CI  '
           f'({subj_r["n_subjects"]} subjects)')
+    if pretext is not None:
+        vr = by_subject.get('var_hat_median', {})
+        pe = by_subject.get('peak_err_bpm_median', {})
+        if vr:
+            print(f'  subject   median Var(y_hat) {vr["median"]:.4f}  '
+                  f'[{vr["lo"]:.4f}, {vr["hi"]:.4f}] 95% CI   '
+                  f'(ADR-008 §3.2: <0.10 collapses, >=0.60 is the target)')
+        if pe:
+            print(f'  subject   median peak err {pe["median"]:.3f} bpm  '
+                  f'[{pe["lo"]:.3f}, {pe["hi"]:.3f}] 95% CI   '
+                  f'(ADR-008 §3.2: >3.0 bpm fails, <=1.5 is the target)')
     print('=' * 68)
 
     if a.out:

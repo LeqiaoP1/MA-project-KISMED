@@ -119,7 +119,7 @@ Tier-3 clinical HRV metrics (`rmssd_ms`, `pnn50`, `median_nn_ms`, `shannon_entro
 
 ## 5. Reproducibility Record
 
-- **Run / Job IDs**: Applied across 5-fold TIR-ROI Stage-3 evaluations (`code/notes/eval/tir_resp/resp_5fold_cv_96respgrid.md`).
-- **Evidence Artifacts**: `code/notes/eval/tir_resp/resp_5fold_cv_96respgrid.md`, `code/notes/eval/tir_resp/resp_5fold_cv.md`.
+- **Run / Job IDs**: Applied across 5-fold TIR-ROI Stage-3 evaluations (`code/notes/eval/archive/tir_resp/resp_5fold_cv_96respgrid.md`).
+- **Evidence Artifacts**: `code/notes/eval/archive/tir_resp/resp_5fold_cv_96respgrid.md`, `code/notes/eval/archive/tir_resp/resp_5fold_cv.md`.
 - **Tests / Smoke Checks**: `code/tests/test_evaluation_subject.py`, `code/tests/test_evaluation_breakdown.py`, `code/tests/test_resp_eval_reference.py`, `code/tests/test_evaluation_amplitude.py`.
 - **Rollback / Rejection Condition**: Not applicable (protocol contract of record). Any change to passband, assembly rule, or headline metric requires a superseding ADR.

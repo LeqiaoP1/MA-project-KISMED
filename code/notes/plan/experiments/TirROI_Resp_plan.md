@@ -3,7 +3,7 @@
 > **Scope.** The `tir_roi` / `tir_roi_resp` lineage: thermal face-ROI video in,
 > respiration waveform out.
 > **This is the only plan for this study.** *Why* a component exists is in
-> `code/notes/design/`; *what it measured* is in `code/notes/eval/tir_resp/`; the
+> `code/notes/design/`; *what it measured* is in `code/notes/eval/archive/tir_resp/`; the
 > build order for an individual change is the child plan in §9.
 > **State.** Pipeline complete and measured over the whole corpus: 5 folds
 > trained and scored, Stage 3 assembled and evaluated per subject (§5). The open
@@ -163,7 +163,7 @@ Ordered by expected information per unit compute.
 | **W2** | **Amplitude.** The output is ~3× under-scaled. An earlier A/B between an amplitude-only `L_time` and the point-wise term moved band-Pearson only marginally and did not close the scale gap, so the remaining choice is a scale-aware loss term versus a deployable per-session calibration. **Decided 2026-11-01:** `L_time` is the point-wise Huber (no selector). That settles which `L_time` ships, NOT this item — the amplitude gap is still open. | `core/waveform_losses.py`, `utils/optim_factory.py` | A3 met with a non-oracle calibration |
 | **W3** | **Rate.** The rate claim needs a stable spectral peak, not just phase locking: harmonic tracking over overlapping 30 s windows, reported as BPM. | `evaluation/metrics.py` (`estimate_rate_bpm`, `rate_metrics`) | A2 met |
 | **W4** | **Fold cohort confound.** `split_universe` can cut sorted ids into contiguous blocks, so fold membership is confounded with sex/recording cohort (`eval/tir_resp/resp_t3_spread_sources.md` §2). Pooled numbers are unaffected; per-fold spreads are not a variance estimate. | `protocol/partition.py`, `design/ADR-001-subject-disjoint-split-and-selection.md` §2.2 | fold assignment is stratified/interleaved (`split_stratify: sex`), and the pooled number is unchanged |
-| **W5** | **Optional bounded retry** on an on-face nostril/lip tile, cleared by all three of: rank/Spearman gate, local-motion partialling, gradient/sign-flip test. | `code/notes/eval/tir_resp/` tools | a gate pass, or it is not pursued |
+| **W5** | **Optional bounded retry** on an on-face nostril/lip tile, cleared by all three of: rank/Spearman gate, local-motion partialling, gradient/sign-flip test. | `code/notes/eval/archive/tir_resp/` tools | a gate pass, or it is not pursued |
 | **W6** | **Doc/spec sync** after any geometry change: `roi_geometry_ledger.py` must still exit 0, and the change must be hand-applied to `code/notes/spec/` (`scripts/project/write_specs.py` still contains stale text and overwrites hand edits — read its warning before running it). | `code/notes/spec/`, `scripts/project/write_specs.py` | ledger PASS + spec diff reviewed |
 
 **Not planned:** chest/body ROI, whole-frame arm, a BP pivot on thermal (weaker
@@ -198,7 +198,7 @@ python runners/run_evaluate_kfold.py --root <run3> --run_prefix resp_tir_roi_hpc
     --folds 0,1,2,3,4 --out <json>
 
 # 4. gates
-python notes/eval/tir_resp/roi_geometry_ledger.py --raw_root "$RAW_DATA_PATH"
+python notes/eval/archive/tir_resp/roi_geometry_ledger.py --raw_root "$RAW_DATA_PATH"
 python -m evaluation.metrics          # metric self-test
 ```
 

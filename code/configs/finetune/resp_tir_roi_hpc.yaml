@@ -9,7 +9,7 @@
 # not just the rate, is the deliverable.
 #
 # !! PROVENANCE GAP -- READ BEFORE QUOTING ANY NUMBER !!
-# The CV record in notes/eval/tir_resp/resp_5fold_cv.md (+0.307 pooled
+# The CV record in notes/eval/archive/tir_resp/resp_5fold_cv.md (+0.307 pooled
 # band-Pearson, 138 subjects) and the output/finetune/resp_tir_roi_hpc{,_fold*}
 # dumps behind it were measured BEFORE this term was finalised, under an
 # AMPLITUDE-ONLY L_time (``|std(pred) - std(target)|``). They are NOT this

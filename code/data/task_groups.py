@@ -57,7 +57,7 @@ from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 #: facial expression + transient startle, ``high`` = singing, threat, pain,
 #: anger, disgust. A PARTITION of ``T1``..``T10`` (3 / 2 / 5):
 #: :func:`runners.run_survey_tir_resp._aggregate` and
-#: ``notes/eval/tir_resp/gate_model_input.group_of`` assume one group per task.
+#: ``notes/eval/archive/tir_resp/gate_model_input.group_of`` assume one group per task.
 #: Rationale: ``code/notes/design/ADR-010-bp4d-task-distortion-tiers.md``.
 SHIPPED_TASK_GROUPS = 'low=T2|T3|T5;moderate=T1|T4;high=T6|T7|T8|T9|T10'
 
