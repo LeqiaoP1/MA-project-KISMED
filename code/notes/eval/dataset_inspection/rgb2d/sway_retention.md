@@ -5,7 +5,7 @@ Script: `sway_retention_probe.py` (raw output `sway_retention.json`).
 
 ```
 cd code
-../.env/bin/python notes/eval/rgb2d/sway_retention_probe.py \
+../.env/bin/python notes/eval/dataset_inspection/rgb2d/sway_retention_probe.py \
     --raw_root "$RAW_DATA_PATH"          # ~28 s, no video decode
 ```
 

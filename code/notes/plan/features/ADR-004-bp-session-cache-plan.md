@@ -47,7 +47,7 @@
 > **1400 / 1400 shards, 0 skips, 0 missing, 34.1 s, 380.2 MB**, `--check 200`
 > **PASS** (bit-identical on signal/mask/cause/segment table). Every ADR §1 corpus
 > statistic reproduced exactly. Numbers, per-segment distribution and the
-> rollback observables: `code/notes/eval/bp/bp_artefact_build.md`. Deviations and
+> rollback observables: `code/notes/eval/dataset_inspection/bp/bp_artefact_build.md`. Deviations and
 > the files added beyond §2 are listed in §10.
 
 ---
@@ -69,7 +69,7 @@
 6. A consumer verifies the identity before cutting a window, derives `s` and `n` from `fs_out`
    arithmetic (ADR §2.7 C4) rather than from any stored window table, and refuses a mismatch.
 7. Gates G0–G13 of §7 pass, and G8 leaves the per-cause accounting in
-   `code/notes/eval/bp/bp_artefact_build.md`.
+   `code/notes/eval/dataset_inspection/bp/bp_artefact_build.md`.
 
 ---
 
@@ -86,7 +86,7 @@ preprocessing module. A simple import check can verify this greenfield rule.
 | consumer contract | `data/bp_windows.py` | window arithmetic, `usable()`, `read_window()`, `segment_of()`, `verify_identity()` |
 | builder | `runners/run_build_bp_artefact.py` | `--init` / `--build` / `--status` / `--index` / `--check N` |
 | tests | `tests/test_bp_gates.py`, `tests/test_bp_preprocess.py`, `tests/test_bp_artefact.py`, `tests/test_bp_windows.py`, `tests/bp_synth.py` | the gates of §7, case list in §7.1; `bp_synth.py` is the shared synthetic-trace generator (no binary fixture, §10 D1) |
-| evidence | `code/notes/eval/bp/bp_artefact_build.md` | corpus accounting only; **not** read or written by the build |
+| evidence | `code/notes/eval/dataset_inspection/bp/bp_artefact_build.md` | corpus accounting only; **not** read or written by the build |
 
 Boundary rules:
 
@@ -361,7 +361,7 @@ step.
 
 31. Subset build (`--limit 5`), then a rebuild of the same 5: both bit-identical.
 32. Full build; then `--status`, `--index`, `--check 40`.
-33. Publish `code/notes/eval/bp/bp_artefact_build.md`: shards written, skips by reason (target
+33. Publish `code/notes/eval/dataset_inspection/bp/bp_artefact_build.md`: shards written, skips by reason (target
     **0**), per-cause invalid-sample share, `valid_frac` distribution, segment-length
     percentiles, sessions with **zero** valid segments, wall time, payload bytes — **and** the
     re-derivation of ADR §1's corpus statistics (samples below 30 mmHg, negative samples,

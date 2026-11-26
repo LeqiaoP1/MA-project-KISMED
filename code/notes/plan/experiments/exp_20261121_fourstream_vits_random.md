@@ -22,7 +22,7 @@
 | Datasets | `code/data/datasets.py`, `trimodal_dataset.py`, `tir_resp_dataset.py`, `paired_dataset.py` |
 | Caches | `code/data/bp_artefact.py`, `bp_windows.py`, `bp_preprocess.py`, `resp_preprocess.py`; `runners/run_build_roi_cache.py`, `run_build_2d_roi_cache.py`, `run_build_resp_cache.py`, `run_build_bp_artefact.py` |
 | HPC | `code/scripts/hpc/submit_sweep.sbatch`, `submit_sweep.sh`; pretrain-only `submit_pretrain_sweep.sbatch`, `submit_pretrain_sweep.sh` |
-| Verified baseline | `code/notes/eval/rgb2d/resp_recon_zeroshot.md` |
+| Verified baseline | `code/notes/eval/dataset_inspection/rgb2d/resp_recon_zeroshot.md` |
 
 ### 0.2 Active implementation stage and runner
 
@@ -35,8 +35,8 @@
 
 - **Falsifiable hypothesis**: At the ADR-002 geometry (8 s clip, `temporal_stride=2`, `tubelet=4,16,16`, `input_size=96`, `fs=1000`, `sig_kernel=32`), the constant-budget policy is feasible for **four** streams (two visuals + two 1 kHz physiologies), and a randomly initialised 384-d ViT-Small trains at least one epoch with `n_batch == 350` on every step, per-stream counts inside the caps/floors, both modes observed, and finite losses. The hypothesis is falsified by any budget, cap, mode-coverage, or finiteness violation.
 - **Exact parameter delta**: add `bp` to the existing `tir,rgb2d,resp` arm; switch `model` from `project_multimae_base` to `project_multimae_small`; switch initialisation from `videomae:k400` to random; set `clip_stride: 4.0`; keep the ADR-002 geometry and seven masking keys.
-- **Baseline**: `None` for the primary infrastructure gate. The verified `code/notes/eval/rgb2d/resp_recon_zeroshot.md` numbers are **not** a valid comparator for this run because they are ViT-Base + VideoMAE-K400, not ViT-Small + random. A matched 3-stream ViT-Small random-init control is defined in §5.4; it uses the existing `data_set: tir_roi_resp_rgb2d`.
-- **Expected decision**: Accept the infrastructure gate if G1–G5 pass. The local fold-0 dev smoke passed all five on 2026-11-21 (`code/notes/eval/baselines/tir_rgb2d_bp_resp/stage2_smoke.md`). Do **not** claim a RESP-accuracy gain: the per-stream decoder has no cross-modal path when a stream is fully masked (`code/notes/eval/rgb2d/resp_recon_zeroshot.md`, “hidden” probe), so BP is not expected to improve RESP reconstruction.
+- **Baseline**: `None` for the primary infrastructure gate. The verified `code/notes/eval/dataset_inspection/rgb2d/resp_recon_zeroshot.md` numbers are **not** a valid comparator for this run because they are ViT-Base + VideoMAE-K400, not ViT-Small + random. A matched 3-stream ViT-Small random-init control is defined in §5.4; it uses the existing `data_set: tir_roi_resp_rgb2d`.
+- **Expected decision**: Accept the infrastructure gate if G1–G5 pass. The local fold-0 dev smoke passed all five on 2026-11-21 (`code/notes/eval/baselines/tir_rgb2d_bp_resp/stage2_smoke.md`). Do **not** claim a RESP-accuracy gain: the per-stream decoder has no cross-modal path when a stream is fully masked (`code/notes/eval/dataset_inspection/rgb2d/resp_recon_zeroshot.md`, “hidden” probe), so BP is not expected to improve RESP reconstruction.
 - **Rollback**: restore `streams: tir,rgb2d,resp`, `data_set: tir_roi_resp_rgb2d`, `model: project_multimae_base`, `pretrained_encoder: videomae:k400`, `clip_stride: 2.0`.
 
 ### 0.4 P0 prerequisite gates (all cleared)
@@ -58,7 +58,7 @@
 ## 1. Scientific Hypothesis and Baseline
 
 - **Core Hypothesis**: The ADR-002 constant-budget apportioner remains feasible with **two** physiological streams, and a randomly initialised ViT-Small can be pre-trained on the four-stream set without violating the constant 350-token budget, the per-stream caps, or numeric stability. No downstream accuracy gain is hypothesised: the per-stream decoder cannot route BP evidence into RESP when RESP is fully masked.
-- **Comparison Baseline**: `None` for the infrastructure gate. The matched scientific control is the 3-stream ViT-Small random-init arm in §5.4 (not an existing record). The verified ViT-Base/VideoMAE tri-modal numbers in `code/notes/eval/rgb2d/resp_recon_zeroshot.md` are context only and are excluded from any gate.
+- **Comparison Baseline**: `None` for the infrastructure gate. The matched scientific control is the 3-stream ViT-Small random-init arm in §5.4 (not an existing record). The verified ViT-Base/VideoMAE tri-modal numbers in `code/notes/eval/dataset_inspection/rgb2d/resp_recon_zeroshot.md` are context only and are excluded from any gate.
 - **Data Lineage**: Raw BP4D+ tree (`Thermal/`, `2D+3D/`, `Physiology/Resp_Volts.txt`, `Physiology/BP_mmHg.txt`). Visual streams come from the TIR-ROI and RGB2D caches; physiological streams come from the 1000 Hz RESP cache and the 1000 Hz BP artefact.
 - **Expected Delta**: No numerical performance expectation. The only expected change is the presence of `kept_bp ∈ [0, 125]`, `mse_bp` finite, and `n_batch = 350` on every step.
 
@@ -262,7 +262,7 @@ If P0-E lands, run the existing 3-stream `tir_roi_resp_rgb2d` arm with the **sam
 |---|---|---:|---|
 | G6 | `r_masked` (span50) | 4-stream arm `>=` 3-stream ViT-Small control `− 0.02` (proposed non-inferiority margin) | matched 3-stream ViT-Small random-init arm, same fold, same clips, same masks |
 
-The ViT-Base numbers in `code/notes/eval/rgb2d/resp_recon_zeroshot.md` (`+0.5419` tri span50, `+0.9975` random50, `+0.0055` hidden) are **context only** and must not be used as G6’s comparator. They differ in encoder width (768 vs 384) and initialisation (VideoMAE K400 vs random).
+The ViT-Base numbers in `code/notes/eval/dataset_inspection/rgb2d/resp_recon_zeroshot.md` (`+0.5419` tri span50, `+0.9975` random50, `+0.0055` hidden) are **context only** and must not be used as G6’s comparator. They differ in encoder width (768 vs 384) and initialisation (VideoMAE K400 vs random).
 
 ---
 

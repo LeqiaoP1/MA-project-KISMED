@@ -62,7 +62,7 @@ model that recovered breathing would show a positive tail only.
   per-stream decoder conditions only on the encoder latents plus that stream's
   own `[MASK]` tokens, so a fully hidden RESP has no cross-modal path that the
   four-stream arm was trained to exploit. It also matches the earlier tri-modal
-  reference (ViT-Base, `hidden` probe: `r = +0.0055`, `notes/eval/rgb2d/resp_recon_zeroshot.md`).
+  reference (ViT-Base, `hidden` probe: `r = +0.0055`, `notes/eval/dataset_inspection/rgb2d/resp_recon_zeroshot.md`).
 - Moving 100 tokens of budget from RGB2D to TIR (or back) does not change the
   outcome, so within this checkpoint and this probe the *allocation* between the
   two visual streams is not the limiting factor.

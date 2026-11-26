@@ -26,7 +26,7 @@ Outputs two candidate thresholds:
 Usage
 -----
     cd code
-    ../.env/bin/python notes/eval/rgb2d/tir_rgb2d_sway_ratio.py \
+    ../.env/bin/python notes/eval/dataset_inspection/rgb2d/tir_rgb2d_sway_ratio.py \
         --raw_root "$RAW_DATA_PATH" --limit 300
 """
 from __future__ import annotations
@@ -39,8 +39,8 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-CODE_DIR = os.path.dirname(os.path.dirname(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+CODE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 if CODE_DIR not in sys.path:
     sys.path.insert(0, CODE_DIR)
 

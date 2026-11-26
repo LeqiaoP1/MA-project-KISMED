@@ -146,7 +146,7 @@ Consequences now in the code:
   session the cache does not yet hold.
 
 Lessons for the next corpus delivery: check
-`notes/eval/rgb2d/zip_audit.py` (~30 s) and wait for `readable: 140, bad: 0`
+`notes/eval/dataset_inspection/rgb2d/zip_audit.py` (~30 s) and wait for `readable: 140, bad: 0`
 before submitting a build. A corpus that changes under a build also changes the
 cache KEY, so the work is wasted, not just incomplete.
 
@@ -325,7 +325,7 @@ then `CACHE_MAX_TASK_GB=24 sbatch scripts/hpc/submit_2d_roi_cache.sbatch`
 
 ## 12. Archive audit of the live corpus (`zip_audit.py`)
 
-`notes/eval/rgb2d/zip_audit.py` classifies every `2D+3D/*.zip` (≈30 s: one
+`notes/eval/dataset_inspection/rgb2d/zip_audit.py` classifies every `2D+3D/*.zip` (≈30 s: one
 `is_zipfile` per file, which reads only the end record). It exists because the
 corpus was **delivered while being read**, and `zipfile` reports all three
 states as `BadZipFile`.

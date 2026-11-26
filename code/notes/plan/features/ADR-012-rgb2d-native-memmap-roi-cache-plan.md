@@ -44,7 +44,7 @@ Delivered exactly as planned, with these recorded deviations:
    windows with the SAME statistic the dataset gates on
    (`tir_resp_dataset.landmark_sway`, centroid excursion): p50 = 24 px, p90 =
    96 px. The pinned 110 px is matched to the fixed TIR gate (`max_sway_px: 40`)
-   by `code/notes/eval/rgb2d/tir_rgb2d_sway_ratio.py`, which pairs both landmark
+   by `code/notes/eval/dataset_inspection/rgb2d/tir_rgb2d_sway_ratio.py`, which pairs both landmark
    tracks on 1375 sessions: RGB reports 3.2× the TIR excursion for the same head
    motion, and 110 px rejects the same fraction of clips (128 px by pure scale
    matching). Two corrections along the way, both recorded in the eval note: an
@@ -110,7 +110,7 @@ reader will ask why the doc no longer matches its own first version.
    doctrine: a free `input_size`, a free hop, and per-clip tight framing. Phase 0
    measures the hull-side distribution so the disk budget is known **before** the
    build, and `--status` reports total bytes so it can be checked afterwards.
-   **MEASURED 2026-11-10** (`code/notes/eval/rgb2d/build_preflight.md`): the hull
+   **MEASURED 2026-11-10** (`code/notes/eval/dataset_inspection/rgb2d/build_preflight.md`): the hull
    is a TASK-WIDE envelope (union over every stride-1 window of the whole task),
    so it is 621–1036 px, not ~250 px → 1.21 MB/frame, 1.37 GB/session,
    **~1.9 TB of frames (~2.25 TB on disk)** and 10.3 core-hours (19 min per
@@ -145,7 +145,7 @@ be built before the threshold is pinned. Phase 4 needs Phase 3's API frozen.
 
 | # | phase | primary artefact | depends on |
 |---|---|---|---|
-| 0 | measure | `code/notes/eval/rgb2d/sway_retention.md` (retention **and** hull/storage forecast) | — |
+| 0 | measure | `code/notes/eval/dataset_inspection/rgb2d/sway_retention.md` (retention **and** hull/storage forecast) | — |
 | 1 | cache module | `data/rgb2d_cache.py` | design doc |
 | 2 | builder | `runners/run_build_2d_roi_cache.py`, `scripts/hpc/submit_2d_roi_cache.sbatch` | 1 |
 | 3 | dataset | `data/trimodal_dataset.py` | 1, 2 |
@@ -157,7 +157,7 @@ be built before the threshold is pinned. Phase 4 needs Phase 3's API frozen.
 
 ## Phase 0 — measure `max_sway_px` and the storage budget before pinning either
 
-**Step 0.1 — the probe.** New `code/notes/eval/rgb2d/sway_retention_probe.py`.
+**Step 0.1 — the probe.** New `code/notes/eval/dataset_inspection/rgb2d/sway_retention_probe.py`.
 Landmarks only: no image decode, no cache, no GPU, and **no import from
 `data.rgb2d_cache`** (Phase 1 does not exist yet — it unions the unclamped
 square spans itself, ~10 lines).
@@ -179,7 +179,7 @@ square spans itself, ~10 lines).
 - sweep `10, 15, 20, 25, 30, 40, 60` px; report kept clips, retention, per-task
   and per-subject breakdown, and the `infl = hull_side / median(per-frame
   envelope side)` each threshold implies;
-- write `code/notes/eval/rgb2d/sway_retention.md` (two tables + one-line verdict)
+- write `code/notes/eval/dataset_inspection/rgb2d/sway_retention.md` (two tables + one-line verdict)
   and `output/eval/rgb2d/sway_retention.json`.
 
 **Step 0.2 — pin the value.** Put the winning threshold in the new config as
@@ -862,7 +862,7 @@ Phases 1–3 and 5.
    Then repeat with `--num_workers 4` to exercise the handle LRU across worker
    processes (fd budget, close-on-evict).
 8. Phase-0 table reviewed, `rgb2d_max_sway_px` pinned, retention recorded in
-   `code/notes/eval/rgb2d/sway_retention.md`; report the number of clips the
+   `code/notes/eval/dataset_inspection/rgb2d/sway_retention.md`; report the number of clips the
    clip-level `clips_dropped_2d_envelope` gate removes (expected: few — it is
    a safety net, not a filter).
 

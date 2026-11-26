@@ -10,7 +10,7 @@
 # add a --gres line -- an 'acc' slot would be wasted.
 #
 # SIZE (MEASURED 2026-11-10 on subject F001, see
-# code/notes/eval/rgb2d/build_preflight.md): 1.21 MB/frame average and
+# code/notes/eval/dataset_inspection/rgb2d/build_preflight.md): 1.21 MB/frame average and
 # 1.37 GB/session, because the stored box is the union over every stride-1 8 s
 # window of the WHOLE task (621-1036 px on a 1392x1040 source). Forecast for the
 # 1390-session corpus: ~1.9 TB of frame data, ~2.25 TB on disk -- versus 623 GB
@@ -36,7 +36,7 @@
 # on disk. `--status` should report `missing 0`. An archive that is still being
 # copied in is reported as "not readable yet" and its subject is skipped for
 # that run ONLY (nothing permanent is recorded, so a later run picks it up);
-# run notes/eval/rgb2d/zip_audit.py first if the corpus may still be arriving.
+# run notes/eval/dataset_inspection/rgb2d/zip_audit.py first if the corpus may still be arriving.
 #
 # Env-style overrides (propagated by sbatch's default --export=ALL). NOTE: every
 # one of these changes the cache KEY, so --init and --build must agree on them:

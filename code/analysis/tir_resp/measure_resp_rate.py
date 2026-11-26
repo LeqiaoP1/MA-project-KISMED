@@ -27,7 +27,7 @@ number and its source, and the ADR's reopening tolerance stays undefined. What
 arbitrates the convention is physiology, not this ratio: the dominant spectral
 peak of the trace sits at a median 14.6 bpm when read at the nominal 1000 Hz
 (100 % of sampled sessions inside 8-30 bpm) and at 5.7 bpm when read at 390 Hz
-(10.5 %). See ``notes/eval/resp/resp_artefact_build.md``. If a real
+(10.5 %). See ``notes/eval/dataset_inspection/resp/resp_artefact_build.md``. If a real
 duration of record is ever found, pass it with ``--duration_csv``.
 
 The duration source is a real choice, so it is explicit: pass ``--duration_csv``
@@ -37,7 +37,7 @@ reported with ``nan`` and counted separately — never silently dropped.
 
     python analysis/tir_resp/measure_resp_rate.py \\
         --raw_root "$RAW_DATA_PATH" \\
-        --out code/notes/eval/resp/resp_rate_spread.csv
+        --out code/notes/eval/dataset_inspection/resp/resp_rate_spread.csv
 
 CPU only. No torch, no GPU, no YAML.
 """
@@ -165,11 +165,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--raw_root', default=os.environ.get('RAW_DATA_PATH', ''))
-    p.add_argument('--out', default='code/notes/eval/resp/'
+    p.add_argument('--out', default='code/notes/eval/dataset_inspection/resp/'
                                    'resp_rate_spread.csv',
                    help='CSV destination (repo-root relative by default); the '
                         'artefact is modality-independent, so the evidence is '
-                        'filed under eval/resp, not under a visual lineage')
+                        'filed under eval/dataset_inspection/resp, not under a visual lineage')
     p.add_argument('--fps', type=float, default=DEFAULT_FPS,
                    help='nominal thermal frame rate for the timeline')
     p.add_argument('--duration_csv', default='',

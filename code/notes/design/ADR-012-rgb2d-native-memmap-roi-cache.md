@@ -23,7 +23,7 @@ Visible-light 2D texture frames (`1392 × 1040` RGB, 25 fps) in BP4D+ carry high
 1. **On-the-fly decode bottleneck.** An uncompressed 8 s clip (200 frames at `1392 × 1040`) is ~290 MB; decoding raw JPEG sequences or zipped archives (`2D+3D/<S>.zip`) on the fly during distributed training severely bottlenecks GPUs.
 2. **Why v1 prerendered `.npz` clip stacks failed.** Baking `input_size=96`, `clip_stride`, and selection thresholds into `.npz` clip stacks duplicates overlapping frames ~5.5×, forces full-corpus rebuilds on every threshold/hop change, and prevents memory-mapping (a materializing reader would re-allocate ~1.37 GB per session under DataLoader shuffling).
 3. **Modality-specific edge cases.** Unlike `IRFeatures` (`(0, 0)` sentinels), lost `2DFeatures` frames appear as empty `[]` / `NaN` records; `2D+3D` archives must never be extracted to disk; and subjects leaning near frame edges require explicit black padding with a two-level out-of-frame guard.
-4. **Modality-relative sway scale.** Measured across 1,375 paired sessions (`code/notes/eval/rgb2d/tir_rgb2d_sway_ratio.py`), 2D facial landmarks report **3.2×** the pixel excursion of TIR for identical head motion; copying TIR's 40 px gate would drop 99% of sessions.
+4. **Modality-relative sway scale.** Measured across 1,375 paired sessions (`code/notes/eval/dataset_inspection/rgb2d/tir_rgb2d_sway_ratio.py`), 2D facial landmarks report **3.2×** the pixel excursion of TIR for identical head motion; copying TIR's 40 px gate would drop 99% of sessions.
 
 ### 1.3 Requirements
 - **R1 — Distinct canonical stream name (`rgb2d`).** Register `rgb2d` separately from `rgb` so checkpoints can never pair the wrong front-end.
@@ -81,7 +81,7 @@ Per-clip `__getitem__` slices each frame's `square_span_2d` box out of the nativ
 ### 2.5 Rejected Alternatives
 - **v1 prerendered `(N_clips, 200, 96, 96, 3)` clip stacks**: Rejected because it bakes `input_size`, `clip_stride`, and selection thresholds into disk storage and duplicates overlapping frames ~5.5×.
 - **`.npz` / `.npy` shard format**: `.npz` cannot be memory-mapped without materializing multi-hundred-MB arrays; `.npy` duplicates shape/dtype headers outside the JSON commit marker.
-- **Unmeasured 15 px sway threshold (v1 draft)**: Rejected after Phase-0 measurement (`code/notes/eval/rgb2d/sway_retention.md`) showed 15 px keeps only 0.9% of windows; calibrated to 110 px via paired TIR/RGB2D ratio.
+- **Unmeasured 15 px sway threshold (v1 draft)**: Rejected after Phase-0 measurement (`code/notes/eval/dataset_inspection/rgb2d/sway_retention.md`) showed 15 px keeps only 0.9% of windows; calibrated to 110 px via paired TIR/RGB2D ratio.
 - **Reusing TIR's `(0, 0)` sentinel predicate**: Rejected because `2DFeatures` encodes lost frames as empty/NaN fields (`valid_frame_rule='finite-excluded'`).
 
 ---
@@ -93,7 +93,7 @@ Per-clip `__getitem__` slices each frame's `square_span_2d` box out of the nativ
 - **Criterion 3 (Corpus build & `--check` parity)**: `run_build_2d_roi_cache.py --status` reports zero `incomplete`/`truncated` shards and `--check N` passes chunk-wise `np.array_equal` verification.
 - **Criterion 4 (Multimodal alignment)**: Trimodal/fourstream datasets yield synchronized `{'tir': [3,T,96,96], 'rgb2d': [3,T,96,96], 'resp': [1,L]}` tensors passing `MultiModalMAE._check_space_time_alignment` and loudly rejecting mismatched spatial grids.
 
-- **Acceptance Artifacts**: `tests/test_rgb2d_cache.py`, `tests/test_trimodal_dataset.py`, `tests/test_multimae_rgb2d.py`, `code/notes/eval/rgb2d/build_preflight.md`, `code/notes/eval/rgb2d/sway_retention.md`.
+- **Acceptance Artifacts**: `tests/test_rgb2d_cache.py`, `tests/test_trimodal_dataset.py`, `tests/test_multimae_rgb2d.py`, `code/notes/eval/dataset_inspection/rgb2d/build_preflight.md`, `code/notes/eval/dataset_inspection/rgb2d/sway_retention.md`.
 
 ---
 
@@ -110,6 +110,6 @@ Per-clip `__getitem__` slices each frame's `square_span_2d` box out of the nativ
 ## 5. Reproducibility Record
 
 - **Run / Job IDs**: Implemented & verified 2026-11-10 (Phases 0–6, 592 suite tests passing); corpus built on Lichtenberg HPC via `scripts/hpc/submit_2d_roi_cache.sbatch` (`--array=0-31`).
-- **Evidence Artifacts**: `code/notes/eval/rgb2d/sway_retention.md`, `code/notes/eval/rgb2d/tir_rgb2d_sway_ratio.json`, `code/notes/eval/rgb2d/build_preflight.md`, `code/notes/eval/baselines/tir_rgb2d_resp/`.
+- **Evidence Artifacts**: `code/notes/eval/dataset_inspection/rgb2d/sway_retention.md`, `code/notes/eval/dataset_inspection/rgb2d/tir_rgb2d_sway_ratio.json`, `code/notes/eval/dataset_inspection/rgb2d/build_preflight.md`, `code/notes/eval/baselines/tir_rgb2d_resp/`.
 - **Tests / Smoke Checks**: `code/tests/test_rgb2d_cache.py`, `code/tests/test_trimodal_dataset.py`, `code/tests/test_multimae_rgb2d.py`.
 - **Rollback / Rejection Condition**: Omit `rgb2d` from `--streams` and select `data_set: tir_roi` (`ADR-007` two-stream arm); existing TIR/RESP shards and caches are completely untouched.

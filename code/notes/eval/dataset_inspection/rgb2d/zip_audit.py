@@ -13,7 +13,7 @@ Run this before a long cache build; it takes ~30 s for 140 archives because
 ``is_zipfile`` only reads the end record.
 
     cd code
-    ../.env/bin/python notes/eval/rgb2d/zip_audit.py --raw_root "$RAW_DATA_PATH"
+    ../.env/bin/python notes/eval/dataset_inspection/rgb2d/zip_audit.py --raw_root "$RAW_DATA_PATH"
 """
 from __future__ import annotations
 

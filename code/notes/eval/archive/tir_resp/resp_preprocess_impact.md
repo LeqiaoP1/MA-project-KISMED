@@ -6,7 +6,7 @@ What was measured when the respiration session artefact was implemented
 2026-11-20** as superseded — recover it with `git show 7ace300:code/notes/plan/
 RESP_session_preprocess_implementation_plan.md`; the build order of record for the
 current artefact is `plan/features/ADR-003-resp-session-cache-plan.md`, whose own evidence
-is `eval/resp/resp_artefact_build.md`). Two things are
+is `eval/dataset_inspection/resp/resp_artefact_build.md`). Two things are
 recorded: the **artefact** (what the cache contains) and what it does to the
 **corpus accounting** at the shipped 8 s / 2 s hop. No GPU was spent; the numbers
 below are dataset statistics, not model results.
@@ -187,6 +187,6 @@ the shipped Stage-3 geometry: 8 s / 2 s hop / `input_size 96` / `roi_padding
 > **Scope note (2026-11-20).** Everything in this file is about the **TIR
 > dataset's** clip accounting. The respiration session artefact itself is
 > modality-independent, so its build accounting and the source-rate investigation
-> live in `eval/resp/resp_artefact_build.md` — read that one for "what is in a
+> live in `eval/dataset_inspection/resp/resp_artefact_build.md` — read that one for "what is in a
 > shard" / "how much of the corpus is usable"; read this one for "how many TIR
 > clips survive a hop".

@@ -607,7 +607,7 @@ the *interpolation* baseline already characterises, and the next lever is then
 not the loss but the **video side**: whether the TIR ROI (mouth/nose, 64 px,
 mask 0.9) carries enough information to infer respiration at all. The measured
 pipeline fact to check first is the probe that found the cardiac pulse present
-in the facial RGB signal (`code/notes/eval/rgb_bp/FINDINGS.md`): the analogous
+in the facial RGB signal (`code/notes/eval/archive/rgb_bp/FINDINGS.md`): the analogous
 question for thermal/respiration is whether the ROI's temporal intensity tracks
 the breathing cycle (`code/notes/eval/tir_resp/FINDINGS.md`).
 

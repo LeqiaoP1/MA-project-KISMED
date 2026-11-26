@@ -218,7 +218,7 @@ otherwise leaves no epoch lines).
 | ROI square box / rescale / motion gate — build order | `code/notes/plan/features/ADR-011-landmark-roi-geometry-and-tir-cache-plan.md` |
 | respiration label contract (validity mask, per-run DC, grid) | `design/ADR-003-resp-session-cache-artefact.md` |
 | respiration label build order | `code/notes/plan/features/ADR-003-resp-session-cache-plan.md` |
-| respiration label artefact — build accounting + source-rate evidence | `eval/resp/resp_artefact_build.md` |
+| respiration label artefact — build accounting + source-rate evidence | `eval/dataset_inspection/resp/resp_artefact_build.md` |
 | respiration label artefact — TIR clip accounting + accounting delta (earlier lineage) | `eval/tir_resp/resp_preprocess_impact.md` |
 | task-tier regrouping | `code/notes/plan/features/ADR-010-bp4d-task-distortion-tiers-plan.md` |
 | k-fold rollout | `code/notes/plan/features/ADR-001-subject-kfold-plan.md` |

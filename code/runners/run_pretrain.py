@@ -230,7 +230,7 @@ def get_args():
                              'as --max_sway_px, in THIS camera\'s pixels: 110 px '
                              'here == the TIR 40 px (RGB reports 3.2x the '
                              'excursion for the same motion; see '
-                             'code/notes/eval/rgb2d/tir_rgb2d_sway_ratio.py). '
+                             'code/notes/eval/dataset_inspection/rgb2d/tir_rgb2d_sway_ratio.py). '
                              'This is a LOAD-time selection rule and never a '
                              'cache-key field.')
     parser.add_argument('--rgb2d_area_min_frac', default=0.5, type=float,

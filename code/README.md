@@ -325,7 +325,7 @@ drivers do it for you). Semantics that matter:
 
 Contract: `notes/design/ADR-003-resp-session-cache-artefact.md`; build order of
 record: `notes/plan/features/ADR-003-resp-session-cache-plan.md`; the artefact's own build
-accounting: `notes/eval/resp/resp_artefact_build.md` (the artefact is
+accounting: `notes/eval/dataset_inspection/resp/resp_artefact_build.md` (the artefact is
 modality-independent, so its evidence is not filed under a visual lineage; the TIR
 dataset's clip accounting stays in `notes/eval/archive/tir_resp/resp_preprocess_impact.md`).
 Two build-time constraints the artefact adds, both refused loudly at `--init`:

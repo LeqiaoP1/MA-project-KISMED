@@ -41,7 +41,7 @@ arterial trace** (not a cuff reading), and the visible-light face carries a
 **skin-borne, motion-independent cardiac component** (rPPG).
 
 Measured on this corpus — full detail and controls in
-`code/notes/eval/rgb_bp/FINDINGS.md`:
+`code/notes/eval/archive/rgb_bp/FINDINGS.md`:
 
 | claim | measurement |
 |---|---|
@@ -298,6 +298,6 @@ names the decision, so the gap is visible instead of implicit.
 | ROI + rescale contract (RGB port pending, W4 — satisfied for the `rgb2d` cache path 2026-11-10) | `design/ADR-011-landmark-roi-geometry-and-tir-cache.md` |
 | evaluation protocol | `design/ADR-009-resp-waveform-evaluation-protocol.md` |
 | folds | `design/ADR-001-subject-disjoint-split-and-selection.md` |
-| rPPG evidence | `code/notes/eval/rgb_bp/FINDINGS.md` |
+| rPPG evidence | `code/notes/eval/archive/rgb_bp/FINDINGS.md` |
 | throughput | `code/notes/eval/batch_size_sweep.md` |
 | generated contract | `code/notes/spec/01_data_pipeline.md`, `code/notes/spec/02_model_architecture.md`, `code/notes/spec/03_engine_and_loss.md` |

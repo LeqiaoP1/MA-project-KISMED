@@ -59,7 +59,7 @@
 > which therefore **stays `[TODO: verify]`**; respiratory physiology arbitrates
 > for the nominal rate (median spectral peak 14.6 bpm at 1000 Hz vs 5.7 bpm at
 > 390 Hz, 100 % vs 10.5 % of sessions inside 8-30 bpm). Numbers, tables and the
-> "what must not be read from this" list: `notes/eval/resp/resp_artefact_build.md`
+> "what must not be read from this" list: `notes/eval/dataset_inspection/resp/resp_artefact_build.md`
 > §"build accounting (2026-11-20)".
 
 ---
@@ -79,7 +79,7 @@
 6. Rebuilding with only a different `clip_seconds` or `clip_stride` produces byte-identical
    shards.
 7. Gates G0–G14 of §6 pass; G8 leaves a per-cause accounting table in the ADR's evidence
-   artifact, `code/notes/eval/resp/resp_artefact_build.md` (modality-neutral — the artefact
+   artifact, `code/notes/eval/dataset_inspection/resp/resp_artefact_build.md` (modality-neutral — the artefact
    serves every `resp` consumer, not the TIR dataset alone).
 
 ---
@@ -114,7 +114,7 @@ Three rules on the boundaries:
 | # | point | reading used here |
 | :--- | :--- | :--- |
 | A1 | §2.1 and §2.3 say a shard records "both rates" | read as `fs_in` (**nominal 1000**) and `fs_out`; §2.3's third bullet is explicit that the **measured** rate is not recorded. A measured `fs_in` must not enter the shard, the key or a log line that a consumer could act on. `[TODO: verify: confirm this reading with the ADR author, since §2.3 also asks for the measured rate to be recorded per session]` |
-| A2 | §2.3 keeps the reopening tolerance undefined | the measured spread is published in the ADR's evidence artifact, `code/notes/eval/resp/resp_artefact_build.md`, and never enters the artefact; the tolerance stays `[TODO: verify]` and is not invented. The measurement procedure is §5 Phase 7, step 27a. **The path moved on 2026-11-20** (it was `eval/tir_resp/resp_preprocess_impact.md`): the artefact is modality-independent, so its evidence does not belong under a visual lineage — the ADR's §5 was amended first, not bypassed, and the TIR-only clip accounting stays where it is. |
+| A2 | §2.3 keeps the reopening tolerance undefined | the measured spread is published in the ADR's evidence artifact, `code/notes/eval/dataset_inspection/resp/resp_artefact_build.md`, and never enters the artefact; the tolerance stays `[TODO: verify]` and is not invented. The measurement procedure is §5 Phase 7, step 27a. **The path moved on 2026-11-20** (it was `eval/tir_resp/resp_preprocess_impact.md`): the artefact is modality-independent, so its evidence does not belong under a visual lineage — the ADR's §5 was amended first, not bypassed, and the TIR-only clip accounting stays where it is. |
 | A3 | §2.1 lists causes as "rail, flatline, run too short, non-finite" without precedence | precedence is fixed as **non-finite → rail → flatline → short run**, first match wins, so a sample inside two rules still has one cause. Documented in `resp_preprocess`'s docstring and asserted in G1a. |
 | A4 | §2.6 fixes the filter only indirectly ("anti-alias resample") and lists neither `resample` nor `store` | both are **additive identity fields**, declared here as a deliberate extension: they change stored bytes, and §2.6 requires the artefact to record the quantities it is built under. The record is `resample: {kind, taps_per_phase, up, down, kernel_radius_src}` plus `store`; see A7. Changing either is a new artefact. |
 | A5 | §2.6 does not name a default `fs_out` | `--fs_out` is a required build parameter with a documented default (`100`), recorded in every shard; a consumer's `--fs` must equal it or the run aborts (G10). |
@@ -365,7 +365,7 @@ removes the sample from the score instead of contributing a residual.
 
 26. Build a small subset (`--limit`), then the full corpus (single process, minutes, no GPU),
     then `--status`, `--index`, `--check 20`.
-27. Publish, in the ADR's evidence artifact `code/notes/eval/resp/resp_artefact_build.md`
+27. Publish, in the ADR's evidence artifact `code/notes/eval/dataset_inspection/resp/resp_artefact_build.md`
     (modality-neutral; appended to as builds land, never overwritten): shards written, skips by
     reason, per-cause invalid share, `valid_frac` distribution, the sessions with
     `valid_frac == 0`, and **the measured-rate spread** of step 27a — recorded in the note,
@@ -373,7 +373,7 @@ removes the sample from the score instead of contributing a residual.
 27a. **Measure the source rate (provenance only).** `analysis/tir_resp/measure_resp_rate.py`
      computes `f_meas = N_src / duration_s` per session from the raw sample count and the paired
      thermal timeline of the same session (`duration_s = num_frames / fps`) and writes
-     `code/notes/eval/resp/resp_rate_spread.csv` (`session, n_src, duration_s, f_meas`) plus
+     `code/notes/eval/dataset_inspection/resp/resp_rate_spread.csv` (`session, n_src, duration_s, f_meas`) plus
      min / median / IQR / max. It runs on CPU, reads raw files only, is **never** invoked by
      `--build`, and writes nothing into the artefact — which is what keeps phases 1–2 pure and
      keeps `fs_in` nominal (A1). `[TODO: verify: confirm that the thermal frame count at nominal
@@ -482,7 +482,7 @@ python runners/run_build_resp_cache.py --check 20 \
 
 # 0b. provenance only (never enters the artefact, never called by --build)
 python analysis/tir_resp/measure_resp_rate.py --raw_root "$RAW_DATA_PATH" \
-    --out code/notes/eval/resp/resp_rate_spread.csv   # repo-root-relative
+    --out code/notes/eval/dataset_inspection/resp/resp_rate_spread.csv   # repo-root-relative
 
 # 1. consumer smoke, single process, one clip cap
 RESP_CACHE="$WORK_SCRATCH/resp_cache" bash scripts/local/waveform_local.sh --max_clips 16
@@ -506,8 +506,8 @@ cd code && ../.env/bin/python -m pytest -q tests/test_resp_*.py
 | `code/notes/spec/01_data_pipeline.md` | new artefact section: validity mask replaces per-window filtering; layout; grid arithmetic |
 | `code/notes/spec/04_configs_and_execution.md` | `rail_touch_v` row → "not on the respiration artefact path"; add `--resp_cache` / `--fs_out` |
 | `code/notes/GLOSSARY.md` §8 | canonical key fields; `resp_fs == fs_out` rule |
-| `code/notes/eval/resp/resp_artefact_build.md` | **the artefact's own record** (modality-neutral): build accounting, per-cause invalid share, measured-rate spread (A2) |
-| `code/notes/eval/resp/resp_rate_spread.csv` | **new**: per-session `N_src`, `duration_s`, `f_meas` from step 27a |
+| `code/notes/eval/dataset_inspection/resp/resp_artefact_build.md` | **the artefact's own record** (modality-neutral): build accounting, per-cause invalid share, measured-rate spread (A2) |
+| `code/notes/eval/dataset_inspection/resp/resp_rate_spread.csv` | **new**: per-session `N_src`, `duration_s`, `f_meas` from step 27a |
 | `code/notes/eval/archive/tir_resp/resp_preprocess_impact.md` | unchanged in content — it holds the **TIR dataset's** clip accounting, which depends on that dataset's hop and geometry |
 | `code/README.md` | data section: `--resp_cache`, clip-length bound, identity refusal |
 

@@ -49,7 +49,7 @@ FACE_LANDMARKS = tuple(range(1, rrd.NUM_LANDMARKS_2D + 1))
 #: RGB reports 3.2x the TIR excursion for the same head motion, so the TIR
 #: module's 40 px corresponds to ~110 px here (retention-matched; pure scale
 #: matching gives 128 px). Measured on 1375 sessions / 7005 paired windows --
-#: ``code/notes/eval/rgb2d/tir_rgb2d_sway_ratio.py``. Do NOT copy one number to
+#: ``code/notes/eval/dataset_inspection/rgb2d/tir_rgb2d_sway_ratio.py``. Do NOT copy one number to
 #: the other modality: 40 px here would reject a third of the 2D clips.
 DEFAULT_RGB2D_MAX_SWAY_PX = 110.0
 

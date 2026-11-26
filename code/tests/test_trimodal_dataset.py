@@ -294,7 +294,7 @@ def test_declared_streams_must_include_rgb2d(built):
 def test_motion_gates_are_the_measured_pair():
     """``rgb2d`` 110 px is the conversion of TIR's 40 px, not a copy.
 
-    Both are measured (`code/notes/eval/rgb2d/sway_retention.md`,
+    Both are measured (`code/notes/eval/dataset_inspection/rgb2d/sway_retention.md`,
     `tir_rgb2d_sway_ratio.py`). The library default and the shipped config must
     agree, otherwise a change to one silently leaves the other stale -- the
     config overrides the default, so the two never contradict each other at

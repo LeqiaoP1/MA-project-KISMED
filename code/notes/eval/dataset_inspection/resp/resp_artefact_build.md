@@ -64,7 +64,7 @@ validity.
 ## 4. Measured source rate — the ADR's open question, answered negatively
 
 Step 27a of the plan; per-session table:
-`code/notes/eval/resp/resp_rate_spread.csv`. Measurement:
+`code/notes/eval/dataset_inspection/resp/resp_rate_spread.csv`. Measurement:
 `f_meas = N_src / duration_s` with `duration_s` taken from the paired thermal
 video's **metadata** (`num_frames / fps`, no pixel decode).
 

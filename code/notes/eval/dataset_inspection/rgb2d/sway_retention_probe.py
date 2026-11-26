@@ -23,10 +23,10 @@ box_side  = max(sway_x, sway_y) * (1 + 2 * padding)   (the square the cache
 Usage
 -----
     cd code
-    ../.env/bin/python notes/eval/rgb2d/sway_retention_probe.py \
+    ../.env/bin/python notes/eval/dataset_inspection/rgb2d/sway_retention_probe.py \
         --raw_root "$RAW_DATA_PATH" --limit 200
 
-Writes ``code/notes/eval/rgb2d/sway_retention.json`` next to this file.
+Writes ``code/notes/eval/dataset_inspection/rgb2d/sway_retention.json`` next to this file.
 """
 from __future__ import annotations
 
@@ -39,8 +39,8 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-CODE_DIR = os.path.dirname(os.path.dirname(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+CODE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 if CODE_DIR not in sys.path:
     sys.path.insert(0, CODE_DIR)
 
