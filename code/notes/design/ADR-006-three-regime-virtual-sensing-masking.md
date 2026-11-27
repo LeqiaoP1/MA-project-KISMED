@@ -186,7 +186,7 @@ A run whose records cannot answer §3.1 has not executed this decision, however 
 | `p_single_modality` | $p_{s,\text{target}}$ | float | 0.20 | $[0,1]$ | single-carrier probability *within* the sensor-absent class, Phase II |
 | `single_modality_warmup_p` | $p_{s,\text{warm}}$ | float | 0.00 | $[0, p_{s,\text{target}}]$ | as above, Phase I |
 | `virtual_sensing_warmup_epochs` | $E_{\text{warm}}$ | int | 50 | $[0,\text{epochs}]$ | leading epochs at the warm-up probabilities; `0` disables |
-| `physio_placement` | — | enum | `scattered` | `scattered`, `span` | 1-D placement policy |
+| `physio_placement` | — | enum | `scattered` | `scattered`, `span` (plus `masked_span` from `ADR-017`) | 1-D placement policy |
 | `physio_span_tokens` | — | int | 0 | required iff `span` | span length |
 | `spatial_patches` | $\text{units}_v$ | int | 36 | must equal the tube count | assertion, not a knob |
 | `physio_tokens` | $\text{units}_{1d}$ | int | 250 | must equal the signal-token count | assertion, not a knob |

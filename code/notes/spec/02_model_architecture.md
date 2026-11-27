@@ -201,6 +201,8 @@ Step 2 — Constant-budget masking (ADR-005, core/budget_masking.py):
                                                       # contract 4 label
   ids_keep[s] = place_video/place_signal(plan.kept_tokens[s],
                      placement_generator)           # [B, k_s], per-sample
+                                                      # ADR-017: mode='masked_span'
+                                                      # hides bounded MASKED runs
   mask_s = 1 - scatter(ids_keep[s])                   # [B, N_s], 1 = masked
 
 Step 3 — Concatenate visible encoder-stream tokens:

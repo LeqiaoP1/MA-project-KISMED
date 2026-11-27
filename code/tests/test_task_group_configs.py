@@ -49,6 +49,7 @@ TIR_ROI_CONFIGS = [
     'configs/pretrain/stage2_budget_3regime_single_modality.yaml',
     'configs/pretrain/stage2_budget_tir_resp_2stream_anatomy.yaml',
     'configs/pretrain/stage2_budget_tir_resp_2stream_anatomy_adr008.yaml',
+    'configs/pretrain/stage2_budget_tir_resp_2stream_anatomy_adr017.yaml',
     'configs/pretrain/stage2_fourstream_tir_rgb2d_bp_resp_small_random.yaml',
     'configs/finetune/resp_tir_roi_local.yaml',
     'configs/finetune/resp_tir_roi_local_matched.yaml',

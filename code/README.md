@@ -519,8 +519,13 @@ scattered (`scattered`, the default) or contiguous blocks (`span`, length via
 `--physio_span_tokens`, exact count preserved). Span placement removes the
 "interpolate the gap from its visible neighbours" shortcut that makes a
 scattered mask on an oversampled band-limited stream solvable with zero video
-information (`code/notes/design/archive/SpanMask_PhysioSignals.md` §1-§2). The resolved
-decision is printed at model build together with the policy parameters, and
+information (`code/notes/design/archive/SpanMask_PhysioSignals.md` §1-§2).
+`masked_span` (ADR-017) inverts the control: the MASKED tokens form
+`--physio_gap_min_tokens..--physio_gap_max_tokens` contiguous runs, so every
+gap is too long to interpolate and the encoder has to supply the waveform. Its
+counts, modes and encoder shape are unchanged, and the feasibility of the
+bounds is checked at model build against the counts the apportioner can draw.
+The resolved decision is printed at model build together with the policy parameters, and
 `python -m core.multimae` self-tests the invariants (constant encoder length,
 batch-uniform counts, and the Mode-1 gradient path to the encoder).
 

@@ -61,6 +61,8 @@ video_min_tubes: 2
 p_virtual_sensing: 0.50
 physio_placement: scattered
 physio_span_tokens: 0
+physio_gap_min_tokens: 0        # ADR-017: required >= 1 iff placement masked_span
+physio_gap_max_tokens: 0        # ADR-017: <= seq_len / sig_kernel
 signal_weight: 0.50
 ```
 

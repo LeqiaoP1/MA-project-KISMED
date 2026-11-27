@@ -92,7 +92,8 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local.yaml [--override
 | `seq_len` | int | Signal samples; 0 = `clip_duration * fs` |
 | `pos_init` | str | `sincos3d` or `random` |
 | `n_budget` / `video_cap_ratio` / `physio_cap_ratio` | int / float / float | ADR-002 constant-budget masking: visible tokens per step and per-stream caps |
-| `video_min_tubes` / `p_virtual_sensing` / `physio_placement` / `physio_span_tokens` | int / float / str / int | ADR-002 floor, Mode-1 probability, 1-D placement and span length |
+| `video_min_tubes` / `p_virtual_sensing` / `physio_placement` / `physio_span_tokens` | int / float / str / int | ADR-002 floor, Mode-1 probability, 1-D placement (`scattered` / `span` / `masked_span`) and span length |
+| `physio_gap_min_tokens` / `physio_gap_max_tokens` | int / int | ADR-017 `g_min` / `g_max`: the shortest and longest MASKED run in tokens. Required `>= 1` and `<= seq_len / sig_kernel` iff `physio_placement: masked_span`, else `0` |
 | `spatial_patches` / `physio_tokens` | int | Tokenizer-derived unit counts; passed only to ASSERT identity |
 | `signal_weight` | float | Loss weight for every physio stream (visual streams stay 1.0). This knob IS ADR-008's `lambda_resp` (arm value `5.0`) |
 | `resp_loss_mse_weight` / `resp_loss_pearson_weight` / `resp_loss_spectral_weight` | float | ADR-008 `alpha` / `beta` / `gamma` of the composite respiration objective; neutral defaults `1.0` / `0.0` / `0.0` build NO extra module |

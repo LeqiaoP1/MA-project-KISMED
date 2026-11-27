@@ -107,7 +107,9 @@ the ADR-002 arm).
   cap in tubes IS the Mode-1 allocation `n_budget / T`; see below.
 - **Placement** (`core/mask_placement.py`): which units survive, drawn per
   SAMPLE — `scattered` (uniform without replacement, default), `span`
-  (contiguous blocks of `physio_span_tokens`), or — under ADR-007 —
+  (contiguous KEPT blocks of `physio_span_tokens`), `masked_span` (ADR-017:
+  contiguous MASKED runs of `physio_gap_min_tokens..physio_gap_max_tokens`
+  tokens, separated by at least one kept token), or — under ADR-007 —
   `anatomy_aware` (`place_video_stratified`, stratified core + periphery).
   Counts are batch-uniform, placements are not.
 - **ADR-007 one-visual policy** (`streams: tir,resp`, `n_budget = 200`,

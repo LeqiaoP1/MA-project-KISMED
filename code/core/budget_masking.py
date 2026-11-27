@@ -1114,6 +1114,99 @@ class ConstantBudgetApportioner:
         s_core = self._randint(self.core_tubes_min, self.core_tubes_max, g)
         return {name: int(s_core)}, {name: int(s_tir) - int(s_core)}
 
+    def mode2_counts(self, stream: str) -> Tuple[int, ...]:
+        """Kept counts a Mode-2 step can draw for ONE physiological stream.
+
+        ADR-017 D4: the placement feasibility check must follow the policy
+        rather than a transcribed set. This enumerates the draw's support
+        (``Uniform{physio_draw_min .. C_p}``) through the SAME alignment the
+        sampler applies — no random number is consumed — so the set moves with
+        ``n_budget``, ``tokens_per_unit`` and ``physio_cap_ratio`` instead of
+        being copied into a test or a config comment.
+
+        ``0`` is dropped: an aligned total of zero is the sensor-absent
+        fall-through of §2.5, i.e. Mode 1, not a Mode-2 count.
+
+        Only a single-physiological-stream apportioner can answer this. With
+        two signal streams the alignment remainder is shared between them (the
+        two-stream alignment is pinned by ``tests/test_budget_masking.py``), so
+        a per-stream count set has no unique answer; ADR-017 §1.1 scopes the
+        placement to one token axis anyway.
+
+        :param stream: the declared physiological stream name.
+        :return: the admissible kept counts, ascending and unique.
+        :raises ValueError: unknown stream, or two declared signal streams.
+        """
+        if len(self.signal) != 1:
+            raise ValueError(
+                'ConstantBudgetApportioner.mode2_counts: the Mode-2 count set '
+                'is defined for ONE physiological stream only; got '
+                f'{[s.name for s in self.signal]}. The tube-modulus remainder '
+                'is shared between streams, so a per-stream set would be '
+                'ambiguous (ADR-017 §1.1).')
+        name = self.signal[0].name
+        if str(stream) != name:
+            raise ValueError(
+                f'ConstantBudgetApportioner.mode2_counts: {stream!r} is not '
+                f'the declared physiological stream ({name!r}).')
+        seen = set()
+        for draw in range(self.physio_draw_min,
+                          self.physio_cap_tokens[name] + 1):
+            kept = int(self._align_physiological({name: draw})[name])
+            if kept > 0:
+                seen.add(kept)
+        return tuple(sorted(seen))
+
+    def _align_physiological(self, raw: Dict[str, int]) -> Dict[str, int]:
+        """Snap a raw per-stream draw onto the tube modulus (ADR-002 §2, G14).
+
+        Pure arithmetic, no random draw, so :meth:`mode2_counts` can enumerate
+        every count the Mode-2 draw can produce without disturbing the RNG
+        stream (ADR-017 D4). The downward branch ``K_tilde - (T - r)`` is part
+        of the snap and must stay here: a caller that re-implemented only the
+        upward branch would disagree with the sampler.
+
+        :param raw: drawn physiological counts per stream (not modified).
+        :return: the aligned counts, as a new dict.
+        """
+        t = self.tokens_per_unit
+        aligned = {s.name: int(raw[s.name]) for s in self.signal}
+        # alignment: charge the modulo remainder to the first declared
+        # physiological stream that can absorb it (ADR-002 §2, G14)
+        remainder = (self.n_budget - sum(aligned.values())) % t
+        if remainder:
+            for s in self.signal:
+                if (aligned[s.name] + remainder
+                        <= self.physio_cap_tokens[s.name]):
+                    aligned[s.name] += remainder
+                    remainder = 0
+                    break
+        if remainder:
+            # ADR-007 §2.5: the downward branch ``K_tilde - (T - r)``. Its count
+            # is NEVER clamped here: mutating it would break the modulo
+            # alignment the caller asserts. With the ADR-007 draw floor
+            # (``physio_draw_min >= 1``) a result below T is impossible for a
+            # single signal — the floor is >= 1, ``C_p >= T`` is validated, and
+            # the upward branch is preferred whenever it fits — so the check
+            # below is an assertion, not a correction.
+            first = self.signal[0].name
+            aligned[first] -= t - remainder
+            if aligned[first] < 0:
+                raise RuntimeError(
+                    f'ConstantBudgetApportioner: alignment remainder '
+                    f'{remainder} cannot be absorbed — {first!r} would fall to '
+                    f'{aligned[first]}. Feasibility condition 3 should have '
+                    f'rejected this tuple.')
+            if (self.physio_draw_min >= 1 and len(self.signal) == 1
+                    and aligned[first] < t):
+                raise RuntimeError(
+                    f'ConstantBudgetApportioner: the ADR-007 draw floor cannot '
+                    f'land below T={t} on a sole physiological stream, yet '
+                    f'{first!r} aligned to {aligned[first]}. ``_validate`` '
+                    f'enforces C_p >= T for physio_draw_min > 0, so this is a '
+                    f'bug in the alignment, not a configuration error.')
+        return aligned
+
     def _mode2(self, g, epoch: Optional[int] = None) -> BudgetPlan:
         """Waveform inpainting: physiological draws, tube-aligned residual.
 
@@ -1128,40 +1221,7 @@ class ConstantBudgetApportioner:
             s.name: self._randint(self.physio_draw_min,
                                   self.physio_cap_tokens[s.name], g)
             for s in self.signal}
-
-        # alignment: charge the modulo remainder to the first declared
-        # physiological stream that can absorb it (ADR-002 §2, G14)
-        remainder = (self.n_budget - sum(raw.values())) % t
-        if remainder:
-            for s in self.signal:
-                if raw[s.name] + remainder <= self.physio_cap_tokens[s.name]:
-                    raw[s.name] += remainder
-                    remainder = 0
-                    break
-        if remainder:
-            # ADR-007 §2.5: the downward branch ``K_tilde - (T - r)``. Its count
-            # is NEVER clamped here: mutating it would break the modulo
-            # alignment the next block asserts. With the ADR-007 draw floor
-            # (``physio_draw_min >= 1``) a result below T is impossible for a
-            # single signal — the floor is >= 1, ``C_p >= T`` is validated, and
-            # the upward branch is preferred whenever it fits — so the check
-            # below is an assertion, not a correction.
-            first = self.signal[0].name
-            raw[first] -= t - remainder
-            if raw[first] < 0:
-                raise RuntimeError(
-                    f'ConstantBudgetApportioner: alignment remainder '
-                    f'{remainder} cannot be absorbed — {first!r} would fall to '
-                    f'{raw[first]}. Feasibility condition 3 should have '
-                    f'rejected this tuple.')
-            if (self.physio_draw_min >= 1 and len(self.signal) == 1
-                    and raw[first] < t):
-                raise RuntimeError(
-                    f'ConstantBudgetApportioner: the ADR-007 draw floor cannot '
-                    f'land below T={t} on a sole physiological stream, yet '
-                    f'{first!r} aligned to {raw[first]}. ``_validate`` '
-                    f'enforces C_p >= T for physio_draw_min > 0, so this is a '
-                    f'bug in the alignment, not a configuration error.')
+        raw = self._align_physiological(raw)
 
         # ADR-006 §2.3 contract 4 / §2.5: an aligned total of zero is a
         # SENSOR-ABSENT step, not an inpainting one — it falls through to the

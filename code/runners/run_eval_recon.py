@@ -59,8 +59,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np                                      # noqa: E402
 import torch                                            # noqa: E402
+from core.mask_placement import validate_physio_placement  # noqa: E402
 from core.multimae import build_pretraining_model        # noqa: E402
 from runners.run_visualize_pretrain import _held_out_subjects  # noqa: E402
+
+
+#: ADR-017 no-video floor predictors scored when ``--interp_baseline`` is set.
+#: Averaged over the repeats ONCE (see the loop), unlike the pre-ADR-017 keys.
+_BASE_KEYS = ('mse_interp', 'r_masked_interp', 'mse_const')
 
 
 # --------------------------------------------------------------------------- #
@@ -141,13 +147,31 @@ def get_args(argv=None):
                         'the visual budget of a 4-stream checkpoint (P0-E). '
                         'Inert for checkpoints without a bp stream.')
     p.add_argument('--resp_probe', default='span',
-                   choices=('span', 'random', 'hidden'),
+                   choices=('span', 'random', 'hidden', 'masked_span'),
                    help="how the waveform is hidden. 'random' keeps "
                         '--kept_resp scattered (the training condition: locally '
                         'interpolatable, r~0.998); \'span\' keeps the same '
                         'budget but as ONE contiguous block (not '
                         "interpolatable -- the informative probe); 'hidden' "
-                        'masks it completely (no cross-modal prior at all).')
+                        'masks it completely (no cross-modal prior at all); '
+                        "'masked_span' reproduces ADR-017: bounded contiguous "
+                        'MASKED gaps, read from the checkpoint record by '
+                        'default.')
+    p.add_argument('--gap_min_tokens', default=-1, type=int,
+                   help='--resp_probe masked_span: override g_min in tokens. '
+                        'Default -1 = use the checkpoint\'s recorded '
+                        'physio_gap_min_tokens (the matched probe, ADR-017 R7).')
+    p.add_argument('--gap_max_tokens', default=-1, type=int,
+                   help='--resp_probe masked_span: override g_max in tokens. '
+                        'Default -1 = use the checkpoint\'s recorded '
+                        'physio_gap_max_tokens.')
+    p.add_argument('--interp_baseline', action='store_true', default=False,
+                   help='also score the NO-VIDEO baselines on the SAME masks: '
+                        'linear interpolation (np.interp over the visible '
+                        'samples, constant-clamped at the clip edges) and the '
+                        'constant-zero predictor. ADR-017 Criterion 3a needs '
+                        'the pair; 3b\'s paired contrast is only readable '
+                        'next to the constant.')
     p.add_argument('--span_seconds', default=4.0, type=float,
                    help='--resp_probe span: block length in seconds (converted '
                         'to whole signal tokens with the checkpoint geometry)')
@@ -357,15 +381,64 @@ def pin_masking(model, a):
             counts, kept_core=(None if int(getattr(a, 'pin_core_tubes', -1)) < 0
                                else int(a.pin_core_tubes)))
 
-    # 1-D placement: contiguous spans remove the interpolate-from-neighbours
-    # shortcut, which is the informative probe; the span length is a RUN setting
-    # expressed in tokens (never a hidden default).
+    # 1-D placement: contiguous runs of KEPT tokens ('span') or of MASKED tokens
+    # ('masked_span') remove the interpolate-from-neighbours shortcut, which is
+    # what makes the probe informative. Every length is a RUN setting expressed
+    # in tokens (never a hidden default), and every INACTIVE attribute is
+    # zeroed: a checkpoint trained with 'span'/'masked_span' carries non-zero
+    # values in its recorded args, which would trip ADR-017's symmetric
+    # exclusivity check under another probe mode.
     if a.resp_probe == 'span':
         model.physio_placement = 'span'
         model.physio_span_tokens = max(
             1, int(round(float(a.span_seconds) * model.fs / model.sig_kernel)))
+        model.physio_gap_min_tokens = 0
+        model.physio_gap_max_tokens = 0
+    elif a.resp_probe == 'masked_span':
+        model.physio_placement = 'masked_span'
+        model.physio_span_tokens = 0
+        # ADR-017 R7: reproduce the TRAINING gap rule from the checkpoint
+        # record unless the caller overrides it explicitly.
+        _rec_g_min = int(getattr(model, 'physio_gap_min_tokens', 0) or 0)
+        _rec_g_max = int(getattr(model, 'physio_gap_max_tokens', 0) or 0)
+        if ((int(a.gap_min_tokens) < 0 and _rec_g_min < 1)
+                or (int(a.gap_max_tokens) < 0 and _rec_g_max < 1)):
+            raise SystemExit(
+                '[eval] --resp_probe masked_span: this checkpoint records no '
+                'gap bounds (it was not trained with masked_span). Pass BOTH '
+                '--gap_min_tokens and --gap_max_tokens explicitly, or probe '
+                'with another --resp_probe.')
+        model.physio_gap_min_tokens = (int(a.gap_min_tokens)
+                                       if int(a.gap_min_tokens) >= 0
+                                       else _rec_g_min)
+        model.physio_gap_max_tokens = (int(a.gap_max_tokens)
+                                       if int(a.gap_max_tokens) >= 0
+                                       else _rec_g_max)
+        # The probe pins --kept_resp, which is NOT restricted to the
+        # apportioner's Mode-2 set, so only the PINNED count is checked; the
+        # arm's own counts are passed as candidates so the refusal still names
+        # counts these bounds WOULD tile (ADR-017 R6).
+        if len(model.signal) != 1:
+            raise SystemExit(
+                '[eval] --resp_probe masked_span needs exactly one '
+                f'physiological stream (ADR-017 §1.1); this checkpoint '
+                f'declares {model.signal}.')
+        _sig = model.signal[0]
+        _arm_counts = tuple(model.apportioner.mode2_counts(_sig))
+        _pinned = int(counts.get(_sig, 0))
+        validate_physio_placement(
+            mode=model.physio_placement, n_tokens=model.physio_tokens,
+            span_tokens=model.physio_span_tokens,
+            gap_min_tokens=model.physio_gap_min_tokens,
+            gap_max_tokens=model.physio_gap_max_tokens,
+            n_streams=len(model.signal),
+            kept_counts=(_pinned,) if _pinned > 0 else (),
+            candidate_counts=_arm_counts)
     else:
         model.physio_placement = 'scattered'
+        model.physio_span_tokens = 0
+        model.physio_gap_min_tokens = 0
+        model.physio_gap_max_tokens = 0
 
     def _caption_budget(plan) -> str:
         return ('budget=EXEMPT (visual stream fully visible)'
@@ -378,6 +451,9 @@ def pin_masking(model, a):
                + f'  placement={model.physio_placement}')
     if a.resp_probe == 'span':
         caption += f' (span {model.physio_span_tokens} tokens)'
+    elif a.resp_probe == 'masked_span':
+        caption += (f' (gaps {model.physio_gap_min_tokens}..'
+                    f'{model.physio_gap_max_tokens} tokens)')
     if getattr(plan, 'regime', None) == 'single':
         caption += f'  regime=single carrier={plan.carrier}'
     # ADR-007 §2.9: name the spatial policy and the realized split, so a figure
@@ -469,9 +545,52 @@ def _pretext_fields(p_m: np.ndarray, t_m: np.ndarray, pretext: Dict) -> Dict:
             'peak_hat_hz': f_hat, 'peak_y_hz': f_y, 'peak_err_bpm': err}
 
 
+def _interp_from_visible(values: np.ndarray,
+                         mask: np.ndarray) -> np.ndarray:
+    """Linear interpolation over the MASKED samples of one 1-D sequence.
+
+    Uses only VISIBLE samples, so this is the no-video floor predictor of
+    ADR-017 Criterion 3a. ``np.interp`` constant-clamps outside the range of
+    the visible indices, which is what an edge gap needs: ADR-017 §2.1 lets a
+    gap touch the clip start (``b_0 = 0``) or end (``b_n = 0``).
+    """
+    values = np.asarray(values, dtype=np.float64).reshape(-1)
+    visible = ~np.asarray(mask, dtype=bool).reshape(-1)
+    if not visible.any():
+        return np.zeros_like(values)
+    x = np.arange(values.size)
+    return np.interp(x, x[visible], values[visible])
+
+
+def _baseline_fields(target_flat: np.ndarray, mask_samples: np.ndarray) -> Dict:
+    """No-video floor predictors on the SAME masked positions (3a / 3b).
+
+    ``interp`` uses only visible target samples; ``const`` is the constant-zero
+    predictor, i.e. the per-clip MEAN once the pipeline's per-clip z-score has
+    been applied (so its MSE is the masked variance, ~1.0 for a unit-variance
+    target — the reference P3 quotes).
+    """
+    if not mask_samples.any():
+        return {'mse_interp': float('nan'), 'r_masked_interp': float('nan'),
+                'mse_const': float('nan')}
+    interp = _interp_from_visible(target_flat, mask_samples)
+    truth = target_flat[mask_samples]
+    return {
+        'mse_interp': float(((interp[mask_samples] - truth) ** 2).mean()),
+        'r_masked_interp': _pearson(interp[mask_samples], truth),
+        'mse_const': float((truth ** 2).mean()),
+    }
+
+
 def score_batch(out: Dict, batch: Dict, sig_kernel: int,
-                pretext: Optional[Dict] = None) -> List[Dict]:
-    """Per-clip metrics for the resp stream of one batch."""
+                pretext: Optional[Dict] = None,
+                baseline: bool = False) -> List[Dict]:
+    """Per-clip metrics for the resp stream of one batch.
+
+    :param baseline: also score the no-video floor predictors (linear
+        interpolation and constant zero) on the same masks, for ADR-017
+        Criteria 3a/3b.
+    """
     pred = out['preds']['resp'].detach().float().cpu().numpy()
     target = (batch['resp'].detach().float().cpu()
               .reshape(pred.shape[0], -1, sig_kernel).numpy())
@@ -481,15 +600,19 @@ def score_batch(out: Dict, batch: Dict, sig_kernel: int,
     for b in range(B):
         m = mask[b]
         if m.sum() == 0:                       # 100 % visible: nothing to score
-            rows.append({'n_masked': 0, 'mse': float('nan'),
-                         'mae': float('nan'), 'rmse': float('nan'),
-                         'r_masked': float('nan'), 'r_full': float('nan')})
+            row = {'n_masked': 0, 'mse': float('nan'),
+                   'mae': float('nan'), 'rmse': float('nan'),
+                   'r_masked': float('nan'), 'r_full': float('nan')}
+            if baseline:
+                row.update(_baseline_fields(
+                    target[b].reshape(-1), np.repeat(m, sig_kernel)))
+            rows.append(row)
             continue
         p_m = pred[b][m].reshape(-1)
         t_m = target[b][m].reshape(-1)
         d = p_m - t_m
         assembled = np.where(m[:, None], pred[b], target[b]).reshape(-1)
-        rows.append({
+        row = {
             'n_masked': int(m.sum() * sig_kernel),
             'mse': float((d * d).mean()),
             'mae': float(np.abs(d).mean()),
@@ -497,7 +620,11 @@ def score_batch(out: Dict, batch: Dict, sig_kernel: int,
             'r_masked': _pearson(p_m, t_m),
             'r_full': _pearson(assembled, target[b].reshape(-1)),
             **(_pretext_fields(p_m, t_m, pretext) if pretext else {}),
-        })
+        }
+        if baseline:
+            row.update(_baseline_fields(
+                target[b].reshape(-1), np.repeat(m, sig_kernel)))
+        rows.append(row)
     return rows
 
 
@@ -654,6 +781,9 @@ def main(argv=None):
 
     # ---- loop -------------------------------------------------------------
     per_clip: List[Dict] = []
+    # ADR-017: per-clip lists of the baseline draws, averaged once after the
+    # repeat loop (the pairwise nanmean used for the other keys is weighted).
+    base_draws: List[Dict[str, List[float]]] = []
     B = int(a.batch_size)
     preloaded = [ds[i] for i in idx] if a.preload else None
     if preloaded is not None:
@@ -679,7 +809,8 @@ def main(argv=None):
             gen = torch.Generator().manual_seed(int(a.seed) + rep)
             with torch.inference_mode():
                 out = model(batch, plan=plan, placement_generator=gen)
-            rows = score_batch(out, batch, model.sig_kernel, pretext=pretext)
+            rows = score_batch(out, batch, model.sig_kernel, pretext=pretext,
+                               baseline=bool(a.interp_baseline))
             for row, i in zip(rows, chunk):
                 entry = ds.entries[i]
                 row['subject'] = str(entry.get('subject', ''))
@@ -689,6 +820,8 @@ def main(argv=None):
         # average the clip over its draws FIRST, then aggregate over clips
         if rep == 0:
             per_clip = [dict(r) for r in rep_rows]
+            base_draws = [{k: [r[k]] for k in _BASE_KEYS if k in r}
+                          for r in rep_rows]
         else:
             for acc, r in zip(per_clip, rep_rows):
                 for k in ('mse', 'mae', 'rmse', 'r_masked', 'r_full'):
@@ -696,13 +829,29 @@ def main(argv=None):
                 for k in ('var_hat', 'peak_err_bpm'):
                     if k in acc and k in r:
                         acc[k] = float(np.nanmean([acc[k], r[k]]))
+            # ADR-017 baselines: accumulate the draws and average ONCE after
+            # the loop. The pairwise nanmean above is exponentially weighted;
+            # it is kept for the pre-ADR-017 keys so archived reports
+            # reproduce, but the new keys get a true unweighted mean.
+            for j, r in enumerate(rep_rows):
+                for k in _BASE_KEYS:
+                    if k in r and k in base_draws[j]:
+                        base_draws[j][k].append(r[k])
         print(f'[eval] rep {rep + 1}/{a.repeats}: '
               f'r_masked mean {np.nanmean([r["r_masked"] for r in rep_rows]):+.4f}'
               f'  mse {np.nanmean([r["mse"] for r in rep_rows]):.5f}')
 
+    # true (unweighted) mean over the repeats for the ADR-017 baselines
+    for _j, _draws in enumerate(base_draws):
+        for _k, _vals in _draws.items():
+            per_clip[_j][_k] = float(np.nanmean(_vals))
+
     # ---- aggregate --------------------------------------------------------
     summary = {k: mean_std([r[k] for r in per_clip])
                for k in ('mse', 'mae', 'rmse', 'r_masked', 'r_full')}
+    if a.interp_baseline:
+        for k in _BASE_KEYS:
+            summary[k] = mean_std([r[k] for r in per_clip if k in r])
     if pretext is not None:
         for k in ('var_hat', 'peak_err_bpm'):
             summary[k] = mean_std([r[k] for r in per_clip if k in r])
@@ -718,6 +867,16 @@ def main(argv=None):
         s = summary[k]
         print(f'  {k:9s} mean {s["mean"]:+.4f}  median {s["median"]:+.4f} '
               f'sd {s["std"]:.4f}  (n={s["n"]})')
+    if a.interp_baseline:
+        # ADR-017 Criterion 3a/3b: the no-video floor, on the SAME masks.
+        _bi, _br = summary['mse_interp'], summary['r_masked_interp']
+        _bc = summary['mse_const']
+        print(f'  interp    mse {_bi["mean"]:.5f}  r_masked '
+              f'{_br["mean"]:+.4f}   (visible samples only)')
+        print(f'  const     mse {_bc["mean"]:.5f}   (constant zero = per-clip'
+              ' mean in z units)')
+        print('            3a passes when interp is WORSE than const under '
+              'masked_span, and far better under scattered')
     subj_r = by_subject['r_masked_median']
     print(f'  subject   median r_masked {subj_r["median"]:+.4f}  '
           f'[{subj_r["lo"]:+.4f}, {subj_r["hi"]:+.4f}] 95% CI  '

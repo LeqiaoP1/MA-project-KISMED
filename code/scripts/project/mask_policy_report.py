@@ -43,7 +43,8 @@ CODE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if CODE not in sys.path:
     sys.path.insert(0, CODE)
 
-from core.mask_placement import counts_generator                  # noqa: E402
+from core.mask_placement import (admissible_gap_counts,              # noqa: E402
+                                 counts_generator)
 from core.multimae import build_pretraining_model                 # noqa: E402
 
 
@@ -336,6 +337,25 @@ def main(argv=None):
     out_dir = a.out_dir or run_dir
     os.makedirs(out_dir, exist_ok=True)
     tag = f'{a.tag}_' if a.tag else ''
+    # ADR-017: the masked-span gap geometry, resolved into seconds and into the
+    # admissible gap counts per masked count. Empty for every other placement.
+    masked_span: Dict = {}
+    if str(model.physio_placement) == 'masked_span':
+        _g_min = int(getattr(model, 'physio_gap_min_tokens', 0) or 0)
+        _g_max = int(getattr(model, 'physio_gap_max_tokens', 0) or 0)
+        _n_tok = int(model.physio_tokens)
+        masked_span = {
+            'gap_min_tokens': _g_min,
+            'gap_max_tokens': _g_max,
+            'gap_seconds': [round(float(_g_min) * float(model.sig_kernel)
+                                  / float(model.fs), 6),
+                            round(float(_g_max) * float(model.sig_kernel)
+                                  / float(model.fs), 6)],
+            'per_masked_count': {
+                str(_n_tok - int(k)): list(admissible_gap_counts(
+                    _n_tok - int(k), int(k), _g_min, _g_max))
+                for k in app.mode2_counts(model.signal[0])},
+        }
     payload = {
         'schema': 'adr-005/policy-replay/1',
         'checkpoint': os.path.abspath(a.checkpoint),
@@ -362,6 +382,7 @@ def main(argv=None):
             'core_tubes_min': int(getattr(app, 'core_tubes_min', 0) or 0),
             'core_tubes_max': int(getattr(app, 'core_tubes_max', 0) or 0),
             'periph_min_tubes': int(getattr(app, 'periph_min_tubes', 0) or 0),
+            **({'masked_span': masked_span} if masked_span else {}),
         },
         'per_stream': stats,
         'mode_split': mode_split,
@@ -375,6 +396,12 @@ def main(argv=None):
     with open(out_json, 'w') as fh:
         json.dump(payload, fh, indent=2)
     print('[replay] wrote', out_json)
+    if masked_span:
+        print('[replay] masked_span gaps '
+              f'{masked_span["gap_min_tokens"]}..'
+              f'{masked_span["gap_max_tokens"]} tokens = '
+              f'{masked_span["gap_seconds"]} s;  N(M) per masked count = '
+              f'{masked_span["per_masked_count"]}')
 
     # ---- figures ----------------------------------------------------------
     import matplotlib

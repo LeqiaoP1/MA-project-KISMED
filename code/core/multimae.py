@@ -247,7 +247,9 @@ class MultiModalMAE(nn.Module):
                  pos_init: str = 'sincos3d',
                  target_norm: str = 'token',
                  physio_placement: str = 'scattered',
-                 physio_span_tokens: int = 0):
+                 physio_span_tokens: int = 0,
+                 physio_gap_min_tokens: int = 0,
+                 physio_gap_max_tokens: int = 0):
         super().__init__()
         self.streams = list(streams)
         # per-stream input channels (tir = 3 by default; see STREAM_CHANNELS)
@@ -403,8 +405,9 @@ class MultiModalMAE(nn.Module):
                 f'or fix the geometry.')
 
         # 1-D placement: scattered tokens by default; 'span' keeps contiguous
-        # blocks (the ablation that removes the local-interpolation shortcut)
-        # and is a run setting RECORDED with the run.
+        # KEPT blocks (the ablation that removes the local-interpolation
+        # shortcut); 'masked_span' hides contiguous MASKED runs of bounded
+        # length (ADR-017). All three are run settings RECORDED with the run.
         self.physio_placement = str(physio_placement or placement.SCATTERED)
         self.physio_placement = self.physio_placement.strip().lower()
         if self.physio_placement not in placement.PLACEMENT_MODES:
@@ -418,6 +421,19 @@ class MultiModalMAE(nn.Module):
                 'physio_span_tokens >= 1 (an explicit length, never a hidden '
                 'default); got '
                 f'{self.physio_span_tokens}.')
+        # ADR-017: the gap bounds, and the symmetric knob pairing. Validated
+        # HERE, i.e. before any step can run; the FEASIBILITY pass follows once
+        # the apportioner exists, so the refusal can name the counts the policy
+        # can actually draw (ADR-017 I6 / R6).
+        self.physio_gap_min_tokens = int(physio_gap_min_tokens or 0)
+        self.physio_gap_max_tokens = int(physio_gap_max_tokens or 0)
+        placement.validate_physio_placement(
+            mode=self.physio_placement,
+            n_tokens=self.physio_tokens,
+            span_tokens=self.physio_span_tokens,
+            gap_min_tokens=self.physio_gap_min_tokens,
+            gap_max_tokens=self.physio_gap_max_tokens,
+            n_streams=len(self.signal))
 
         # one StreamSpec per declared stream: the engine sees only unit counts
         # and how many tokens a unit carries, never a modality name. The visual
@@ -468,6 +484,18 @@ class MultiModalMAE(nn.Module):
         self.core_tubes_max = int(self.apportioner.core_tubes_max)
         self.periph_min_tubes = int(self.apportioner.periph_min_tubes)
         self.physio_draw_min = int(self.apportioner.physio_draw_min)
+        # ADR-017 I6: feasibility against the counts this policy can DRAW, not
+        # against a transcribed set — a future change to the Mode-2 count set
+        # is therefore re-checked automatically (plan D4).
+        if self.physio_placement == placement.MASKED_SPAN:
+            placement.validate_physio_placement(
+                mode=self.physio_placement,
+                n_tokens=self.physio_tokens,
+                span_tokens=self.physio_span_tokens,
+                gap_min_tokens=self.physio_gap_min_tokens,
+                gap_max_tokens=self.physio_gap_max_tokens,
+                n_streams=len(self.signal),
+                kept_counts=self.apportioner.mode2_counts(self.signal[0]))
         self.s_tir_min = self.apportioner.s_tir_min
         self.s_tir_max = self.apportioner.s_tir_max
         self._last_plan: Optional[BudgetPlan] = None
@@ -907,6 +935,8 @@ class MultiModalMAE(nn.Module):
                     kept, spec.n_units, generator=placement_generator,
                     mode=self.physio_placement,
                     span_tokens=self.physio_span_tokens or None,
+                    gap_min_tokens=self.physio_gap_min_tokens or None,
+                    gap_max_tokens=self.physio_gap_max_tokens or None,
                     batch_size=B, device=device)
             keep = torch.zeros(B, spec.n_tokens, device=device,
                                dtype=torch.long)
@@ -1484,7 +1514,11 @@ def build_pretraining_model(args):
         target_norm=str(getattr(args, 'target_norm', 'token')),
         physio_placement=str(getattr(args, 'physio_placement', 'scattered')
                              or 'scattered'),
-        physio_span_tokens=int(getattr(args, 'physio_span_tokens', 0) or 0))
+        physio_span_tokens=int(getattr(args, 'physio_span_tokens', 0) or 0),
+        physio_gap_min_tokens=int(
+            getattr(args, 'physio_gap_min_tokens', 0) or 0),
+        physio_gap_max_tokens=int(
+            getattr(args, 'physio_gap_max_tokens', 0) or 0))
     print(f'[encoder] streams: {model.streams} (all fed to the shared '
           f'encoder); target streams: {model.signal}')
     print(f'[mask] policy=constant-budget  n_budget={model.n_budget}  '
@@ -1507,6 +1541,39 @@ def build_pretraining_model(args):
           f'physio_draw_min={model.physio_draw_min}  '
           f'units={[(s.name, s.n_units, s.tokens_per_unit) for s in model.specs]}'
           f'  physio_placement={model.physio_placement}')
+
+    def _gap_seconds(tokens: int) -> float:
+        """Resolved wall-clock length of ``tokens`` 1-D tokens."""
+        return (float(tokens) * float(model.sig_kernel)
+                / max(1e-9, float(model.fs)))
+
+    # ADR-017 §2.2 / Criterion 2: the RESOLVED seconds and the per-M gap-count
+    # sets, so a reader never has to re-derive them from (g, sig_kernel, fs).
+    # ``scattered`` keeps the line above alone (byte-identical logs, R5).
+    if model.physio_placement == placement.MASKED_SPAN:
+        _counts = model.apportioner.mode2_counts(model.signal[0])
+        _nsets = {}
+        for _k in _counts:
+            _m = int(model.physio_tokens) - int(_k)
+            _nsets[_m] = list(placement.admissible_gap_counts(
+                _m, _k, model.physio_gap_min_tokens,
+                model.physio_gap_max_tokens))
+        print(f'[mask] placement={model.physio_placement}  gaps '
+              f'[{model.physio_gap_min_tokens}, '
+              f'{model.physio_gap_max_tokens}] tokens = '
+              f'[{_gap_seconds(model.physio_gap_min_tokens):.3f}, '
+              f'{_gap_seconds(model.physio_gap_max_tokens):.3f}] s  '
+              f'K_resp={list(_counts)}  N(M)={_nsets}')
+        # The bounds are TOKEN-valued, so a change to sig_kernel / fs / clip
+        # length re-scales them silently. Say so instead of training quietly.
+        if _gap_seconds(model.physio_gap_min_tokens) < 1.5:
+            print('[mask] WARNING: the shortest masked gap resolves to '
+                  f'{_gap_seconds(model.physio_gap_min_tokens):.3f} s, below '
+                  'the ~1.5 s floor the ADR-017 passband implies; re-derive '
+                  'the token bounds for this geometry (Criterion 3a).')
+    elif model.physio_placement == placement.SPAN:
+        print(f'[mask] placement=span  span={model.physio_span_tokens} '
+              f'tokens = {_gap_seconds(model.physio_span_tokens):.3f} s')
     if len(model.visual) == 1 and (model.spatial_sampling == 'uniform'
                                    or model.physio_draw_min == 0):
         # ADR-007 D10: a bare ``--streams tir,resp --n_budget 200`` invocation

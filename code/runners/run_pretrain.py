@@ -460,16 +460,28 @@ def get_args():
                              'identity, the run fails on a mismatch.')
     # ---- placement: WHICH tokens survive (not how many) ------------------ #
     parser.add_argument('--physio_placement', default='scattered', type=str,
-                        choices=['scattered', 'span'],
+                        choices=['scattered', 'span', 'masked_span'],
                         help="1-D placement of the kept tokens: 'scattered' "
-                             "(uniform without replacement, default) or "
-                             "'span' (contiguous blocks, which removes the "
-                             "local-interpolation shortcut). The choice is "
+                             "(uniform without replacement, default), "
+                             "'span' (contiguous KEPT blocks) or "
+                             "'masked_span' (contiguous MASKED gaps of "
+                             'bounded length, ADR-017). The choice is '
                              'recorded with the run.')
     parser.add_argument('--physio_span_tokens', default=0, type=int,
                         help="span placement only: length of one contiguous "
                              'block in tokens (required when '
                              '--physio_placement span).')
+    parser.add_argument('--physio_gap_min_tokens', default=0, type=int,
+                        help='masked_span placement only (ADR-017): g_min, '
+                             'the shortest masked run in tokens. Required '
+                             '>= 1 with --physio_placement masked_span and 0 '
+                             'otherwise; the resolved seconds and the '
+                             'per-count gap numbers are printed at build.')
+    parser.add_argument('--physio_gap_max_tokens', default=0, type=int,
+                        help='masked_span placement only (ADR-017): g_max, '
+                             'the longest masked run in tokens; '
+                             '>= --physio_gap_min_tokens and '
+                             '<= seq_len / sig_kernel.')
     parser.add_argument('--loss_weights', default='', type=str,
                         help='FULL per-stream override of the per-modality '
                              'masked-MSE weights: comma list, ONE value per '
@@ -802,6 +814,32 @@ def write_masking_manifest(args, model, *, plan, mask_base: int,
             'single_modality_warmup_p': float(app.single_modality_warmup_p),
             'single_carrier_tubes': int(app.single_carrier_tubes),
         })
+    # ADR-017: the masked-span gap bounds, written ONLY when non-neutral for the
+    # same reason as the ADR-006/007/008 keys above — `_stable()` compares the
+    # whole `policy` dict, so an unconditional pair of new keys would make every
+    # in-flight pre-ADR-017 run refuse to resume. Everything stays JSON-native
+    # (ints and a 2-float list) so the reload compares equal to the fresh record.
+    _g_min = int(getattr(model, 'physio_gap_min_tokens', 0) or 0)
+    _g_max = int(getattr(model, 'physio_gap_max_tokens', 0) or 0)
+    if _g_min or _g_max:
+        from core.mask_placement import admissible_gap_counts as _gap_counts
+
+        _g_sec = [round(float(g) * float(model.sig_kernel) / float(model.fs), 6)
+                  for g in (_g_min, _g_max)]
+        # ADR-017 Criterion 2: N(M) per masked count, as JSON-native
+        # ``{"<M>": [n, ...]}`` so the record reloads identically.
+        _n_map = {}
+        if str(model.physio_placement) == 'masked_span':
+            for _k in app.mode2_counts(model.signal[0]):
+                _m = int(model.physio_tokens) - int(_k)
+                _n_map[str(_m)] = [int(x) for x in
+                                   _gap_counts(_m, int(_k), _g_min, _g_max)]
+        record['policy'].update({
+            'physio_gap_min_tokens': _g_min,
+            'physio_gap_max_tokens': _g_max,
+            'physio_gap_seconds': _g_sec,
+            'physio_gap_counts': _n_map,
+        })
     # ADR-007 §2.9: the stratified policy is recorded for EVERY one-visual run
     # (including the ``uniform`` ablation, whose record must still say which
     # policy produced it), while a 2-visual ADR-005/006 manifest stays
@@ -1081,6 +1119,14 @@ def main(args):
               f'spatial_sampling={_masking["policy"].get("spatial_sampling", "uniform")}, '
               f'A_core={_masking["policy"].get("core_coords")}, '
               f'physio_draw_min={_masking["policy"].get("physio_draw_min", 0)})')
+        if _masking['policy'].get('physio_gap_min_tokens'):
+            # ADR-017 Criterion 2: the banner names the placement, both bounds,
+            # their seconds and every admissible gap count per masked count.
+            print(f'[mask] placement={_masking["policy"]["physio_placement"]} '
+                  f'gaps={_masking["policy"]["physio_gap_min_tokens"]}..'
+                  f'{_masking["policy"]["physio_gap_max_tokens"]} tokens = '
+                  f'{_masking["policy"]["physio_gap_seconds"]} s  '
+                  f'N(M)={_masking["policy"]["physio_gap_counts"]}')
     # Mask RNG of the training loop (ADR-005 §2.3 contract 8). The COUNTS
     # generator is seeded from a rank-independent key, so every rank derives
     # the same plan without a collective; the PLACEMENT generator includes the
