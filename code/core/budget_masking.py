@@ -200,6 +200,15 @@ class BudgetPlan:
         plan that never stratified cannot claim a core count.
     :param periph_units: the same allocation in :math:`\mathcal{A}_{periph}`;
         invariant ``core_units[s] + periph_units[s] == kept_units[s]``.
+    :param budget_exempt: ``False`` on every plan the POLICY can draw. ``True``
+        marks an EVALUATION-ONLY plan that deliberately leaves the constant
+        budget, because the caller wants ``kept_tokens`` to sum to something
+        other than ``n_budget`` (e.g. a FULLY VISIBLE visual stream: 36 tubes x
+        25 tokens = 900 tokens on a 200-token checkpoint). Training cannot
+        produce such a plan — the sampler never sets the flag and
+        ``MultiModalMAE.forward`` sizes its encoder-input assertion from it — so
+        the constant-budget contract (ADR-002/ADR-007 §2.6) stays unchanged for
+        every training step.
     """
 
     mode: int
@@ -210,6 +219,7 @@ class BudgetPlan:
     carrier: Optional[str] = None
     core_units: Optional[Dict[str, int]] = None
     periph_units: Optional[Dict[str, int]] = None
+    budget_exempt: bool = False
 
     def __post_init__(self):
         if int(self.mode) not in MODES:
@@ -1183,7 +1193,8 @@ class ConstantBudgetApportioner:
         return self._plan(MODE_INPAINTING, units, tokens, REGIME_INPAINTING)
 
     def plan_from_counts(self, kept_tokens: Mapping[str, int],
-                         kept_core: Optional[int] = None) -> BudgetPlan:
+                         kept_core: Optional[int] = None,
+                         exempt_budget: bool = False) -> BudgetPlan:
         """Validate an EXPLICIT allocation (evaluation pins, tests).
 
         The masking policy owns the draws; this entry point exists so a caller
@@ -1193,6 +1204,17 @@ class ConstantBudgetApportioner:
         The mode is inferred: Mode 1 when no physiological token survives.
 
         :param kept_tokens: kept encoder tokens per DECLARED stream.
+        :param kept_core: ADR-007 stratified split, core tubes only.
+        :param exempt_budget: ``False`` (default) enforces the constant-budget
+            contract. ``True`` states an EVALUATION-ONLY allocation that leaves
+            it: the counts are still validated (declared streams, whole visual
+            tubes, every count inside its own stream's unit count, a legal
+            stratified split) but the ``n_budget`` sum, the visual floor/cap and
+            the ``S_core`` band are not applied, because the request is "encode
+            THIS many tokens" rather than "spend the budget". The returned
+            plan carries :attr:`BudgetPlan.budget_exempt`, which is what lets
+            ``MultiModalMAE.forward`` size its length assertion from the plan.
+            Training cannot reach this path: the sampler never passes it.
         :raises ValueError: missing/unknown stream, or any invariant broken.
         """
         declared = {s.name for s in self.streams}
@@ -1233,11 +1255,73 @@ class ConstantBudgetApportioner:
         regime, carrier = self._infer_regime(tokens)
         core, periph = self._pin_stratification(units, kept_core)
         try:
+            if exempt_budget:
+                return self._plan_unbudgeted(mode, units, tokens, regime,
+                                             carrier, core=core, periph=periph)
             return self._plan(mode, units, tokens, regime, carrier,
                               core=core, periph=periph)
         except RuntimeError as exc:      # normalise to the caller-facing type
             raise ValueError(
                 f'ConstantBudgetApportioner.plan_from_counts: {exc}') from exc
+
+    def _plan_unbudgeted(self, mode: int, units: Mapping[str, int],
+                         tokens: Mapping[str, int], regime: str,
+                         carrier: Optional[str],
+                         core: Optional[Mapping[str, int]] = None,
+                         periph: Optional[Mapping[str, int]] = None
+                         ) -> BudgetPlan:
+        """Build an EVALUATION-ONLY plan that leaves the constant budget.
+
+        Everything a PLACEMENT still depends on is validated — the counts are
+        whole tubes for a visual stream and inside that stream's own unit count,
+        the stratified split names the same streams and adds up, the core draw
+        fits :math:`\\mathcal{A}_{core}` and the periphery draw fits its
+        complement — while the three rules that exist to make the ENCODER INPUT
+        constant (the ``n_budget`` sum, the visual cap/floor pair and the
+        ``S_core`` band) are deliberately not applied: that is the whole point of
+        the request.
+        """
+        plan = BudgetPlan(mode=int(mode), kept_tokens=dict(tokens),
+                          kept_units=dict(units),
+                          mode_by_counts=(MODE_VIRTUAL_SENSING
+                                          if all(tokens[s.name] == 0
+                                                 for s in self.signal)
+                                          else MODE_INPAINTING),
+                          regime=regime, carrier=carrier,
+                          core_units=(None if core is None else dict(core)),
+                          periph_units=(None if periph is None else dict(periph)),
+                          budget_exempt=True)
+        for s in self.streams:
+            kept = int(plan.kept_units[s.name])
+            if not 0 <= kept <= int(s.n_units):
+                raise RuntimeError(
+                    f'an exempt plan asked stream {s.name!r} for {kept} '
+                    f'unit(s), outside its {s.n_units} unit(s).')
+            if s.kind == VISUAL and int(plan.kept_tokens[s.name]) != (
+                    kept * int(s.tokens_per_unit)):
+                raise RuntimeError(
+                    f'visual stream {s.name!r} keeps '
+                    f'{int(plan.kept_tokens[s.name])} token(s) for {kept} '
+                    f'tube(s) of {s.tokens_per_unit}.')
+        if self.anatomy_aware:
+            if plan.core_units is None:
+                raise RuntimeError(
+                    'an exempt plan on an anatomy_aware checkpoint must carry '
+                    f'the stratified split; got core={plan.core_units!r}.')
+            for s in self.visual:
+                core_n = int(plan.core_units.get(s.name, 0))
+                periph_n = int(plan.periph_units.get(s.name, 0))
+                if not 1 <= core_n <= len(self.core_indices):
+                    raise RuntimeError(
+                        f'visual stream {s.name!r} keeps {core_n} core '
+                        f'tube(s) but A_core has {len(self.core_indices)}; a '
+                        'stratified draw always keeps at least one core tube.')
+                if not 0 <= periph_n <= int(s.n_units) - len(self.core_indices):
+                    raise RuntimeError(
+                        f'visual stream {s.name!r} keeps {periph_n} peripheral '
+                        f'tube(s) but A_periph has '
+                        f'{int(s.n_units) - len(self.core_indices)}.')
+        return plan
 
     def _pin_stratification(self, units: Mapping[str, int],
                             kept_core: Optional[int]

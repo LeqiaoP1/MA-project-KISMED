@@ -122,6 +122,17 @@ def get_args(argv=None):
                         'core-free; >= 0 is forwarded explicitly and RAISES on a '
                         'uniform checkpoint (its core count would be '
                         'fabricated).')
+    p.add_argument('--exempt_budget', action='store_true', default=False,
+                   help='REMOTE-SENSING / deployment probe: deliberately leave '
+                        'the constant budget and encode EVERY visual tube, '
+                        'pinning physiological streams to their --kept_* / '
+                        '--resp_probe counts. On the 200-token two-stream '
+                        'checkpoint this encodes 36 tubes x 25 = 900 TIR '
+                        'tokens + 0 resp tokens — the full TIR clip with no '
+                        'sensor reading that a deployed system sees. Because '
+                        'the encoder was trained on 200 visible tokens, this '
+                        'probe is out-of-regime by construction; the report '
+                        'records budget=EXEMPT. Inert unless set.')
     p.add_argument('--kept_bp', default=1.0, type=float,
                    help='fraction of the 250 bp tokens kept. 1.0 (default) '
                         'reproduces the legacy rule (a declared stream with no '
@@ -251,6 +262,9 @@ def pin_masking(model, a):
     A stream's floor is mandatory -- the policy cannot express "0 visual tubes",
     because the floor exists so the encoder always has visual evidence -- while
     a physiological stream CAN be pinned to exactly 0 (that is Mode 1).
+    When ``--exempt_budget`` is set, the constant-budget fill is skipped: every
+    visual stream is encoded in full (100 % of tubes) and physiological streams
+    keep only what ``--kept_*`` / ``--resp_probe`` requested.
 
     :return: ``(plan, caption)``; the realised counts are what the caption and
         the report record, never the requested fractions.
@@ -274,47 +288,74 @@ def pin_masking(model, a):
     floor = model.video_min_tubes
     counts: Dict[str, int] = {}
     pin_carrier = str(getattr(a, 'pin_single_carrier', 'none') or 'none')
-    if pin_carrier != 'none':
-        # ADR-006 §2.3 contract 3 / §2.4: one stream carries the WHOLE budget
-        # and every other stream keeps nothing. The floor/cap clamp below is
-        # bypassed on purpose -- it exists so a SPLIT always leaves visual
-        # evidence, and a sole carrier already satisfies that.
-        if pin_carrier not in model.visual:
-            raise SystemExit(
-                f'[eval] --pin_single_carrier {pin_carrier!r} is not a visual '
-                f'stream of this checkpoint (visual={model.visual})')
-        counts = {spec.name: (int(model.n_budget)
-                              if spec.name == pin_carrier else 0)
-                  for spec in model.specs}
-    else:
-        for spec in model.specs:
-            k = int(round(want[spec.name] * spec.n_units))
-            if spec.kind == 'visual':
-                k = max(floor, min(k, app.video_cap_units[spec.name]))
-                counts[spec.name] = k * int(spec.tokens_per_unit)
-            else:
-                counts[spec.name] = max(0, min(k, app.physio_cap_tokens[spec.name]))
-
-    residual = int(model.n_budget) - sum(counts.values())
-    for spec in model.specs:
-        if residual == 0 or spec.kind != 'visual':
-            continue
-        lo = floor * int(spec.tokens_per_unit)
-        hi = app.video_cap_units[spec.name] * int(spec.tokens_per_unit)
-        room = hi - counts[spec.name] if residual > 0 \
-            else counts[spec.name] - lo
-        take = min(room, abs(residual))
-        counts[spec.name] += take if residual > 0 else -take
-        residual += -take if residual > 0 else take
-    if residual:
+    exempt_budget = bool(getattr(a, 'exempt_budget', False))
+    if exempt_budget and pin_carrier != 'none':
         raise SystemExit(
-            f'[eval] the requested masking cannot reach the constant budget '
-            f'{model.n_budget}: {residual:+d} token(s) left after filling every '
-            f'visual stream to its cap/floor ({counts}). Adjust --kept_* or '
-            f'evaluate a checkpoint with another --n_budget.')
-    plan = model.plan_from_counts(
-        counts, kept_core=(None if int(getattr(a, 'pin_core_tubes', -1)) < 0
-                           else int(a.pin_core_tubes)))
+            '[eval] --exempt_budget and --pin_single_carrier are mutually '
+            'exclusive.')
+
+    if exempt_budget:
+        # REMOTE SENSING (deployment): every visual tube is encoded and each
+        # physiological stream keeps only what its flag requested (normally 0).
+        # The constant-budget fill is skipped on purpose so the encoder sees
+        # the full clip it would receive in the field. For anatomy-aware
+        # checkpoints, the core draw is the whole anatomical core so stratified
+        # placement covers every tube.
+        for spec in model.specs:
+            if spec.kind == 'visual':
+                counts[spec.name] = int(spec.n_units) * int(spec.tokens_per_unit)
+            else:
+                counts[spec.name] = max(0, min(
+                    int(round(want[spec.name] * spec.n_units)),
+                    int(spec.n_units)))
+        plan = model.plan_from_counts(
+            counts,
+            kept_core=(len(model.core_indices) if model.anatomy_aware else None),
+            exempt_budget=True)
+    else:
+        if pin_carrier != 'none':
+            # ADR-006 §2.3 contract 3 / §2.4: one stream carries the WHOLE
+            # budget and every other stream keeps nothing. The floor/cap clamp
+            # below is bypassed on purpose -- it exists so a SPLIT always leaves
+            # visual evidence, and a sole carrier already satisfies that.
+            if pin_carrier not in model.visual:
+                raise SystemExit(
+                    f'[eval] --pin_single_carrier {pin_carrier!r} is not a '
+                    f'visual stream of this checkpoint (visual={model.visual})')
+            counts = {spec.name: (int(model.n_budget)
+                                  if spec.name == pin_carrier else 0)
+                      for spec in model.specs}
+        else:
+            for spec in model.specs:
+                k = int(round(want[spec.name] * spec.n_units))
+                if spec.kind == 'visual':
+                    k = max(floor, min(k, app.video_cap_units[spec.name]))
+                    counts[spec.name] = k * int(spec.tokens_per_unit)
+                else:
+                    counts[spec.name] = max(
+                        0, min(k, app.physio_cap_tokens[spec.name]))
+
+        residual = int(model.n_budget) - sum(counts.values())
+        for spec in model.specs:
+            if residual == 0 or spec.kind != 'visual':
+                continue
+            lo = floor * int(spec.tokens_per_unit)
+            hi = app.video_cap_units[spec.name] * int(spec.tokens_per_unit)
+            room = hi - counts[spec.name] if residual > 0 \
+                else counts[spec.name] - lo
+            take = min(room, abs(residual))
+            counts[spec.name] += take if residual > 0 else -take
+            residual += -take if residual > 0 else take
+        if residual:
+            raise SystemExit(
+                f'[eval] the requested masking cannot reach the constant '
+                f'budget {model.n_budget}: {residual:+d} token(s) left after '
+                f'filling every visual stream to its cap/floor ({counts}). '
+                f'Adjust --kept_* or evaluate a checkpoint with another '
+                f'--n_budget.')
+        plan = model.plan_from_counts(
+            counts, kept_core=(None if int(getattr(a, 'pin_core_tubes', -1)) < 0
+                               else int(a.pin_core_tubes)))
 
     # 1-D placement: contiguous spans remove the interpolate-from-neighbours
     # shortcut, which is the informative probe; the span length is a RUN setting
@@ -326,9 +367,14 @@ def pin_masking(model, a):
     else:
         model.physio_placement = 'scattered'
 
+    def _caption_budget(plan) -> str:
+        return ('budget=EXEMPT (visual stream fully visible)'
+                if getattr(plan, 'budget_exempt', False)
+                else f'budget={model.n_budget}')
+
     kept = {s: counts[s] for s in model.streams}
     caption = ('KEPT ' + ' '.join(f'{s}={v}' for s, v in kept.items())
-               + f' tokens  mode={plan.mode}  budget={model.n_budget}'
+               + f' tokens  mode={plan.mode}  {_caption_budget(plan)}'
                + f'  placement={model.physio_placement}')
     if a.resp_probe == 'span':
         caption += f' (span {model.physio_span_tokens} tokens)'

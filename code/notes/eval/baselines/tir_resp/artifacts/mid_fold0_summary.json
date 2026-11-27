@@ -1,0 +1,421 @@
+{
+  "label": "adr008_fold0_mid",
+  "checkpoint": "/work/scratch/ne95ocyg/pretrain/adr008_2stream_fold0/fold0/stage2/checkpoints/checkpoint-0149.pth",
+  "data_checkpoint": "",
+  "split": "test",
+  "fold": 0,
+  "masking": "KEPT tir=125 resp=75 tokens  mode=2  budget=200  placement=scattered  spatial_sampling=anatomy_aware  regime=inpainting S_core=1 S_periph=4",
+  "repeats": 5,
+  "ablation": null,
+  "n_clips": 1742,
+  "n_sessions": 213,
+  "n_subjects": 27,
+  "summary": {
+    "mse": {
+      "mean": 0.004317058456129507,
+      "median": 0.003035184054169804,
+      "std": 0.004862604276437834,
+      "n": 1742
+    },
+    "mae": {
+      "mean": 0.04402091149696503,
+      "median": 0.04068912903312594,
+      "std": 0.01325808348162749,
+      "n": 1742
+    },
+    "rmse": {
+      "mean": 0.0603241746963577,
+      "median": 0.05441463191527873,
+      "std": 0.023208778026652315,
+      "n": 1742
+    },
+    "r_masked": {
+      "mean": 0.9980751668604521,
+      "median": 0.9986906144768,
+      "std": 0.002351368814784872,
+      "n": 1742
+    },
+    "r_full": {
+      "mean": 0.9986060156147974,
+      "median": 0.9990438241511583,
+      "std": 0.0016356303996285864,
+      "n": 1742
+    },
+    "var_hat": {
+      "mean": 0.985868635827977,
+      "median": 0.989850765094161,
+      "std": 0.03073569289549799,
+      "n": 1742
+    },
+    "peak_err_bpm": {
+      "mean": 0.17862506082493182,
+      "median": 0.0,
+      "std": 0.9375617830422598,
+      "n": 1742
+    }
+  },
+  "subject_aggregate": {
+    "per_subject": [
+      {
+        "subject": "F001",
+        "n_clips": 67,
+        "n_sessions": 8,
+        "median_r_masked": 0.9987093657255173,
+        "median_r_full": 0.9990717023611069,
+        "median_mse": 0.002896031830459833,
+        "median_mae": 0.0405895400326699,
+        "median_rmse": 0.05357407219707966,
+        "median_var_hat": 0.9940549433231354,
+        "median_peak_err_bpm": 0.0
+      },
+      {
+        "subject": "F003",
+        "n_clips": 72,
+        "n_sessions": 9,
+        "median_r_masked": 0.9984149504452944,
+        "median_r_full": 0.9988539684563875,
+        "median_mse": 0.003599388124712277,
+        "median_mae": 0.044556630426086485,
+        "median_rmse": 0.059795829583890736,
+        "median_var_hat": 0.9938896540552378,
+        "median_peak_err_bpm": 0.0
+      },
+      {
+        "subject": "F005",
+        "n_clips": 84,
+        "n_sessions": 10,
+        "median_r_masked": 0.9990614056587219,
+        "median_r_full": 0.9993007555603981,
+        "median_mse": 0.002285506605403498,
+        "median_mae": 0.03508185513783246,
+        "median_rmse": 0.04738848307169974,
+        "median_var_hat": 0.994217636063695,
+        "median_peak_err_bpm": 0.0
+      },
+      {
+        "subject": "F019",
+        "n_clips": 7,
+        "n_sessions": 2,
+        "median_r_masked": 0.9981855116784573,
+        "median_r_full": 0.998676735907793,
+        "median_mse": 0.004164290410699323,
+        "median_mae": 0.044553400948643684,
+        "median_rmse": 0.06375458789989352,
+        "median_var_hat": 0.9765587970614433,
+        "median_peak_err_bpm": 0.0
+      },
+      {
+        "subject": "F025",
+        "n_clips": 73,
+        "n_sessions": 10,
+        "median_r_masked": 0.998580414801836,
+        "median_r_full": 0.9989751763641834,
+        "median_mse": 0.003079067297221627,
+        "median_mae": 0.04013910377398133,
+        "median_rmse": 0.054757959907874465,
+        "median_var_hat": 0.9870406538248062,
+        "median_peak_err_bpm": 0.0
+      },
+      {
+        "subject": "F028",
+        "n_clips": 4,
+        "n_sessions": 2,
+        "median_r_masked": 0.9967870786786079,
+        "median_r_full": 0.9975525215268135,
+        "median_mse": 0.007691086997510865,
+        "median_mae": 0.06006886495742947,
+        "median_rmse": 0.08674862259067595,
+        "median_var_hat": 0.9905466698110104,
+        "median_peak_err_bpm": 0.0
+      },
+      {
+        "subject": "F030",
+        "n_clips": 23,
+        "n_sessions": 6,
+        "median_r_masked": 0.9961622022092342,
+        "median_r_full": 0.99736587703228,
+        "median_mse": 0.007984061143361032,
+        "median_mae": 0.06162331998348236,
+        "median_rmse": 0.08831225521862507,
+        "median_var_hat": 0.9727054499089718,
+        "median_peak_err_bpm": 0.11444091796875
+      },
+      {
+        "subject": "F034",
+        "n_clips": 83,
+        "n_sessions": 9,
+        "median_r_masked": 0.997429370880127,
+        "median_r_full": 0.9981285780668259,
+        "median_mse": 0.005680473477696069,
+        "median_mae": 0.053677664604038,
+        "median_rmse": 0.07437998009845614,
+        "median_var_hat": 0.9882569722831249,
+        "median_peak_err_bpm": 0.0
+      },
+      {
+        "subject": "F041",
+        "n_clips": 81,
+        "n_sessions": 10,
+        "median_r_masked": 0.9985817782580853,
+        "median_r_full": 0.9989504963159561,
+        "median_mse": 0.003275366878369823,
+        "median_mae": 0.043589690467342734,
+        "median_rmse": 0.05648928368464112,
+        "median_var_hat": 0.987191017717123,
+        "median_peak_err_bpm": 0.0
+      },
+      {
+        "subject": "F043",
+        "n_clips": 39,
+        "n_sessions": 4,
+        "median_r_masked": 0.9988258890807629,
+        "median_r_full": 0.9991802982985973,
+        "median_mse": 0.0029115991346770898,
+        "median_mae": 0.03984788036905229,
+        "median_rmse": 0.05345248756930232,
+        "median_var_hat": 0.9849251210689545,
+        "median_peak_err_bpm": 0.0
+      },
+      {
+        "subject": "F053",
+        "n_clips": 94,
+        "n_sessions": 10,
+        "median_r_masked": 0.9989904202520847,
+        "median_r_full": 0.9992405381053686,
+        "median_mse": 0.002475730230798945,
+        "median_mae": 0.03696920652873814,
+        "median_rmse": 0.04942898580338806,
+        "median_var_hat": 0.984337080270052,
+        "median_peak_err_bpm": 0.0
+      },
+      {
+        "subject": "F057",
+        "n_clips": 100,
+        "n_sessions": 9,
+        "median_r_masked": 0.9980832133442163,
+        "median_r_full": 0.9986248761415482,
+        "median_mse": 0.004103731735085603,
+        "median_mae": 0.049284366657957435,
+        "median_rmse": 0.06315213849302381,
+        "median_var_hat": 0.9897460006177425,
+        "median_peak_err_bpm": 0.0
+      },
+      {
+        "subject": "F060",
+        "n_clips": 60,
+        "n_sessions": 9,
+        "median_r_masked": 0.998653145506978,
+        "median_r_full": 0.9990222416818142,
+        "median_mse": 0.003052284249861259,
+        "median_mae": 0.04107732814736664,
+        "median_rmse": 0.05456624331418425,
+        "median_var_hat": 0.9958865251392126,
+        "median_peak_err_bpm": 0.0
+      },
+      {
+        "subject": "F062",
+        "n_clips": 90,
+        "n_sessions": 10,
+        "median_r_masked": 0.998584071174264,
+        "median_r_full": 0.9989628177136183,
+        "median_mse": 0.0033857305388664827,
+        "median_mae": 0.042335534701123834,
+        "median_rmse": 0.057368081994354725,
+        "median_var_hat": 0.9847114104777575,
+        "median_peak_err_bpm": 0.0
+      },
+      {
+        "subject": "F063",
+        "n_clips": 95,
+        "n_sessions": 9,
+        "median_r_masked": 0.9982788488268852,
+        "median_r_full": 0.9987392351031303,
+        "median_mse": 0.004026034701382741,
+        "median_mae": 0.045903305523097515,
+        "median_rmse": 0.06289558671414852,
+        "median_var_hat": 0.993214413523674,
+        "median_peak_err_bpm": 0.0
+      },
+      {
+        "subject": "F064",
+        "n_clips": 52,
+        "n_sessions": 9,
+        "median_r_masked": 0.9988464694470167,
+        "median_r_full": 0.9991858396679163,
+        "median_mse": 0.002577112813014537,
+        "median_mae": 0.03785555646754801,
+        "median_rmse": 0.050321107846684754,
+        "median_var_hat": 0.9902731515467167,
+        "median_peak_err_bpm": 0.0
+      },
+      {
+        "subject": "M003",
+        "n_clips": 25,
+        "n_sessions": 4,
+        "median_r_masked": 0.9985504485666752,
+        "median_r_full": 0.998906034976244,
+        "median_mse": 0.003311484571895562,
+        "median_mae": 0.04321309761144221,
+        "median_rmse": 0.05709664709866047,
+        "median_var_hat": 0.9909963011741638,
+        "median_peak_err_bpm": 0.0
+      },
+      {
+        "subject": "M005",
+        "n_clips": 27,
+        "n_sessions": 5,
+        "median_r_masked": 0.9961283132433891,
+        "median_r_full": 0.9971274323761463,
+        "median_mse": 0.008799603616353124,
+        "median_mae": 0.062055770540609956,
+        "median_rmse": 0.09212870476767421,
+        "median_var_hat": 0.96678626537323,
+        "median_peak_err_bpm": 0.0
+      },
+      {
+        "subject": "M007",
+        "n_clips": 97,
+        "n_sessions": 10,
+        "median_r_masked": 0.9989030882716179,
+        "median_r_full": 0.9991806894540787,
+        "median_mse": 0.002596367266960442,
+        "median_mae": 0.0387611270416528,
+        "median_rmse": 0.050347112119197845,
+        "median_var_hat": 0.9899893626570702,
+        "median_peak_err_bpm": 0.0
+      },
+      {
+        "subject": "M012",
+        "n_clips": 75,
+        "n_sessions": 10,
+        "median_r_masked": 0.998601820319891,
+        "median_r_full": 0.9989329166710377,
+        "median_mse": 0.0033480692945886403,
+        "median_mae": 0.04227619920857251,
+        "median_rmse": 0.057538507506251335,
+        "median_var_hat": 0.9975223951041698,
+        "median_peak_err_bpm": 0.0
+      },
+      {
+        "subject": "M016",
+        "n_clips": 8,
+        "n_sessions": 5,
+        "median_r_masked": 0.9967268891632557,
+        "median_r_full": 0.9976203069090843,
+        "median_mse": 0.007237632555188611,
+        "median_mae": 0.059952939162030816,
+        "median_rmse": 0.0832686850335449,
+        "median_var_hat": 0.9536382686346769,
+        "median_peak_err_bpm": 0.0
+      },
+      {
+        "subject": "M026",
+        "n_clips": 18,
+        "n_sessions": 5,
+        "median_r_masked": 0.9978950843214989,
+        "median_r_full": 0.9985474571585655,
+        "median_mse": 0.004480869836697821,
+        "median_mae": 0.04563456156756729,
+        "median_rmse": 0.06614679552149028,
+        "median_var_hat": 0.9865589458495378,
+        "median_peak_err_bpm": 0.0
+      },
+      {
+        "subject": "M029",
+        "n_clips": 85,
+        "n_sessions": 9,
+        "median_r_masked": 0.998644445091486,
+        "median_r_full": 0.9990198202431202,
+        "median_mse": 0.0031179796351352707,
+        "median_mae": 0.040850871009752154,
+        "median_rmse": 0.055094117065891623,
+        "median_var_hat": 0.985924631357193,
+        "median_peak_err_bpm": 0.0
+      },
+      {
+        "subject": "M031",
+        "n_clips": 83,
+        "n_sessions": 10,
+        "median_r_masked": 0.9989015311002731,
+        "median_r_full": 0.9991866946220398,
+        "median_mse": 0.0025682902050903067,
+        "median_mae": 0.03837914043106139,
+        "median_rmse": 0.050335193518549204,
+        "median_var_hat": 0.9920165091753006,
+        "median_peak_err_bpm": 0.0
+      },
+      {
+        "subject": "M038",
+        "n_clips": 115,
+        "n_sessions": 10,
+        "median_r_masked": 0.9990524090826511,
+        "median_r_full": 0.9993085525929928,
+        "median_mse": 0.0021938464196864516,
+        "median_mae": 0.03514555958099663,
+        "median_rmse": 0.04651269246824086,
+        "median_var_hat": 0.989449754357338,
+        "median_peak_err_bpm": 0.0
+      },
+      {
+        "subject": "M042",
+        "n_clips": 107,
+        "n_sessions": 10,
+        "median_r_masked": 0.999081589281559,
+        "median_r_full": 0.9993051886558533,
+        "median_mse": 0.0022790676666772924,
+        "median_mae": 0.03552778926678002,
+        "median_rmse": 0.04740113718435168,
+        "median_var_hat": 0.9964036419987679,
+        "median_peak_err_bpm": 0.0
+      },
+      {
+        "subject": "M058",
+        "n_clips": 78,
+        "n_sessions": 9,
+        "median_r_masked": 0.9986323826014996,
+        "median_r_full": 0.9990260358899832,
+        "median_mse": 0.0031855840716161765,
+        "median_mae": 0.042861715774051845,
+        "median_rmse": 0.0555954062147066,
+        "median_var_hat": 0.9920562412589788,
+        "median_peak_err_bpm": 0.0
+      }
+    ],
+    "r_masked_median": {
+      "median": 0.998584071174264,
+      "lo": 0.9982788488268852,
+      "hi": 0.9987093657255173,
+      "n_subjects": 27,
+      "n_boot": 2000
+    },
+    "r_full_median": {
+      "median": 0.9989628177136183,
+      "lo": 0.9987392351031303,
+      "hi": 0.9990717023611069,
+      "n_subjects": 27,
+      "n_boot": 2000
+    },
+    "mse_median": {
+      "median": 0.003275366878369823,
+      "lo": 0.0029115991346770898,
+      "hi": 0.004026034701382741,
+      "n_subjects": 27,
+      "n_boot": 2000
+    },
+    "var_hat_median": {
+      "median": 0.9897460006177425,
+      "lo": 0.9865589458495378,
+      "hi": 0.9920165091753006,
+      "n_subjects": 27,
+      "n_boot": 2000
+    },
+    "peak_err_bpm_median": {
+      "median": 0.0,
+      "lo": 0.0,
+      "hi": 0.0,
+      "n_subjects": 27,
+      "n_boot": 2000
+    }
+  },
+  "per_clip_dropped": "1742 rows; the full report stays at /work/home/ne95ocyg/MA-project-KISMED/output/eval/adr008_recon/mid_fold0.json"
+}

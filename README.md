@@ -17,8 +17,9 @@ Downstream branches target two 1-D physiological waveforms:
 - **RESP** (`resp`) — continuous respiration waveform reconstruction
 
 Optional workflows include a frozen-encoder action-unit (AU) occurrence probe,
-offline ROI and physiological cache builders, TIR-ROI respiration experiments,
-and zero-shot cross-modal reconstruction probes.
+offline ROI and physiological artefact cache builders, TIR-ROI respiration
+experiments, and zero-shot cross-modal reconstruction probes (including
+budget-exempt full-frame remote-sensing evaluation).
 
 ```mermaid
 flowchart LR
@@ -37,44 +38,63 @@ flowchart LR
 ## Why this project
 
 - **Three-stage progressive pipeline** — VideoMAE-style 3-D tubelet
-  initialization, MultiMAE-style multimodal masked pre-training, and
-  visual-only waveform fine-tuning orchestrated through a unified YAML + CLI
-  interface.
+  initialization, MultiMAE-style early-token-mixing pre-training
+  ([`ADR-014`](code/notes/design/ADR-014-stage2-multimae-early-token-mixing-architecture.md)),
+  and visual-only waveform fine-tuning
+  ([`ADR-015`](code/notes/design/ADR-015-stage3-waveform-regression-and-joint-loss.md))
+  orchestrated through a unified YAML + CLI interface.
 - **Flexible modality contract** — select visual streams (`rgb`, `tir`, `rgb2d`)
   and 1-D physiological signals (`bp`, `resp`) via `--streams`; ablations are a
   YAML change. `rgb2d` is the 2D-texture face-ROI stream that shares the `tir`
   patch grid, making `tir,rgb2d,resp` (and `tir,rgb2d,bp,resp`) the supported
   visible+TIR fusion configurations.
-- **Constant-budget masking (ADR-002 / ADR-005 / ADR-006)** — one masking
-  policy keeps the encoder sequence length fixed at `n_budget` tokens (default
-  350) on every step with no `[MASK]` tokens or padding in the encoder. It
-  supports waveform inpainting, bi-visual virtual sensing (zero physiological
-  tokens), a two-phase virtual-sensing curriculum (ADR-005), and a
-  single-carrier virtual-sensing regime where one visual stream holds all 350
-  tokens while the other keeps zero (ADR-006). Mask placement (`scattered` or
-  contiguous `span`) is an independent layer.
-- **Multi-tier waveform evaluation** — Tier 1 temporal metrics (MAE, RMSE,
-  Pearson, band-limited Pearson, amplitude, breath-rate MAE), Tier 2 Welch PSD
-  spectral consistency, and Tier 3 clinical HRV metrics for the BP branch via
-  NeuroKit2.
-- **ROI-aware preprocessing & immutable caches** — TIR mouth/nose ROI crops,
-  `rgb2d` face-ROI caches, and quality-gated respiration (`resp_cache`, ADR-003)
-  and blood-pressure (`bp_artefact`, ADR-004) session artefacts.
-- **Reproducible evaluation protocols** — subject-disjoint fold plans
-  (`protocol.FoldPlan` with write-once `partition.json`, ADR-001) plus
-  clip-, session-, subject-, and k-fold evaluation runners.
+- **Constant-budget & anatomy-aware masking (`ADR-007` / `ADR-006`)** — one
+  masking policy fixes the encoder input length at `n_budget` tokens (`200` on
+  the active two-stream `tir,resp` arm; `350` on multi-visual fusion arms) on
+  every training step, with no `[MASK]` tokens or padding in the encoder. It
+  supports two-phase virtual-sensing curricula, **anatomy-aware stratified
+  spatial sampling** (`spatial_sampling: anatomy_aware`, guaranteeing anatomical
+  core coverage on every step, [`ADR-007`](code/notes/design/ADR-007-two-stream-anatomy-aware-constant-budget-masking.md)),
+  single-carrier visual steps ([`ADR-006`](code/notes/design/ADR-006-three-regime-virtual-sensing-masking.md)),
+  independent 1-D placement (`scattered` or contiguous `span`), and
+  evaluation-only budget-exempt probes (`--exempt_budget`) for full-frame
+  remote-sensing inference.
+- **Composite respiration objective & cross-modal alignment (`ADR-008`)** —
+  combines masked MSE, masked Pearson correlation, and band-limited respiratory
+  PSD L1 ($\alpha/\beta/\gamma = 1/2/1$, $\lambda_\text{resp} = 5.0$) with
+  Mode-2-gated symmetric InfoNCE alignment ($\lambda_\text{align} = 0.5$) and
+  gradient-balance diagnostics (`--grad_balance_freq`) to prevent
+  conditional-mean collapse ([`ADR-008`](code/notes/design/ADR-008-composite-objective-and-cross-modal-alignment.md)).
+- **ROI-aware preprocessing & immutable caches** — landmark-guided square TIR
+  ROI crops ([`ADR-011`](code/notes/design/ADR-011-landmark-roi-geometry-and-tir-cache.md)),
+  native-resolution `rgb2d` memmap caches ([`ADR-012`](code/notes/design/ADR-012-rgb2d-native-memmap-roi-cache.md)),
+  clip/cube visual normalization ([`ADR-013`](code/notes/design/ADR-013-visual-clip-and-masked-cube-normalization.md)),
+  and quality-gated respiration (`resp_cache`, [`ADR-003`](code/notes/design/ADR-003-resp-session-cache-artefact.md))
+  and blood-pressure (`bp_artefact`, [`ADR-004`](code/notes/design/ADR-004-bp-session-cache-artefact.md))
+  session artefacts.
+- **Reproducible evaluation protocols & multi-tier metrics** — subject-disjoint
+  5-fold plans (`protocol.FoldPlan` with write-once `partition.json`,
+  [`ADR-001`](code/notes/design/ADR-001-subject-disjoint-split-and-selection.md)),
+  task distortion tiers ([`ADR-010`](code/notes/design/ADR-010-bp4d-task-distortion-tiers.md)),
+  and three-tier offline scoring ([`ADR-009`](code/notes/design/ADR-009-resp-waveform-evaluation-protocol.md)):
+  Tier 1 temporal (MAE, RMSE, Pearson, band-limited Pearson, amplitude,
+  breath-rate MAE in `bpm`), Tier 2 Welch PSD spectral consistency, and Tier 3
+  clinical HRV metrics for the BP branch via NeuroKit2.
 - **Local smoke & HPC DDP workflows** — single-GPU smoke configs and scripts
-  for local development, alongside Slurm multi-GPU DDP sweeps and auto-resuming
-  30-minute pre-training chains.
-- **Code-grounded documentation** — generated contracts, ADRs, experiment
-  plans, terminology glossary, and measured evaluation records live under
+  for local development, alongside Slurm multi-GPU DDP sweeps, mixed-precision
+  training with DDP `no_sync` gradient accumulation
+  ([`ADR-016`](code/notes/design/ADR-016-mixed-precision-and-ddp-accumulation.md)),
+  and auto-resuming 30-minute pre-training chains.
+- **Code-grounded documentation** — generated contracts, an indexed ADR
+  registry (`ADR-001`–`ADR-016`), 1-to-1 feature plans, experiment runbooks, a
+  terminology glossary, and measured baseline records live under
   [`code/notes/`](code/notes/).
 
 ## Included components
 
 | Path | Purpose |
 | --- | --- |
-| [`code/core/`](code/core/) | Models (`MultiModalMAE`, `MultiModalWaveformRegressor`), adapters, constant-budget masking, losses, and registry |
+| [`code/core/`](code/core/) | Models (`MultiModalMAE`, `MultiModalWaveformRegressor`), adapters, constant-budget & anatomy-aware masking, composite/alignment losses, and registry |
 | [`code/data/`](code/data/) | BP4D+ conversion, video/physiology I/O, ROI datasets, and offline cache/artefact readers |
 | [`code/models/`](code/models/) | Model factory (`create_model`) and Stage-1 VideoMAE weight downloader |
 | [`code/engines/`](code/engines/) | Training, validation, inference, and visualization loops |
@@ -86,10 +106,10 @@ flowchart LR
 | [`code/configs/finetune/`](code/configs/finetune/) | Stage-3 and AU-probe YAML configurations |
 | [`code/scripts/local/`](code/scripts/local/) | Single-GPU local smoke wrappers |
 | [`code/scripts/hpc/`](code/scripts/hpc/) | Slurm launch, sweep, chain, and preprocessing jobs |
-| [`code/tests/`](code/tests/) | Pytest suite covering data, caches, masking policies, models, losses, and runners |
+| [`code/tests/`](code/tests/) | Pytest suite covering data, caches, masking policies, models, losses, runners, and ADR governance |
 | [`code/analysis/`](code/analysis/) | Standalone measurement scripts (e.g. respiration source-rate probe) |
-| [`code/notes/`](code/notes/) | Glossary, generated specs, ADRs, experiment/feature plans, and eval verdicts |
-| [`notebooks/`](notebooks/) | TIR-ROI respiration notebook and guide |
+| [`code/notes/`](code/notes/) | Glossary, generated specs, ADR registry (`ADR-001`–`ADR-016`), plans, explanations, and eval baselines |
+| [`notebooks/`](notebooks/) | TIR-ROI respiration notebook and workflow guide |
 | [`report/`](report/) | LaTeX thesis source |
 | [`presentation/`](presentation/) | Presentation source and slide builder |
 
@@ -201,17 +221,21 @@ python runners/run_pretrain.py -c configs/pretrain/stage2_local_pretrained.yaml
 
 Key Stage-2 configurations under [`code/configs/pretrain/`](code/configs/pretrain/):
 
-- `stage2_local_pretrained_ssv2.yaml` — SSV2 twin for K400-vs-SSV2 comparison.
-- `stage2_multimodal.yaml` — canonical multi-stream HPC template.
-- `stage2_{local,hpc}_tir_roi_resp.yaml` — TIR-ROI + respiration pipelines.
-- `stage2_budget_tir_roi_resp_rgb2d.yaml` — three-stream (`tir,rgb2d,resp`)
-  constant-budget baseline (no curriculum).
-- `stage2_budget_3stream_curriculum.yaml` — ADR-005 three-stream arm with a
-  two-phase virtual-sensing curriculum (`p_warm = 0.10` → `p_target = 0.50`).
-- `stage2_budget_3regime_single_modality.yaml` — ADR-006 three-regime arm
+- `stage2_budget_tir_resp_2stream_anatomy_adr008.yaml` — active Phase-1
+  two-stream arm (`tir,resp`, 200-token budget, anatomy-aware stratified tubes)
+  with the ADR-008 composite respiration objective (`alpha/beta/gamma = 1/2/1`,
+  `lambda_resp = 5.0`) and Mode-2-gated InfoNCE alignment (`lambda_align = 0.5`).
+- `stage2_budget_tir_resp_2stream_anatomy.yaml` — matched ADR-007 two-stream
+  pure-MSE comparator (`lambda_resp = 0.5`).
+- `stage2_budget_3stream_curriculum.yaml` — three-stream (`tir,rgb2d,resp`,
+  350-token budget) baseline with a two-phase virtual-sensing curriculum.
+- `stage2_budget_3regime_single_modality.yaml` — ADR-006 Phase-2 fusion arm
   adding single-carrier virtual sensing (`tir`-only or `rgb2d`-only steps).
 - `stage2_fourstream_tir_rgb2d_bp_resp_small_random.yaml` — four-stream
-  (`tir,rgb2d,bp,resp`) arm on a randomly initialized ViT-Small.
+  (`tir,rgb2d,bp,resp`) comparator on a randomly initialized ViT-Small.
+- `stage2_local_pretrained_ssv2.yaml` — SSV2 twin for K400-vs-SSV2 comparison.
+- `stage2_multimodal.yaml` and `stage2_{local,hpc}_tir_roi_resp.yaml` —
+  canonical multi-stream and TIR-ROI templates.
 
 Pre-training does not require downloaded weights: set
 `pretrained_encoder: none` (or `--pretrained_encoder none|random|scratch|c0`) to
@@ -279,8 +303,14 @@ python runners/run_build_2d_roi_cache.py --help
 # AU-occurrence probe on a frozen Stage-2 encoder
 python runners/run_au_probe.py -c configs/finetune/au_local.yaml
 
-# Zero-shot reconstruction probe and pre-training visualization
-python runners/run_eval_recon.py --help
+# Zero-shot Mode-1 pretext & budget-exempt remote-sensing probes
+python runners/run_eval_recon.py --checkpoint "$CKPT" --split test \
+  --resp_probe hidden --kept_tir 1.0 --pretext_metrics --out mode1.json
+python runners/run_eval_recon.py --checkpoint "$CKPT" --split test \
+  --resp_probe hidden --kept_tir 1.0 --exempt_budget --pretext_metrics \
+  --out remote_sensing.json
+
+# Pre-training visualization
 python runners/run_visualize_pretrain.py --help
 ```
 
@@ -318,44 +348,60 @@ EXP_ROOT=$WORK_SCRATCH/pretrain_v1 FOLDS=0 \
 
 ## Latest baseline results
 
-### Three-stream Stage-2 (`tir`, `rgb2d`, `resp`), fold 0 — ADR-005
+All figures below measure **zero-shot Stage-2** respiration reconstruction on
+the fold-0 held-out `test` role (27 unseen subjects, no Stage-3 fine-tuning).
 
-Pre-trained `project_multimae_base` (VideoMAE `k400` → `tir` adapter,
-random-init `rgb2d` adapter, 350-token constant budget, curriculum
-`p = 0.10 → 0.50` at epoch 50) for **150 epochs** on fold 0 (6,762 train / 1,128
-val clips) via a 13-link 4×A100 chain. Records:
-[`README.md`](code/notes/eval/baselines/tir_rgb2d_resp/README.md),
-[`fold0_pretrain_150ep.md`](code/notes/eval/baselines/tir_rgb2d_resp/fold0_pretrain_150ep.md),
-[`resp_recon_arms_ab.md`](code/notes/eval/baselines/tir_rgb2d_resp/resp_recon_arms_ab.md),
-[`multimae_style_panel.md`](code/notes/eval/baselines/tir_rgb2d_resp/multimae_style_panel.md).
+### Two-stream Stage-2 (`tir`, `resp`), fold 0 — ADR-008 composite arm (active)
 
-![Three-stream masked reconstruction at three budget allocations](code/notes/eval/baselines/tir_rgb2d_resp/multimae_style_kept_density.png)
+Pre-trained `project_multimae_base` (103.9 M params, VideoMAE `k400` → `tir`
+adapter, 200-token budget, anatomy-aware stratified tubes, composite
+respiration loss `alpha/beta/gamma = 1/2/1`, `lambda_resp = 5.0`, Mode-2-gated
+InfoNCE `lambda_align = 0.5`) for **150 epochs** via a 13-link 4×A100 chain.
+Records: [`README.md`](code/notes/eval/baselines/tir_resp/README.md),
+[`mode1_pretext_fold0.md`](code/notes/eval/baselines/tir_resp/mode1_pretext_fold0.md),
+[`multimae_style_panel.md`](code/notes/eval/baselines/tir_resp/multimae_style_panel.md).
 
-*MultiMAE-Figure-6-style panel for the frozen fold-0 checkpoint (`checkpoint-0149.pth`)
-on a held-out test clip (subject `F053`, session `F053_T9`). The visible budget
-is fixed at 350 tokens across three allocations: 4+5 visual tubes + 50% RESP →
-6+6 tubes + 20% RESP → 7+7 tubes + 0% RESP (virtual sensing).*
+![Two-stream masked reconstruction at three budget allocations plus a fully visible TIR remote-sensing column](code/notes/eval/baselines/tir_resp/artifacts/multimae_style_kept_density.png)
 
-Key zero-shot findings on fold-0 held-out `test` (1,594 clips / 27 subjects):
+*MultiMAE-Figure-6-style panel for the frozen fold-0 ADR-008 checkpoint
+(`checkpoint-0149.pth`) on held-out clip `F064_T6` (`t_start = 12.0 s`). The
+first three columns share the 200-token constant budget (4/36 TIR tubes + 40 %
+RESP → 5/36 tubes + 30 % RESP → 8/36 tubes + 0 % RESP); the fourth column is a
+budget-exempt remote-sensing probe with all 36/36 TIR tubes (900 tokens)
+visible and RESP hidden.*
 
-- **RESP inpainting** (125/250 tokens visible, 210 clips): `r_masked`
-  **+0.996** (MSE 0.009).
-- **RESP virtual sensing** (0 RESP tokens visible): `r_masked` **+0.109**
-  (subject median +0.113 [+0.078, +0.136]) under TIR-max vs **+0.080** under
-  `rgb2d`-max (paired Δ = −0.0292 ± 0.0044, t = −6.62) — a weak, real lead
-  rather than a usable waveform.
-- **Content ablation**: rolling `tir` drops `r_masked` by **−0.0539**
-  (t = −9.96), whereas rolling or zeroing `rgb2d` has no measurable effect
-  (−0.0012 / −0.0028), motivating ADR-006's single-carrier regime.
+Zero-shot hidden-respiration progression on fold-0 held-out `test` (1,742 clips
+for the two-stream arm; 1,594 clips for predecessors):
 
-### Four-stream Stage-2 (`tir`, `rgb2d`, `bp`, `resp`), fold 0 — ADR-002 comparator
+| Stage-2 arm (fold 0, 150 ep) | Probe (`tir` / `resp` tokens) | Subject-median `r_masked` [95 % CI] | `Var(ŷ)` (subj. med.) | Peak err (subj. med.) | Record |
+| --- | --- | --- | ---: | ---: | --- |
+| Four-stream pure MSE (`tir,rgb2d,bp,resp`, ViT-S) | Mode 1, TIR-max | `+0.0062` | ≈ 0 | — | [`tir_rgb2d_bp_resp`](code/notes/eval/baselines/tir_rgb2d_bp_resp/resp_recon_arms_ab.md) |
+| Three-stream pure MSE (`tir,rgb2d,resp`, ViT-B) | Mode 1, TIR-max | `+0.113` `[+0.078, +0.136]` | ≈ 0 | — | [`tir_rgb2d_resp`](code/notes/eval/baselines/tir_rgb2d_resp/README.md) |
+| **Two-stream ADR-008 composite (`tir,resp`, ViT-B)** | Mode 1 (`200 / 0`, budgeted) | **`+0.326`** `[+0.244, +0.406]` | `0.472` | `4.92 bpm` | [`mode1_pretext_fold0.md`](code/notes/eval/baselines/tir_resp/mode1_pretext_fold0.md) |
+| **Two-stream ADR-008 composite (`tir,resp`, ViT-B)** | Remote sensing (`900 / 0`, exempt) | **`+0.382`** `[+0.273, +0.535]` | `0.652` | `3.66 bpm` | [`multimae_style_panel.md`](code/notes/eval/baselines/tir_resp/multimae_style_panel.md) |
+| Two-stream ADR-008 — rolled-TIR control | Remote sensing (`900 / 0`, 16-frame roll) | `+0.082` `[+0.038, +0.153]` | `0.628` | `5.49 bpm` | [`multimae_style_panel.md`](code/notes/eval/baselines/tir_resp/multimae_style_panel.md) |
 
-A randomly initialized ViT-Small (`stage2_fourstream_tir_rgb2d_bp_resp_small_random.yaml`,
-350-token budget, 150 epochs, `val/loss` 3.5040 → 2.1051) held its budget on
-all 31,050 steps, while zero-shot RESP reconstruction remained at the noise
-floor (`r_masked` +0.006 TIR-max vs +0.014 `rgb2d`-max). See
-[`fold0_pretrain_150ep.md`](code/notes/eval/baselines/tir_rgb2d_bp_resp/fold0_pretrain_150ep.md)
-and [`resp_recon_arms_ab.md`](code/notes/eval/baselines/tir_rgb2d_bp_resp/resp_recon_arms_ab.md).
+- **Collapse resolved, rate target still open:** ADR-008 lifts budgeted Mode-1
+  subject-median `r` ~2.9× over the three-stream pure-MSE baseline (`+0.113` →
+  `+0.326`) and eliminates conditional-mean collapse (`Var(ŷ) = 0.472`), while
+  spectral peak error (`4.92 bpm`) still misses the ADR-008 §3.2 failure
+  threshold (`> 3.0 bpm`).
+- **Full-frame remote-sensing gain is content-driven:** Providing the full
+  900-token TIR clip (`--exempt_budget`) raises subject-median `r` to `+0.382`
+  (per-clip paired Δ `+0.055 ± 0.007`, t = +8.40), `Var(ŷ)` to `0.652`, and
+  lowers peak error to `3.66 bpm`. Rolling TIR by 16 frames (2.56 s) collapses
+  subject-median `r` to `+0.082` (clip mean `+0.108`), confirming aligned
+  thermal content drives the gain.
+- **Predecessor baselines:** Three-stream (`tir,rgb2d,resp`, 150 epochs,
+  [`fold0_pretrain_150ep.md`](code/notes/eval/baselines/tir_rgb2d_resp/fold0_pretrain_150ep.md))
+  achieved `+0.996` inpainting and `+0.113` Mode-1 TIR-max vs `+0.080`
+  `rgb2d`-max, with content ablation showing TIR carried the signal while
+  random-init `rgb2d` had no measurable effect. Four-stream random-init
+  ViT-Small ([`fold0_pretrain_150ep.md`](code/notes/eval/baselines/tir_rgb2d_bp_resp/fold0_pretrain_150ep.md))
+  validated constant-budget mechanics over 31,050 steps at the zero-shot noise
+  floor (`+0.006`).
+- **Gating status:** Stage-3 five-fold evaluation against the matched pure-MSE
+  ADR-007 comparator (`ADR-008 §3.3`) has not yet been run.
 
 ## Testing
 
@@ -364,7 +410,7 @@ Run the pytest suite from [`code/`](code/):
 ```bash
 cd code
 python -m pytest
-python -m pytest tests/test_waveform_losses.py -q   # targeted
+python -m pytest tests/test_plan_budget_exempt.py tests/test_budget_masking.py -q
 python -m pytest --cov=data --cov=evaluation --cov=runners --cov=utils
 ```
 
@@ -380,13 +426,13 @@ python -m compileall .
   commands
 - [`code/notes/GLOSSARY.md`](code/notes/GLOSSARY.md) — canonical terminology,
   shapes, and notation
+- [`code/notes/design/README.md`](code/notes/design/README.md) — Architecture
+  Decision Records registry (`ADR-001`–`ADR-016`)
 - [`code/notes/spec/`](code/notes/spec/) — generated architecture, data,
   engine, and execution contracts
-- [`code/notes/design/`](code/notes/design/) — ADRs and architectural design
-  decisions
-- [`code/notes/plan/`](code/notes/plan/) — training-run protocols
-  ([`experiments/`](code/notes/plan/experiments/)) and implementation plans
-  ([`features/`](code/notes/plan/features/))
+- [`code/notes/plan/README.md`](code/notes/plan/README.md) — training-run
+  protocols ([`experiments/`](code/notes/plan/experiments/)) and 1-to-1 ADR
+  implementation plans ([`features/`](code/notes/plan/features/))
 - [`code/notes/eval/`](code/notes/eval/) — measured evaluation records and
   baselines
 - [`code/notes/explanation/`](code/notes/explanation/) — result and cluster
@@ -408,11 +454,11 @@ or private checkpoints.
 Maintained within the KIS*MED project at TU Darmstadt. Primary maintainer:
 Leqiao Peng (<leqiao.peng@stud.tu-darmstadt.de>).
 
-No standalone `CONTRIBUTING.md` is bundled; follow [`AGENTS.md`](AGENTS.md) and
-keep contributions focused and reproducible:
+No standalone `CONTRIBUTING.md` is bundled; follow [`AGENTS.md`](AGENTS.md) for
+repository guardrails:
 
 1. Create a branch and keep runtime source edits under [`code/`](code/).
-2. Update related configs, specs, or notes alongside behavioral changes.
+2. Update related configs, specs, ADRs, or notes alongside behavioral changes.
 3. Add or update pytest tests under [`code/tests/`](code/tests/) and verify
    with `python -m pytest` plus a local smoke run.
 4. Open a pull request describing data/config assumptions and validation

@@ -35,6 +35,8 @@ Note the last top-up link reports `FAILED` in `sacct`; its stderr is the runner'
 | [`artifacts/mode1_pretext_fold0_summary.json`](artifacts/mode1_pretext_fold0_summary.json) | the same numbers machine-readable (per-clip dump omitted; full report in `output/eval/adr008_pretext/mode1_fold0.json`) |
 | [`artifacts/resp-reconstruction-mode1-fold0.png`](artifacts/resp-reconstruction-mode1-fold0.png) | slide figure: three held-out clips, mean PSD, rate scatter, per-subject `r` |
 | [`figure_resp_reconstruction.py`](figure_resp_reconstruction.py) | regenerates that figure from the checkpoint |
+| [`multimae_style_panel.md`](multimae_style_panel.md) + [`artifacts/multimae_style_kept_density.png`](artifacts/multimae_style_kept_density.png) | MultiMAE Figure-6-style panel (TIR / RESP × three 200-token budget allocations **plus a fully visible TIR remote-sensing column**, one held-out clip) and full test-set evaluation of each condition |
+| [`artifacts/respmax_fold0_summary.json`](artifacts/respmax_fold0_summary.json), [`artifacts/mid_fold0_summary.json`](artifacts/mid_fold0_summary.json), [`artifacts/remote_sensing_fold0_summary.json`](artifacts/remote_sensing_fold0_summary.json), [`artifacts/remote_sensing_tir_rolled_fold0_summary.json`](artifacts/remote_sensing_tir_rolled_fold0_summary.json) | test-set summaries for the three non-Mode-1 panel columns **plus the rolled-TIR content control** (trimmed; full reports in `output/eval/adr008_recon/`) |
 
 Headline (fold-0 test role, 1742 clips / 213 sessions / 27 subjects, 5 mask draws, `K_resp = 0`,
 `K_tir = 200`):
@@ -48,6 +50,18 @@ Headline (fold-0 test role, 1742 clips / 213 sessions / 27 subjects, 5 mask draw
 
 The condition-mean collapse is gone, but three of the ADR's four success thresholds are still missed —
 see `mode1_pretext_fold0.md` §"Honest reading".
+
+The two inpainting allocations (respiration partially visible) are reported separately in
+[`multimae_style_panel.md`](multimae_style_panel.md) §4: masked `r` is **+0.999** at both 100/250
+and 75/250 visible tokens — the local-interpolation ceiling — which is why the Mode-1 row above, not
+those, is the sensing headline.
+
+The same note also measures the **deployment / remote-sensing condition** (whole TIR clip visible,
+budget-exempt): subject-median `r` reaches **+0.382 [+0.273, +0.535]** (per-clip paired Δ
+**+0.055 ± 0.007** over the 200-token Mode-1 row), with `Var(ŷ)` rising from 0.47 to 0.65 and
+spectral peak error falling from 4.92 to 3.66 bpm. A rolled-TIR control (same 900 tokens, temporal
+alignment broken) drops to subject-median `r` **+0.082** (clip mean `+0.108`), confirming that the
+gain comes from TIR content rather than token count.
 
 ## Reproduce
 

@@ -836,7 +836,8 @@ class MultiModalMAE(nn.Module):
     # masking (masks == 1 => masked / to reconstruct)
     # ------------------------------------------------------------------ #
     def plan_from_counts(self, kept_tokens: Dict[str, int],
-                         kept_core: Optional[int] = None) -> BudgetPlan:
+                         kept_core: Optional[int] = None,
+                         exempt_budget: bool = False) -> BudgetPlan:
         """Validate an EXPLICIT allocation (evaluation pins, reconstructions).
 
         The policy owns the training draws; this entry point lets a caller that
@@ -844,9 +845,14 @@ class MultiModalMAE(nn.Module):
         invariants enforced (exact budget, caps, floors, whole tubes, and — on
         an ``anatomy_aware`` checkpoint — the stratified split, whose
         ``kept_core`` cannot be recovered from a pinned allocation).
+
+        ``exempt_budget=True`` states an EVALUATION-ONLY allocation that leaves
+        the constant budget on purpose (a fully visible visual stream); see
+        :meth:`ConstantBudgetApportioner.plan_from_counts`.
         """
         return self.apportioner.plan_from_counts(kept_tokens,
-                                                 kept_core=kept_core)
+                                                 kept_core=kept_core,
+                                                 exempt_budget=exempt_budget)
 
     def make_masks(self, B: int, device,
                    counts_generator: Optional[torch.Generator] = None,
@@ -1060,10 +1066,20 @@ class MultiModalMAE(nn.Module):
                 tok, 1, keep.unsqueeze(-1).expand(B, keep.shape[1],
                                                   tok.shape[2])))
         z = torch.cat(enc_parts, dim=1)                 # [B, n_budget, D]
-        assert tuple(z.shape) == (B, self.n_budget, self.embed_dim), (
+        # The width is the constant budget for every plan the POLICY can draw.
+        # An EVALUATION-ONLY plan may state its own length instead (a fully
+        # visible visual stream needs 36 tubes x 25 tokens = 900 tokens on a
+        # 200-token checkpoint); ``budget_exempt`` is only ever set by
+        # ``plan_from_counts(..., exempt_budget=True)``, never by the sampler.
+        want_len = (int(plan.total_tokens)
+                    if getattr(plan, 'budget_exempt', False) else self.n_budget)
+        is_exempt = bool(getattr(plan, 'budget_exempt', False))
+        assert tuple(z.shape) == (B, want_len, self.embed_dim), (
             f'MultiModalMAE.forward: the encoder input is {tuple(z.shape)} but '
-            f'the constant budget requires {(B, self.n_budget, self.embed_dim)} '
-            f'(plan {plan.kept_tokens}, mode {plan.mode}).')
+            f'{"the exempt plan" if is_exempt else "the constant budget"} '
+            f'requires {(B, want_len, self.embed_dim)} '
+            f'(plan {plan.kept_tokens}, mode {plan.mode}, '
+            f'budget_exempt={is_exempt}).')
 
         # per-stream ROW OFFSETS inside `z` (the concatenation order). ADR-008
         # needs them twice: to slice the two pools for the InfoNCE term, and to

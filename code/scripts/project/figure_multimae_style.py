@@ -2,18 +2,28 @@
 
 Rows = the checkpoint's streams; columns = the original clip and, per kept
 density, [masked input | prediction]. The three densities are stated as KEPT
-TOKEN COUNTS that sum to the checkpoint's constant budget (350), because the
+TOKEN COUNTS that sum to the checkpoint's constant budget (350 on the ADR-002/
+ADR-005 arms, 200 on the ADR-007/ADR-008 two-stream arm), because the
 architecture asserts an encoder length of exactly `n_budget` -- a "fewer
 visible tokens overall" sweep like the paper's is not expressible here, so what
 varies is how the fixed budget is allocated.
 
-Two presets exist, selected from the checkpoint's own stream set:
+Three presets exist, selected from the checkpoint's own stream set:
 
 * four streams (`tir`, `rgb2d`, `bp`, `resp`) -- the ADR-002 predecessor arm;
 * three streams (`tir`, `rgb2d`, `resp`) -- the ADR-005 arm.  Here the
   physiological cap (125 of 250 tokens) plus the 350-token budget leave at
   least 225 visual tokens, so the sparsest expressible visual column is 4 + 5
-tubes, not the four-stream panel's 3 + 3.
+tubes, not the four-stream panel's 3 + 3;
+* two streams (`tir`, `resp`) -- the ADR-007/ADR-008 arm.  Budget 200, TIR cap
+  8 of 36 tubes, resp cap 100 of 250 tokens: the sparsest visual column is
+  4 tubes (100 tokens) + the full 100-token respiration cap, and the densest is
+  8 tubes with respiration fully hidden (Mode 1 virtual sensing).  This preset
+  carries a FOURTH column, the remote-sensing / deployment condition: every TIR
+  tube visible (900 tokens, i.e. outside the constant budget by construction)
+  and no respiration token -- built with
+  ``plan_from_counts(..., exempt_budget=True)``, which states its own encoder
+  length instead of spending the budget.
 
 Clip: one sample from the fold's HELD-OUT test subjects (never trained on).
 
@@ -37,8 +47,16 @@ from runners.run_visualize_pretrain import (                 # noqa: E402
     _blank_masked_patches, _held_out_subjects, _to_rgb,
     reconstruct_visual)
 
-#: (label, kept tokens per stream). Each row MUST sum to the model's n_budget.
-#: Keyed by the checkpoint's stream set so one script serves both arms.
+#: height of the per-column allocation label, in axes fractions. It must clear
+#: the two-line ``masked in / kept N/M`` axes title underneath it; 1.20 does not
+#: once the figure is only two rows tall (the panel axes are then larger, so the
+#: title is too), so the label sits one more line higher.
+COLUMN_LABEL_Y = 1.30
+
+#: (label, kept tokens per stream[, plan_kwargs]). Standard rows MUST sum to
+#: the model's n_budget; an optional third element with ``exempt_budget=True``
+#: marks an evaluation-only column that deliberately leaves the budget.
+#: Keyed by the checkpoint's stream set so one script serves every arm.
 DENSITIES = {
     frozenset(('tir', 'rgb2d', 'bp', 'resp')): (
         ('sparse  (3/36 tubes, physio 100/250)', {'tir': 75, 'rgb2d': 75,
@@ -55,6 +73,23 @@ DENSITIES = {
                                             'resp': 50}),
         ('dense visual  (7/36 tubes, physio 0)', {'tir': 175, 'rgb2d': 175,
                                                   'resp': 0}),
+    ),
+    # ADR-007/ADR-008 two-stream arm: budget 200, TIR cap 8/36 tubes,
+    # respiration cap 100/250 tokens. The first three columns each spend the
+    # SAME 200 tokens, shifting the split between the visual stream and the
+    # waveform. The FOURTH column is the remote-sensing / deployment condition:
+    # the whole TIR clip is visible (36 of 36 tubes = 900 tokens) and NO
+    # respiration token reaches the encoder. Because that leaves the constant
+    # budget, it is built as an exempt plan (``exempt_budget=True``) with the
+    # core draw set to the full anatomical core so stratified placement covers
+    # every tube; see ``core.budget_masking.ConstantBudgetApportioner.plan_from_counts``.
+    frozenset(('tir', 'resp')): (
+        ('resp-max  (4/36 tubes, resp 100/250)', {'tir': 100, 'resp': 100}),
+        ('mid  (5/36 tubes, resp 75/250)', {'tir': 125, 'resp': 75}),
+        ('dense visual  (8/36 tubes, resp 0)', {'tir': 200, 'resp': 0}),
+        ('remote sensing  (36/36 tubes visible, resp 0)',
+         {'tir': 900, 'resp': 0},
+         {'exempt_budget': True, 'kept_core': 4}),
     ),
 }
 
@@ -115,14 +150,31 @@ def main(argv=None):
     batch = {k: v.to(dev).float() for k, v in batch_cpu.items()}
 
     plans = []
-    for label, counts in densities:
+    for preset in densities:
+        label, counts = preset[0], preset[1]
+        plan_kwargs = dict(preset[2]) if len(preset) > 2 else {}
         if set(counts) != set(model.streams):
             raise SystemExit(f'[fig] {label}: allocation keys {sorted(counts)} '
                              f'!= model streams {sorted(model.streams)}')
-        if sum(counts.values()) != budget:
-            raise SystemExit(f'[fig] {label}: counts sum to '
-                             f'{sum(counts.values())}, budget is {budget}')
-        plans.append((label, counts, model.plan_from_counts(counts)))
+        if not plan_kwargs.get('exempt_budget'):
+            if sum(counts.values()) != budget:
+                raise SystemExit(f'[fig] {label}: counts sum to '
+                                 f'{sum(counts.values())}, budget is {budget}')
+        else:
+            # An exempt column only ever means "this stream is FULLY visible", so
+            # the stated count has to be that stream's whole token count at THIS
+            # checkpoint's geometry -- a stale literal must not silently draw a
+            # partial frame and label it 100 %.
+            full = {s: int(model.n_visual if s in model.visual
+                           else model.n_signal) for s in model.streams}
+            for s, v in counts.items():
+                if v not in (0, full[s]):
+                    raise SystemExit(
+                        f'[fig] {label}: exempt column states {s}={v} tokens; '
+                        f'it must be 0 or all {full[s]} tokens of this '
+                        f'checkpoint')
+        plans.append((label, counts,
+                      model.plan_from_counts(counts, **plan_kwargs)))
 
     outs = []
     for i, (label, counts, plan) in enumerate(plans):
@@ -171,7 +223,13 @@ def main(argv=None):
                 kept_units = int((m_sp == 0).sum())
                 ax_in.set_title(f'masked in\nkept {kept_units}/{m_sp.numel()} tubes',
                                 fontsize=7.5)
-                ax_pr.set_title(f'prediction\n{counts[s]} tokens', fontsize=7.5)
+                # A fully visible stream has nothing to reconstruct: its
+                # "prediction" panel is the ground truth, so it is labelled as
+                # such instead of pretending to show a reconstruction.
+                ax_pr.set_title(
+                    f'prediction\n{counts[s]} tokens'
+                    if kept_units < m_sp.numel() else
+                    f'no masked token\n({counts[s]} kept)', fontsize=7.5)
                 ax_in.set_xticks([]); ax_in.set_yticks([])
                 ax_pr.set_xticks([]); ax_pr.set_yticks([])
             else:
@@ -198,12 +256,18 @@ def main(argv=None):
         axes[r][0].set_ylabel(s, fontsize=9)
 
     for g, (label, _, _) in enumerate(plans):
-        axes[0][1 + 2 * g].annotate(label, xy=(0.5, 1.20), xycoords='axes fraction',
+        axes[0][1 + 2 * g].annotate(label, xy=(0.5, COLUMN_LABEL_Y),
+                                    xycoords='axes fraction',
                                     ha='center', fontsize=8)
     e = entry
     n_streams = len(rows)
-    word = {3: 'Three', 4: 'Four'}.get(n_streams, str(n_streams))
-    fig.suptitle(f'{word}-stream reconstruction at three budget allocations — '
+    word = {2: 'Two', 3: 'Three', 4: 'Four'}.get(n_streams, str(n_streams))
+    n_exempt = sum(1 for _, _, pl in plans
+                   if getattr(pl, 'budget_exempt', False))
+    how = f'{len(plans) - n_exempt} budget allocations'
+    if n_exempt:
+        how += ' + a fully visible TIR (remote sensing)'
+    fig.suptitle(f'{word}-stream reconstruction at {how} — '
                  f'subject {e.get("subject")}, session {e.get("session")}, '
                  f'held-out (fold 0 test)', fontsize=10)
     out_png = a.out or os.path.join(
