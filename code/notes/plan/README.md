@@ -48,6 +48,7 @@ Rules of thumb:
 | [`features/ADR-012-rgb2d-native-memmap-roi-cache-plan.md`](features/ADR-012-rgb2d-native-memmap-roi-cache-plan.md) | `design/ADR-012-rgb2d-native-memmap-roi-cache.md` |
 | [`features/ADR-013-visual-clip-and-masked-cube-normalization-plan.md`](features/ADR-013-visual-clip-and-masked-cube-normalization-plan.md) | `design/ADR-013-visual-clip-and-masked-cube-normalization.md` |
 | [`features/ADR-016-mixed-precision-and-ddp-accumulation-plan.md`](features/ADR-016-mixed-precision-and-ddp-accumulation-plan.md) | `design/ADR-016-mixed-precision-and-ddp-accumulation.md` |
+| [`features/ADR-017-masked-span-physio-placement-plan.md`](features/ADR-017-masked-span-physio-placement-plan.md) | `design/ADR-017-masked-span-physio-placement.md` |
 
 *(Foundational baselines `ADR-009`, `ADR-014`, and `ADR-015` were implemented prior to the
 feature-plan workflow and map directly to [`../spec/`](../spec/). Superseded feature plans for

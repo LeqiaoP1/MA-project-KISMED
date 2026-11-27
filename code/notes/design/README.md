@@ -45,6 +45,7 @@ under [`../plan/features/`](../plan/features/) pairs 1-to-1 with an ADR here.
 | [`ADR-007`](ADR-007-two-stream-anatomy-aware-constant-budget-masking.md) | Stage-2 masking (Phase-1 active): 2-stream anatomy-aware constant-budget (`tir`, `resp`) | `Implemented (Pending Eval)` | [`ADR-007-two-stream-anatomy-aware-masking-plan.md`](../plan/features/ADR-007-two-stream-anatomy-aware-masking-plan.md) |
 | [`ADR-006`](ADR-006-three-regime-virtual-sensing-masking.md) | Stage-2 masking (Phase-2 fusion): 3-regime multi-camera virtual sensing (`tir`, `rgb2d`, `resp`) | `Deferred` | [`ADR-006-three-regime-masking-plan.md`](../plan/features/ADR-006-three-regime-masking-plan.md) |
 | [`ADR-008`](ADR-008-composite-objective-and-cross-modal-alignment.md) | Stage-2 composite respiration objective ($\mathcal{L}_\text{MSE}+\mathcal{L}_\text{Pearson}+\mathcal{L}_\text{spectral}$) & InfoNCE alignment | `Implemented (Pending Eval)` | [`ADR-008-composite-objective-and-cross-modal-alignment-plan.md`](../plan/features/ADR-008-composite-objective-and-cross-modal-alignment-plan.md) |
+| [`ADR-017`](ADR-017-masked-span-physio-placement.md) | Stage-2 1-D respiration placement: gap-controlled contiguous masked spans (`masked_span`) | `Proposed` | [`ADR-017-masked-span-physio-placement-plan.md`](../plan/features/ADR-017-masked-span-physio-placement-plan.md) |
 | [`ADR-015`](ADR-015-stage3-waveform-regression-and-joint-loss.md) | Stage-3 waveform regression head, Stage-2 encoder transfer contract & `WaveformJointLoss` | `Accepted` | Pre-existing baseline (`spec/02_model_architecture.md`, `code/core/waveform_model.py`) |
 
 ### E. Compute & Execution Infrastructure
@@ -60,7 +61,7 @@ Historical records are preserved read-only for provenance and must not be implem
 
 | Archived Document | Superseded By | Archived Feature Plan |
 |---|---|---|
-| [`archive/SpanMask_PhysioSignals.md`](archive/SpanMask_PhysioSignals.md) | `ADR-002`..`ADR-007` (`mask_placement.py`) & 2026-11-09 STFT removal | — |
+| [`archive/SpanMask_PhysioSignals.md`](archive/SpanMask_PhysioSignals.md) | `ADR-002`..`ADR-007` (`mask_placement.py`), `ADR-017` (`masked_span`) & 2026-11-09 STFT removal | — |
 | [`archive/ADR-002-asymmetric-multimodal-masking.md`](archive/ADR-002-asymmetric-multimodal-masking.md) | `ADR-005` → `ADR-006` / `ADR-007` | [`../plan/features/archive/ADR-002-constant-budget-masking-plan.md`](../plan/features/archive/ADR-002-constant-budget-masking-plan.md) |
 | [`archive/ADR-005-asymmetric-multimodal-masking-3streams.md`](archive/ADR-005-asymmetric-multimodal-masking-3streams.md) | `ADR-006` → `ADR-007` | [`../plan/features/archive/ADR-005-asymmetric-multimodal-masking-3streams-plan.md`](../plan/features/archive/ADR-005-asymmetric-multimodal-masking-3streams-plan.md) |
 
