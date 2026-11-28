@@ -163,6 +163,42 @@ Available Slurm batch files (`code/scripts/hpc/`): `submit_sweep.sbatch` (the AD
 - `clip_stride: 1.0` (overlapping windows, more clips)
 - No `max_sessions` / `max_entries` limits
 
+#### 4.2.1 Compute placement rule — the login node is NOT a compute node
+
+The login host (`logc0003`, and any other `log*` node) exposes exactly **one
+communal `Tesla T4` (~15.4 GB)** shared by every logged-in user, and it is
+routinely saturated by other tenants' long-running jobs (measured 2026-11-28:
+two foreign `python3` processes pinned the device at 100 % utilisation for
+4 h 25 m and 10 h 26 m). Two properties make it unusable for any reported GPU
+work:
+
+1. **Throughput is unbounded.** A probe that needs ~10 min of exclusive T4 time
+   stretches by an unknown factor while it shares the device, so wall-clock
+   budgets and `--time` estimates stop meaning anything.
+2. **Processes die with the session.** A terminal-attached run is `SIGKILL`ed
+   the moment its terminal/SSH session is torn down, and it leaves **no
+   traceback** in the run log — the log simply stops. Measured 2026-11-28: an
+   ADR-017 evaluation chain died right after `preloaded 1742 clip(s) into host
+   RAM` and silently produced nothing for 2.5 h.
+
+**Rules**
+
+- **Never** run training, fine-tuning, or evaluation on a login node:
+  `run_pretrain.py`, `run_waveform.py`, `run_finetune.py`, `run_eval_recon.py`,
+  `run_evaluate*.py`, `run_au_probe.py`. Submit them instead — `sbatch`,
+  `scripts/hpc/submit.sh`, or `scripts/hpc/submit_pretrain_chain.sh` — on
+  `acc_short` (or `acc` / `acc_long`). The zero-shot probes in
+  `run_eval_recon.py` need only **1 GPU** (`--gres=gpu:a100:1`).
+- Allowed on a login node: CPU-only, no-GPU utilities
+  (`run_download_weights.py`, `run_build_*_cache.py --status/--check`,
+  `run_partition.py`), the zero-GPU Criterion-3a floor probe
+  (`run_probe_masking_baselines.py`), and file/log inspection. Keep each
+  command to a couple of minutes.
+- If a GPU smoke on the login node is truly unavoidable: confirm the device is
+  free with `nvidia-smi` first, cap it (`--max_clips` / `--max_entries 2`),
+  launch it under `setsid nohup … &` so a terminal teardown cannot kill it, and
+  never use its numbers as a reported result.
+
 ---
 
 ## 5. Runner Entry Points

@@ -13,6 +13,7 @@
 
 - **Local (WSL / 1 GPU)**: Fast smoke tests (`code/scripts/local/*.sh`, `source code/scripts/env_local.sh`). Use CLI caps (`--max_sessions`, `--max_clips`, `--max_entries` in `code/runners/_common.py`). No DDP required.
 - **HPC (Slurm / Multi-GPU)**: Full pre-training and waveform fine-tuning (`sbatch code/scripts/hpc/<job>.sbatch`). Must use dynamic rank discovery via `code/utils/dist.py` (`RANK`, `WORLD_SIZE`, `LOCAL_RANK`).
+- **No compute on login nodes**: never run training, fine-tuning, or evaluation (`run_pretrain.py`, `run_waveform.py`, `run_eval_recon.py`, `run_evaluate*.py`) on a `log*` host. Its single communal GPU is shared with other tenants and terminal-attached processes are killed on session teardown with no traceback. Submit instead; login nodes are only for CPU-only utilities, cache status checks, and the zero-GPU floor probe (`code/notes/spec/04_configs_and_execution.md` §4.2.1).
 
 ## 3. Directory Layout & Boundaries
 

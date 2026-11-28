@@ -31,6 +31,7 @@ Rules of thumb:
 | [`experiments/local_downstream_plan.md`](experiments/local_downstream_plan.md) | local 64 px Stage-3 setup record (BP and RESP branches) |
 | [`experiments/exp_20261121_fourstream_vits_random.md`](experiments/exp_20261121_fourstream_vits_random.md) | four-stream ViT-Small random-init Stage-2 baseline run protocol |
 | [`experiments/exp_20261124_adr006_tir_primary_rgb2d_ablation.md`](experiments/exp_20261124_adr006_tir_primary_rgb2d_ablation.md) | ADR-006 TIR-primary vs. RGB2D ablation run protocol |
+| [`experiments/exp_20261127_adr017_tir_resp_masked_span.md`](experiments/exp_20261127_adr017_tir_resp_masked_span.md) | ADR-017 two-stream `tir,resp` Stage-2 pre-training run protocol (`masked_span`) |
 | [`experiments/exp_template.md`](experiments/exp_template.md) | standard template for new experiment run protocols (`EXP-YYYYMMDD-SEQ`) |
 
 ## Features (implementation plans — 1-to-1 with `design/ADR-*`)
